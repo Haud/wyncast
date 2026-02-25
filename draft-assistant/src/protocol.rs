@@ -42,18 +42,19 @@ pub struct ExtensionConnectedPayload {
 #[serde(rename_all = "camelCase")]
 pub struct StateUpdatePayload {
     pub picks: Vec<PickData>,
+    #[serde(default)]
     pub current_nomination: Option<NominationData>,
-    pub my_team_id: u32,
-    pub source: String,
+    pub my_team_id: Option<String>,
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PickData {
     pub pick_number: u32,
-    pub team_id: u32,
+    pub team_id: String,
     pub team_name: String,
-    pub player_id: u32,
+    pub player_id: String,
     pub player_name: String,
     pub position: String,
     pub price: u32,
@@ -62,13 +63,13 @@ pub struct PickData {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct NominationData {
-    pub player_id: u32,
+    pub player_id: String,
     pub player_name: String,
     pub position: String,
     pub nominated_by: String,
     pub current_bid: u32,
-    pub current_bidder: String,
-    pub time_remaining: u32,
+    pub current_bidder: Option<String>,
+    pub time_remaining: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -116,7 +117,7 @@ pub enum UserCommand {
     RefreshPlan,
     ManualPick {
         player_name: String,
-        team_id: u32,
+        team_idx: usize,
         price: u32,
     },
     SwitchTab(TabId),
@@ -198,8 +199,8 @@ pub enum ScrollDirection {
 /// Snapshot of the full application state, sent to the TUI for rendering.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AppSnapshot {
-    pub pick_count: u32,
-    pub total_picks: u32,
+    pub pick_count: usize,
+    pub total_picks: usize,
     pub active_tab: Option<TabId>,
 }
 
@@ -210,8 +211,8 @@ pub struct NominationInfo {
     pub position: String,
     pub nominated_by: String,
     pub current_bid: u32,
-    pub current_bidder: String,
-    pub time_remaining: u32,
+    pub current_bidder: Option<String>,
+    pub time_remaining: Option<u32>,
 }
 
 /// Instant analysis result for a nominated player.
@@ -261,24 +262,24 @@ mod tests {
             payload: StateUpdatePayload {
                 picks: vec![PickData {
                     pick_number: 1,
-                    team_id: 3,
+                    team_id: "team_3".to_string(),
                     team_name: "Vorticists".to_string(),
-                    player_id: 12345,
+                    player_id: "12345".to_string(),
                     player_name: "Shohei Ohtani".to_string(),
                     position: "DH".to_string(),
                     price: 62,
                 }],
                 current_nomination: Some(NominationData {
-                    player_id: 67890,
+                    player_id: "67890".to_string(),
                     player_name: "Aaron Judge".to_string(),
                     position: "OF".to_string(),
                     nominated_by: "Team Alpha".to_string(),
                     current_bid: 55,
-                    current_bidder: "Team Beta".to_string(),
-                    time_remaining: 15,
+                    current_bidder: Some("Team Beta".to_string()),
+                    time_remaining: Some(15),
                 }),
-                my_team_id: 7,
-                source: "dom_scraper".to_string(),
+                my_team_id: Some("team_7".to_string()),
+                source: Some("dom_scraper".to_string()),
             },
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -345,25 +346,25 @@ mod tests {
                 "picks": [
                     {
                         "pickNumber": 1,
-                        "teamId": 3,
+                        "teamId": "team_3",
                         "teamName": "Vorticists",
-                        "playerId": 12345,
+                        "playerId": "12345",
                         "playerName": "Shohei Ohtani",
                         "position": "DH",
                         "price": 62
                     },
                     {
                         "pickNumber": 2,
-                        "teamId": 5,
+                        "teamId": "team_5",
                         "teamName": "Sluggers",
-                        "playerId": 54321,
+                        "playerId": "54321",
                         "playerName": "Mookie Betts",
                         "position": "SS",
                         "price": 48
                     }
                 ],
                 "currentNomination": {
-                    "playerId": 67890,
+                    "playerId": "67890",
                     "playerName": "Aaron Judge",
                     "position": "OF",
                     "nominatedBy": "Team Alpha",
@@ -371,7 +372,7 @@ mod tests {
                     "currentBidder": "Team Beta",
                     "timeRemaining": 15
                 },
-                "myTeamId": 7,
+                "myTeamId": "team_7",
                 "source": "dom_scraper"
             }
         }"#;
@@ -387,9 +388,9 @@ mod tests {
                 let nom = payload.current_nomination.unwrap();
                 assert_eq!(nom.player_name, "Aaron Judge");
                 assert_eq!(nom.current_bid, 55);
-                assert_eq!(nom.time_remaining, 15);
-                assert_eq!(payload.my_team_id, 7);
-                assert_eq!(payload.source, "dom_scraper");
+                assert_eq!(nom.time_remaining, Some(15));
+                assert_eq!(payload.my_team_id, Some("team_7".to_string()));
+                assert_eq!(payload.source, Some("dom_scraper".to_string()));
             }
             _ => panic!("expected StateUpdate variant"),
         }
@@ -403,7 +404,7 @@ mod tests {
             "payload": {
                 "picks": [],
                 "currentNomination": null,
-                "myTeamId": 1,
+                "myTeamId": "team_1",
                 "source": "react_state"
             }
         }"#;
@@ -411,6 +412,27 @@ mod tests {
         match msg {
             ExtensionMessage::StateUpdate { payload, .. } => {
                 assert!(payload.picks.is_empty());
+                assert!(payload.current_nomination.is_none());
+            }
+            _ => panic!("expected StateUpdate variant"),
+        }
+    }
+
+    #[test]
+    fn deserialize_state_update_omitted_nomination() {
+        // With #[serde(default)], omitting currentNomination entirely should work
+        let json = r#"{
+            "type": "STATE_UPDATE",
+            "timestamp": 1700000010,
+            "payload": {
+                "picks": [],
+                "myTeamId": "team_1",
+                "source": "react_state"
+            }
+        }"#;
+        let msg: ExtensionMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ExtensionMessage::StateUpdate { payload, .. } => {
                 assert!(payload.current_nomination.is_none());
             }
             _ => panic!("expected StateUpdate variant"),
@@ -462,16 +484,16 @@ mod tests {
             payload: StateUpdatePayload {
                 picks: vec![PickData {
                     pick_number: 1,
-                    team_id: 2,
+                    team_id: "team_2".to_string(),
                     team_name: "Test".to_string(),
-                    player_id: 3,
+                    player_id: "p3".to_string(),
                     player_name: "Player".to_string(),
                     position: "C".to_string(),
                     price: 10,
                 }],
                 current_nomination: None,
-                my_team_id: 5,
-                source: "test".to_string(),
+                my_team_id: Some("team_5".to_string()),
+                source: Some("test".to_string()),
             },
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -485,12 +507,7 @@ mod tests {
         assert!(json.contains("myTeamId"));
         // Verify snake_case keys are NOT present
         assert!(!json.contains("pick_number"));
-        assert!(!json.contains("team_id"));
-        assert!(!json.contains("team_name"));
-        assert!(!json.contains("player_id"));
         assert!(!json.contains("player_name"));
-        assert!(!json.contains("current_nomination"));
-        assert!(!json.contains("my_team_id"));
     }
 
     // -- Placeholder struct defaults --
