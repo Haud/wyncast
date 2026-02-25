@@ -1,0 +1,5 @@
+target/
+config/credentials.toml
+*.db
+*.log
+data/projections/*.csv
