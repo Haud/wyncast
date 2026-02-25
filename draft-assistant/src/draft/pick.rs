@@ -6,46 +6,46 @@ use std::fmt;
 /// Baseball positions used for roster slot assignment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Position {
-    C,
+    Catcher,
     FirstBase,
     SecondBase,
     ThirdBase,
-    SS,
-    LF,
-    CF,
-    RF,
-    SP,
-    RP,
-    DH,
-    UTIL,
-    BE,
-    IL,
+    ShortStop,
+    LeftField,
+    CenterField,
+    RightField,
+    StartingPitcher,
+    ReliefPitcher,
+    DesignatedHitter,
+    Utility,
+    Bench,
+    InjuredList,
 }
 
 impl Position {
     /// Parse a position string into a Position enum.
     ///
     /// Handles ESPN-style abbreviations:
-    /// - "1B" -> FB, "2B" -> SB, "3B" -> TB
-    /// - "OF" -> CF (generic outfield maps to CF slot)
-    /// - "DH" -> DH, "UTIL" -> UTIL, "BE"/"BN" -> BE, "IL"/"DL" -> IL
+    /// - "1B" -> FirstBase, "2B" -> SecondBase, "3B" -> ThirdBase
+    /// - "OF" -> CenterField (generic outfield maps to CenterField slot)
+    /// - "DH" -> DesignatedHitter, "UTIL" -> Utility, "BE"/"BN" -> Bench, "IL"/"DL" -> InjuredList
     pub fn from_str_pos(s: &str) -> Option<Self> {
         match s.to_uppercase().as_str() {
-            "C" => Some(Position::C),
+            "C" => Some(Position::Catcher),
             "1B" => Some(Position::FirstBase),
             "2B" => Some(Position::SecondBase),
             "3B" => Some(Position::ThirdBase),
-            "SS" => Some(Position::SS),
-            "LF" => Some(Position::LF),
-            "CF" => Some(Position::CF),
-            "RF" => Some(Position::RF),
-            "OF" => Some(Position::CF), // Generic outfield -> CF
-            "SP" => Some(Position::SP),
-            "RP" => Some(Position::RP),
-            "DH" => Some(Position::DH),
-            "UTIL" => Some(Position::UTIL),
-            "BE" | "BN" => Some(Position::BE),
-            "IL" | "DL" => Some(Position::IL),
+            "SS" => Some(Position::ShortStop),
+            "LF" => Some(Position::LeftField),
+            "CF" => Some(Position::CenterField),
+            "RF" => Some(Position::RightField),
+            "OF" => Some(Position::CenterField),
+            "SP" => Some(Position::StartingPitcher),
+            "RP" => Some(Position::ReliefPitcher),
+            "DH" => Some(Position::DesignatedHitter),
+            "UTIL" => Some(Position::Utility),
+            "BE" | "BN" => Some(Position::Bench),
+            "IL" | "DL" => Some(Position::InjuredList),
             _ => None,
         }
     }
@@ -53,20 +53,20 @@ impl Position {
     /// Return the display string for this position.
     pub fn display_str(&self) -> &'static str {
         match self {
-            Position::C => "C",
+            Position::Catcher => "C",
             Position::FirstBase => "1B",
             Position::SecondBase => "2B",
             Position::ThirdBase => "3B",
-            Position::SS => "SS",
-            Position::LF => "LF",
-            Position::CF => "CF",
-            Position::RF => "RF",
-            Position::SP => "SP",
-            Position::RP => "RP",
-            Position::DH => "DH",
-            Position::UTIL => "UTIL",
-            Position::BE => "BE",
-            Position::IL => "IL",
+            Position::ShortStop => "SS",
+            Position::LeftField => "LF",
+            Position::CenterField => "CF",
+            Position::RightField => "RF",
+            Position::StartingPitcher => "SP",
+            Position::ReliefPitcher => "RP",
+            Position::DesignatedHitter => "DH",
+            Position::Utility => "UTIL",
+            Position::Bench => "BE",
+            Position::InjuredList => "IL",
         }
     }
 
@@ -74,37 +74,36 @@ impl Position {
     pub fn is_hitter(&self) -> bool {
         matches!(
             self,
-            Position::C
+            Position::Catcher
                 | Position::FirstBase
                 | Position::SecondBase
                 | Position::ThirdBase
-                | Position::SS
-                | Position::LF
-                | Position::CF
-                | Position::RF
-                | Position::DH
-                | Position::UTIL
+                | Position::ShortStop
+                | Position::LeftField
+                | Position::CenterField
+                | Position::RightField
+                | Position::DesignatedHitter
+                | Position::Utility
         )
     }
 
     /// Deterministic ordering index for roster slot display.
-    /// Positions are ordered: C, 1B, 2B, 3B, SS, LF, CF, RF, UTIL, DH, SP, RP, BE, IL.
     pub fn sort_order(&self) -> u8 {
         match self {
-            Position::C => 0,
+            Position::Catcher => 0,
             Position::FirstBase => 1,
             Position::SecondBase => 2,
             Position::ThirdBase => 3,
-            Position::SS => 4,
-            Position::LF => 5,
-            Position::CF => 6,
-            Position::RF => 7,
-            Position::UTIL => 8,
-            Position::DH => 9,
-            Position::SP => 10,
-            Position::RP => 11,
-            Position::BE => 12,
-            Position::IL => 13,
+            Position::ShortStop => 4,
+            Position::LeftField => 5,
+            Position::CenterField => 6,
+            Position::RightField => 7,
+            Position::Utility => 8,
+            Position::DesignatedHitter => 9,
+            Position::StartingPitcher => 10,
+            Position::ReliefPitcher => 11,
+            Position::Bench => 12,
+            Position::InjuredList => 13,
         }
     }
 }
@@ -138,13 +137,13 @@ mod tests {
 
     #[test]
     fn from_str_pos_standard_positions() {
-        assert_eq!(Position::from_str_pos("C"), Some(Position::C));
-        assert_eq!(Position::from_str_pos("SS"), Some(Position::SS));
-        assert_eq!(Position::from_str_pos("SP"), Some(Position::SP));
-        assert_eq!(Position::from_str_pos("RP"), Some(Position::RP));
-        assert_eq!(Position::from_str_pos("LF"), Some(Position::LF));
-        assert_eq!(Position::from_str_pos("CF"), Some(Position::CF));
-        assert_eq!(Position::from_str_pos("RF"), Some(Position::RF));
+        assert_eq!(Position::from_str_pos("C"), Some(Position::Catcher));
+        assert_eq!(Position::from_str_pos("SS"), Some(Position::ShortStop));
+        assert_eq!(Position::from_str_pos("SP"), Some(Position::StartingPitcher));
+        assert_eq!(Position::from_str_pos("RP"), Some(Position::ReliefPitcher));
+        assert_eq!(Position::from_str_pos("LF"), Some(Position::LeftField));
+        assert_eq!(Position::from_str_pos("CF"), Some(Position::CenterField));
+        assert_eq!(Position::from_str_pos("RF"), Some(Position::RightField));
     }
 
     #[test]
@@ -156,25 +155,25 @@ mod tests {
 
     #[test]
     fn from_str_pos_generic_outfield() {
-        assert_eq!(Position::from_str_pos("OF"), Some(Position::CF));
+        assert_eq!(Position::from_str_pos("OF"), Some(Position::CenterField));
     }
 
     #[test]
     fn from_str_pos_special_slots() {
-        assert_eq!(Position::from_str_pos("UTIL"), Some(Position::UTIL));
-        assert_eq!(Position::from_str_pos("DH"), Some(Position::DH));
-        assert_eq!(Position::from_str_pos("BE"), Some(Position::BE));
-        assert_eq!(Position::from_str_pos("BN"), Some(Position::BE));
-        assert_eq!(Position::from_str_pos("IL"), Some(Position::IL));
-        assert_eq!(Position::from_str_pos("DL"), Some(Position::IL));
+        assert_eq!(Position::from_str_pos("UTIL"), Some(Position::Utility));
+        assert_eq!(Position::from_str_pos("DH"), Some(Position::DesignatedHitter));
+        assert_eq!(Position::from_str_pos("BE"), Some(Position::Bench));
+        assert_eq!(Position::from_str_pos("BN"), Some(Position::Bench));
+        assert_eq!(Position::from_str_pos("IL"), Some(Position::InjuredList));
+        assert_eq!(Position::from_str_pos("DL"), Some(Position::InjuredList));
     }
 
     #[test]
     fn from_str_pos_case_insensitive() {
-        assert_eq!(Position::from_str_pos("sp"), Some(Position::SP));
-        assert_eq!(Position::from_str_pos("Ss"), Some(Position::SS));
+        assert_eq!(Position::from_str_pos("sp"), Some(Position::StartingPitcher));
+        assert_eq!(Position::from_str_pos("Ss"), Some(Position::ShortStop));
         assert_eq!(Position::from_str_pos("1b"), Some(Position::FirstBase));
-        assert_eq!(Position::from_str_pos("util"), Some(Position::UTIL));
+        assert_eq!(Position::from_str_pos("util"), Some(Position::Utility));
     }
 
     #[test]
@@ -186,22 +185,21 @@ mod tests {
 
     #[test]
     fn display_str_roundtrip() {
-        // For standard positions, from_str_pos(display_str()) should roundtrip
         let positions = [
-            Position::C,
+            Position::Catcher,
             Position::FirstBase,
             Position::SecondBase,
             Position::ThirdBase,
-            Position::SS,
-            Position::LF,
-            Position::CF,
-            Position::RF,
-            Position::SP,
-            Position::RP,
-            Position::DH,
-            Position::UTIL,
-            Position::BE,
-            Position::IL,
+            Position::ShortStop,
+            Position::LeftField,
+            Position::CenterField,
+            Position::RightField,
+            Position::StartingPitcher,
+            Position::ReliefPitcher,
+            Position::DesignatedHitter,
+            Position::Utility,
+            Position::Bench,
+            Position::InjuredList,
         ];
         for pos in positions {
             let s = pos.display_str();
@@ -212,20 +210,20 @@ mod tests {
 
     #[test]
     fn is_hitter_correct() {
-        assert!(Position::C.is_hitter());
+        assert!(Position::Catcher.is_hitter());
         assert!(Position::FirstBase.is_hitter());
         assert!(Position::SecondBase.is_hitter());
         assert!(Position::ThirdBase.is_hitter());
-        assert!(Position::SS.is_hitter());
-        assert!(Position::LF.is_hitter());
-        assert!(Position::CF.is_hitter());
-        assert!(Position::RF.is_hitter());
-        assert!(Position::DH.is_hitter());
-        assert!(Position::UTIL.is_hitter());
-        assert!(!Position::SP.is_hitter());
-        assert!(!Position::RP.is_hitter());
-        assert!(!Position::BE.is_hitter());
-        assert!(!Position::IL.is_hitter());
+        assert!(Position::ShortStop.is_hitter());
+        assert!(Position::LeftField.is_hitter());
+        assert!(Position::CenterField.is_hitter());
+        assert!(Position::RightField.is_hitter());
+        assert!(Position::DesignatedHitter.is_hitter());
+        assert!(Position::Utility.is_hitter());
+        assert!(!Position::StartingPitcher.is_hitter());
+        assert!(!Position::ReliefPitcher.is_hitter());
+        assert!(!Position::Bench.is_hitter());
+        assert!(!Position::InjuredList.is_hitter());
     }
 
     #[test]
@@ -233,7 +231,7 @@ mod tests {
         assert_eq!(format!("{}", Position::FirstBase), "1B");
         assert_eq!(format!("{}", Position::SecondBase), "2B");
         assert_eq!(format!("{}", Position::ThirdBase), "3B");
-        assert_eq!(format!("{}", Position::SP), "SP");
+        assert_eq!(format!("{}", Position::StartingPitcher), "SP");
     }
 
     #[test]

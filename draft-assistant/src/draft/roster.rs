@@ -94,8 +94,15 @@ impl Roster {
         }
 
         // For outfielders (LF/CF/RF), also try the other outfield slots
-        if matches!(pos, Position::LF | Position::CF | Position::RF) {
-            let of_positions = [Position::LF, Position::CF, Position::RF];
+        if matches!(
+            pos,
+            Position::LeftField | Position::CenterField | Position::RightField
+        ) {
+            let of_positions = [
+                Position::LeftField,
+                Position::CenterField,
+                Position::RightField,
+            ];
             for &of_pos in &of_positions {
                 if of_pos == pos {
                     continue; // Already tried exact match
@@ -116,7 +123,7 @@ impl Roster {
             if let Some(slot) = self
                 .slots
                 .iter_mut()
-                .find(|s| s.position == Position::UTIL && s.player.is_none())
+                .find(|s| s.position == Position::Utility && s.player.is_none())
             {
                 slot.player = Some(player);
                 return true;
@@ -127,7 +134,7 @@ impl Roster {
         if let Some(slot) = self
             .slots
             .iter_mut()
-            .find(|s| s.position == Position::BE && s.player.is_none())
+            .find(|s| s.position == Position::Bench && s.player.is_none())
         {
             slot.player = Some(player);
             return true;
@@ -140,7 +147,7 @@ impl Roster {
     pub fn empty_slots(&self) -> usize {
         self.slots
             .iter()
-            .filter(|s| s.position != Position::IL && s.player.is_none())
+            .filter(|s| s.position != Position::InjuredList && s.player.is_none())
             .count()
     }
 
@@ -171,7 +178,7 @@ impl Roster {
     pub fn draftable_count(&self) -> usize {
         self.slots
             .iter()
-            .filter(|s| s.position != Position::IL)
+            .filter(|s| s.position != Position::InjuredList)
             .count()
     }
 }
@@ -209,13 +216,16 @@ mod tests {
     fn new_roster_deterministic_order() {
         let roster = Roster::new(&test_roster_config());
         // First slot should be C, then 1B, 2B, 3B, SS, etc.
-        assert_eq!(roster.slots[0].position, Position::C);
+        assert_eq!(roster.slots[0].position, Position::Catcher);
         assert_eq!(roster.slots[1].position, Position::FirstBase);
         assert_eq!(roster.slots[2].position, Position::SecondBase);
         assert_eq!(roster.slots[3].position, Position::ThirdBase);
-        assert_eq!(roster.slots[4].position, Position::SS);
+        assert_eq!(roster.slots[4].position, Position::ShortStop);
         // Last slots should be IL
-        assert_eq!(roster.slots[roster.slots.len() - 1].position, Position::IL);
+        assert_eq!(
+            roster.slots[roster.slots.len() - 1].position,
+            Position::InjuredList
+        );
     }
 
     #[test]
@@ -236,7 +246,7 @@ mod tests {
         let cf_slot = roster
             .slots
             .iter()
-            .find(|s| s.position == Position::CF)
+            .find(|s| s.position == Position::CenterField)
             .unwrap();
         assert!(cf_slot.player.is_some());
         assert_eq!(cf_slot.player.as_ref().unwrap().name, "Mike Trout");
@@ -253,7 +263,7 @@ mod tests {
         let util_slot = roster
             .slots
             .iter()
-            .find(|s| s.position == Position::UTIL)
+            .find(|s| s.position == Position::Utility)
             .unwrap();
         assert!(util_slot.player.is_some());
         assert_eq!(util_slot.player.as_ref().unwrap().name, "Adley Rutschman");
@@ -272,7 +282,7 @@ mod tests {
         let bench_slots: Vec<_> = roster
             .slots
             .iter()
-            .filter(|s| s.position == Position::BE && s.player.is_some())
+            .filter(|s| s.position == Position::Bench && s.player.is_some())
             .collect();
         assert_eq!(bench_slots.len(), 1);
         assert_eq!(bench_slots[0].player.as_ref().unwrap().name, "Will Smith");
@@ -291,14 +301,17 @@ mod tests {
         let util_slot = roster
             .slots
             .iter()
-            .find(|s| s.position == Position::UTIL)
+            .find(|s| s.position == Position::Utility)
             .unwrap();
-        assert!(util_slot.player.is_none(), "UTIL should remain empty for pitchers");
+        assert!(
+            util_slot.player.is_none(),
+            "UTIL should remain empty for pitchers"
+        );
 
         let bench_pitchers: Vec<_> = roster
             .slots
             .iter()
-            .filter(|s| s.position == Position::BE && s.player.is_some())
+            .filter(|s| s.position == Position::Bench && s.player.is_some())
             .collect();
         assert_eq!(bench_pitchers.len(), 1);
     }
@@ -315,7 +328,12 @@ mod tests {
         let of_filled: Vec<_> = roster
             .slots
             .iter()
-            .filter(|s| matches!(s.position, Position::CF | Position::RF) && s.player.is_some())
+            .filter(|s| {
+                matches!(
+                    s.position,
+                    Position::CenterField | Position::RightField
+                ) && s.player.is_some()
+            })
             .collect();
         assert_eq!(of_filled.len(), 1);
     }
@@ -323,11 +341,11 @@ mod tests {
     #[test]
     fn has_empty_slot() {
         let mut roster = Roster::new(&test_roster_config());
-        assert!(roster.has_empty_slot(Position::C));
-        assert!(roster.has_empty_slot(Position::SP));
+        assert!(roster.has_empty_slot(Position::Catcher));
+        assert!(roster.has_empty_slot(Position::StartingPitcher));
 
         roster.add_player("Test", "C", 5);
-        assert!(!roster.has_empty_slot(Position::C));
+        assert!(!roster.has_empty_slot(Position::Catcher));
     }
 
     #[test]
