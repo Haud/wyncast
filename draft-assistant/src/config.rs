@@ -1,1 +1,768 @@
 // Configuration loading and parsing (league.toml, strategy.toml, credentials.toml).
+
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use thiserror::Error;
+
+// ---------------------------------------------------------------------------
+// Error types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("config file not found: {path}")]
+    FileNotFound { path: PathBuf },
+
+    #[error("failed to parse config file {path}: {source}")]
+    ParseError {
+        path: PathBuf,
+        source: toml::de::Error,
+    },
+
+    #[error("validation error for field `{field}`: {message}")]
+    ValidationError { field: String, message: String },
+}
+
+// ---------------------------------------------------------------------------
+// Top-level assembled Config
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub league: LeagueConfig,
+    pub strategy: StrategyConfig,
+    pub credentials: CredentialsConfig,
+    pub ws_port: u16,
+    pub db_path: String,
+    pub data_paths: DataPaths,
+}
+
+// ---------------------------------------------------------------------------
+// league.toml structs
+// ---------------------------------------------------------------------------
+
+/// Wrapper for the top-level `[league]` table in league.toml.
+#[derive(Debug, Clone, Deserialize)]
+struct LeagueFile {
+    league: LeagueConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LeagueConfig {
+    pub name: String,
+    pub platform: String,
+    pub num_teams: usize,
+    pub scoring_type: String,
+    pub salary_cap: u32,
+    pub batting_categories: CategoriesSection,
+    pub pitching_categories: CategoriesSection,
+    pub roster: HashMap<String, usize>,
+    pub roster_limits: RosterLimits,
+    pub teams: HashMap<String, String>,
+    pub my_team: MyTeam,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CategoriesSection {
+    pub categories: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RosterLimits {
+    pub max_sp: usize,
+    pub max_rp: usize,
+    pub gs_per_week: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MyTeam {
+    pub team_id: String,
+}
+
+// ---------------------------------------------------------------------------
+// strategy.toml structs
+// ---------------------------------------------------------------------------
+
+/// Raw deserialization target for the entire strategy.toml file.
+#[derive(Debug, Clone, Deserialize)]
+struct StrategyFile {
+    budget: BudgetSection,
+    category_weights: CategoryWeights,
+    pool: PoolConfig,
+    holds_estimation: HoldsEstimationConfig,
+    llm: LlmConfig,
+    websocket: WebsocketSection,
+    database: DatabaseSection,
+    data_paths: DataPaths,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct BudgetSection {
+    hitting_budget_fraction: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct WebsocketSection {
+    port: u16,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct DatabaseSection {
+    path: String,
+}
+
+/// The public strategy config assembled from the strategy.toml sections.
+#[derive(Debug, Clone)]
+pub struct StrategyConfig {
+    pub hitting_budget_fraction: f64,
+    pub weights: CategoryWeights,
+    pub pool: PoolConfig,
+    pub holds_estimation: HoldsEstimationConfig,
+    pub llm: LlmConfig,
+}
+
+/// Category weight multipliers. The field names use UPPERCASE to match the
+/// TOML keys (R, HR, ...). Serde aliases with `#[serde(rename)]` map them.
+#[derive(Debug, Clone, Deserialize)]
+#[allow(non_snake_case)]
+pub struct CategoryWeights {
+    pub R: f64,
+    pub HR: f64,
+    pub RBI: f64,
+    pub BB: f64,
+    pub SB: f64,
+    pub AVG: f64,
+    pub K: f64,
+    pub W: f64,
+    pub SV: f64,
+    pub HD: f64,
+    pub ERA: f64,
+    pub WHIP: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PoolConfig {
+    pub min_pa: usize,
+    pub min_ip_sp: f64,
+    pub min_g_rp: usize,
+    pub hitter_pool_size: usize,
+    pub sp_pool_size: usize,
+    pub rp_pool_size: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct HoldsEstimationConfig {
+    pub default_hold_rate: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LlmConfig {
+    pub model: String,
+    pub analysis_max_tokens: u32,
+    pub planning_max_tokens: u32,
+    pub analysis_trigger: String,
+    pub prefire_planning: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DataPaths {
+    pub hitters: String,
+    pub pitchers_sp: String,
+    pub pitchers_rp: String,
+    pub holds_overlay: String,
+    pub adp: String,
+}
+
+// ---------------------------------------------------------------------------
+// credentials.toml structs
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct CredentialsConfig {
+    pub anthropic_api_key: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Loading logic
+// ---------------------------------------------------------------------------
+
+/// Load and validate configuration from `config/league.toml`,
+/// `config/strategy.toml`, and (optionally) `config/credentials.toml`,
+/// all relative to the given `base_dir`.
+pub fn load_config_from(base_dir: &Path) -> Result<Config, ConfigError> {
+    let config_dir = base_dir.join("config");
+
+    // --- league.toml (required) ---
+    let league_path = config_dir.join("league.toml");
+    let league_text = read_file(&league_path)?;
+    let league_file: LeagueFile =
+        toml::from_str(&league_text).map_err(|e| ConfigError::ParseError {
+            path: league_path.clone(),
+            source: e,
+        })?;
+    let league = league_file.league;
+
+    // --- strategy.toml (required) ---
+    let strategy_path = config_dir.join("strategy.toml");
+    let strategy_text = read_file(&strategy_path)?;
+    let strategy_file: StrategyFile =
+        toml::from_str(&strategy_text).map_err(|e| ConfigError::ParseError {
+            path: strategy_path.clone(),
+            source: e,
+        })?;
+
+    let strategy = StrategyConfig {
+        hitting_budget_fraction: strategy_file.budget.hitting_budget_fraction,
+        weights: strategy_file.category_weights,
+        pool: strategy_file.pool,
+        holds_estimation: strategy_file.holds_estimation,
+        llm: strategy_file.llm,
+    };
+
+    let ws_port = strategy_file.websocket.port;
+    let db_path = strategy_file.database.path;
+    let data_paths = strategy_file.data_paths;
+
+    // --- credentials.toml (optional) ---
+    let credentials_path = config_dir.join("credentials.toml");
+    let credentials = if credentials_path.exists() {
+        let cred_text = read_file(&credentials_path)?;
+        toml::from_str(&cred_text).map_err(|e| ConfigError::ParseError {
+            path: credentials_path.clone(),
+            source: e,
+        })?
+    } else {
+        CredentialsConfig::default()
+    };
+
+    let config = Config {
+        league,
+        strategy,
+        credentials,
+        ws_port,
+        db_path,
+        data_paths,
+    };
+
+    validate(&config)?;
+
+    Ok(config)
+}
+
+/// Convenience wrapper: loads config relative to the current working directory.
+pub fn load_config() -> Result<Config, ConfigError> {
+    let cwd = std::env::current_dir().map_err(|_| ConfigError::FileNotFound {
+        path: PathBuf::from("."),
+    })?;
+    load_config_from(&cwd)
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn read_file(path: &Path) -> Result<String, ConfigError> {
+    std::fs::read_to_string(path).map_err(|_| ConfigError::FileNotFound {
+        path: path.to_path_buf(),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+
+fn validate(config: &Config) -> Result<(), ConfigError> {
+    // League validations
+    if config.league.num_teams == 0 {
+        return Err(ConfigError::ValidationError {
+            field: "league.num_teams".into(),
+            message: "must be greater than 0".into(),
+        });
+    }
+
+    if config.league.salary_cap == 0 {
+        return Err(ConfigError::ValidationError {
+            field: "league.salary_cap".into(),
+            message: "must be greater than 0".into(),
+        });
+    }
+
+    // Strategy validations
+    let frac = config.strategy.hitting_budget_fraction;
+    if !(0.0..=1.0).contains(&frac) {
+        return Err(ConfigError::ValidationError {
+            field: "strategy.hitting_budget_fraction".into(),
+            message: format!("must be between 0.0 and 1.0 inclusive, got {frac}"),
+        });
+    }
+
+    // Category weights must all be positive
+    let w = &config.strategy.weights;
+    let weight_fields: &[(&str, f64)] = &[
+        ("weights.R", w.R),
+        ("weights.HR", w.HR),
+        ("weights.RBI", w.RBI),
+        ("weights.BB", w.BB),
+        ("weights.SB", w.SB),
+        ("weights.AVG", w.AVG),
+        ("weights.K", w.K),
+        ("weights.W", w.W),
+        ("weights.SV", w.SV),
+        ("weights.HD", w.HD),
+        ("weights.ERA", w.ERA),
+        ("weights.WHIP", w.WHIP),
+    ];
+    for (name, val) in weight_fields {
+        if *val <= 0.0 {
+            return Err(ConfigError::ValidationError {
+                field: name.to_string(),
+                message: format!("must be > 0, got {val}"),
+            });
+        }
+    }
+
+    // Pool sizes must be positive
+    let pool = &config.strategy.pool;
+    let pool_fields: &[(&str, usize)] = &[
+        ("pool.min_pa", pool.min_pa),
+        ("pool.min_g_rp", pool.min_g_rp),
+        ("pool.hitter_pool_size", pool.hitter_pool_size),
+        ("pool.sp_pool_size", pool.sp_pool_size),
+        ("pool.rp_pool_size", pool.rp_pool_size),
+    ];
+    for (name, val) in pool_fields {
+        if *val == 0 {
+            return Err(ConfigError::ValidationError {
+                field: name.to_string(),
+                message: "must be > 0".into(),
+            });
+        }
+    }
+
+    if pool.min_ip_sp <= 0.0 {
+        return Err(ConfigError::ValidationError {
+            field: "pool.min_ip_sp".into(),
+            message: format!("must be > 0, got {}", pool.min_ip_sp),
+        });
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    /// Helper: returns the path to the draft-assistant project root
+    /// (works whether `cargo test` runs from the crate root or repo root).
+    fn project_root() -> PathBuf {
+        // `cargo test` sets CWD to the crate root, so "config/" should be
+        // directly accessible. Return "." so load_config_from works.
+        let cwd = std::env::current_dir().unwrap();
+        if cwd.join("config").exists() {
+            cwd
+        } else if cwd.join("draft-assistant/config").exists() {
+            cwd.join("draft-assistant")
+        } else {
+            panic!("Cannot locate config/ directory from CWD {:?}", cwd);
+        }
+    }
+
+    #[test]
+    fn load_valid_config_from_project_files() {
+        let config = load_config_from(&project_root()).expect("should load valid config");
+
+        // League assertions
+        assert_eq!(config.league.name, "Wyndham Lewis Vorticist Baseball");
+        assert_eq!(config.league.platform, "espn");
+        assert_eq!(config.league.num_teams, 10);
+        assert_eq!(config.league.scoring_type, "h2h_most_categories");
+        assert_eq!(config.league.salary_cap, 260);
+        assert_eq!(
+            config.league.batting_categories.categories,
+            vec!["R", "HR", "RBI", "BB", "SB", "AVG"]
+        );
+        assert_eq!(
+            config.league.pitching_categories.categories,
+            vec!["K", "W", "SV", "HD", "ERA", "WHIP"]
+        );
+        assert_eq!(config.league.roster.get("SP"), Some(&5));
+        assert_eq!(config.league.roster.get("RP"), Some(&6));
+        assert_eq!(config.league.roster_limits.max_rp, 7);
+        assert_eq!(config.league.roster_limits.gs_per_week, 7);
+        assert_eq!(config.league.my_team.team_id, "team_1");
+        assert_eq!(config.league.teams.len(), 10);
+
+        // Strategy assertions
+        assert!((config.strategy.hitting_budget_fraction - 0.65).abs() < f64::EPSILON);
+        assert!((config.strategy.weights.SV - 0.7).abs() < f64::EPSILON);
+        assert!((config.strategy.weights.R - 1.0).abs() < f64::EPSILON);
+        assert_eq!(config.strategy.pool.hitter_pool_size, 150);
+        assert_eq!(config.strategy.pool.sp_pool_size, 70);
+        assert_eq!(config.strategy.pool.rp_pool_size, 80);
+        assert!((config.strategy.holds_estimation.default_hold_rate - 0.25).abs() < f64::EPSILON);
+        assert_eq!(config.strategy.llm.model, "claude-sonnet-4-5-20250929");
+        assert_eq!(config.strategy.llm.analysis_max_tokens, 400);
+        assert_eq!(config.strategy.llm.planning_max_tokens, 600);
+        assert_eq!(config.strategy.llm.analysis_trigger, "nomination");
+        assert!(config.strategy.llm.prefire_planning);
+
+        // Infrastructure assertions
+        assert_eq!(config.ws_port, 9001);
+        assert_eq!(config.db_path, "draft-assistant.db");
+        assert_eq!(config.data_paths.hitters, "data/projections/hitters.csv");
+        assert_eq!(config.data_paths.adp, "data/adp.csv");
+    }
+
+    #[test]
+    fn missing_credentials_toml_is_ok() {
+        // Create a temporary directory with league.toml and strategy.toml but no credentials.toml
+        let tmp = std::env::temp_dir().join("config_test_no_creds");
+        let config_dir = tmp.join("config");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let root = project_root();
+        fs::copy(root.join("config/league.toml"), config_dir.join("league.toml")).unwrap();
+        fs::copy(
+            root.join("config/strategy.toml"),
+            config_dir.join("strategy.toml"),
+        )
+        .unwrap();
+
+        let config = load_config_from(&tmp).expect("should load without credentials.toml");
+        assert!(config.credentials.anthropic_api_key.is_none());
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn credentials_toml_with_api_key() {
+        let tmp = std::env::temp_dir().join("config_test_with_creds");
+        let config_dir = tmp.join("config");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let root = project_root();
+        fs::copy(root.join("config/league.toml"), config_dir.join("league.toml")).unwrap();
+        fs::copy(
+            root.join("config/strategy.toml"),
+            config_dir.join("strategy.toml"),
+        )
+        .unwrap();
+        fs::write(
+            config_dir.join("credentials.toml"),
+            "anthropic_api_key = \"sk-ant-test-key\"\n",
+        )
+        .unwrap();
+
+        let config = load_config_from(&tmp).expect("should load with credentials.toml");
+        assert_eq!(
+            config.credentials.anthropic_api_key.as_deref(),
+            Some("sk-ant-test-key")
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn rejects_num_teams_zero() {
+        let tmp = std::env::temp_dir().join("config_test_num_teams_zero");
+        let config_dir = tmp.join("config");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&config_dir).unwrap();
+
+        // Write a league.toml with num_teams = 0
+        let league_toml = r#"
+[league]
+name = "Test"
+platform = "espn"
+num_teams = 0
+scoring_type = "h2h"
+salary_cap = 260
+
+[league.batting_categories]
+categories = ["R"]
+
+[league.pitching_categories]
+categories = ["K"]
+
+[league.roster]
+SP = 5
+
+[league.roster_limits]
+max_sp = 7
+max_rp = 7
+gs_per_week = 7
+
+[league.teams]
+team_1 = "Team 1"
+
+[league.my_team]
+team_id = "team_1"
+"#;
+        fs::write(config_dir.join("league.toml"), league_toml).unwrap();
+
+        let root = project_root();
+        fs::copy(
+            root.join("config/strategy.toml"),
+            config_dir.join("strategy.toml"),
+        )
+        .unwrap();
+
+        let err = load_config_from(&tmp).unwrap_err();
+        match &err {
+            ConfigError::ValidationError { field, .. } => {
+                assert_eq!(field, "league.num_teams");
+            }
+            other => panic!("expected ValidationError, got: {other}"),
+        }
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn rejects_salary_cap_zero() {
+        let tmp = std::env::temp_dir().join("config_test_salary_cap_zero");
+        let config_dir = tmp.join("config");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let league_toml = r#"
+[league]
+name = "Test"
+platform = "espn"
+num_teams = 10
+scoring_type = "h2h"
+salary_cap = 0
+
+[league.batting_categories]
+categories = ["R"]
+
+[league.pitching_categories]
+categories = ["K"]
+
+[league.roster]
+SP = 5
+
+[league.roster_limits]
+max_sp = 7
+max_rp = 7
+gs_per_week = 7
+
+[league.teams]
+team_1 = "Team 1"
+
+[league.my_team]
+team_id = "team_1"
+"#;
+        fs::write(config_dir.join("league.toml"), league_toml).unwrap();
+
+        let root = project_root();
+        fs::copy(
+            root.join("config/strategy.toml"),
+            config_dir.join("strategy.toml"),
+        )
+        .unwrap();
+
+        let err = load_config_from(&tmp).unwrap_err();
+        match &err {
+            ConfigError::ValidationError { field, .. } => {
+                assert_eq!(field, "league.salary_cap");
+            }
+            other => panic!("expected ValidationError, got: {other}"),
+        }
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn rejects_hitting_budget_fraction_too_high() {
+        let tmp = std::env::temp_dir().join("config_test_budget_high");
+        let config_dir = tmp.join("config");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let root = project_root();
+        fs::copy(root.join("config/league.toml"), config_dir.join("league.toml")).unwrap();
+
+        // Write strategy.toml with hitting_budget_fraction = 1.5
+        let strategy_text = fs::read_to_string(root.join("config/strategy.toml")).unwrap();
+        let modified = strategy_text.replace(
+            "hitting_budget_fraction = 0.65",
+            "hitting_budget_fraction = 1.5",
+        );
+        fs::write(config_dir.join("strategy.toml"), modified).unwrap();
+
+        let err = load_config_from(&tmp).unwrap_err();
+        match &err {
+            ConfigError::ValidationError { field, .. } => {
+                assert_eq!(field, "strategy.hitting_budget_fraction");
+            }
+            other => panic!("expected ValidationError, got: {other}"),
+        }
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn rejects_hitting_budget_fraction_negative() {
+        let tmp = std::env::temp_dir().join("config_test_budget_neg");
+        let config_dir = tmp.join("config");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let root = project_root();
+        fs::copy(root.join("config/league.toml"), config_dir.join("league.toml")).unwrap();
+
+        let strategy_text = fs::read_to_string(root.join("config/strategy.toml")).unwrap();
+        let modified = strategy_text.replace(
+            "hitting_budget_fraction = 0.65",
+            "hitting_budget_fraction = -0.1",
+        );
+        fs::write(config_dir.join("strategy.toml"), modified).unwrap();
+
+        let err = load_config_from(&tmp).unwrap_err();
+        match &err {
+            ConfigError::ValidationError { field, .. } => {
+                assert_eq!(field, "strategy.hitting_budget_fraction");
+            }
+            other => panic!("expected ValidationError, got: {other}"),
+        }
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn rejects_zero_weight() {
+        let tmp = std::env::temp_dir().join("config_test_zero_weight");
+        let config_dir = tmp.join("config");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let root = project_root();
+        fs::copy(root.join("config/league.toml"), config_dir.join("league.toml")).unwrap();
+
+        let strategy_text = fs::read_to_string(root.join("config/strategy.toml")).unwrap();
+        // Set SV weight to 0.0 (should fail validation: weights must be > 0)
+        let modified = strategy_text.replace("SV   = 0.7", "SV   = 0.0");
+        fs::write(config_dir.join("strategy.toml"), modified).unwrap();
+
+        let err = load_config_from(&tmp).unwrap_err();
+        match &err {
+            ConfigError::ValidationError { field, .. } => {
+                assert_eq!(field, "weights.SV");
+            }
+            other => panic!("expected ValidationError, got: {other}"),
+        }
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn rejects_zero_pool_size() {
+        let tmp = std::env::temp_dir().join("config_test_zero_pool");
+        let config_dir = tmp.join("config");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let root = project_root();
+        fs::copy(root.join("config/league.toml"), config_dir.join("league.toml")).unwrap();
+
+        let strategy_text = fs::read_to_string(root.join("config/strategy.toml")).unwrap();
+        let modified = strategy_text.replace("hitter_pool_size = 150", "hitter_pool_size = 0");
+        fs::write(config_dir.join("strategy.toml"), modified).unwrap();
+
+        let err = load_config_from(&tmp).unwrap_err();
+        match &err {
+            ConfigError::ValidationError { field, .. } => {
+                assert_eq!(field, "pool.hitter_pool_size");
+            }
+            other => panic!("expected ValidationError, got: {other}"),
+        }
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn file_not_found_for_missing_league_toml() {
+        let tmp = std::env::temp_dir().join("config_test_missing_league");
+        let config_dir = tmp.join("config");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&config_dir).unwrap();
+
+        // No league.toml written
+        let root = project_root();
+        fs::copy(
+            root.join("config/strategy.toml"),
+            config_dir.join("strategy.toml"),
+        )
+        .unwrap();
+
+        let err = load_config_from(&tmp).unwrap_err();
+        match &err {
+            ConfigError::FileNotFound { path } => {
+                assert!(path.ends_with("league.toml"));
+            }
+            other => panic!("expected FileNotFound, got: {other}"),
+        }
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn file_not_found_for_missing_strategy_toml() {
+        let tmp = std::env::temp_dir().join("config_test_missing_strategy");
+        let config_dir = tmp.join("config");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let root = project_root();
+        fs::copy(root.join("config/league.toml"), config_dir.join("league.toml")).unwrap();
+        // No strategy.toml written
+
+        let err = load_config_from(&tmp).unwrap_err();
+        match &err {
+            ConfigError::FileNotFound { path } => {
+                assert!(path.ends_with("strategy.toml"));
+            }
+            other => panic!("expected FileNotFound, got: {other}"),
+        }
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn parse_error_for_invalid_toml() {
+        let tmp = std::env::temp_dir().join("config_test_invalid_toml");
+        let config_dir = tmp.join("config");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&config_dir).unwrap();
+
+        fs::write(config_dir.join("league.toml"), "this is not valid [[[ toml").unwrap();
+
+        let root = project_root();
+        fs::copy(
+            root.join("config/strategy.toml"),
+            config_dir.join("strategy.toml"),
+        )
+        .unwrap();
+
+        let err = load_config_from(&tmp).unwrap_err();
+        match &err {
+            ConfigError::ParseError { path, .. } => {
+                assert!(path.ends_with("league.toml"));
+            }
+            other => panic!("expected ParseError, got: {other}"),
+        }
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+}
