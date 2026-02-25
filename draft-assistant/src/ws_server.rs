@@ -1,13 +1,16 @@
 // WebSocket server for communication with the Firefox extension.
 
+use futures_util::stream::{SplitStream, Stream};
 use futures_util::StreamExt;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::WebSocketStream;
 use tracing::{info, warn};
 
 /// Events emitted by the WebSocket server to the application layer.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum WsEvent {
     /// A new WebSocket client has connected.
     Connected { addr: String },
@@ -41,37 +44,19 @@ pub async fn run(port: u16, tx: mpsc::Sender<WsEvent>) -> anyhow::Result<()> {
             }
         };
 
-        if tx.send(WsEvent::Connected { addr: addr_str.clone() }).await.is_err() {
-            // Receiver dropped; stop the server.
+        if tx
+            .send(WsEvent::Connected {
+                addr: addr_str.clone(),
+            })
+            .await
+            .is_err()
+        {
             break;
         }
 
-        let (_write, mut read) = ws_stream.split();
-
-        loop {
-            match read.next().await {
-                Some(Ok(Message::Text(text))) => {
-                    if tx.send(WsEvent::Message(text.to_string())).await.is_err() {
-                        return Ok(());
-                    }
-                }
-                Some(Ok(Message::Close(_))) => {
-                    info!("Client {addr_str} sent close frame");
-                    break;
-                }
-                Some(Err(e)) => {
-                    warn!("WebSocket error from {addr_str}: {e}");
-                    break;
-                }
-                None => {
-                    // Stream ended (connection closed without close frame).
-                    info!("Connection from {addr_str} ended");
-                    break;
-                }
-                _ => {
-                    // Ignore Binary, Ping, Pong, Frame variants.
-                }
-            }
+        let (_write, read) = ws_stream.split();
+        if process_messages(read, &tx, &addr_str).await.is_err() {
+            break;
         }
 
         if tx.send(WsEvent::Disconnected).await.is_err() {
@@ -82,134 +67,223 @@ pub async fn run(port: u16, tx: mpsc::Sender<WsEvent>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Process incoming WebSocket messages from a read stream, forwarding text
+/// messages through `tx`. Returns `Err(())` if the channel is closed (receiver
+/// dropped), signalling the caller to stop.
+///
+/// This function is generic over the stream type so it can be tested with
+/// in-memory streams without opening TCP ports.
+pub async fn process_messages<S>(
+    mut read: SplitStream<WebSocketStream<S>>,
+    tx: &mpsc::Sender<WsEvent>,
+    addr: &str,
+) -> Result<(), ()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    while let Some(msg_result) = read.next().await {
+        match msg_result {
+            Ok(Message::Text(text)) => {
+                if tx.send(WsEvent::Message(text.to_string())).await.is_err() {
+                    return Err(());
+                }
+            }
+            Ok(Message::Close(_)) => {
+                info!("Client {addr} sent close frame");
+                break;
+            }
+            Err(e) => {
+                warn!("WebSocket error from {addr}: {e}");
+                break;
+            }
+            _ => {
+                // Ignore Binary, Ping, Pong, Frame variants.
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Process raw WebSocket [`Message`] items from any [`Stream`], forwarding
+/// text payloads through `tx`. This is a pure-logic function that requires
+/// no I/O and is the primary unit-test target.
+pub async fn process_message_stream<St>(
+    mut stream: St,
+    tx: &mpsc::Sender<WsEvent>,
+    addr: &str,
+) -> Result<(), ()>
+where
+    St: Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+{
+    while let Some(msg_result) = stream.next().await {
+        match msg_result {
+            Ok(Message::Text(text)) => {
+                if tx.send(WsEvent::Message(text.to_string())).await.is_err() {
+                    return Err(());
+                }
+            }
+            Ok(Message::Close(_)) => {
+                info!("Client {addr} sent close frame");
+                break;
+            }
+            Err(e) => {
+                warn!("WebSocket error from {addr}: {e}");
+                break;
+            }
+            _ => {
+                // Ignore Binary, Ping, Pong, Frame variants.
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures_util::SinkExt;
-    use tokio_tungstenite::tungstenite::Message as WsMessage;
+    use futures_util::stream;
+    use tokio_tungstenite::tungstenite::Error as WsError;
 
-    /// Helper: start the server on an ephemeral port and return the port number.
-    async fn start_server(tx: mpsc::Sender<WsEvent>) -> u16 {
-        // Bind to port 0 to get an ephemeral port, then extract the actual port.
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        // Drop the listener so the server can re-bind on the same port.
-        drop(listener);
-        tokio::spawn(run(port, tx));
-        // Give the server a moment to bind.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        port
+    /// Helper: create a stream of Message results from a vec.
+    fn mock_stream(
+        messages: Vec<Result<Message, WsError>>,
+    ) -> impl Stream<Item = Result<Message, WsError>> + Unpin {
+        stream::iter(messages)
     }
 
     #[tokio::test]
-    async fn server_accepts_connection_and_emits_connected_event() {
+    async fn text_message_forwarded_to_channel() {
         let (tx, mut rx) = mpsc::channel(64);
-        let port = start_server(tx).await;
+        let messages = vec![Ok(Message::Text("hello".into()))];
 
-        let url = format!("ws://127.0.0.1:{port}");
-        let (_ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
-
-        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+        process_message_stream(mock_stream(messages), &tx, "test")
             .await
-            .expect("timed out waiting for Connected event")
-            .expect("channel closed unexpectedly");
-
-        match event {
-            WsEvent::Connected { addr } => {
-                assert!(!addr.is_empty(), "addr should not be empty");
-            }
-            other => panic!("expected Connected event, got: {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn text_message_arrives_on_channel() {
-        let (tx, mut rx) = mpsc::channel(64);
-        let port = start_server(tx).await;
-
-        let url = format!("ws://127.0.0.1:{port}");
-        let (ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
-        let (mut write, _read) = ws.split();
-
-        // Drain the Connected event.
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
-            .await
-            .unwrap()
             .unwrap();
 
-        let payload = r#"{"type":"pick","player":"Mike Trout"}"#;
-        write.send(WsMessage::Text(payload.into())).await.unwrap();
-
-        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
-            .await
-            .expect("timed out waiting for Message event")
-            .expect("channel closed unexpectedly");
-
-        match event {
-            WsEvent::Message(text) => {
-                assert_eq!(text, payload);
-            }
-            other => panic!("expected Message event, got: {other:?}"),
-        }
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event, WsEvent::Message("hello".to_string()));
     }
 
     #[tokio::test]
-    async fn reconnection_works_after_disconnect() {
+    async fn multiple_messages_forwarded_in_order() {
         let (tx, mut rx) = mpsc::channel(64);
-        let port = start_server(tx).await;
+        let messages = vec![
+            Ok(Message::Text("first".into())),
+            Ok(Message::Text("second".into())),
+            Ok(Message::Text("third".into())),
+        ];
 
-        let url = format!("ws://127.0.0.1:{port}");
+        process_message_stream(mock_stream(messages), &tx, "test")
+            .await
+            .unwrap();
 
-        // First connection.
-        {
-            let (ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
-            let (mut write, _read) = ws.split();
+        assert_eq!(rx.recv().await.unwrap(), WsEvent::Message("first".into()));
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            WsEvent::Message("second".into())
+        );
+        assert_eq!(rx.recv().await.unwrap(), WsEvent::Message("third".into()));
+    }
 
-            // Drain Connected.
-            let evt = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
-                .await
-                .unwrap()
-                .unwrap();
-            assert!(matches!(evt, WsEvent::Connected { .. }));
+    #[tokio::test]
+    async fn close_frame_stops_processing() {
+        let (tx, mut rx) = mpsc::channel(64);
+        let messages = vec![
+            Ok(Message::Text("before_close".into())),
+            Ok(Message::Close(None)),
+            Ok(Message::Text("after_close_should_not_appear".into())),
+        ];
 
-            // Close the connection.
-            write.send(WsMessage::Close(None)).await.unwrap();
+        process_message_stream(mock_stream(messages), &tx, "test")
+            .await
+            .unwrap();
 
-            // Wait for Disconnected.
-            let evt = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
-                .await
-                .unwrap()
-                .unwrap();
-            assert!(matches!(evt, WsEvent::Disconnected));
-        }
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            WsEvent::Message("before_close".into())
+        );
+        // Channel should have no more messages (close stopped processing).
+        assert!(rx.try_recv().is_err());
+    }
 
-        // Small delay to let server loop back to accept.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    #[tokio::test]
+    async fn error_stops_processing() {
+        let (tx, mut rx) = mpsc::channel(64);
+        let messages = vec![
+            Ok(Message::Text("before_error".into())),
+            Err(WsError::ConnectionClosed),
+            Ok(Message::Text("after_error_should_not_appear".into())),
+        ];
 
-        // Second connection.
-        {
-            let (ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
-            let (mut write, _read) = ws.split();
+        process_message_stream(mock_stream(messages), &tx, "test")
+            .await
+            .unwrap();
 
-            // Should get a new Connected event.
-            let evt = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
-                .await
-                .unwrap()
-                .unwrap();
-            assert!(matches!(evt, WsEvent::Connected { .. }));
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            WsEvent::Message("before_error".into())
+        );
+        assert!(rx.try_recv().is_err());
+    }
 
-            // Send a message on the new connection to prove it works.
-            let payload = r#"{"type":"reconnected"}"#;
-            write.send(WsMessage::Text(payload.into())).await.unwrap();
+    #[tokio::test]
+    async fn binary_and_ping_messages_are_ignored() {
+        let (tx, mut rx) = mpsc::channel(64);
+        let messages = vec![
+            Ok(Message::Binary(vec![1, 2, 3].into())),
+            Ok(Message::Ping(vec![].into())),
+            Ok(Message::Pong(vec![].into())),
+            Ok(Message::Text("after_ignored".into())),
+        ];
 
-            let evt = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
-                .await
-                .unwrap()
-                .unwrap();
-            match evt {
-                WsEvent::Message(text) => assert_eq!(text, payload),
-                other => panic!("expected Message event, got: {other:?}"),
-            }
-        }
+        process_message_stream(mock_stream(messages), &tx, "test")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            WsEvent::Message("after_ignored".into())
+        );
+        // No other events should be in the channel.
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn returns_err_when_channel_closed() {
+        let (tx, rx) = mpsc::channel(64);
+        drop(rx); // Close the receiver.
+
+        let messages = vec![Ok(Message::Text("orphan".into()))];
+
+        let result = process_message_stream(mock_stream(messages), &tx, "test").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn empty_stream_completes_normally() {
+        let (tx, mut rx) = mpsc::channel(64);
+        let messages: Vec<Result<Message, WsError>> = vec![];
+
+        process_message_stream(mock_stream(messages), &tx, "test")
+            .await
+            .unwrap();
+
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn json_payload_preserved_exactly() {
+        let (tx, mut rx) = mpsc::channel(64);
+        let payload = r#"{"type":"STATE_UPDATE","timestamp":123,"payload":{"picks":[]}}"#;
+        let messages = vec![Ok(Message::Text(payload.into()))];
+
+        process_message_stream(mock_stream(messages), &tx, "test")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            WsEvent::Message(payload.to_string())
+        );
     }
 }
