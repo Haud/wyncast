@@ -241,17 +241,24 @@ pub fn compute_state_diff(
         bid_updated: false,
     };
 
-    // Determine new picks
-    let prev_pick_count = previous.as_ref().map(|p| p.picks.len()).unwrap_or(0);
-    for pick_payload in current.picks.iter().skip(prev_pick_count) {
-        diff.new_picks.push(DraftPick {
-            pick_number: pick_payload.pick_number,
-            team_id: pick_payload.team_id.clone(),
-            team_name: pick_payload.team_name.clone(),
-            player_name: pick_payload.player_name.clone(),
-            position: pick_payload.position.clone(),
-            price: pick_payload.price,
-        });
+    // Determine new picks by pick_number rather than array position.
+    // This handles cases where the extension may re-order picks.
+    let prev_pick_numbers: std::collections::HashSet<u32> = previous
+        .as_ref()
+        .map(|p| p.picks.iter().map(|pk| pk.pick_number).collect())
+        .unwrap_or_default();
+
+    for pick_payload in &current.picks {
+        if !prev_pick_numbers.contains(&pick_payload.pick_number) {
+            diff.new_picks.push(DraftPick {
+                pick_number: pick_payload.pick_number,
+                team_id: pick_payload.team_id.clone(),
+                team_name: pick_payload.team_name.clone(),
+                player_name: pick_payload.player_name.clone(),
+                position: pick_payload.position.clone(),
+                price: pick_payload.price,
+            });
+        }
     }
 
     // Compare nominations
@@ -747,5 +754,31 @@ mod tests {
             diff.new_nomination.as_ref().unwrap().current_bidder,
             Some("team_3".to_string())
         );
+    }
+
+    #[test]
+    fn diff_detects_new_picks_when_reordered() {
+        // Previous had picks 1 and 2
+        let previous = StateUpdatePayload {
+            picks: vec![
+                make_pick_payload(1, "team_1", "Player A", "SP", 20),
+                make_pick_payload(2, "team_2", "Player B", "CF", 30),
+            ],
+            current_nomination: None,
+        };
+        // Current has picks 2, 1, 3 (reordered, with one new pick)
+        let current = StateUpdatePayload {
+            picks: vec![
+                make_pick_payload(2, "team_2", "Player B", "CF", 30),
+                make_pick_payload(1, "team_1", "Player A", "SP", 20),
+                make_pick_payload(3, "team_3", "Player C", "1B", 15),
+            ],
+            current_nomination: None,
+        };
+
+        let diff = compute_state_diff(&Some(previous), &current);
+        assert_eq!(diff.new_picks.len(), 1);
+        assert_eq!(diff.new_picks[0].pick_number, 3);
+        assert_eq!(diff.new_picks[0].player_name, "Player C");
     }
 }

@@ -150,7 +150,7 @@ impl Roster {
     pub fn max_bid(&self, budget_remaining: u32) -> u32 {
         let remaining_empty = self.empty_slots();
         if remaining_empty == 0 {
-            return budget_remaining;
+            return 0;
         }
         // Reserve $1 for each remaining slot that still needs to be filled after this one
         let reserved = (remaining_empty - 1) as u32;
@@ -210,9 +210,9 @@ mod tests {
         let roster = Roster::new(&test_roster_config());
         // First slot should be C, then 1B, 2B, 3B, SS, etc.
         assert_eq!(roster.slots[0].position, Position::C);
-        assert_eq!(roster.slots[1].position, Position::FB);
-        assert_eq!(roster.slots[2].position, Position::SB);
-        assert_eq!(roster.slots[3].position, Position::TB);
+        assert_eq!(roster.slots[1].position, Position::FirstBase);
+        assert_eq!(roster.slots[2].position, Position::SecondBase);
+        assert_eq!(roster.slots[3].position, Position::ThirdBase);
         assert_eq!(roster.slots[4].position, Position::SS);
         // Last slots should be IL
         assert_eq!(roster.slots[roster.slots.len() - 1].position, Position::IL);
@@ -382,5 +382,15 @@ mod tests {
     fn add_player_invalid_position() {
         let mut roster = Roster::new(&test_roster_config());
         assert!(!roster.add_player("Player", "XX", 5));
+    }
+
+    #[test]
+    fn max_bid_returns_zero_when_roster_full() {
+        let mut config = HashMap::new();
+        config.insert("C".to_string(), 1);
+        let mut roster = Roster::new(&config);
+        roster.add_player("Player 1", "C", 5);
+        assert_eq!(roster.empty_slots(), 0);
+        assert_eq!(roster.max_bid(250), 0);
     }
 }

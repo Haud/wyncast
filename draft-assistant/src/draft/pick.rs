@@ -7,9 +7,9 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Position {
     C,
-    FB,   // 1B
-    SB,   // 2B
-    TB,   // 3B
+    FirstBase,
+    SecondBase,
+    ThirdBase,
     SS,
     LF,
     CF,
@@ -32,9 +32,9 @@ impl Position {
     pub fn from_str_pos(s: &str) -> Option<Self> {
         match s.to_uppercase().as_str() {
             "C" => Some(Position::C),
-            "1B" => Some(Position::FB),
-            "2B" => Some(Position::SB),
-            "3B" => Some(Position::TB),
+            "1B" => Some(Position::FirstBase),
+            "2B" => Some(Position::SecondBase),
+            "3B" => Some(Position::ThirdBase),
             "SS" => Some(Position::SS),
             "LF" => Some(Position::LF),
             "CF" => Some(Position::CF),
@@ -54,9 +54,9 @@ impl Position {
     pub fn display_str(&self) -> &'static str {
         match self {
             Position::C => "C",
-            Position::FB => "1B",
-            Position::SB => "2B",
-            Position::TB => "3B",
+            Position::FirstBase => "1B",
+            Position::SecondBase => "2B",
+            Position::ThirdBase => "3B",
             Position::SS => "SS",
             Position::LF => "LF",
             Position::CF => "CF",
@@ -75,9 +75,9 @@ impl Position {
         matches!(
             self,
             Position::C
-                | Position::FB
-                | Position::SB
-                | Position::TB
+                | Position::FirstBase
+                | Position::SecondBase
+                | Position::ThirdBase
                 | Position::SS
                 | Position::LF
                 | Position::CF
@@ -92,9 +92,9 @@ impl Position {
     pub fn sort_order(&self) -> u8 {
         match self {
             Position::C => 0,
-            Position::FB => 1,
-            Position::SB => 2,
-            Position::TB => 3,
+            Position::FirstBase => 1,
+            Position::SecondBase => 2,
+            Position::ThirdBase => 3,
             Position::SS => 4,
             Position::LF => 5,
             Position::CF => 6,
@@ -149,9 +149,9 @@ mod tests {
 
     #[test]
     fn from_str_pos_numbered_bases() {
-        assert_eq!(Position::from_str_pos("1B"), Some(Position::FB));
-        assert_eq!(Position::from_str_pos("2B"), Some(Position::SB));
-        assert_eq!(Position::from_str_pos("3B"), Some(Position::TB));
+        assert_eq!(Position::from_str_pos("1B"), Some(Position::FirstBase));
+        assert_eq!(Position::from_str_pos("2B"), Some(Position::SecondBase));
+        assert_eq!(Position::from_str_pos("3B"), Some(Position::ThirdBase));
     }
 
     #[test]
@@ -173,7 +173,7 @@ mod tests {
     fn from_str_pos_case_insensitive() {
         assert_eq!(Position::from_str_pos("sp"), Some(Position::SP));
         assert_eq!(Position::from_str_pos("Ss"), Some(Position::SS));
-        assert_eq!(Position::from_str_pos("1b"), Some(Position::FB));
+        assert_eq!(Position::from_str_pos("1b"), Some(Position::FirstBase));
         assert_eq!(Position::from_str_pos("util"), Some(Position::UTIL));
     }
 
@@ -189,9 +189,9 @@ mod tests {
         // For standard positions, from_str_pos(display_str()) should roundtrip
         let positions = [
             Position::C,
-            Position::FB,
-            Position::SB,
-            Position::TB,
+            Position::FirstBase,
+            Position::SecondBase,
+            Position::ThirdBase,
             Position::SS,
             Position::LF,
             Position::CF,
@@ -213,9 +213,9 @@ mod tests {
     #[test]
     fn is_hitter_correct() {
         assert!(Position::C.is_hitter());
-        assert!(Position::FB.is_hitter());
-        assert!(Position::SB.is_hitter());
-        assert!(Position::TB.is_hitter());
+        assert!(Position::FirstBase.is_hitter());
+        assert!(Position::SecondBase.is_hitter());
+        assert!(Position::ThirdBase.is_hitter());
         assert!(Position::SS.is_hitter());
         assert!(Position::LF.is_hitter());
         assert!(Position::CF.is_hitter());
@@ -230,9 +230,9 @@ mod tests {
 
     #[test]
     fn display_trait_works() {
-        assert_eq!(format!("{}", Position::FB), "1B");
-        assert_eq!(format!("{}", Position::SB), "2B");
-        assert_eq!(format!("{}", Position::TB), "3B");
+        assert_eq!(format!("{}", Position::FirstBase), "1B");
+        assert_eq!(format!("{}", Position::SecondBase), "2B");
+        assert_eq!(format!("{}", Position::ThirdBase), "3B");
         assert_eq!(format!("{}", Position::SP), "SP");
     }
 
