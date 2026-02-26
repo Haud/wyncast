@@ -143,6 +143,11 @@ struct RawAdp {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Returns true if all given f64 values are finite (not NaN or Infinity).
+fn all_finite(values: &[f64]) -> bool {
+    values.iter().all(|v| v.is_finite())
+}
+
 /// Merge holds overlay data into pitcher projections.
 ///
 /// For RPs, holds are resolved in priority order:
@@ -177,9 +182,13 @@ fn load_hitters_from_reader<R: Read>(rdr: R) -> Result<Vec<HitterProjection>, cs
     for result in reader.deserialize::<RawHitter>() {
         match result {
             Ok(raw) => {
+                if !raw.AVG.is_finite() {
+                    warn!("skipping hitter '{}': non-finite AVG value", raw.Name.trim());
+                    continue;
+                }
                 hitters.push(HitterProjection {
-                    name: raw.Name,
-                    team: raw.Team,
+                    name: raw.Name.trim().to_string(),
+                    team: raw.Team.trim().to_string(),
                     pa: raw.PA,
                     ab: raw.AB,
                     h: raw.H,
@@ -208,9 +217,13 @@ fn load_pitchers_from_reader<R: Read>(
     for result in reader.deserialize::<RawPitcher>() {
         match result {
             Ok(raw) => {
+                if !all_finite(&[raw.IP, raw.ERA, raw.WHIP]) {
+                    warn!("skipping pitcher '{}': non-finite IP/ERA/WHIP value", raw.Name.trim());
+                    continue;
+                }
                 pitchers.push(PitcherProjection {
-                    name: raw.Name,
-                    team: raw.Team,
+                    name: raw.Name.trim().to_string(),
+                    team: raw.Team.trim().to_string(),
                     pitcher_type,
                     ip: raw.IP,
                     k: raw.K,
@@ -237,10 +250,11 @@ fn load_holds_from_reader<R: Read>(rdr: R) -> Result<HashMap<String, u32>, csv::
     for result in reader.deserialize::<RawHoldsOverlay>() {
         match result {
             Ok(raw) => {
-                if map.contains_key(&raw.Name) {
-                    warn!("duplicate holds entry for '{}', using latest value", raw.Name);
+                let name = raw.Name.trim().to_string();
+                if map.contains_key(&name) {
+                    warn!("duplicate holds entry for '{}', using latest value", name);
                 }
-                map.insert(raw.Name, raw.HD);
+                map.insert(name, raw.HD);
             }
             Err(e) => {
                 warn!("skipping malformed holds row: {}", e);
@@ -256,10 +270,15 @@ fn load_adp_from_reader<R: Read>(rdr: R) -> Result<HashMap<String, f64>, csv::Er
     for result in reader.deserialize::<RawAdp>() {
         match result {
             Ok(raw) => {
-                if map.contains_key(&raw.Name) {
-                    warn!("duplicate ADP entry for '{}', using latest value", raw.Name);
+                if !raw.ADP.is_finite() {
+                    warn!("skipping ADP entry for '{}': non-finite value", raw.Name.trim());
+                    continue;
                 }
-                map.insert(raw.Name, raw.ADP);
+                let name = raw.Name.trim().to_string();
+                if map.contains_key(&name) {
+                    warn!("duplicate ADP entry for '{}', using latest value", name);
+                }
+                map.insert(name, raw.ADP);
             }
             Err(e) => {
                 warn!("skipping malformed ADP row: {}", e);
@@ -359,7 +378,9 @@ pub fn load_all_from_paths(
     let holds_path = Path::new(&paths.holds_overlay);
     let holds_map = match load_holds_overlay(holds_path) {
         Ok(map) => map,
-        Err(ProjectionError::Io { .. }) if !holds_path.exists() => {
+        Err(ProjectionError::Io { ref source, .. })
+            if source.kind() == std::io::ErrorKind::NotFound =>
+        {
             warn!("holds overlay file not found at {:?}, using estimation for all RPs", holds_path);
             HashMap::new()
         }
@@ -383,6 +404,17 @@ pub fn load_all_from_paths(
     }
 
     merge_holds(&mut pitchers, &holds_map, hold_rate);
+
+    if hitters.is_empty() {
+        return Err(ProjectionError::Validation(
+            "hitter CSV produced zero valid rows".into(),
+        ));
+    }
+    if pitchers.is_empty() {
+        return Err(ProjectionError::Validation(
+            "pitcher CSVs produced zero valid rows".into(),
+        ));
+    }
 
     Ok(AllProjections {
         hitters,
@@ -706,5 +738,87 @@ Aaron Judge,5.0";
         let adp = load_adp_from_reader(csv_data.as_bytes()).unwrap();
         assert_eq!(adp.len(), 1);
         assert!((adp["Aaron Judge"] - 5.0).abs() < f64::EPSILON);
+    }
+
+    // -- Name trimming --
+
+    #[test]
+    fn hitter_names_trimmed() {
+        let csv_data = "\
+Name,Team,PA,AB,H,HR,R,RBI,BB,SB,AVG
+  Aaron Judge  , NYY ,700,600,180,50,120,130,90,5,0.300";
+
+        let hitters = load_hitters_from_reader(csv_data.as_bytes()).unwrap();
+        assert_eq!(hitters[0].name, "Aaron Judge");
+        assert_eq!(hitters[0].team, "NYY");
+    }
+
+    #[test]
+    fn pitcher_names_trimmed() {
+        let csv_data = "\
+Name,Team,IP,K,W,SV,ERA,WHIP,G,GS
+  Gerrit Cole  , NYY ,200.0,250,16,0,2.80,1.05,32,32";
+
+        let pitchers = load_pitchers_from_reader(csv_data.as_bytes(), PitcherType::SP).unwrap();
+        assert_eq!(pitchers[0].name, "Gerrit Cole");
+        assert_eq!(pitchers[0].team, "NYY");
+    }
+
+    #[test]
+    fn holds_overlay_names_trimmed() {
+        let csv_data = "\
+Name,Team,HD
+  Devin Williams  ,NYY,25";
+
+        let holds = load_holds_from_reader(csv_data.as_bytes()).unwrap();
+        assert_eq!(holds["Devin Williams"], 25);
+    }
+
+    #[test]
+    fn adp_names_trimmed() {
+        let csv_data = "\
+Name,ADP
+  Aaron Judge  ,3.5";
+
+        let adp = load_adp_from_reader(csv_data.as_bytes()).unwrap();
+        assert!((adp["Aaron Judge"] - 3.5).abs() < f64::EPSILON);
+    }
+
+    // -- Non-finite f64 rejection --
+
+    #[test]
+    fn hitter_nan_avg_skipped() {
+        let csv_data = "\
+Name,Team,PA,AB,H,HR,R,RBI,BB,SB,AVG
+Valid Player,NYY,600,500,150,30,90,80,70,10,0.300
+NaN Player,NYY,600,500,150,30,90,80,70,10,NaN";
+
+        let hitters = load_hitters_from_reader(csv_data.as_bytes()).unwrap();
+        assert_eq!(hitters.len(), 1);
+        assert_eq!(hitters[0].name, "Valid Player");
+    }
+
+    #[test]
+    fn pitcher_inf_era_skipped() {
+        let csv_data = "\
+Name,Team,IP,K,W,SV,ERA,WHIP,G,GS
+Valid Pitcher,NYY,200.0,250,16,0,2.80,1.05,32,32
+Inf Pitcher,NYY,200.0,250,16,0,inf,1.05,32,32";
+
+        let pitchers = load_pitchers_from_reader(csv_data.as_bytes(), PitcherType::SP).unwrap();
+        assert_eq!(pitchers.len(), 1);
+        assert_eq!(pitchers[0].name, "Valid Pitcher");
+    }
+
+    #[test]
+    fn adp_nan_skipped() {
+        let csv_data = "\
+Name,ADP
+Aaron Judge,3.5
+Bad Player,NaN";
+
+        let adp = load_adp_from_reader(csv_data.as_bytes()).unwrap();
+        assert_eq!(adp.len(), 1);
+        assert!(adp.contains_key("Aaron Judge"));
     }
 }
