@@ -53,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
         projections.pitchers.len()
     );
 
-    let mut available_players = valuation::compute_initial(&projections, &config)
+    let available_players = valuation::compute_initial(&projections, &config)
         .context("failed to compute initial valuations")?;
     info!(
         "Computed valuations for {} players",

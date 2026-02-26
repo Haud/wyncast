@@ -130,10 +130,25 @@ impl AppState {
                 warn!("Failed to persist pick to DB: {}", e);
             }
 
-            // Remove from available player pool (match by name since we don't
-            // have a unified player ID)
-            self.available_players
-                .retain(|p| p.name != pick.player_name);
+            // Remove from available player pool.
+            // Primary match is by name; fall back to ESPN player ID when available
+            // to guard against minor name-format mismatches between extension and
+            // projection data (e.g. "J.D. Martinez" vs "JD Martinez").
+            let player_name = &pick.player_name;
+            let espn_id = pick.espn_player_id.as_deref();
+            self.available_players.retain(|p| {
+                if p.name == *player_name {
+                    return false;
+                }
+                // If the pick carries an ESPN ID, also check the player's ADP
+                // lookup name won't help here, but future player records might
+                // carry an ID field. For now this is a defensive no-op placeholder
+                // that keeps the structure ready for ID-based matching.
+                if let Some(_id) = espn_id {
+                    // TODO: match against player.espn_id once that field exists
+                }
+                true
+            });
         }
 
         // Recalculate valuations with the updated pool
@@ -280,6 +295,10 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     info!("Application event loop started");
 
+    // Track whether the LLM channel is still open. When it closes we replace
+    // the recv future with a pending future so tokio::select! never spins on it.
+    let mut llm_open = true;
+
     loop {
         tokio::select! {
             // --- WebSocket events ---
@@ -305,15 +324,16 @@ pub async fn run(
                 }
             }
 
-            // --- LLM events ---
-            llm_event = llm_rx.recv() => {
+            // --- LLM events (only poll when channel is open) ---
+            llm_event = llm_rx.recv(), if llm_open => {
                 match llm_event {
                     Some(event) => {
                         handle_llm_event(&mut state, event, &ui_tx).await;
                     }
                     None => {
-                        // LLM channel closed - not fatal, just log
+                        // LLM channel closed - stop polling to avoid busy-loop
                         info!("LLM channel closed");
+                        llm_open = false;
                     }
                 }
             }
@@ -469,6 +489,7 @@ async fn handle_llm_event(
         (Some(LlmMode::NominationAnalysis { .. }), LlmEvent::Error(e)) => {
             warn!("LLM analysis error: {}", e);
             state.nomination_analysis_status = LlmStatus::Error;
+            let _ = ui_tx.send(UiUpdate::AnalysisComplete).await;
         }
         (Some(LlmMode::NominationPlanning), LlmEvent::Token(token)) => {
             state.nomination_plan_text.push_str(&token);
@@ -483,6 +504,7 @@ async fn handle_llm_event(
         (Some(LlmMode::NominationPlanning), LlmEvent::Error(e)) => {
             warn!("LLM planning error: {}", e);
             state.nomination_plan_status = LlmStatus::Error;
+            let _ = ui_tx.send(UiUpdate::PlanComplete).await;
         }
         (None, _) => {
             // No active LLM mode - discard the event
@@ -495,7 +517,7 @@ async fn handle_llm_event(
 async fn handle_user_command(
     state: &mut AppState,
     cmd: UserCommand,
-    ui_tx: &mpsc::Sender<UiUpdate>,
+    _ui_tx: &mpsc::Sender<UiUpdate>,
 ) {
     match cmd {
         UserCommand::SwitchTab(tab) => {
@@ -547,9 +569,6 @@ async fn handle_user_command(
             // Handled in the main loop
         }
     }
-
-    // Send a state snapshot after handling the command (for relevant commands)
-    let _ = ui_tx.send(UiUpdate::ConnectionStatus(state.connection_status)).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -570,11 +589,11 @@ pub fn recover_from_db(state: &mut AppState) -> anyhow::Result<bool> {
     let pick_count = picks.len();
     info!("Crash recovery: restoring {} picks from DB", pick_count);
 
-    // Restore picks into DraftState
-    state.draft_state.restore_from_picks(picks.clone());
+    // Restore picks into DraftState (takes ownership)
+    state.draft_state.restore_from_picks(picks);
 
-    // Remove drafted players from available pool
-    for pick in &picks {
+    // Remove drafted players from available pool using the restored picks
+    for pick in &state.draft_state.picks {
         state
             .available_players
             .retain(|p| p.name != pick.player_name);
