@@ -1,7 +1,6 @@
 // Projection data loading and normalization.
 
 use crate::config::{Config, DataPaths};
-use crate::draft::pick::Position;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Read;
@@ -20,11 +19,13 @@ pub enum PitcherType {
 }
 
 /// Projected season stats for a hitter.
+///
+/// Note: position eligibility is intentionally excluded from projections.
+/// It will be sourced from ESPN roster data via a separate overlay.
 #[derive(Debug, Clone)]
 pub struct HitterProjection {
     pub name: String,
     pub team: String,
-    pub positions: Vec<Position>,
     pub pa: u32,
     pub ab: u32,
     pub h: u32,
@@ -90,8 +91,6 @@ struct RawHitter {
     Name: String,
     #[serde(default)]
     Team: String,
-    #[serde(default)]
-    Pos: String,
     PA: u32,
     AB: u32,
     H: u32,
@@ -144,32 +143,6 @@ struct RawAdp {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Parse a comma-separated position string (e.g. "2B,SS,OF") into a Vec<Position>.
-///
-/// Note: position eligibility from third-party projection CSVs is treated as
-/// informational only. Authoritative eligibility should come from ESPN roster
-/// data via a separate overlay (similar to holds). Generic "OF" maps to
-/// CenterField as a placeholder — see the position eligibility TODO.
-/// Unknown position tokens are skipped with a warning.
-fn parse_positions(pos_str: &str) -> Vec<Position> {
-    if pos_str.trim().is_empty() {
-        return Vec::new();
-    }
-    pos_str
-        .split(',')
-        .filter_map(|s| {
-            let trimmed = s.trim();
-            match Position::from_str_pos(trimmed) {
-                Some(pos) => Some(pos),
-                None => {
-                    warn!("unknown position '{}', skipping", trimmed);
-                    None
-                }
-            }
-        })
-        .collect()
-}
-
 /// Merge holds overlay data into pitcher projections.
 ///
 /// For RPs, holds are resolved in priority order:
@@ -207,7 +180,6 @@ fn load_hitters_from_reader<R: Read>(rdr: R) -> Result<Vec<HitterProjection>, cs
                 hitters.push(HitterProjection {
                     name: raw.Name,
                     team: raw.Team,
-                    positions: parse_positions(&raw.Pos),
                     pa: raw.PA,
                     ab: raw.AB,
                     h: raw.H,
@@ -432,9 +404,9 @@ mod tests {
     #[test]
     fn hitter_csv_roundtrip() {
         let csv_data = "\
-Name,Team,Pos,PA,AB,H,HR,R,RBI,BB,SB,AVG
-Aaron Judge,NYY,OF,700,600,180,50,120,130,90,5,0.300
-Mookie Betts,LAD,\"2B,SS,OF\",680,590,170,30,110,95,80,15,0.288";
+Name,Team,PA,AB,H,HR,R,RBI,BB,SB,AVG
+Aaron Judge,NYY,700,600,180,50,120,130,90,5,0.300
+Mookie Betts,LAD,680,590,170,30,110,95,80,15,0.288";
 
         let hitters = load_hitters_from_reader(csv_data.as_bytes()).unwrap();
         assert_eq!(hitters.len(), 2);
@@ -450,47 +422,10 @@ Mookie Betts,LAD,\"2B,SS,OF\",680,590,170,30,110,95,80,15,0.288";
         assert_eq!(hitters[0].bb, 90);
         assert_eq!(hitters[0].sb, 5);
         assert!((hitters[0].avg - 0.300).abs() < f64::EPSILON);
-        // OF maps to CenterField (placeholder; real eligibility comes from ESPN)
-        assert_eq!(hitters[0].positions, vec![Position::CenterField]);
 
         assert_eq!(hitters[1].name, "Mookie Betts");
-        assert_eq!(hitters[1].positions.len(), 3);
-        assert_eq!(hitters[1].positions[0], Position::SecondBase);
-        assert_eq!(hitters[1].positions[1], Position::ShortStop);
-        assert_eq!(hitters[1].positions[2], Position::CenterField);
-    }
-
-    // -- Position parsing --
-
-    #[test]
-    fn parse_positions_single() {
-        let positions = parse_positions("SS");
-        assert_eq!(positions, vec![Position::ShortStop]);
-    }
-
-    #[test]
-    fn parse_positions_multi() {
-        let positions = parse_positions("2B,SS");
-        assert_eq!(positions, vec![Position::SecondBase, Position::ShortStop]);
-    }
-
-    #[test]
-    fn parse_positions_with_of() {
-        // OF maps to CenterField placeholder; real eligibility from ESPN overlay
-        let positions = parse_positions("OF");
-        assert_eq!(positions, vec![Position::CenterField]);
-    }
-
-    #[test]
-    fn parse_positions_empty() {
-        let positions = parse_positions("");
-        assert!(positions.is_empty());
-    }
-
-    #[test]
-    fn parse_positions_unknown_skipped() {
-        let positions = parse_positions("SS,XX,1B");
-        assert_eq!(positions, vec![Position::ShortStop, Position::FirstBase]);
+        assert_eq!(hitters[1].team, "LAD");
+        assert_eq!(hitters[1].hr, 30);
     }
 
     // -- Pitcher CSV loading --
@@ -531,8 +466,8 @@ Gerrit Cole,NYY,200.0,250,16,0,2.80,1.05,32,32";
     #[test]
     fn hitter_csv_ba_alias() {
         let csv_data = "\
-Name,Team,Pos,PA,AB,H,HR,R,RBI,BB,SB,BA
-Aaron Judge,NYY,OF,700,600,180,50,120,130,90,5,0.300";
+Name,Team,PA,AB,H,HR,R,RBI,BB,SB,BA
+Aaron Judge,NYY,700,600,180,50,120,130,90,5,0.300";
 
         let hitters = load_hitters_from_reader(csv_data.as_bytes()).unwrap();
         assert_eq!(hitters.len(), 1);
@@ -640,10 +575,10 @@ Aaron Judge,NYY,OF,700,600,180,50,120,130,90,5,0.300";
     #[test]
     fn malformed_hitter_rows_skipped() {
         let csv_data = "\
-Name,Team,Pos,PA,AB,H,HR,R,RBI,BB,SB,AVG
-Valid Player,NYY,SS,600,500,150,30,90,80,70,10,0.300
-Bad Row,NYY,SS,not_a_number,500,150,30,90,80,70,10,0.300
-Another Valid,BOS,1B,550,480,140,25,80,75,60,5,0.292";
+Name,Team,PA,AB,H,HR,R,RBI,BB,SB,AVG
+Valid Player,NYY,600,500,150,30,90,80,70,10,0.300
+Bad Row,NYY,not_a_number,500,150,30,90,80,70,10,0.300
+Another Valid,BOS,550,480,140,25,80,75,60,5,0.292";
 
         let hitters = load_hitters_from_reader(csv_data.as_bytes()).unwrap();
         assert_eq!(hitters.len(), 2);
@@ -656,7 +591,7 @@ Another Valid,BOS,1B,550,480,140,25,80,75,60,5,0.292";
     #[test]
     fn empty_csv_returns_empty_vec() {
         let csv_data = "\
-Name,Team,Pos,PA,AB,H,HR,R,RBI,BB,SB,AVG";
+Name,Team,PA,AB,H,HR,R,RBI,BB,SB,AVG";
 
         let hitters = load_hitters_from_reader(csv_data.as_bytes()).unwrap();
         assert!(hitters.is_empty());
