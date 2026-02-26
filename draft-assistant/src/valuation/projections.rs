@@ -145,30 +145,29 @@ struct RawAdp {
 // ---------------------------------------------------------------------------
 
 /// Parse a comma-separated position string (e.g. "2B,SS,OF") into a Vec<Position>.
-/// Generic "OF" is expanded to LF, CF, RF (full outfield eligibility).
+///
+/// Note: position eligibility from third-party projection CSVs is treated as
+/// informational only. Authoritative eligibility should come from ESPN roster
+/// data via a separate overlay (similar to holds). Generic "OF" maps to
+/// CenterField as a placeholder — see the position eligibility TODO.
 /// Unknown position tokens are skipped with a warning.
 fn parse_positions(pos_str: &str) -> Vec<Position> {
     if pos_str.trim().is_empty() {
         return Vec::new();
     }
-    let mut positions = Vec::new();
-    for token in pos_str.split(',') {
-        let trimmed = token.trim();
-        if trimmed.eq_ignore_ascii_case("OF") {
-            // Generic outfield means eligible at all three OF slots.
-            positions.push(Position::LeftField);
-            positions.push(Position::CenterField);
-            positions.push(Position::RightField);
-        } else {
+    pos_str
+        .split(',')
+        .filter_map(|s| {
+            let trimmed = s.trim();
             match Position::from_str_pos(trimmed) {
-                Some(pos) => positions.push(pos),
+                Some(pos) => Some(pos),
                 None => {
                     warn!("unknown position '{}', skipping", trimmed);
+                    None
                 }
             }
-        }
-    }
-    positions
+        })
+        .collect()
 }
 
 /// Merge holds overlay data into pitcher projections.
@@ -451,20 +450,14 @@ Mookie Betts,LAD,\"2B,SS,OF\",680,590,170,30,110,95,80,15,0.288";
         assert_eq!(hitters[0].bb, 90);
         assert_eq!(hitters[0].sb, 5);
         assert!((hitters[0].avg - 0.300).abs() < f64::EPSILON);
-        // OF expands to LF, CF, RF
-        assert_eq!(
-            hitters[0].positions,
-            vec![Position::LeftField, Position::CenterField, Position::RightField]
-        );
+        // OF maps to CenterField (placeholder; real eligibility comes from ESPN)
+        assert_eq!(hitters[0].positions, vec![Position::CenterField]);
 
         assert_eq!(hitters[1].name, "Mookie Betts");
-        // "2B,SS,OF" → 2B, SS, LF, CF, RF
-        assert_eq!(hitters[1].positions.len(), 5);
+        assert_eq!(hitters[1].positions.len(), 3);
         assert_eq!(hitters[1].positions[0], Position::SecondBase);
         assert_eq!(hitters[1].positions[1], Position::ShortStop);
-        assert_eq!(hitters[1].positions[2], Position::LeftField);
-        assert_eq!(hitters[1].positions[3], Position::CenterField);
-        assert_eq!(hitters[1].positions[4], Position::RightField);
+        assert_eq!(hitters[1].positions[2], Position::CenterField);
     }
 
     // -- Position parsing --
@@ -483,11 +476,9 @@ Mookie Betts,LAD,\"2B,SS,OF\",680,590,170,30,110,95,80,15,0.288";
 
     #[test]
     fn parse_positions_with_of() {
+        // OF maps to CenterField placeholder; real eligibility from ESPN overlay
         let positions = parse_positions("OF");
-        assert_eq!(
-            positions,
-            vec![Position::LeftField, Position::CenterField, Position::RightField]
-        );
+        assert_eq!(positions, vec![Position::CenterField]);
     }
 
     #[test]
