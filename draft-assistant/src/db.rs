@@ -72,13 +72,12 @@ impl Database {
         })
     }
 
-    /// Acquire the database connection, recovering from a poisoned mutex.
+    /// Acquire the database connection.
     ///
-    /// If another thread panicked while holding the lock, we recover the
-    /// guard. SQLite automatically rolls back any incomplete transaction
-    /// when the connection is reused.
+    /// Panics if the mutex is poisoned (another thread panicked while
+    /// holding the lock). This should never happen in normal operation.
     fn conn(&self) -> MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap_or_else(|e| e.into_inner())
+        self.conn.lock().expect("database mutex poisoned")
     }
 
     /// Record a single draft pick. Uses INSERT OR IGNORE for idempotency —
