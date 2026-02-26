@@ -101,8 +101,10 @@ impl ClaudeClient {
 
                     match event_type {
                         "message_start" => {
-                            input_tokens =
-                                parse_input_tokens(data).unwrap_or(0);
+                            match parse_input_tokens(data) {
+                                Some(n) => input_tokens = n,
+                                None => warn!("failed to parse input_tokens from message_start"),
+                            }
                             debug!(input_tokens, "message_start");
                         }
                         "content_block_delta" => {
@@ -116,15 +118,17 @@ impl ClaudeClient {
                             }
                         }
                         "message_delta" => {
-                            output_tokens =
-                                parse_output_tokens(data).unwrap_or(output_tokens);
+                            match parse_output_tokens(data) {
+                                Some(n) => output_tokens = n,
+                                None => warn!("failed to parse output_tokens from message_delta"),
+                            }
                             debug!(output_tokens, "message_delta");
                         }
                         "message_stop" => {
                             debug!("message_stop — streaming complete");
                             let _ = tx
                                 .send(LlmEvent::Complete {
-                                    full_text: full_text.clone(),
+                                    full_text,
                                     input_tokens,
                                     output_tokens,
                                 })
