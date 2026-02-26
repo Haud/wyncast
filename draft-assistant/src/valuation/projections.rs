@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
+use tracing::warn;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -74,6 +75,9 @@ pub enum ProjectionError {
 
     #[error("CSV error in {path}: {source}")]
     Csv { path: String, source: csv::Error },
+
+    #[error("validation error: {0}")]
+    Validation(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -141,30 +145,39 @@ struct RawAdp {
 // ---------------------------------------------------------------------------
 
 /// Parse a comma-separated position string (e.g. "2B,SS,OF") into a Vec<Position>.
-/// Unknown position tokens are skipped with an eprintln warning.
+/// Generic "OF" is expanded to LF, CF, RF (full outfield eligibility).
+/// Unknown position tokens are skipped with a warning.
 fn parse_positions(pos_str: &str) -> Vec<Position> {
     if pos_str.trim().is_empty() {
         return Vec::new();
     }
-    pos_str
-        .split(',')
-        .filter_map(|s| {
-            let trimmed = s.trim();
+    let mut positions = Vec::new();
+    for token in pos_str.split(',') {
+        let trimmed = token.trim();
+        if trimmed.eq_ignore_ascii_case("OF") {
+            // Generic outfield means eligible at all three OF slots.
+            positions.push(Position::LeftField);
+            positions.push(Position::CenterField);
+            positions.push(Position::RightField);
+        } else {
             match Position::from_str_pos(trimmed) {
-                Some(pos) => Some(pos),
+                Some(pos) => positions.push(pos),
                 None => {
-                    eprintln!("warning: unknown position '{}', skipping", trimmed);
-                    None
+                    warn!("unknown position '{}', skipping", trimmed);
                 }
             }
-        })
-        .collect()
+        }
+    }
+    positions
 }
 
 /// Merge holds overlay data into pitcher projections.
 ///
-/// For RPs: if the pitcher has an entry in `holds_map`, use that value.
-/// Otherwise, estimate holds as `max(0, (G - SV - GS) * hold_rate)`.
+/// For RPs, holds are resolved in priority order:
+/// 1. Holds overlay value (if player has an entry in `holds_map`)
+/// 2. Value already present from the RP CSV (if `hd > 0`)
+/// 3. Estimated as `max(0, (G - SV - GS) * hold_rate)`
+///
 /// SPs are never assigned holds.
 fn merge_holds(pitchers: &mut [PitcherProjection], holds_map: &HashMap<String, u32>, hold_rate: f64) {
     for p in pitchers.iter_mut() {
@@ -173,10 +186,12 @@ fn merge_holds(pitchers: &mut [PitcherProjection], holds_map: &HashMap<String, u
         }
         if let Some(&hd) = holds_map.get(&p.name) {
             p.hd = hd;
-        } else {
+        } else if p.hd == 0 {
+            // No overlay match and no value from CSV — estimate.
             let available = (p.g as f64) - (p.sv as f64) - (p.gs as f64);
             p.hd = (available.max(0.0) * hold_rate).round() as u32;
         }
+        // else: preserve the non-zero HD value already loaded from the RP CSV.
     }
 }
 
@@ -185,9 +200,7 @@ fn merge_holds(pitchers: &mut [PitcherProjection], holds_map: &HashMap<String, u
 // ---------------------------------------------------------------------------
 
 fn load_hitters_from_reader<R: Read>(rdr: R) -> Result<Vec<HitterProjection>, csv::Error> {
-    let mut reader = csv::ReaderBuilder::new()
-        .flexible(true)
-        .from_reader(rdr);
+    let mut reader = csv::Reader::from_reader(rdr);
     let mut hitters = Vec::new();
     for result in reader.deserialize::<RawHitter>() {
         match result {
@@ -208,7 +221,7 @@ fn load_hitters_from_reader<R: Read>(rdr: R) -> Result<Vec<HitterProjection>, cs
                 });
             }
             Err(e) => {
-                eprintln!("warning: skipping malformed hitter row: {}", e);
+                warn!("skipping malformed hitter row: {}", e);
             }
         }
     }
@@ -219,9 +232,7 @@ fn load_pitchers_from_reader<R: Read>(
     rdr: R,
     pitcher_type: PitcherType,
 ) -> Result<Vec<PitcherProjection>, csv::Error> {
-    let mut reader = csv::ReaderBuilder::new()
-        .flexible(true)
-        .from_reader(rdr);
+    let mut reader = csv::Reader::from_reader(rdr);
     let mut pitchers = Vec::new();
     for result in reader.deserialize::<RawPitcher>() {
         match result {
@@ -242,7 +253,7 @@ fn load_pitchers_from_reader<R: Read>(
                 });
             }
             Err(e) => {
-                eprintln!("warning: skipping malformed pitcher row: {}", e);
+                warn!("skipping malformed pitcher row: {}", e);
             }
         }
     }
@@ -250,17 +261,18 @@ fn load_pitchers_from_reader<R: Read>(
 }
 
 fn load_holds_from_reader<R: Read>(rdr: R) -> Result<HashMap<String, u32>, csv::Error> {
-    let mut reader = csv::ReaderBuilder::new()
-        .flexible(true)
-        .from_reader(rdr);
+    let mut reader = csv::Reader::from_reader(rdr);
     let mut map = HashMap::new();
     for result in reader.deserialize::<RawHoldsOverlay>() {
         match result {
             Ok(raw) => {
+                if map.contains_key(&raw.Name) {
+                    warn!("duplicate holds entry for '{}', using latest value", raw.Name);
+                }
                 map.insert(raw.Name, raw.HD);
             }
             Err(e) => {
-                eprintln!("warning: skipping malformed holds row: {}", e);
+                warn!("skipping malformed holds row: {}", e);
             }
         }
     }
@@ -268,17 +280,18 @@ fn load_holds_from_reader<R: Read>(rdr: R) -> Result<HashMap<String, u32>, csv::
 }
 
 fn load_adp_from_reader<R: Read>(rdr: R) -> Result<HashMap<String, f64>, csv::Error> {
-    let mut reader = csv::ReaderBuilder::new()
-        .flexible(true)
-        .from_reader(rdr);
+    let mut reader = csv::Reader::from_reader(rdr);
     let mut map = HashMap::new();
     for result in reader.deserialize::<RawAdp>() {
         match result {
             Ok(raw) => {
+                if map.contains_key(&raw.Name) {
+                    warn!("duplicate ADP entry for '{}', using latest value", raw.Name);
+                }
                 map.insert(raw.Name, raw.ADP);
             }
             Err(e) => {
-                eprintln!("warning: skipping malformed ADP row: {}", e);
+                warn!("skipping malformed ADP row: {}", e);
             }
         }
     }
@@ -360,15 +373,43 @@ pub fn load_all_from_paths(
     paths: &DataPaths,
     hold_rate: f64,
 ) -> Result<AllProjections, ProjectionError> {
+    if !(0.0..=1.0).contains(&hold_rate) {
+        return Err(ProjectionError::Validation(format!(
+            "hold_rate must be between 0.0 and 1.0 inclusive, got {hold_rate}"
+        )));
+    }
+
     let hitters = load_hitter_projections(Path::new(&paths.hitters))?;
     let sp = load_sp_projections(Path::new(&paths.pitchers_sp))?;
     let rp = load_rp_projections(Path::new(&paths.pitchers_rp))?;
-    let holds_map = load_holds_overlay(Path::new(&paths.holds_overlay))?;
+
+    // Holds overlay is optional — if the file is missing, fall through to
+    // estimation in merge_holds.
+    let holds_path = Path::new(&paths.holds_overlay);
+    let holds_map = match load_holds_overlay(holds_path) {
+        Ok(map) => map,
+        Err(ProjectionError::Io { .. }) if !holds_path.exists() => {
+            warn!("holds overlay file not found at {:?}, using estimation for all RPs", holds_path);
+            HashMap::new()
+        }
+        Err(e) => return Err(e),
+    };
+
     let adp = load_adp(Path::new(&paths.adp))?;
 
+    // Combine SP and RP, warning about duplicates.
+    let mut seen_names: HashMap<String, PitcherType> = HashMap::with_capacity(sp.len() + rp.len());
     let mut pitchers: Vec<PitcherProjection> = Vec::with_capacity(sp.len() + rp.len());
-    pitchers.extend(sp);
-    pitchers.extend(rp);
+    for pitcher in sp.into_iter().chain(rp.into_iter()) {
+        if let Some(&prev_type) = seen_names.get(&pitcher.name) {
+            warn!(
+                "duplicate pitcher '{}' found in both {:?} and {:?} files, keeping both entries",
+                pitcher.name, prev_type, pitcher.pitcher_type
+            );
+        }
+        seen_names.insert(pitcher.name.clone(), pitcher.pitcher_type);
+        pitchers.push(pitcher);
+    }
 
     merge_holds(&mut pitchers, &holds_map, hold_rate);
 
@@ -410,14 +451,20 @@ Mookie Betts,LAD,\"2B,SS,OF\",680,590,170,30,110,95,80,15,0.288";
         assert_eq!(hitters[0].bb, 90);
         assert_eq!(hitters[0].sb, 5);
         assert!((hitters[0].avg - 0.300).abs() < f64::EPSILON);
-        // OF → CenterField
-        assert_eq!(hitters[0].positions, vec![Position::CenterField]);
+        // OF expands to LF, CF, RF
+        assert_eq!(
+            hitters[0].positions,
+            vec![Position::LeftField, Position::CenterField, Position::RightField]
+        );
 
         assert_eq!(hitters[1].name, "Mookie Betts");
-        assert_eq!(hitters[1].positions.len(), 3);
+        // "2B,SS,OF" → 2B, SS, LF, CF, RF
+        assert_eq!(hitters[1].positions.len(), 5);
         assert_eq!(hitters[1].positions[0], Position::SecondBase);
         assert_eq!(hitters[1].positions[1], Position::ShortStop);
-        assert_eq!(hitters[1].positions[2], Position::CenterField);
+        assert_eq!(hitters[1].positions[2], Position::LeftField);
+        assert_eq!(hitters[1].positions[3], Position::CenterField);
+        assert_eq!(hitters[1].positions[4], Position::RightField);
     }
 
     // -- Position parsing --
@@ -437,7 +484,10 @@ Mookie Betts,LAD,\"2B,SS,OF\",680,590,170,30,110,95,80,15,0.288";
     #[test]
     fn parse_positions_with_of() {
         let positions = parse_positions("OF");
-        assert_eq!(positions, vec![Position::CenterField]);
+        assert_eq!(
+            positions,
+            vec![Position::LeftField, Position::CenterField, Position::RightField]
+        );
     }
 
     #[test]
@@ -651,5 +701,84 @@ Clay Holmes,CLE,18";
         assert_eq!(holds.len(), 2);
         assert_eq!(holds["Devin Williams"], 25);
         assert_eq!(holds["Clay Holmes"], 18);
+    }
+
+    // -- Holds merge: preserves non-zero HD from CSV --
+
+    #[test]
+    fn holds_merge_preserves_csv_hd() {
+        let mut pitchers = vec![PitcherProjection {
+            name: "Setup Man".into(),
+            team: "SEA".into(),
+            pitcher_type: PitcherType::RP,
+            ip: 60.0,
+            k: 65,
+            w: 3,
+            sv: 2,
+            hd: 20, // non-zero from RP CSV
+            era: 3.00,
+            whip: 1.10,
+            g: 60,
+            gs: 0,
+        }];
+        let holds_map = HashMap::new(); // no overlay entry
+
+        merge_holds(&mut pitchers, &holds_map, 0.25);
+        // Should preserve the 20 from the CSV, not estimate
+        assert_eq!(pitchers[0].hd, 20);
+    }
+
+    // -- Holds merge: overlay overrides even non-zero CSV HD --
+
+    #[test]
+    fn holds_merge_overlay_overrides_csv_hd() {
+        let mut pitchers = vec![PitcherProjection {
+            name: "Setup Man".into(),
+            team: "SEA".into(),
+            pitcher_type: PitcherType::RP,
+            ip: 60.0,
+            k: 65,
+            w: 3,
+            sv: 2,
+            hd: 20, // from CSV
+            era: 3.00,
+            whip: 1.10,
+            g: 60,
+            gs: 0,
+        }];
+        let mut holds_map = HashMap::new();
+        holds_map.insert("Setup Man".to_string(), 30u32);
+
+        merge_holds(&mut pitchers, &holds_map, 0.25);
+        // Overlay takes priority over CSV value
+        assert_eq!(pitchers[0].hd, 30);
+    }
+
+    // -- Duplicate detection in holds overlay --
+
+    #[test]
+    fn holds_overlay_duplicate_uses_latest() {
+        let csv_data = "\
+Name,Team,HD
+Devin Williams,NYY,25
+Devin Williams,NYY,30";
+
+        let holds = load_holds_from_reader(csv_data.as_bytes()).unwrap();
+        assert_eq!(holds.len(), 1);
+        assert_eq!(holds["Devin Williams"], 30); // last-write-wins
+    }
+
+    // -- Duplicate detection in ADP --
+
+    #[test]
+    fn adp_duplicate_uses_latest() {
+        let csv_data = "\
+Name,ADP
+Aaron Judge,3.5
+Aaron Judge,5.0";
+
+        let adp = load_adp_from_reader(csv_data.as_bytes()).unwrap();
+        assert_eq!(adp.len(), 1);
+        assert!((adp["Aaron Judge"] - 5.0).abs() < f64::EPSILON);
     }
 }
