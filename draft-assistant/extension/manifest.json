@@ -3,20 +3,26 @@
   "name": "Wyndham Draft Sync",
   "version": "0.1.0",
   "description": "Syncs ESPN fantasy baseball draft data to the draft assistant backend",
-  "permissions": ["tabs", "activeTab"],
+  "permissions": [
+    "tabs",
+    "activeTab"
+  ],
   "background": {
     "scripts": ["background.js"],
     "persistent": true
   },
-  "content_scripts": [{
-    "matches": ["*://*.espn.com/fantasy/baseball/*/draft*"],
-    "js": ["content_scripts/espn.js"],
-    "run_at": "document_idle"
-  }],
-  "content_security_policy": "script-src 'self'; connect-src ws://localhost:* http://localhost:*;",
+  "content_scripts": [
+    {
+      "matches": ["*://*.espn.com/fantasy/baseball/*/draft*"],
+      "js": ["content_scripts/espn.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "content_security_policy": "script-src 'self'; connect-src ws://localhost:* http://localhost:*; object-src 'self';",
   "browser_specific_settings": {
     "gecko": {
-      "id": "wyndham-draft-sync@example.com"
+      "id": "wyndham-draft-sync@wyndham-assistant.local",
+      "strict_min_version": "109.0"
     }
   }
 }
