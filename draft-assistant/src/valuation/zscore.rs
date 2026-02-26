@@ -450,9 +450,6 @@ pub fn compute_initial_zscores(
         projections.hitters.len() + projections.pitchers.len(),
     );
 
-    // Build a set of names in the pools for potential future use
-    // (currently we score everyone against the pool stats)
-
     for hitter in &projections.hitters {
         let zscores = compute_hitter_zscores(hitter, &hitter_stats, league_avg_avg, weights);
         valuations.push(PlayerValuation {
