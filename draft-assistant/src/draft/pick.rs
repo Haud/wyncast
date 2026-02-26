@@ -129,6 +129,8 @@ pub struct DraftPick {
     pub position: String,
     /// Auction price paid for the player.
     pub price: u32,
+    /// ESPN external player ID, if available.
+    pub espn_player_id: Option<String>,
 }
 
 #[cfg(test)]
@@ -243,9 +245,11 @@ mod tests {
             player_name: "Mike Trout".to_string(),
             position: "OF".to_string(),
             price: 45,
+            espn_player_id: Some("12345".to_string()),
         };
         assert_eq!(pick.pick_number, 1);
         assert_eq!(pick.price, 45);
         assert_eq!(pick.position, "OF");
+        assert_eq!(pick.espn_player_id, Some("12345".to_string()));
     }
 }

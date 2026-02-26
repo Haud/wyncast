@@ -257,6 +257,7 @@ pub fn compute_state_diff(
                 player_name: pick_payload.player_name.clone(),
                 position: pick_payload.position.clone(),
                 price: pick_payload.price,
+                espn_player_id: Some(pick_payload.player_id.clone()),
             });
         }
     }
@@ -382,6 +383,7 @@ mod tests {
             player_name: "Mike Trout".to_string(),
             position: "CF".to_string(),
             price: 45,
+            espn_player_id: None,
         };
         state.record_pick(pick);
 
@@ -402,6 +404,7 @@ mod tests {
             player_name: "Mike Trout".to_string(),
             position: "CF".to_string(),
             price: 45,
+            espn_player_id: None,
         };
         state.record_pick(pick);
 
@@ -420,6 +423,7 @@ mod tests {
             player_name: "Mike Trout".to_string(),
             position: "CF".to_string(),
             price: 45,
+            espn_player_id: None,
         });
         state.record_pick(DraftPick {
             pick_number: 2,
@@ -428,6 +432,7 @@ mod tests {
             player_name: "Shohei Ohtani".to_string(),
             position: "SP".to_string(),
             price: 50,
+            espn_player_id: None,
         });
         state.record_pick(DraftPick {
             pick_number: 3,
@@ -436,6 +441,7 @@ mod tests {
             player_name: "Mookie Betts".to_string(),
             position: "RF".to_string(),
             price: 35,
+            espn_player_id: None,
         });
 
         assert_eq!(state.pick_count, 3);
@@ -461,6 +467,7 @@ mod tests {
             player_name: "Player A".to_string(),
             position: "SP".to_string(),
             price: 30,
+            espn_player_id: None,
         });
         state.record_pick(DraftPick {
             pick_number: 2,
@@ -469,6 +476,7 @@ mod tests {
             player_name: "Player B".to_string(),
             position: "1B".to_string(),
             price: 25,
+            espn_player_id: None,
         });
         assert_eq!(state.total_spent(), 55);
     }
@@ -493,6 +501,7 @@ mod tests {
                 player_name: "Mike Trout".to_string(),
                 position: "CF".to_string(),
                 price: 45,
+                espn_player_id: None,
             },
             DraftPick {
                 pick_number: 2,
@@ -501,6 +510,7 @@ mod tests {
                 player_name: "Shohei Ohtani".to_string(),
                 position: "SP".to_string(),
                 price: 50,
+                espn_player_id: None,
             },
             DraftPick {
                 pick_number: 3,
@@ -509,6 +519,7 @@ mod tests {
                 player_name: "Mookie Betts".to_string(),
                 position: "RF".to_string(),
                 price: 35,
+                espn_player_id: None,
             },
         ];
 
@@ -538,6 +549,7 @@ mod tests {
             player_name: "Old Player".to_string(),
             position: "C".to_string(),
             price: 20,
+            espn_player_id: None,
         });
         assert_eq!(state.pick_count, 1);
 
@@ -549,6 +561,7 @@ mod tests {
             player_name: "New Player".to_string(),
             position: "SP".to_string(),
             price: 30,
+            espn_player_id: None,
         }];
         state.restore_from_picks(new_picks);
 
