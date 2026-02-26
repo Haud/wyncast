@@ -193,7 +193,12 @@ function connect() {
 
 /**
  * Handle messages from content scripts.
- * Enriches the message with tabId and timestamp, then forwards to the backend.
+ * Constructs a protocol-compliant message and forwards to the backend.
+ *
+ * IMPORTANT: The Rust backend deserializes ExtensionMessage using
+ * #[serde(tag = "type")] (internally-tagged enum). Only fields defined in
+ * protocol.rs are allowed at the top level -- extra fields will cause
+ * deserialization to fail silently.
  */
 browser.runtime.onMessage.addListener((message, sender) => {
   // Only process messages from our content script
@@ -201,22 +206,25 @@ browser.runtime.onMessage.addListener((message, sender) => {
     return;
   }
 
-  // Enrich with tab information and relay timestamp
-  const enriched = Object.assign({}, message);
-  enriched.tabId = sender.tab ? sender.tab.id : null;
-  enriched.relayTimestamp = Date.now();
+  // Log tab context for debugging (not forwarded to backend)
+  const tabId = sender.tab ? sender.tab.id : null;
+  log('Relaying', message.type, 'from tab', tabId);
 
-  // Remove the `source` field — the backend protocol doesn't expect it at the
-  // top level. The `source` inside `payload` (react_state / dom_scrape) is
-  // preserved and expected by protocol.rs.
-  delete enriched.source;
+  // Build a protocol-compliant message with ONLY the fields that
+  // protocol.rs ExtensionMessage expects. Do not add extra fields like
+  // tabId or relayTimestamp -- serde will reject unknown fields.
+  const forwarded = {
+    type: message.type,
+    timestamp: message.timestamp,
+    payload: message.payload,
+  };
 
   // Forward to WebSocket
   if (isConnected) {
-    if (wsSend(enriched)) {
+    if (wsSend(forwarded)) {
       // Message sent successfully
     } else {
-      warn('WebSocket send failed; message queued for next connection');
+      warn('WebSocket send failed; message dropped');
     }
   } else {
     warn('WebSocket not connected; dropping message of type:', message.type);

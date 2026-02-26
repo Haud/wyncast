@@ -270,13 +270,13 @@ function pageContextScript() {
         type: 'REACT_STATE',
         payload: reactState,
         extractionSource: 'react_state',
-      }, '*');
+      }, window.location.origin);
     } else {
       // Signal that React extraction failed so content script can use DOM fallback
       window.postMessage({
         source: 'wyndham-draft-sync',
         type: 'REACT_EXTRACTION_FAILED',
-      }, '*');
+      }, window.location.origin);
     }
   }
 
@@ -352,7 +352,7 @@ function requestStateExtraction() {
       window.postMessage({
         source: 'wyndham-draft-sync-request',
         type: 'EXTRACT_STATE',
-      }, '*');
+      }, window.location.origin);
     } else {
       // React not available, use DOM scraping directly
       const domState = scrapeDom();
@@ -379,8 +379,10 @@ function startObserving(target) {
     childList: true,
     subtree: true,
     characterData: true,
+    // Observe all attribute changes. MutationObserver attributeFilter only
+    // accepts exact attribute names (not glob patterns), so we omit the filter
+    // to catch changes to class, style, data-* attributes, and any others.
     attributes: true,
-    attributeFilter: ['class', 'style', 'data-*'],
   });
 
   log('MutationObserver attached to:', target.tagName, target.className || target.id || '');
