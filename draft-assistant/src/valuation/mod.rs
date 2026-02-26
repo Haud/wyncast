@@ -98,10 +98,9 @@ pub fn recalculate_all(
         let mut bb_vals = Vec::new();
         let mut sb_vals = Vec::new();
         let mut ab_vals = Vec::new();
-        let mut avg_vals = Vec::new();
 
         for &i in &hitter_indices {
-            if let PlayerProjectionData::Hitter { r, hr, rbi, bb, sb, ab, avg, .. } =
+            if let PlayerProjectionData::Hitter { r, hr, rbi, bb, sb, ab, .. } =
                 &available_players[i].projection
             {
                 r_vals.push(*r as f64);
@@ -110,7 +109,6 @@ pub fn recalculate_all(
                 bb_vals.push(*bb as f64);
                 sb_vals.push(*sb as f64);
                 ab_vals.push(*ab);
-                avg_vals.push(*avg);
             }
         }
 
@@ -197,11 +195,9 @@ pub fn recalculate_all(
         let mut sv_vals = Vec::new();
         let mut hd_vals = Vec::new();
         let mut ip_vals = Vec::new();
-        let mut era_raw = Vec::new();
-        let mut whip_raw = Vec::new();
 
         for &i in &pitcher_indices {
-            if let PlayerProjectionData::Pitcher { k, w, sv, hd, ip, era, whip, .. } =
+            if let PlayerProjectionData::Pitcher { k, w, sv, hd, ip, .. } =
                 &available_players[i].projection
             {
                 k_vals.push(*k as f64);
@@ -209,8 +205,6 @@ pub fn recalculate_all(
                 sv_vals.push(*sv as f64);
                 hd_vals.push(*hd as f64);
                 ip_vals.push(*ip);
-                era_raw.push(*era);
-                whip_raw.push(*whip);
             }
         }
 

@@ -122,16 +122,7 @@ pub fn compute_scarcity(
         // Collect players eligible at this position with positive VOR.
         let mut eligible: Vec<f64> = available_players
             .iter()
-            .filter(|p| {
-                p.vor > 0.0
-                    && if pos == Position::StartingPitcher || pos == Position::ReliefPitcher {
-                        // Pitchers: check positions list
-                        p.positions.contains(&pos)
-                    } else {
-                        // Hitters: check positions list
-                        p.positions.contains(&pos)
-                    }
-            })
+            .filter(|p| p.vor > 0.0 && p.positions.contains(&pos))
             .map(|p| p.vor)
             .collect();
 
