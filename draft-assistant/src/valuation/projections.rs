@@ -182,7 +182,7 @@ fn load_hitters_from_reader<R: Read>(rdr: R) -> Result<Vec<HitterProjection>, cs
     for result in reader.deserialize::<RawHitter>() {
         match result {
             Ok(raw) => {
-                if !all_finite(&[raw.AVG]) {
+                if !raw.AVG.is_finite() {
                     warn!("skipping hitter '{}': non-finite AVG value", raw.Name.trim());
                     continue;
                 }
@@ -404,6 +404,17 @@ pub fn load_all_from_paths(
     }
 
     merge_holds(&mut pitchers, &holds_map, hold_rate);
+
+    if hitters.is_empty() {
+        return Err(ProjectionError::Validation(
+            "hitter CSV produced zero valid rows".into(),
+        ));
+    }
+    if pitchers.is_empty() {
+        return Err(ProjectionError::Validation(
+            "pitcher CSVs produced zero valid rows".into(),
+        ));
+    }
 
     Ok(AllProjections {
         hitters,
