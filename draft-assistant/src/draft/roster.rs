@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::pick::{Position, position_from_espn_slot};
+use super::pick::{Position, positions_from_espn_slot};
 
 /// A player assigned to a roster slot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -167,7 +167,15 @@ impl Roster {
         }
 
         let display_pos = Position::from_str_pos(position_str).unwrap_or(Position::Bench);
-        let is_hitter = display_pos.is_hitter();
+        // Derive is_hitter from eligible_slots if the position string is unknown
+        let is_hitter = if display_pos == Position::Bench && Position::from_str_pos(position_str).is_none() {
+            // Unknown position string -- check if any eligible slot is a hitter position
+            eligible_slots.iter().any(|&slot_id| {
+                positions_from_espn_slot(slot_id).iter().any(|p| p.is_hitter())
+            })
+        } else {
+            display_pos.is_hitter()
+        };
 
         let player = RosteredPlayer {
             name: name.to_string(),
@@ -178,9 +186,8 @@ impl Roster {
 
         // 1. Try each eligible position slot (skip meta-slots like UTIL/BE/IL)
         for &slot_id in eligible_slots {
-            if let Some(pos) = position_from_espn_slot(slot_id) {
-                // Skip meta slots - handled in steps 2 and 3
-                if matches!(pos, Position::Utility | Position::Bench | Position::InjuredList) {
+            for pos in positions_from_espn_slot(slot_id) {
+                if pos.is_meta_slot() {
                     continue;
                 }
                 if let Some(slot) = self.slots.iter_mut().find(|s| s.position == pos && s.player.is_none()) {
@@ -213,8 +220,8 @@ impl Roster {
     pub fn has_empty_slot_for_slots(&self, eligible_slots: &[u16], is_hitter: bool) -> bool {
         // Check each eligible position slot
         for &slot_id in eligible_slots {
-            if let Some(pos) = position_from_espn_slot(slot_id) {
-                if matches!(pos, Position::Utility | Position::Bench | Position::InjuredList) {
+            for pos in positions_from_espn_slot(slot_id) {
+                if pos.is_meta_slot() {
                     continue;
                 }
                 if self.has_empty_slot(pos) {
@@ -585,5 +592,155 @@ mod tests {
         roster.add_player("Player 1", "C", 5);
         assert_eq!(roster.empty_slots(), 0);
         assert_eq!(roster.max_bid(250), 0);
+    }
+
+    // -- Combo/generic slot expansion tests --
+
+    #[test]
+    fn add_player_with_slots_generic_of_slot() {
+        let mut roster = Roster::new(&test_roster_config());
+        // Player eligible only at generic OF (slot 5), UTIL (12), BE (16), IL (17)
+        // Does NOT have individual LF/CF/RF slots — only the generic OF combo slot
+        let slots = vec![5, 12, 16, 17];
+        assert!(roster.add_player_with_slots("Juan Soto", "OF", 40, &slots));
+        // Should be placed in one of LF, CF, or RF via the expanded OF slot
+        let of_filled: Vec<_> = roster
+            .slots
+            .iter()
+            .filter(|s| {
+                matches!(
+                    s.position,
+                    Position::LeftField | Position::CenterField | Position::RightField
+                ) && s.player.is_some()
+            })
+            .collect();
+        assert_eq!(of_filled.len(), 1);
+        assert_eq!(of_filled[0].player.as_ref().unwrap().name, "Juan Soto");
+    }
+
+    #[test]
+    fn add_player_with_slots_combo_mi_slot() {
+        let mut roster = Roster::new(&test_roster_config());
+        // Fill the 2B slot first
+        roster.add_player("Other 2B", "2B", 10);
+        // Player eligible at MI (slot 6) only — not at individual 2B or SS
+        let slots = vec![6, 12, 16, 17];
+        assert!(roster.add_player_with_slots("MI Player", "2B", 15, &slots));
+        // 2B is full, so MI expansion should place in SS
+        let ss_slot = roster
+            .slots
+            .iter()
+            .find(|s| s.position == Position::ShortStop)
+            .unwrap();
+        assert!(ss_slot.player.is_some());
+        assert_eq!(ss_slot.player.as_ref().unwrap().name, "MI Player");
+    }
+
+    #[test]
+    fn add_player_with_slots_combo_ci_slot() {
+        let mut roster = Roster::new(&test_roster_config());
+        // Fill 1B slot
+        roster.add_player("Other 1B", "1B", 10);
+        // Player eligible at CI (slot 7) only
+        let slots = vec![7, 12, 16, 17];
+        assert!(roster.add_player_with_slots("CI Player", "1B", 15, &slots));
+        // 1B is full, so CI expansion should place in 3B
+        let slot_3b = roster
+            .slots
+            .iter()
+            .find(|s| s.position == Position::ThirdBase)
+            .unwrap();
+        assert!(slot_3b.player.is_some());
+        assert_eq!(slot_3b.player.as_ref().unwrap().name, "CI Player");
+    }
+
+    #[test]
+    fn has_empty_slot_for_slots_combo_of_all_full() {
+        // Minimal config: only OF slots, no UTIL, no bench
+        let mut config = HashMap::new();
+        config.insert("LF".to_string(), 1);
+        config.insert("CF".to_string(), 1);
+        config.insert("RF".to_string(), 1);
+        let mut roster = Roster::new(&config);
+        // Fill all individual OF slots
+        roster.add_player("LF Player", "LF", 10);
+        roster.add_player("CF Player", "CF", 10);
+        roster.add_player("RF Player", "RF", 10);
+        // Generic OF slot should find no empty positions (no OF, no UTIL, no bench)
+        let slots = vec![5]; // just OF combo
+        assert!(!roster.has_empty_slot_for_slots(&slots, true));
+    }
+
+    #[test]
+    fn has_empty_slot_for_slots_combo_of_with_util_fallback() {
+        let mut roster = Roster::new(&test_roster_config());
+        // Fill all individual OF slots
+        roster.add_player("LF Player", "LF", 10);
+        roster.add_player("CF Player", "CF", 10);
+        roster.add_player("RF Player", "RF", 10);
+        // Generic OF slot finds no OF positions, but is_hitter=true finds UTIL
+        let slots = vec![5]; // just OF combo
+        assert!(roster.has_empty_slot_for_slots(&slots, true));
+    }
+
+    #[test]
+    fn has_empty_slot_for_slots_combo_mi_finds_empty() {
+        let mut roster = Roster::new(&test_roster_config());
+        // Fill 2B but leave SS open
+        roster.add_player("2B Player", "2B", 10);
+        // MI slot should find SS is still available
+        let slots = vec![6]; // just MI combo
+        assert!(roster.has_empty_slot_for_slots(&slots, true));
+    }
+
+    // -- is_hitter derivation from eligible_slots --
+
+    #[test]
+    fn is_hitter_derived_from_eligible_slots_for_unknown_position() {
+        let mut roster = Roster::new(&test_roster_config());
+        // Unknown position string "UNKNOWN", but eligible slots include hitter positions
+        let hitter_slots = vec![5, 12, 16, 17]; // OF, UTIL, BE, IL
+        assert!(roster.add_player_with_slots("Mystery Hitter", "UNKNOWN", 10, &hitter_slots));
+        // Should be placed as a hitter — check that UTIL was used (since "UNKNOWN" maps to Bench,
+        // and the eligible slot expansion puts them in an OF slot first)
+        let of_filled: Vec<_> = roster
+            .slots
+            .iter()
+            .filter(|s| {
+                matches!(
+                    s.position,
+                    Position::LeftField | Position::CenterField | Position::RightField
+                ) && s.player.is_some()
+            })
+            .collect();
+        assert_eq!(of_filled.len(), 1);
+        assert_eq!(of_filled[0].player.as_ref().unwrap().name, "Mystery Hitter");
+    }
+
+    #[test]
+    fn is_hitter_false_from_eligible_slots_for_unknown_pitcher() {
+        let mut roster = Roster::new(&test_roster_config());
+        // Unknown position string, but eligible slots are pitcher-only
+        let pitcher_slots = vec![14, 16, 17]; // SP, BE, IL
+        // Fill all SP slots
+        for i in 0..5 {
+            roster.add_player(&format!("SP {}", i), "SP", 10);
+        }
+        assert!(roster.add_player_with_slots("Mystery Pitcher", "UNKNOWN", 5, &pitcher_slots));
+        // is_hitter should be false (derived from pitcher-only slots), so UTIL should NOT be used
+        let util = roster
+            .slots
+            .iter()
+            .find(|s| s.position == Position::Utility)
+            .unwrap();
+        assert!(util.player.is_none(), "UTIL should remain empty for pitcher-derived unknown position");
+        // Should be on the bench
+        let bench_players: Vec<_> = roster
+            .slots
+            .iter()
+            .filter(|s| s.position == Position::Bench && s.player.is_some())
+            .collect();
+        assert_eq!(bench_players.len(), 1);
+        assert_eq!(bench_players[0].player.as_ref().unwrap().name, "Mystery Pitcher");
     }
 }

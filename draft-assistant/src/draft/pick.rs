@@ -110,6 +110,11 @@ impl Position {
         )
     }
 
+    /// Whether this is a meta-slot (not a concrete playing position).
+    pub fn is_meta_slot(&self) -> bool {
+        matches!(self, Position::Utility | Position::Bench | Position::InjuredList)
+    }
+
     /// Deterministic ordering index for roster slot display.
     pub fn sort_order(&self) -> u8 {
         match self {
@@ -160,6 +165,18 @@ pub fn position_from_espn_slot(slot_id: u16) -> Option<Position> {
         ESPN_SLOT_BE => Some(Position::Bench),
         ESPN_SLOT_IL => Some(Position::InjuredList),
         _ => None, // Combo slots (MI, CI, P, generic OF) not directly mappable
+    }
+}
+
+/// Expand an ESPN slot ID into all concrete positions it represents.
+/// Regular slots return a single position; combo/generic slots expand to multiple.
+pub fn positions_from_espn_slot(slot_id: u16) -> Vec<Position> {
+    match slot_id {
+        ESPN_SLOT_OF => vec![Position::LeftField, Position::CenterField, Position::RightField],
+        ESPN_SLOT_MI => vec![Position::SecondBase, Position::ShortStop],
+        ESPN_SLOT_CI => vec![Position::FirstBase, Position::ThirdBase],
+        ESPN_SLOT_P => vec![Position::StartingPitcher, Position::ReliefPitcher],
+        other => position_from_espn_slot(other).into_iter().collect(),
     }
 }
 
@@ -438,5 +455,71 @@ mod tests {
         let positions = playing_positions_from_slots(&slots);
         // Only SP should survive (P is combo, BE and IL are meta)
         assert_eq!(positions, vec![Position::StartingPitcher]);
+    }
+
+    // -- positions_from_espn_slot tests --
+
+    #[test]
+    fn positions_from_espn_slot_generic_of() {
+        let positions = positions_from_espn_slot(ESPN_SLOT_OF);
+        assert_eq!(positions, vec![Position::LeftField, Position::CenterField, Position::RightField]);
+    }
+
+    #[test]
+    fn positions_from_espn_slot_mi() {
+        let positions = positions_from_espn_slot(ESPN_SLOT_MI);
+        assert_eq!(positions, vec![Position::SecondBase, Position::ShortStop]);
+    }
+
+    #[test]
+    fn positions_from_espn_slot_ci() {
+        let positions = positions_from_espn_slot(ESPN_SLOT_CI);
+        assert_eq!(positions, vec![Position::FirstBase, Position::ThirdBase]);
+    }
+
+    #[test]
+    fn positions_from_espn_slot_generic_pitcher() {
+        let positions = positions_from_espn_slot(ESPN_SLOT_P);
+        assert_eq!(positions, vec![Position::StartingPitcher, Position::ReliefPitcher]);
+    }
+
+    #[test]
+    fn positions_from_espn_slot_regular_slot() {
+        // Regular slots should return a single-element vec
+        assert_eq!(positions_from_espn_slot(ESPN_SLOT_C), vec![Position::Catcher]);
+        assert_eq!(positions_from_espn_slot(ESPN_SLOT_SS), vec![Position::ShortStop]);
+        assert_eq!(positions_from_espn_slot(ESPN_SLOT_SP), vec![Position::StartingPitcher]);
+        assert_eq!(positions_from_espn_slot(ESPN_SLOT_BE), vec![Position::Bench]);
+    }
+
+    #[test]
+    fn positions_from_espn_slot_unknown() {
+        // Unknown slots should return an empty vec
+        assert!(positions_from_espn_slot(99).is_empty());
+        assert!(positions_from_espn_slot(255).is_empty());
+    }
+
+    // -- is_meta_slot tests --
+
+    #[test]
+    fn is_meta_slot_true_for_meta_positions() {
+        assert!(Position::Utility.is_meta_slot());
+        assert!(Position::Bench.is_meta_slot());
+        assert!(Position::InjuredList.is_meta_slot());
+    }
+
+    #[test]
+    fn is_meta_slot_false_for_playing_positions() {
+        assert!(!Position::Catcher.is_meta_slot());
+        assert!(!Position::FirstBase.is_meta_slot());
+        assert!(!Position::SecondBase.is_meta_slot());
+        assert!(!Position::ThirdBase.is_meta_slot());
+        assert!(!Position::ShortStop.is_meta_slot());
+        assert!(!Position::LeftField.is_meta_slot());
+        assert!(!Position::CenterField.is_meta_slot());
+        assert!(!Position::RightField.is_meta_slot());
+        assert!(!Position::DesignatedHitter.is_meta_slot());
+        assert!(!Position::StartingPitcher.is_meta_slot());
+        assert!(!Position::ReliefPitcher.is_meta_slot());
     }
 }

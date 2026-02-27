@@ -194,7 +194,9 @@ function pageContextScript() {
           playerName: p.playerName || p.player_name || p.fullName || p.name || '',
           position: p.position || p.defaultPosition || p.pos || '',
           price: Number(p.price || p.salary || p.cost || 0),
-          eligibleSlots: Array.isArray(p.eligibleSlots) ? p.eligibleSlots.map(Number) : [],
+          eligibleSlots: Array.isArray(p.eligibleSlots)
+            ? p.eligibleSlots.slice(0, 32).map(Number).filter(n => Number.isInteger(n) && n >= 0 && n <= 65535)
+            : [],
         })).filter(p => p.playerName); // Filter out empty/invalid picks
       }
 
@@ -212,7 +214,9 @@ function pageContextScript() {
           timeRemaining: nom.timeRemaining != null ? Number(nom.timeRemaining) :
                          nom.time_remaining != null ? Number(nom.time_remaining) :
                          nom.timer != null ? Number(nom.timer) : null,
-          eligibleSlots: Array.isArray(nom.eligibleSlots) ? nom.eligibleSlots.map(Number) : [],
+          eligibleSlots: Array.isArray(nom.eligibleSlots)
+            ? nom.eligibleSlots.slice(0, 32).map(Number).filter(n => Number.isInteger(n) && n >= 0 && n <= 65535)
+            : [],
         };
       }
 
