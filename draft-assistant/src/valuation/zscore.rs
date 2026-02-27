@@ -188,7 +188,6 @@ pub struct PlayerValuation {
     pub vor: f64,
     pub best_position: Option<Position>,
     pub dollar_value: f64,
-    pub adp: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -474,7 +473,6 @@ pub fn compute_initial_zscores(
             vor: 0.0,
             best_position: None,
             dollar_value: 0.0,
-            adp: projections.adp.get(&hitter.name).copied(),
         });
     }
 
@@ -508,7 +506,6 @@ pub fn compute_initial_zscores(
             vor: 0.0,
             best_position: None,
             dollar_value: 0.0,
-            adp: projections.adp.get(&pitcher.name).copied(),
         });
     }
 
@@ -619,7 +616,6 @@ mod tests {
             data_paths: DataPaths {
                 hitters: "data/projections/hitters.csv".into(),
                 pitchers: "data/projections/pitchers.csv".into(),
-                adp: "data/adp.csv".into(),
             },
         }
     }
@@ -951,12 +947,9 @@ mod tests {
             make_rp("Setup Man", 70.0, 75, 5, 25, 3.00, 1.10, 65),
         ];
 
-        let adp = HashMap::new();
-
         let projections = AllProjections {
             hitters,
             pitchers,
-            adp,
         };
 
         // Config with pools small enough to include all players
@@ -1032,43 +1025,6 @@ mod tests {
         assert!(approx_eq(elite.dollar_value, 0.0, 1e-10));
     }
 
-    // ---- ADP lookup test ----
-
-    #[test]
-    fn adp_lookup_works() {
-        let hitters = vec![
-            make_hitter("Player A", 600, 540, 155, 30, 90, 85, 55, 12),
-            make_hitter("Player B", 550, 500, 130, 20, 70, 65, 45, 8),
-        ];
-
-        let pitchers = vec![
-            make_sp("Pitcher A", 180.0, 190, 14, 3.30, 1.10),
-        ];
-
-        let mut adp = HashMap::new();
-        adp.insert("Player A".to_string(), 5.0);
-        adp.insert("Pitcher A".to_string(), 15.0);
-
-        let projections = AllProjections { hitters, pitchers, adp };
-
-        let mut config = test_config();
-        config.strategy.pool.min_pa = 100;
-        config.strategy.pool.hitter_pool_size = 10;
-        config.strategy.pool.min_ip_sp = 10.0;
-        config.strategy.pool.sp_pool_size = 10;
-
-        let valuations = compute_initial_zscores(&projections, &config);
-
-        let a = valuations.iter().find(|v| v.name == "Player A").unwrap();
-        assert!(approx_eq(a.adp.unwrap(), 5.0, 1e-10));
-
-        let b = valuations.iter().find(|v| v.name == "Player B").unwrap();
-        assert!(b.adp.is_none());
-
-        let pa = valuations.iter().find(|v| v.name == "Pitcher A").unwrap();
-        assert!(approx_eq(pa.adp.unwrap(), 15.0, 1e-10));
-    }
-
     // ---- Zero stdev edge case ----
 
     #[test]
@@ -1097,7 +1053,6 @@ mod tests {
         let projections = AllProjections {
             hitters,
             pitchers,
-            adp: HashMap::new(),
         };
 
         let mut config = test_config();
@@ -1228,7 +1183,6 @@ mod tests {
         let projections = AllProjections {
             hitters,
             pitchers,
-            adp: HashMap::new(),
         };
 
         let mut config = test_config();
@@ -1268,7 +1222,6 @@ mod tests {
         let projections = AllProjections {
             hitters,
             pitchers,
-            adp: HashMap::new(),
         };
 
         let mut config = test_config();
@@ -1302,7 +1255,6 @@ mod tests {
         let projections = AllProjections {
             hitters,
             pitchers,
-            adp: HashMap::new(),
         };
 
         let mut config = test_config();

@@ -119,13 +119,6 @@ fn source_files_exist() {
     }
 }
 
-/// Verify that data CSV files have correct headers.
-#[test]
-fn csv_files_have_headers() {
-    let adp_content = std::fs::read_to_string("data/adp.csv").expect("adp.csv should exist");
-    assert!(adp_content.starts_with("Name,ADP"), "adp.csv should have correct headers");
-}
-
 /// Verify league.toml contains expected league settings.
 #[test]
 fn league_toml_has_correct_settings() {

@@ -165,7 +165,6 @@ pub struct LlmConfig {
 pub struct DataPaths {
     pub hitters: String,
     pub pitchers: String,
-    pub adp: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -496,7 +495,6 @@ mod tests {
         assert_eq!(config.ws_port, 9001);
         assert_eq!(config.db_path, "draft-assistant.db");
         assert_eq!(config.data_paths.hitters, "data/projections/hitters.csv");
-        assert_eq!(config.data_paths.adp, "data/adp.csv");
     }
 
     #[test]

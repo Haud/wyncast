@@ -188,7 +188,6 @@ mod tests {
             vor: 5.0,
             best_position: None,
             dollar_value: dollar,
-            adp: None,
         }
     }
 

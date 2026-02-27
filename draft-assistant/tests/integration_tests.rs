@@ -142,7 +142,6 @@ fn inline_config() -> Config {
         data_paths: DataPaths {
             hitters: format!("{}/sample_hitters.csv", FIXTURES),
             pitchers: format!("{}/sample_pitchers.csv", FIXTURES),
-            adp: format!("{}/sample_adp.csv", FIXTURES),
         },
     }
 }
@@ -648,17 +647,6 @@ fn csv_import_loads_all_fixture_data() {
         .filter(|p| p.pitcher_type == PitcherType::RP)
         .count();
     assert_eq!(rp_count, 10, "Should load 10 RP from fixture");
-
-    // Verify ADP data loaded
-    assert!(!projections.adp.is_empty(), "ADP data should be loaded");
-    assert!(
-        projections.adp.contains_key("Aaron Judge"),
-        "ADP should contain Aaron Judge"
-    );
-    assert!(
-        (projections.adp["Aaron Judge"] - 2.5).abs() < 0.01,
-        "Aaron Judge ADP should be 2.5"
-    );
 
     // Verify holds overlay was merged
     let devin = projections
@@ -1493,11 +1481,6 @@ fn fixture_csv_files_have_correct_headers() {
         "Pitchers CSV should have correct headers"
     );
 
-    let adp = std::fs::read_to_string(format!("{}/sample_adp.csv", FIXTURES)).unwrap();
-    assert!(
-        adp.starts_with("Name,ADP"),
-        "ADP CSV should have correct headers"
-    );
 }
 
 #[test]

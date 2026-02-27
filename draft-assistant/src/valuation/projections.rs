@@ -5,10 +5,9 @@
 
 use crate::config::{Config, DataPaths};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
-use tracing::{info, warn};
+use tracing::warn;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -62,7 +61,6 @@ pub struct PitcherProjection {
 pub struct AllProjections {
     pub hitters: Vec<HitterProjection>,
     pub pitchers: Vec<PitcherProjection>,
-    pub adp: HashMap<String, f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -130,13 +128,6 @@ struct RawRazzballPitcher {
     WHIP: f64,
     #[serde(alias = "SO")]
     K: f64,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code, non_snake_case)]
-struct RawAdp {
-    Name: String,
-    ADP: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -239,30 +230,6 @@ fn load_pitchers_from_reader<R: Read>(rdr: R) -> Result<Vec<PitcherProjection>, 
     Ok(pitchers)
 }
 
-fn load_adp_from_reader<R: Read>(rdr: R) -> Result<HashMap<String, f64>, csv::Error> {
-    let mut reader = csv::Reader::from_reader(rdr);
-    let mut map = HashMap::new();
-    for result in reader.deserialize::<RawAdp>() {
-        match result {
-            Ok(raw) => {
-                if !raw.ADP.is_finite() {
-                    warn!("skipping ADP entry for '{}': non-finite value", raw.Name.trim());
-                    continue;
-                }
-                let name = raw.Name.trim().to_string();
-                if map.contains_key(&name) {
-                    warn!("duplicate ADP entry for '{}', using latest value", name);
-                }
-                map.insert(name, raw.ADP);
-            }
-            Err(e) => {
-                warn!("skipping malformed ADP row: {}", e);
-            }
-        }
-    }
-    Ok(map)
-}
-
 // ---------------------------------------------------------------------------
 // Public path-based loaders
 // ---------------------------------------------------------------------------
@@ -291,18 +258,6 @@ pub fn load_pitcher_projections(path: &Path) -> Result<Vec<PitcherProjection>, P
     })
 }
 
-/// Load ADP data from a CSV file. Returns a map of player name → ADP value.
-pub fn load_adp(path: &Path) -> Result<HashMap<String, f64>, ProjectionError> {
-    let file = std::fs::File::open(path).map_err(|e| ProjectionError::Io {
-        path: path.display().to_string(),
-        source: e,
-    })?;
-    load_adp_from_reader(file).map_err(|e| ProjectionError::Csv {
-        path: path.display().to_string(),
-        source: e,
-    })
-}
-
 /// Load all projection data using paths from the config and return
 /// the combined `AllProjections`.
 pub fn load_all(config: &Config) -> Result<AllProjections, ProjectionError> {
@@ -310,24 +265,9 @@ pub fn load_all(config: &Config) -> Result<AllProjections, ProjectionError> {
 }
 
 /// Load all projection data from explicit paths. Exposed for testing and flexibility.
-///
-/// ADP data is optional — if the file is missing, an empty map is used and
-/// players will simply have `adp: None` in their valuations.
 pub fn load_all_from_paths(paths: &DataPaths) -> Result<AllProjections, ProjectionError> {
     let hitters = load_hitter_projections(Path::new(&paths.hitters))?;
     let pitchers = load_pitcher_projections(Path::new(&paths.pitchers))?;
-
-    let adp_path = Path::new(&paths.adp);
-    let adp = match load_adp(adp_path) {
-        Ok(map) => map,
-        Err(ProjectionError::Io { ref source, .. })
-            if source.kind() == std::io::ErrorKind::NotFound =>
-        {
-            info!("ADP file not found at {:?}, ADP data will be unavailable", adp_path);
-            HashMap::new()
-        }
-        Err(e) => return Err(e),
-    };
 
     if hitters.is_empty() {
         return Err(ProjectionError::Validation(
@@ -343,7 +283,6 @@ pub fn load_all_from_paths(paths: &DataPaths) -> Result<AllProjections, Projecti
     Ok(AllProjections {
         hitters,
         pitchers,
-        adp,
     })
 }
 
@@ -582,37 +521,6 @@ Name,Team,PA,AB,H,HR,R,RBI,BB,SB,AVG";
         assert!(hitters.is_empty());
     }
 
-    // -- ADP loading --
-
-    #[test]
-    fn adp_loading() {
-        let csv_data = "\
-Name,ADP
-Aaron Judge,3.5
-Mookie Betts,7.2
-Shohei Ohtani,1.1";
-
-        let adp = load_adp_from_reader(csv_data.as_bytes()).unwrap();
-        assert_eq!(adp.len(), 3);
-        assert!((adp["Aaron Judge"] - 3.5).abs() < f64::EPSILON);
-        assert!((adp["Mookie Betts"] - 7.2).abs() < f64::EPSILON);
-        assert!((adp["Shohei Ohtani"] - 1.1).abs() < f64::EPSILON);
-    }
-
-    // -- Duplicate detection in ADP --
-
-    #[test]
-    fn adp_duplicate_uses_latest() {
-        let csv_data = "\
-Name,ADP
-Aaron Judge,3.5
-Aaron Judge,5.0";
-
-        let adp = load_adp_from_reader(csv_data.as_bytes()).unwrap();
-        assert_eq!(adp.len(), 1);
-        assert!((adp["Aaron Judge"] - 5.0).abs() < f64::EPSILON);
-    }
-
     // -- Name trimming --
 
     #[test]
@@ -635,16 +543,6 @@ Name,Team,POS,G,GS,IP,W,SV,HLD,ERA,WHIP,K
         let pitchers = load_pitchers_from_reader(csv_data.as_bytes()).unwrap();
         assert_eq!(pitchers[0].name, "Gerrit Cole");
         assert_eq!(pitchers[0].team, "NYY");
-    }
-
-    #[test]
-    fn adp_names_trimmed() {
-        let csv_data = "\
-Name,ADP
-  Aaron Judge  ,3.5";
-
-        let adp = load_adp_from_reader(csv_data.as_bytes()).unwrap();
-        assert!((adp["Aaron Judge"] - 3.5).abs() < f64::EPSILON);
     }
 
     // -- Non-finite f64 rejection --
@@ -708,15 +606,4 @@ Gerrit Cole,NYY,SP,32,32,200.0,16,0,2.80,1.05,250";
         assert_eq!(pitchers[0].hd, 0);
     }
 
-    #[test]
-    fn adp_nan_skipped() {
-        let csv_data = "\
-Name,ADP
-Aaron Judge,3.5
-Bad Player,NaN";
-
-        let adp = load_adp_from_reader(csv_data.as_bytes()).unwrap();
-        assert_eq!(adp.len(), 1);
-        assert!(adp.contains_key("Aaron Judge"));
-    }
 }
