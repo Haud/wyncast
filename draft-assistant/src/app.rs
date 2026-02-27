@@ -4,6 +4,8 @@
 // extension, LLM streaming events, and user commands from the TUI. Maintains
 // the complete application state and pushes UI updates to the TUI render loop.
 
+use std::sync::Arc;
+
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -13,6 +15,8 @@ use crate::draft::state::{
     compute_state_diff, ActiveNomination, DraftState, NominationPayload, PickPayload,
     StateUpdatePayload,
 };
+use crate::llm::client::LlmClient;
+use crate::llm::prompt;
 use crate::protocol::{
     ConnectionStatus, ExtensionMessage, LlmEvent, LlmStatus, NominationInfo, TabId, UiUpdate,
     UserCommand,
@@ -65,6 +69,12 @@ pub struct AppState {
     pub connection_status: ConnectionStatus,
     pub active_tab: TabId,
     pub category_needs: CategoryNeeds,
+    /// LLM client for streaming Claude API calls. Wrapped in Arc for
+    /// sharing with spawned tasks.
+    pub llm_client: Arc<LlmClient>,
+    /// Sender for LLM events; spawned tasks use a clone of this sender
+    /// to stream tokens back to the main event loop.
+    pub llm_tx: mpsc::Sender<LlmEvent>,
 }
 
 impl AppState {
@@ -75,6 +85,8 @@ impl AppState {
         available_players: Vec<PlayerValuation>,
         all_projections: AllProjections,
         db: Database,
+        llm_client: LlmClient,
+        llm_tx: mpsc::Sender<LlmEvent>,
     ) -> Self {
         let scarcity = compute_scarcity(&available_players, &config.league);
         let inflation = InflationTracker::new();
@@ -97,6 +109,8 @@ impl AppState {
             connection_status: ConnectionStatus::Disconnected,
             active_tab: TabId::Analysis,
             category_needs: CategoryNeeds::default(),
+            llm_client: Arc::new(llm_client),
+            llm_tx,
         }
     }
 
@@ -203,7 +217,7 @@ impl AppState {
         // Cancel any existing LLM task
         self.cancel_llm_task();
 
-        // Set up LLM mode for nomination analysis (stub)
+        // Set up LLM mode for nomination analysis
         self.llm_mode = Some(LlmMode::NominationAnalysis {
             player_name: nomination.player_name.clone(),
             player_id: nomination.player_id.clone(),
@@ -215,11 +229,8 @@ impl AppState {
         self.nomination_analysis_text.clear();
         self.nomination_analysis_status = LlmStatus::Idle;
 
-        // LLM call is a STUB - just log it. Real integration is Task 14/16.
-        info!(
-            "LLM analysis would be triggered for nomination: {} (bid: ${})",
-            nomination.player_name, nomination.current_bid
-        );
+        // Trigger LLM nomination analysis
+        self.trigger_nomination_analysis(nomination);
 
         analysis
     }
@@ -239,6 +250,112 @@ impl AppState {
             handle.abort();
             info!("Cancelled previous LLM task");
         }
+    }
+
+    /// Trigger LLM nomination analysis for a nominated player.
+    ///
+    /// Cancels any in-flight LLM task, builds the analysis prompt from
+    /// current state, and spawns a streaming task that sends tokens
+    /// through the LLM event channel.
+    pub fn trigger_nomination_analysis(&mut self, nomination: &ActiveNomination) {
+        self.cancel_llm_task();
+
+        // Find the nominated player in our pool
+        let player = self
+            .available_players
+            .iter()
+            .find(|p| p.name == nomination.player_name);
+
+        let player = match player {
+            Some(p) => p.clone(),
+            None => {
+                info!(
+                    "Player {} not found in available pool, skipping LLM analysis",
+                    nomination.player_name
+                );
+                return;
+            }
+        };
+
+        let nom_info = NominationInfo {
+            player_name: nomination.player_name.clone(),
+            position: nomination.position.clone(),
+            nominated_by: nomination.nominated_by.clone(),
+            current_bid: nomination.current_bid,
+            current_bidder: nomination.current_bidder.clone(),
+            time_remaining: nomination.time_remaining,
+        };
+
+        let system = prompt::system_prompt();
+        let user_content = prompt::build_nomination_analysis_prompt(
+            &player,
+            &nom_info,
+            &self.draft_state.my_team().roster,
+            &self.category_needs,
+            &self.scarcity,
+            &self.available_players,
+            &self.draft_state,
+            &self.inflation,
+        );
+
+        let max_tokens = self.config.strategy.llm.analysis_max_tokens;
+        let client = Arc::clone(&self.llm_client);
+        let tx = self.llm_tx.clone();
+
+        self.nomination_analysis_status = LlmStatus::Streaming;
+
+        let handle = tokio::spawn(async move {
+            if let Err(e) = client
+                .stream_message(&system, &user_content, max_tokens, tx)
+                .await
+            {
+                warn!("LLM analysis task failed: {}", e);
+            }
+        });
+
+        self.current_llm_task = Some(handle);
+        info!(
+            "Triggered LLM nomination analysis for {} (bid: ${})",
+            nomination.player_name, nomination.current_bid
+        );
+    }
+
+    /// Trigger LLM nomination planning (what to nominate next).
+    ///
+    /// Cancels any in-flight LLM task, builds the planning prompt from
+    /// current state, and spawns a streaming task.
+    pub fn trigger_nomination_planning(&mut self) {
+        self.cancel_llm_task();
+
+        self.llm_mode = Some(LlmMode::NominationPlanning);
+        self.nomination_plan_text.clear();
+        self.nomination_plan_status = LlmStatus::Streaming;
+
+        let system = prompt::system_prompt();
+        let user_content = prompt::build_nomination_planning_prompt(
+            &self.draft_state.my_team().roster,
+            &self.category_needs,
+            &self.scarcity,
+            &self.available_players,
+            &self.draft_state,
+            &self.inflation,
+        );
+
+        let max_tokens = self.config.strategy.llm.planning_max_tokens;
+        let client = Arc::clone(&self.llm_client);
+        let tx = self.llm_tx.clone();
+
+        let handle = tokio::spawn(async move {
+            if let Err(e) = client
+                .stream_message(&system, &user_content, max_tokens, tx)
+                .await
+            {
+                warn!("LLM planning task failed: {}", e);
+            }
+        });
+
+        self.current_llm_task = Some(handle);
+        info!("Triggered LLM nomination planning");
     }
 
     /// Convert extension PickData format to our internal StateUpdatePayload format.
@@ -525,19 +642,23 @@ async fn handle_user_command(
             info!("Switched to tab: {:?}", tab);
         }
         UserCommand::RefreshAnalysis => {
-            if let Some(ref nom) = state.draft_state.current_nomination {
+            if let Some(nom) = state.draft_state.current_nomination.clone() {
                 info!("Refreshing analysis for {}", nom.player_name);
-                // LLM stub - just log
+                state.cancel_llm_task();
                 state.nomination_analysis_text.clear();
                 state.nomination_analysis_status = LlmStatus::Idle;
+                state.llm_mode = Some(LlmMode::NominationAnalysis {
+                    player_name: nom.player_name.clone(),
+                    player_id: nom.player_id.clone(),
+                    nominated_by: nom.nominated_by.clone(),
+                    current_bid: nom.current_bid,
+                });
+                state.trigger_nomination_analysis(&nom);
             }
         }
         UserCommand::RefreshPlan => {
             info!("Refreshing nomination plan");
-            // LLM stub - just log
-            state.nomination_plan_text.clear();
-            state.nomination_plan_status = LlmStatus::Idle;
-            state.llm_mode = Some(LlmMode::NominationPlanning);
+            state.trigger_nomination_planning();
         }
         UserCommand::ManualPick {
             player_name,
@@ -992,8 +1113,10 @@ mod tests {
         );
 
         let db = Database::open(":memory:").expect("in-memory db");
+        let llm_client = LlmClient::Disabled;
+        let (llm_tx, _llm_rx) = mpsc::channel(16);
 
-        AppState::new(config, draft_state, available, empty_projections(), db)
+        AppState::new(config, draft_state, available, empty_projections(), db, llm_client, llm_tx)
     }
 
     // -----------------------------------------------------------------------
@@ -1194,8 +1317,8 @@ mod tests {
     // Tests: LLM trigger logic
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn nomination_triggers_llm_mode() {
+    #[tokio::test]
+    async fn nomination_triggers_llm_mode() {
         let mut state = create_test_app_state();
 
         let nomination = ActiveNomination {
@@ -1229,8 +1352,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn nomination_returns_analysis_for_known_player() {
+    #[tokio::test]
+    async fn nomination_returns_analysis_for_known_player() {
         let mut state = create_test_app_state();
 
         let nomination = ActiveNomination {
@@ -1251,8 +1374,8 @@ mod tests {
         assert_eq!(analysis.player_name, "H_Star");
     }
 
-    #[test]
-    fn nomination_returns_none_for_unknown_player() {
+    #[tokio::test]
+    async fn nomination_returns_none_for_unknown_player() {
         let mut state = create_test_app_state();
 
         let nomination = ActiveNomination {
@@ -1275,8 +1398,8 @@ mod tests {
     // Tests: LLM cancellation (new nomination cancels previous)
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn new_nomination_clears_previous_analysis() {
+    #[tokio::test]
+    async fn new_nomination_clears_previous_analysis() {
         let mut state = create_test_app_state();
 
         // First nomination
@@ -1305,9 +1428,9 @@ mod tests {
         };
         state.handle_nomination(&nom2);
 
-        // Analysis text should be cleared
+        // Analysis text should be cleared and new streaming started
         assert!(state.nomination_analysis_text.is_empty());
-        assert_eq!(state.nomination_analysis_status, LlmStatus::Idle);
+        assert_eq!(state.nomination_analysis_status, LlmStatus::Streaming);
 
         // LLM mode should be updated to the new nomination
         if let Some(LlmMode::NominationAnalysis { player_name, .. }) = &state.llm_mode {
@@ -1317,8 +1440,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn nomination_cleared_resets_state() {
+    #[tokio::test]
+    async fn nomination_cleared_resets_state() {
         let mut state = create_test_app_state();
 
         // Set up a nomination
@@ -1391,7 +1514,9 @@ mod tests {
         );
         let initial_player_count = available.len();
 
-        let mut state = AppState::new(config, draft_state, available, empty_projections(), db);
+        let llm_client = LlmClient::Disabled;
+        let (llm_tx, _llm_rx) = mpsc::channel(16);
+        let mut state = AppState::new(config, draft_state, available, empty_projections(), db, llm_client, llm_tx);
 
         // Run crash recovery
         let recovered = recover_from_db(&mut state).unwrap();
@@ -1426,7 +1551,9 @@ mod tests {
             DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
         let available = test_players();
 
-        let mut state = AppState::new(config, draft_state, available, empty_projections(), db);
+        let llm_client = LlmClient::Disabled;
+        let (llm_tx, _llm_rx) = mpsc::channel(16);
+        let mut state = AppState::new(config, draft_state, available, empty_projections(), db, llm_client, llm_tx);
 
         let recovered = recover_from_db(&mut state).unwrap();
         assert!(!recovered);
