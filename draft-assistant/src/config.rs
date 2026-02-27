@@ -93,7 +93,6 @@ struct StrategyFile {
     budget: BudgetSection,
     category_weights: CategoryWeights,
     pool: PoolConfig,
-    holds_estimation: HoldsEstimationConfig,
     llm: LlmConfig,
     websocket: WebsocketSection,
     database: DatabaseSection,
@@ -121,7 +120,6 @@ pub struct StrategyConfig {
     pub hitting_budget_fraction: f64,
     pub weights: CategoryWeights,
     pub pool: PoolConfig,
-    pub holds_estimation: HoldsEstimationConfig,
     pub llm: LlmConfig,
 }
 
@@ -155,11 +153,6 @@ pub struct PoolConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct HoldsEstimationConfig {
-    pub default_hold_rate: f64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
 pub struct LlmConfig {
     pub model: String,
     pub analysis_max_tokens: u32,
@@ -171,9 +164,7 @@ pub struct LlmConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct DataPaths {
     pub hitters: String,
-    pub pitchers_sp: String,
-    pub pitchers_rp: String,
-    pub holds_overlay: String,
+    pub pitchers: String,
     pub adp: String,
 }
 
@@ -222,7 +213,6 @@ pub(crate) fn load_config_from(base_dir: &Path) -> Result<Config, ConfigError> {
         hitting_budget_fraction: strategy_file.budget.hitting_budget_fraction,
         weights: strategy_file.category_weights,
         pool: strategy_file.pool,
-        holds_estimation: strategy_file.holds_estimation,
         llm: strategy_file.llm,
     };
 
@@ -496,7 +486,6 @@ mod tests {
         assert_eq!(config.strategy.pool.hitter_pool_size, 150);
         assert_eq!(config.strategy.pool.sp_pool_size, 70);
         assert_eq!(config.strategy.pool.rp_pool_size, 80);
-        assert!((config.strategy.holds_estimation.default_hold_rate - 0.25).abs() < f64::EPSILON);
         assert_eq!(config.strategy.llm.model, "claude-sonnet-4-5-20250929");
         assert_eq!(config.strategy.llm.analysis_max_tokens, 400);
         assert_eq!(config.strategy.llm.planning_max_tokens, 600);

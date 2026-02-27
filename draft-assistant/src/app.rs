@@ -861,9 +861,6 @@ mod tests {
                 sp_pool_size: 70,
                 rp_pool_size: 80,
             },
-            holds_estimation: HoldsEstimationConfig {
-                default_hold_rate: 0.25,
-            },
             llm: LlmConfig {
                 model: "test".into(),
                 analysis_max_tokens: 400,
@@ -883,9 +880,7 @@ mod tests {
             db_path: ":memory:".into(),
             data_paths: DataPaths {
                 hitters: "data/projections/hitters.csv".into(),
-                pitchers_sp: "data/projections/pitchers_sp.csv".into(),
-                pitchers_rp: "data/projections/pitchers_rp.csv".into(),
-                holds_overlay: "data/holds_overlay.csv".into(),
+                pitchers: "data/projections/pitchers.csv".into(),
                 adp: "data/adp.csv".into(),
             },
         }

@@ -122,13 +122,6 @@ fn source_files_exist() {
 /// Verify that data CSV files have correct headers.
 #[test]
 fn csv_files_have_headers() {
-    let holds_content =
-        std::fs::read_to_string("data/holds_projections.csv").expect("holds_projections.csv should exist");
-    assert!(
-        holds_content.starts_with("Name,Team,HD"),
-        "holds_projections.csv should have correct headers"
-    );
-
     let adp_content = std::fs::read_to_string("data/adp.csv").expect("adp.csv should exist");
     assert!(adp_content.starts_with("Name,ADP"), "adp.csv should have correct headers");
 }
