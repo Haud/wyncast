@@ -11,7 +11,7 @@ pub mod widgets;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers};
+use crossterm::event::{Event, EventStream};
 use futures_util::StreamExt;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -321,19 +321,14 @@ pub async fn run(
             maybe_event = event_stream.next() => {
                 match maybe_event {
                     Some(Ok(Event::Key(key_event))) => {
-                        // Quit on 'q' (when not in filter mode) or Ctrl+C
-                        if key_event.code == KeyCode::Char('c')
-                            && key_event.modifiers.contains(KeyModifiers::CONTROL)
-                        {
-                            let _ = cmd_tx.send(UserCommand::Quit).await;
-                            break;
+                        // Delegate to input handler
+                        if let Some(cmd) = input::handle_key(key_event, &mut view_state) {
+                            let is_quit = cmd == UserCommand::Quit;
+                            let _ = cmd_tx.send(cmd).await;
+                            if is_quit {
+                                break;
+                            }
                         }
-                        if key_event.code == KeyCode::Char('q') && !view_state.filter_mode {
-                            let _ = cmd_tx.send(UserCommand::Quit).await;
-                            break;
-                        }
-                        // Delegate to input handler (stub for now, Task 17)
-                        input::handle_key(key_event, &mut view_state, &cmd_tx).await;
                     }
                     Some(Ok(_)) => {
                         // Mouse events, resize events, etc. -- ignore for now

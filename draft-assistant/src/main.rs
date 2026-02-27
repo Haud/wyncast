@@ -130,29 +130,19 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // 9. TUI placeholder: wait for Ctrl+C
-    // Real TUI implementation is in Tasks 13/15/17.
-    info!("Application ready. Press Ctrl+C to exit.");
-    info!("WebSocket server listening on 127.0.0.1:{}", ws_port);
+    // 9. Run the TUI event loop (blocking until user quits)
+    info!("Application ready. WebSocket server listening on 127.0.0.1:{}", ws_port);
 
-    // Drop unused channel endpoints for clean shutdown
-    drop(llm_tx); // LLM producing is now handled by AppState's internal clone
-    drop(ui_rx); // No TUI consumer yet (Task 13)
+    // Drop the LLM sender clone; AppState holds its own clone for spawning tasks.
+    drop(llm_tx);
 
-    // Wait for Ctrl+C
-    match tokio::signal::ctrl_c().await {
-        Ok(()) => {
-            info!("Ctrl+C received, shutting down...");
-        }
-        Err(e) => {
-            error!("Failed to listen for Ctrl+C: {}", e);
-        }
+    // The TUI consumes ui_rx and sends commands through cmd_tx.
+    // It blocks until the user presses 'q' or Ctrl+C.
+    if let Err(e) = tui::run(ui_rx, cmd_tx).await {
+        error!("TUI error: {}", e);
     }
 
-    // 10. Cleanup: send quit command to trigger graceful shutdown
-    let _ = cmd_tx.send(protocol::UserCommand::Quit).await;
-
-    // Wait for tasks to finish (with timeout)
+    // 10. Cleanup: wait for app task to finish (with timeout)
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         let _ = app_handle.await;
     })
