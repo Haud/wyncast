@@ -408,9 +408,6 @@ mod tests {
                 sp_pool_size: 70,
                 rp_pool_size: 80,
             },
-            holds_estimation: HoldsEstimationConfig {
-                default_hold_rate: 0.25,
-            },
             llm: LlmConfig {
                 model: "test".into(),
                 analysis_max_tokens: 400,

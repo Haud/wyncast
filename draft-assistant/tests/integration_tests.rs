@@ -124,9 +124,6 @@ fn inline_config() -> Config {
             sp_pool_size: 70,
             rp_pool_size: 80,
         },
-        holds_estimation: HoldsEstimationConfig {
-            default_hold_rate: 0.25,
-        },
         llm: LlmConfig {
             model: "test".into(),
             analysis_max_tokens: 400,
@@ -144,9 +141,7 @@ fn inline_config() -> Config {
         db_path: ":memory:".into(),
         data_paths: DataPaths {
             hitters: format!("{}/sample_hitters.csv", FIXTURES),
-            pitchers_sp: format!("{}/sample_pitchers_sp.csv", FIXTURES),
-            pitchers_rp: format!("{}/sample_pitchers_rp.csv", FIXTURES),
-            holds_overlay: format!("{}/sample_holds.csv", FIXTURES),
+            pitchers: format!("{}/sample_pitchers.csv", FIXTURES),
             adp: format!("{}/sample_adp.csv", FIXTURES),
         },
     }
@@ -156,7 +151,6 @@ fn inline_config() -> Config {
 fn load_fixture_players(config: &Config) -> Vec<PlayerValuation> {
     let projections = draft_assistant::valuation::projections::load_all_from_paths(
         &config.data_paths,
-        config.strategy.holds_estimation.default_hold_rate,
     )
     .expect("fixture CSVs should load");
 
@@ -168,7 +162,6 @@ fn load_fixture_players(config: &Config) -> Vec<PlayerValuation> {
 fn load_fixture_projections(config: &Config) -> AllProjections {
     draft_assistant::valuation::projections::load_all_from_paths(
         &config.data_paths,
-        config.strategy.holds_estimation.default_hold_rate,
     )
     .expect("fixture CSVs should load")
 }
@@ -740,14 +733,14 @@ fn valuation_pipeline_produces_valid_dollar_values() {
     assert!(pitcher_count > 0, "Should have pitchers in pool");
 }
 
-/// Verify that the holds overlay correctly applies to RP who have overlay
-/// entries, and estimates holds for those without.
+/// Verify that holds are loaded directly from the HLD column in the
+/// combined pitchers CSV (Razzball format — no overlay or estimation).
 #[test]
-fn holds_overlay_applied_correctly() {
+fn holds_loaded_from_csv_directly() {
     let config = inline_config();
     let projections = load_fixture_projections(&config);
 
-    // Devin Williams: overlay says 25 HD
+    // Devin Williams: HLD=25 in CSV
     let dw = projections
         .pitchers
         .iter()
@@ -755,7 +748,7 @@ fn holds_overlay_applied_correctly() {
         .unwrap();
     assert_eq!(dw.hd, 25);
 
-    // Clay Holmes: overlay says 18 HD
+    // Clay Holmes: HLD=18 in CSV
     let ch = projections
         .pitchers
         .iter()
@@ -763,20 +756,13 @@ fn holds_overlay_applied_correctly() {
         .unwrap();
     assert_eq!(ch.hd, 18);
 
-    // Kenley Jansen: no overlay entry, RP with G=55 SV=25 GS=0
-    // Estimated: (55 - 25 - 0) * 0.25 = 7.5 -> 8
+    // Kenley Jansen: HLD=6 in CSV
     let kj = projections
         .pitchers
         .iter()
         .find(|p| p.name == "Kenley Jansen")
         .unwrap();
-    // Estimation formula: max(0, (G - SV - GS) * hold_rate)
-    let expected_hd = ((55.0_f64 - 25.0 - 0.0).max(0.0) * 0.25).round() as u32;
-    assert_eq!(
-        kj.hd, expected_hd,
-        "Kenley Jansen estimated holds should be {}",
-        expected_hd
-    );
+    assert_eq!(kj.hd, 6);
 }
 
 // ===========================================================================
@@ -1501,22 +1487,10 @@ fn fixture_csv_files_have_correct_headers() {
         "Hitters CSV should have correct headers"
     );
 
-    let sp = std::fs::read_to_string(format!("{}/sample_pitchers_sp.csv", FIXTURES)).unwrap();
+    let pitchers = std::fs::read_to_string(format!("{}/sample_pitchers.csv", FIXTURES)).unwrap();
     assert!(
-        sp.starts_with("Name,Team,IP,K,W,SV,ERA,WHIP,G,GS"),
-        "SP CSV should have correct headers"
-    );
-
-    let rp = std::fs::read_to_string(format!("{}/sample_pitchers_rp.csv", FIXTURES)).unwrap();
-    assert!(
-        rp.starts_with("Name,Team,IP,K,W,SV,ERA,WHIP,G,GS"),
-        "RP CSV should have correct headers"
-    );
-
-    let holds = std::fs::read_to_string(format!("{}/sample_holds.csv", FIXTURES)).unwrap();
-    assert!(
-        holds.starts_with("Name,Team,HD"),
-        "Holds CSV should have correct headers"
+        pitchers.starts_with("Name,Team,POS,G,GS,IP,W,SV,HLD,ERA,WHIP,K"),
+        "Pitchers CSV should have correct headers"
     );
 
     let adp = std::fs::read_to_string(format!("{}/sample_adp.csv", FIXTURES)).unwrap();

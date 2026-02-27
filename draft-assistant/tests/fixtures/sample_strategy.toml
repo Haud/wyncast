@@ -23,9 +23,6 @@ hitter_pool_size = 150
 sp_pool_size = 70
 rp_pool_size = 80
 
-[holds_estimation]
-default_hold_rate = 0.25
-
 [llm]
 model = "claude-sonnet-4-5-20250929"
 analysis_max_tokens = 400
@@ -41,7 +38,5 @@ path = ":memory:"
 
 [data_paths]
 hitters = "tests/fixtures/sample_hitters.csv"
-pitchers_sp = "tests/fixtures/sample_pitchers_sp.csv"
-pitchers_rp = "tests/fixtures/sample_pitchers_rp.csv"
-holds_overlay = "tests/fixtures/sample_holds.csv"
+pitchers = "tests/fixtures/sample_pitchers.csv"
 adp = "tests/fixtures/sample_adp.csv"

@@ -27,10 +27,6 @@ hitter_pool_size = 150 # Number of hitters in the valuation pool
 sp_pool_size = 70      # Number of SP in the valuation pool
 rp_pool_size = 80      # Number of RP in the valuation pool
 
-[holds_estimation]
-# Default hold rate for RP without explicit holds projections
-default_hold_rate = 0.25  # Proportion of non-save, non-start appearances that result in holds
-
 [llm]
 model = "claude-sonnet-4-5-20250929"
 
@@ -55,7 +51,5 @@ path = "draft-assistant.db"
 
 [data_paths]
 hitters = "data/projections/hitters.csv"
-pitchers_sp = "data/projections/pitchers_sp.csv"
-pitchers_rp = "data/projections/pitchers_rp.csv"
-holds_overlay = "data/holds_projections.csv"
+pitchers = "data/projections/pitchers.csv"
 adp = "data/adp.csv"

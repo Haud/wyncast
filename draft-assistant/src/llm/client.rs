@@ -830,9 +830,6 @@ mod tests {
                     sp_pool_size: 70,
                     rp_pool_size: 80,
                 },
-                holds_estimation: HoldsEstimationConfig {
-                    default_hold_rate: 0.25,
-                },
                 llm: LlmConfig {
                     model: "claude-sonnet-4-5-20250929".to_string(),
                     analysis_max_tokens: 400,
@@ -848,9 +845,7 @@ mod tests {
             db_path: "test.db".to_string(),
             data_paths: DataPaths {
                 hitters: "data/hitters.csv".to_string(),
-                pitchers_sp: "data/sp.csv".to_string(),
-                pitchers_rp: "data/rp.csv".to_string(),
-                holds_overlay: "data/holds.csv".to_string(),
+                pitchers: "data/pitchers.csv".to_string(),
                 adp: "data/adp.csv".to_string(),
             },
         }
