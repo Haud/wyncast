@@ -74,6 +74,19 @@ async fn main() -> anyhow::Result<()> {
         &config.league.roster,
     );
 
+    // 6. Create mpsc channels (before AppState so llm_tx can be passed in)
+    let (ws_tx, ws_rx) = mpsc::channel(256);
+    let (llm_tx, llm_rx) = mpsc::channel(256);
+    let (cmd_tx, cmd_rx) = mpsc::channel(64);
+    let (ui_tx, ui_rx) = mpsc::channel(256);
+
+    // Build the LLM client from config
+    let llm_client = llm::client::LlmClient::from_config(&config);
+    match &llm_client {
+        llm::client::LlmClient::Active(_) => info!("LLM client initialized (API key configured)"),
+        llm::client::LlmClient::Disabled => info!("LLM client disabled (no API key)"),
+    }
+
     // Create the application state
     let mut app_state = app::AppState::new(
         config.clone(),
@@ -81,6 +94,8 @@ async fn main() -> anyhow::Result<()> {
         available_players,
         projections,
         db,
+        llm_client,
+        llm_tx.clone(),
     );
 
     // Check for crash recovery
@@ -92,12 +107,6 @@ async fn main() -> anyhow::Result<()> {
             return Err(e.context("crash recovery failed"));
         }
     }
-
-    // 6. Create mpsc channels
-    let (ws_tx, ws_rx) = mpsc::channel(256);
-    let (llm_tx, llm_rx) = mpsc::channel(256);
-    let (cmd_tx, cmd_rx) = mpsc::channel(64);
-    let (ui_tx, ui_rx) = mpsc::channel(256);
 
     // 7. Spawn WebSocket server task
     let ws_port = config.ws_port;
@@ -127,7 +136,7 @@ async fn main() -> anyhow::Result<()> {
     info!("WebSocket server listening on 127.0.0.1:{}", ws_port);
 
     // Drop unused channel endpoints for clean shutdown
-    drop(llm_tx); // No LLM producer yet (Task 14)
+    drop(llm_tx); // LLM producing is now handled by AppState's internal clone
     drop(ui_rx); // No TUI consumer yet (Task 13)
 
     // Wait for Ctrl+C
