@@ -846,7 +846,6 @@ mod tests {
             data_paths: DataPaths {
                 hitters: "data/hitters.csv".to_string(),
                 pitchers: "data/pitchers.csv".to_string(),
-                adp: "data/adp.csv".to_string(),
             },
         }
     }

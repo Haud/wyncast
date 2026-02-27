@@ -154,10 +154,10 @@ impl AppState {
                 if p.name == *player_name {
                     return false;
                 }
-                // If the pick carries an ESPN ID, also check the player's ADP
-                // lookup name won't help here, but future player records might
-                // carry an ID field. For now this is a defensive no-op placeholder
-                // that keeps the structure ready for ID-based matching.
+                // If the pick carries an ESPN ID, check for an ID-based match.
+                // Future player records might carry an ID field. For now this is
+                // a defensive no-op placeholder that keeps the structure ready
+                // for ID-based matching.
                 if let Some(_id) = espn_id {
                     // TODO: match against player.espn_id once that field exists
                 }
@@ -881,7 +881,6 @@ mod tests {
             data_paths: DataPaths {
                 hitters: "data/projections/hitters.csv".into(),
                 pitchers: "data/projections/pitchers.csv".into(),
-                adp: "data/adp.csv".into(),
             },
         }
     }
@@ -952,7 +951,6 @@ mod tests {
             vor: 0.0,
             best_position: None,
             dollar_value: 0.0,
-            adp: None,
         }
     }
 
@@ -1005,7 +1003,6 @@ mod tests {
             vor: 0.0,
             best_position: None,
             dollar_value: 0.0,
-            adp: None,
         }
     }
 
@@ -1095,7 +1092,6 @@ mod tests {
         AllProjections {
             hitters: vec![],
             pitchers: vec![],
-            adp: HashMap::new(),
         }
     }
 

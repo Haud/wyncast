@@ -268,7 +268,6 @@ mod tests {
             vor,
             best_position: best_pos,
             dollar_value: vor.max(1.0) * 5.0 + 1.0,
-            adp: None,
         }
     }
 
@@ -293,7 +292,6 @@ mod tests {
             vor,
             best_position: Some(pos),
             dollar_value: vor.max(1.0) * 5.0 + 1.0,
-            adp: None,
         }
     }
 

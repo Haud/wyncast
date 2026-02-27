@@ -39,4 +39,3 @@ path = ":memory:"
 [data_paths]
 hitters = "tests/fixtures/sample_hitters.csv"
 pitchers = "tests/fixtures/sample_pitchers.csv"
-adp = "tests/fixtures/sample_adp.csv"

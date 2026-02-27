@@ -412,7 +412,6 @@ mod tests {
             vor,
             best_position: Some(Position::FirstBase),
             dollar_value: 0.0,
-            adp: None,
         }
     }
 
@@ -443,7 +442,6 @@ mod tests {
             vor,
             best_position: Some(pos),
             dollar_value: 0.0,
-            adp: None,
         }
     }
 

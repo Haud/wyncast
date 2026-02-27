@@ -448,7 +448,6 @@ mod tests {
             vor: 0.0,
             best_position: None,
             dollar_value: 0.0,
-            adp: None,
         }
     }
 
@@ -486,7 +485,6 @@ mod tests {
             vor: 0.0,
             best_position: None,
             dollar_value: 0.0,
-            adp: None,
         }
     }
 

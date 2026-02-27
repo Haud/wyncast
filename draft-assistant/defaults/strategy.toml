@@ -52,4 +52,3 @@ path = "draft-assistant.db"
 [data_paths]
 hitters = "data/projections/hitters.csv"
 pitchers = "data/projections/pitchers.csv"
-adp = "data/adp.csv"

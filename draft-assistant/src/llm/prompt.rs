@@ -912,7 +912,6 @@ mod tests {
             vor,
             best_position: positions.first().copied(),
             dollar_value: dollar,
-            adp: None,
         }
     }
 
@@ -937,7 +936,6 @@ mod tests {
             vor,
             best_position: Some(pos),
             dollar_value: dollar,
-            adp: None,
         }
     }
 
