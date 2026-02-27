@@ -1,0 +1,47 @@
+[league]
+name = "Test Integration League"
+platform = "espn"
+num_teams = 10
+scoring_type = "h2h_most_categories"
+salary_cap = 260
+
+[league.batting_categories]
+categories = ["R", "HR", "RBI", "BB", "SB", "AVG"]
+
+[league.pitching_categories]
+categories = ["K", "W", "SV", "HD", "ERA", "WHIP"]
+
+[league.roster]
+C  = 1
+"1B" = 1
+"2B" = 1
+"3B" = 1
+SS = 1
+LF = 1
+CF = 1
+RF = 1
+UTIL = 1
+SP = 5
+RP = 6
+BE = 6
+IL = 5
+
+[league.roster_limits]
+max_sp = 7
+max_rp = 7
+gs_per_week = 7
+
+[league.teams]
+team_1 = "Vorticists"
+team_2 = "Mudcats"
+team_3 = "Sluggers"
+team_4 = "Aces"
+team_5 = "Bombers"
+team_6 = "Rockets"
+team_7 = "Thunder"
+team_8 = "Cyclones"
+team_9 = "Flames"
+team_10 = "Vipers"
+
+[league.my_team]
+team_id = "team_1"
