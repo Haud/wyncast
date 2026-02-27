@@ -28,29 +28,40 @@ use tokio::sync::mpsc;
 /// `cargo test`).
 const FIXTURES: &str = "tests/fixtures";
 
+/// Build the roster config HashMap -- single source of truth for roster slots.
+fn roster_config() -> HashMap<String, usize> {
+    let mut m = HashMap::new();
+    m.insert("C".into(), 1);
+    m.insert("1B".into(), 1);
+    m.insert("2B".into(), 1);
+    m.insert("3B".into(), 1);
+    m.insert("SS".into(), 1);
+    m.insert("LF".into(), 1);
+    m.insert("CF".into(), 1);
+    m.insert("RF".into(), 1);
+    m.insert("UTIL".into(), 1);
+    m.insert("SP".into(), 5);
+    m.insert("RP".into(), 6);
+    m.insert("BE".into(), 6);
+    m.insert("IL".into(), 5);
+    m
+}
+
+/// Build a 10-team list -- single source of truth for team data.
+fn ten_teams() -> Vec<(String, String)> {
+    (1..=10)
+        .map(|i| (format!("team_{i}"), format!("Team {i}")))
+        .collect()
+}
+
+/// Build a teams HashMap for LeagueConfig (derived from `ten_teams()`).
+fn teams_map() -> HashMap<String, String> {
+    ten_teams().into_iter().collect()
+}
+
 /// Build a test-ready Config with inline league/strategy settings (no files).
-/// Uses 10 teams matching the sample_league.toml.
+/// Uses `roster_config()` and `teams_map()` as single sources of truth.
 fn inline_config() -> Config {
-    let mut roster = HashMap::new();
-    roster.insert("C".into(), 1);
-    roster.insert("1B".into(), 1);
-    roster.insert("2B".into(), 1);
-    roster.insert("3B".into(), 1);
-    roster.insert("SS".into(), 1);
-    roster.insert("LF".into(), 1);
-    roster.insert("CF".into(), 1);
-    roster.insert("RF".into(), 1);
-    roster.insert("UTIL".into(), 1);
-    roster.insert("SP".into(), 5);
-    roster.insert("RP".into(), 6);
-    roster.insert("BE".into(), 6);
-    roster.insert("IL".into(), 5);
-
-    let mut teams_map = HashMap::new();
-    for i in 1..=10 {
-        teams_map.insert(format!("team_{i}"), format!("Team {i}"));
-    }
-
     let league = LeagueConfig {
         name: "Test Integration League".into(),
         platform: "espn".into(),
@@ -77,13 +88,13 @@ fn inline_config() -> Config {
                 "WHIP".into(),
             ],
         },
-        roster,
+        roster: roster_config(),
         roster_limits: RosterLimits {
             max_sp: 7,
             max_rp: 7,
             gs_per_week: 7,
         },
-        teams: teams_map,
+        teams: teams_map(),
         my_team: MyTeam {
             team_id: "team_1".into(),
         },
@@ -139,32 +150,6 @@ fn inline_config() -> Config {
             adp: format!("{}/sample_adp.csv", FIXTURES),
         },
     }
-}
-
-/// Build a 10-team list matching the inline_config.
-fn ten_teams() -> Vec<(String, String)> {
-    (1..=10)
-        .map(|i| (format!("team_{i}"), format!("Team {i}")))
-        .collect()
-}
-
-/// Build the roster config HashMap matching the inline config.
-fn roster_config() -> HashMap<String, usize> {
-    let mut m = HashMap::new();
-    m.insert("C".into(), 1);
-    m.insert("1B".into(), 1);
-    m.insert("2B".into(), 1);
-    m.insert("3B".into(), 1);
-    m.insert("SS".into(), 1);
-    m.insert("LF".into(), 1);
-    m.insert("CF".into(), 1);
-    m.insert("RF".into(), 1);
-    m.insert("UTIL".into(), 1);
-    m.insert("SP".into(), 5);
-    m.insert("RP".into(), 6);
-    m.insert("BE".into(), 6);
-    m.insert("IL".into(), 5);
-    m
 }
 
 /// Load projections from fixture CSVs and run the full valuation pipeline.
