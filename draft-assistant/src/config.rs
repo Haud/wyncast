@@ -22,6 +22,9 @@ pub enum ConfigError {
 
     #[error("validation error for field `{field}`: {message}")]
     ValidationError { field: String, message: String },
+
+    #[error("failed to initialize config from defaults: {message}")]
+    DefaultsCopyError { message: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -190,6 +193,8 @@ pub struct CredentialsConfig {
 /// Load and validate configuration from `config/league.toml`,
 /// `config/strategy.toml`, and (optionally) `config/credentials.toml`,
 /// all relative to the given `base_dir`.
+///
+/// Note: call `ensure_config_files` first to copy defaults for any missing files.
 pub fn load_config_from(base_dir: &Path) -> Result<Config, ConfigError> {
     let config_dir = base_dir.join("config");
 
@@ -250,11 +255,63 @@ pub fn load_config_from(base_dir: &Path) -> Result<Config, ConfigError> {
     Ok(config)
 }
 
+/// Ensure all config files exist by copying missing ones from `defaults/`.
+/// Returns the list of files that were copied. Skips `.example` files.
+pub fn ensure_config_files(base_dir: &Path) -> Result<Vec<PathBuf>, ConfigError> {
+    let defaults_dir = base_dir.join("defaults");
+    let config_dir = base_dir.join("config");
+
+    if !defaults_dir.exists() {
+        return Ok(vec![]);
+    }
+
+    std::fs::create_dir_all(&config_dir).map_err(|e| ConfigError::DefaultsCopyError {
+        message: format!("failed to create config directory: {e}"),
+    })?;
+
+    let mut copied = Vec::new();
+
+    let entries = std::fs::read_dir(&defaults_dir).map_err(|e| ConfigError::DefaultsCopyError {
+        message: format!("failed to read defaults directory: {e}"),
+    })?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| ConfigError::DefaultsCopyError {
+            message: format!("failed to read defaults entry: {e}"),
+        })?;
+        let path = entry.path();
+
+        // Skip non-files and .example files
+        if !path.is_file() {
+            continue;
+        }
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if name.ends_with(".example") {
+                continue;
+            }
+        }
+
+        let file_name = path.file_name().unwrap();
+        let target = config_dir.join(file_name);
+
+        if !target.exists() {
+            std::fs::copy(&path, &target).map_err(|e| ConfigError::DefaultsCopyError {
+                message: format!("failed to copy {} to {}: {e}", path.display(), target.display()),
+            })?;
+            copied.push(target);
+        }
+    }
+
+    Ok(copied)
+}
+
 /// Convenience wrapper: loads config relative to the current working directory.
+/// Ensures default config files are copied before loading.
 pub fn load_config() -> Result<Config, ConfigError> {
     let cwd = std::env::current_dir().map_err(|_| ConfigError::FileNotFound {
         path: PathBuf::from("."),
     })?;
+    ensure_config_files(&cwd)?;
     load_config_from(&cwd)
 }
 
@@ -363,21 +420,21 @@ mod tests {
     /// Helper: returns the path to the draft-assistant project root
     /// (works whether `cargo test` runs from the crate root or repo root).
     fn project_root() -> PathBuf {
-        // `cargo test` sets CWD to the crate root, so "config/" should be
-        // directly accessible. Return "." so load_config_from works.
         let cwd = std::env::current_dir().unwrap();
-        if cwd.join("config").exists() {
+        if cwd.join("defaults").exists() {
             cwd
-        } else if cwd.join("draft-assistant/config").exists() {
+        } else if cwd.join("draft-assistant/defaults").exists() {
             cwd.join("draft-assistant")
         } else {
-            panic!("Cannot locate config/ directory from CWD {:?}", cwd);
+            panic!("Cannot locate defaults/ directory from CWD {:?}", cwd);
         }
     }
 
     #[test]
     fn load_valid_config_from_project_files() {
-        let config = load_config_from(&project_root()).expect("should load valid config");
+        let root = project_root();
+        ensure_config_files(&root).expect("should copy default configs");
+        let config = load_config_from(&root).expect("should load valid config");
 
         // League assertions
         assert_eq!(config.league.name, "Wyndham Lewis Vorticist Baseball");
@@ -430,9 +487,9 @@ mod tests {
         fs::create_dir_all(&config_dir).unwrap();
 
         let root = project_root();
-        fs::copy(root.join("config/league.toml"), config_dir.join("league.toml")).unwrap();
+        fs::copy(root.join("defaults/league.toml"), config_dir.join("league.toml")).unwrap();
         fs::copy(
-            root.join("config/strategy.toml"),
+            root.join("defaults/strategy.toml"),
             config_dir.join("strategy.toml"),
         )
         .unwrap();
@@ -451,9 +508,9 @@ mod tests {
         fs::create_dir_all(&config_dir).unwrap();
 
         let root = project_root();
-        fs::copy(root.join("config/league.toml"), config_dir.join("league.toml")).unwrap();
+        fs::copy(root.join("defaults/league.toml"), config_dir.join("league.toml")).unwrap();
         fs::copy(
-            root.join("config/strategy.toml"),
+            root.join("defaults/strategy.toml"),
             config_dir.join("strategy.toml"),
         )
         .unwrap();
@@ -512,7 +569,7 @@ team_id = "team_1"
 
         let root = project_root();
         fs::copy(
-            root.join("config/strategy.toml"),
+            root.join("defaults/strategy.toml"),
             config_dir.join("strategy.toml"),
         )
         .unwrap();
@@ -567,7 +624,7 @@ team_id = "team_1"
 
         let root = project_root();
         fs::copy(
-            root.join("config/strategy.toml"),
+            root.join("defaults/strategy.toml"),
             config_dir.join("strategy.toml"),
         )
         .unwrap();
@@ -591,10 +648,10 @@ team_id = "team_1"
         fs::create_dir_all(&config_dir).unwrap();
 
         let root = project_root();
-        fs::copy(root.join("config/league.toml"), config_dir.join("league.toml")).unwrap();
+        fs::copy(root.join("defaults/league.toml"), config_dir.join("league.toml")).unwrap();
 
         // Write strategy.toml with hitting_budget_fraction = 1.5
-        let strategy_text = fs::read_to_string(root.join("config/strategy.toml")).unwrap();
+        let strategy_text = fs::read_to_string(root.join("defaults/strategy.toml")).unwrap();
         let modified = strategy_text.replace(
             "hitting_budget_fraction = 0.65",
             "hitting_budget_fraction = 1.5",
@@ -620,9 +677,9 @@ team_id = "team_1"
         fs::create_dir_all(&config_dir).unwrap();
 
         let root = project_root();
-        fs::copy(root.join("config/league.toml"), config_dir.join("league.toml")).unwrap();
+        fs::copy(root.join("defaults/league.toml"), config_dir.join("league.toml")).unwrap();
 
-        let strategy_text = fs::read_to_string(root.join("config/strategy.toml")).unwrap();
+        let strategy_text = fs::read_to_string(root.join("defaults/strategy.toml")).unwrap();
         let modified = strategy_text.replace(
             "hitting_budget_fraction = 0.65",
             "hitting_budget_fraction = -0.1",
@@ -648,9 +705,9 @@ team_id = "team_1"
         fs::create_dir_all(&config_dir).unwrap();
 
         let root = project_root();
-        fs::copy(root.join("config/league.toml"), config_dir.join("league.toml")).unwrap();
+        fs::copy(root.join("defaults/league.toml"), config_dir.join("league.toml")).unwrap();
 
-        let strategy_text = fs::read_to_string(root.join("config/strategy.toml")).unwrap();
+        let strategy_text = fs::read_to_string(root.join("defaults/strategy.toml")).unwrap();
         // Set SV weight to 0.0 (should fail validation: weights must be > 0)
         let modified = strategy_text.replace("SV   = 0.7", "SV   = 0.0");
         fs::write(config_dir.join("strategy.toml"), modified).unwrap();
@@ -674,9 +731,9 @@ team_id = "team_1"
         fs::create_dir_all(&config_dir).unwrap();
 
         let root = project_root();
-        fs::copy(root.join("config/league.toml"), config_dir.join("league.toml")).unwrap();
+        fs::copy(root.join("defaults/league.toml"), config_dir.join("league.toml")).unwrap();
 
-        let strategy_text = fs::read_to_string(root.join("config/strategy.toml")).unwrap();
+        let strategy_text = fs::read_to_string(root.join("defaults/strategy.toml")).unwrap();
         let modified = strategy_text.replace("hitter_pool_size = 150", "hitter_pool_size = 0");
         fs::write(config_dir.join("strategy.toml"), modified).unwrap();
 
@@ -701,7 +758,7 @@ team_id = "team_1"
         // No league.toml written
         let root = project_root();
         fs::copy(
-            root.join("config/strategy.toml"),
+            root.join("defaults/strategy.toml"),
             config_dir.join("strategy.toml"),
         )
         .unwrap();
@@ -725,7 +782,7 @@ team_id = "team_1"
         fs::create_dir_all(&config_dir).unwrap();
 
         let root = project_root();
-        fs::copy(root.join("config/league.toml"), config_dir.join("league.toml")).unwrap();
+        fs::copy(root.join("defaults/league.toml"), config_dir.join("league.toml")).unwrap();
         // No strategy.toml written
 
         let err = load_config_from(&tmp).unwrap_err();
@@ -750,7 +807,7 @@ team_id = "team_1"
 
         let root = project_root();
         fs::copy(
-            root.join("config/strategy.toml"),
+            root.join("defaults/strategy.toml"),
             config_dir.join("strategy.toml"),
         )
         .unwrap();
@@ -762,6 +819,82 @@ team_id = "team_1"
             }
             other => panic!("expected ParseError, got: {other}"),
         }
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn ensure_config_files_copies_missing_files() {
+        let tmp = std::env::temp_dir().join("config_test_ensure_copies");
+        let _ = fs::remove_dir_all(&tmp);
+
+        // Create defaults/ with league.toml and strategy.toml
+        let defaults_dir = tmp.join("defaults");
+        fs::create_dir_all(&defaults_dir).unwrap();
+
+        let root = project_root();
+        fs::copy(root.join("defaults/league.toml"), defaults_dir.join("league.toml")).unwrap();
+        fs::copy(root.join("defaults/strategy.toml"), defaults_dir.join("strategy.toml")).unwrap();
+        // Add an example file that should NOT be copied
+        fs::write(
+            defaults_dir.join("credentials.toml.example"),
+            "anthropic_api_key = \"sk-ant-...\"\n",
+        )
+        .unwrap();
+
+        // No config/ dir exists yet
+        assert!(!tmp.join("config").exists());
+
+        let copied = ensure_config_files(&tmp).expect("should succeed");
+        assert_eq!(copied.len(), 2);
+
+        // config/ should now exist with both files
+        assert!(tmp.join("config/league.toml").exists());
+        assert!(tmp.join("config/strategy.toml").exists());
+        // example file should NOT have been copied
+        assert!(!tmp.join("config/credentials.toml.example").exists());
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn ensure_config_files_skips_existing() {
+        let tmp = std::env::temp_dir().join("config_test_ensure_skips");
+        let _ = fs::remove_dir_all(&tmp);
+
+        let defaults_dir = tmp.join("defaults");
+        let config_dir = tmp.join("config");
+        fs::create_dir_all(&defaults_dir).unwrap();
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let root = project_root();
+        fs::copy(root.join("defaults/league.toml"), defaults_dir.join("league.toml")).unwrap();
+        fs::copy(root.join("defaults/strategy.toml"), defaults_dir.join("strategy.toml")).unwrap();
+
+        // Pre-create league.toml in config/ with custom content
+        fs::write(config_dir.join("league.toml"), "# custom\n").unwrap();
+
+        let copied = ensure_config_files(&tmp).expect("should succeed");
+        // Only strategy.toml should be copied (league.toml already exists)
+        assert_eq!(copied.len(), 1);
+        assert!(copied[0].ends_with("strategy.toml"));
+
+        // Original custom content should be preserved
+        let content = fs::read_to_string(config_dir.join("league.toml")).unwrap();
+        assert_eq!(content, "# custom\n");
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn ensure_config_files_no_defaults_dir_is_ok() {
+        let tmp = std::env::temp_dir().join("config_test_no_defaults");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        // No defaults/ directory
+        let copied = ensure_config_files(&tmp).expect("should succeed");
+        assert!(copied.is_empty());
 
         let _ = fs::remove_dir_all(&tmp);
     }
