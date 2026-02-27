@@ -4,7 +4,7 @@
 // app orchestrator, or into local ViewState mutations (e.g. tab switching,
 // scroll, filtering).
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::draft::pick::Position;
 use crate::protocol::{TabId, UserCommand};
@@ -37,6 +37,13 @@ pub fn handle_key(
     key_event: KeyEvent,
     view_state: &mut ViewState,
 ) -> Option<UserCommand> {
+    // Only process key press events. On Windows, crossterm emits both
+    // Press and Release events for each physical keypress; ignoring
+    // non-Press events prevents double-processing.
+    if key_event.kind != KeyEventKind::Press {
+        return None;
+    }
+
     // Ctrl+C always quits regardless of mode
     if key_event.modifiers.contains(KeyModifiers::CONTROL)
         && key_event.code == KeyCode::Char('c')
@@ -527,5 +534,37 @@ mod tests {
         let mut state = ViewState::default();
         let result = handle_key(key(KeyCode::Char('x')), &mut state);
         assert!(result.is_none());
+    }
+
+    // -- KeyEventKind filtering --
+
+    #[test]
+    fn release_events_are_ignored() {
+        let mut state = ViewState::default();
+        let release_event = KeyEvent {
+            code: KeyCode::Char('q'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Release,
+            state: KeyEventState::NONE,
+        };
+        let result = handle_key(release_event, &mut state);
+        assert!(result.is_none(), "Release events should be ignored");
+    }
+
+    #[test]
+    fn repeat_events_are_ignored() {
+        let mut state = ViewState::default();
+        let repeat_event = KeyEvent {
+            code: KeyCode::Down,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Repeat,
+            state: KeyEventState::NONE,
+        };
+        let result = handle_key(repeat_event, &mut state);
+        assert!(result.is_none(), "Repeat events should be ignored");
+        assert!(
+            state.scroll_offset.get("analysis").is_none(),
+            "Repeat event should not modify scroll state"
+        );
     }
 }
