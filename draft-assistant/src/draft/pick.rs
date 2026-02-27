@@ -3,6 +3,29 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+// ---------------------------------------------------------------------------
+// ESPN slot ID constants (from ESPN Fantasy API v3)
+// ---------------------------------------------------------------------------
+
+pub const ESPN_SLOT_C: u16 = 0;
+pub const ESPN_SLOT_1B: u16 = 1;
+pub const ESPN_SLOT_2B: u16 = 2;
+pub const ESPN_SLOT_3B: u16 = 3;
+pub const ESPN_SLOT_SS: u16 = 4;
+pub const ESPN_SLOT_OF: u16 = 5;
+pub const ESPN_SLOT_MI: u16 = 6; // 2B/SS combo
+pub const ESPN_SLOT_CI: u16 = 7; // 1B/3B combo
+pub const ESPN_SLOT_LF: u16 = 8;
+pub const ESPN_SLOT_CF: u16 = 9;
+pub const ESPN_SLOT_RF: u16 = 10;
+pub const ESPN_SLOT_DH: u16 = 11;
+pub const ESPN_SLOT_UTIL: u16 = 12;
+pub const ESPN_SLOT_P: u16 = 13; // Generic pitcher
+pub const ESPN_SLOT_SP: u16 = 14;
+pub const ESPN_SLOT_RP: u16 = 15;
+pub const ESPN_SLOT_BE: u16 = 16;
+pub const ESPN_SLOT_IL: u16 = 17;
+
 /// Baseball positions used for roster slot assignment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Position {
@@ -114,6 +137,68 @@ impl fmt::Display for Position {
     }
 }
 
+// ---------------------------------------------------------------------------
+// ESPN slot ID mapping functions
+// ---------------------------------------------------------------------------
+
+/// Map an ESPN slot ID to a Position enum value.
+/// Returns None for combo/flex slots not in our league (MI, CI, P, generic OF).
+pub fn position_from_espn_slot(slot_id: u16) -> Option<Position> {
+    match slot_id {
+        ESPN_SLOT_C => Some(Position::Catcher),
+        ESPN_SLOT_1B => Some(Position::FirstBase),
+        ESPN_SLOT_2B => Some(Position::SecondBase),
+        ESPN_SLOT_3B => Some(Position::ThirdBase),
+        ESPN_SLOT_SS => Some(Position::ShortStop),
+        ESPN_SLOT_LF => Some(Position::LeftField),
+        ESPN_SLOT_CF => Some(Position::CenterField),
+        ESPN_SLOT_RF => Some(Position::RightField),
+        ESPN_SLOT_DH => Some(Position::DesignatedHitter),
+        ESPN_SLOT_UTIL => Some(Position::Utility),
+        ESPN_SLOT_SP => Some(Position::StartingPitcher),
+        ESPN_SLOT_RP => Some(Position::ReliefPitcher),
+        ESPN_SLOT_BE => Some(Position::Bench),
+        ESPN_SLOT_IL => Some(Position::InjuredList),
+        _ => None, // Combo slots (MI, CI, P, generic OF) not directly mappable
+    }
+}
+
+/// Map a Position enum to its primary ESPN slot ID.
+pub fn espn_slot_from_position(pos: Position) -> u16 {
+    match pos {
+        Position::Catcher => ESPN_SLOT_C,
+        Position::FirstBase => ESPN_SLOT_1B,
+        Position::SecondBase => ESPN_SLOT_2B,
+        Position::ThirdBase => ESPN_SLOT_3B,
+        Position::ShortStop => ESPN_SLOT_SS,
+        Position::LeftField => ESPN_SLOT_LF,
+        Position::CenterField => ESPN_SLOT_CF,
+        Position::RightField => ESPN_SLOT_RF,
+        Position::DesignatedHitter => ESPN_SLOT_DH,
+        Position::Utility => ESPN_SLOT_UTIL,
+        Position::StartingPitcher => ESPN_SLOT_SP,
+        Position::ReliefPitcher => ESPN_SLOT_RP,
+        Position::Bench => ESPN_SLOT_BE,
+        Position::InjuredList => ESPN_SLOT_IL,
+    }
+}
+
+/// Extract all concrete playing positions from ESPN eligible slots,
+/// filtering out meta-slots (UTIL, BE, IL) and combo slots.
+pub fn playing_positions_from_slots(eligible_slots: &[u16]) -> Vec<Position> {
+    eligible_slots
+        .iter()
+        .filter_map(|&slot_id| {
+            let pos = position_from_espn_slot(slot_id)?;
+            // Filter out non-playing slots
+            match pos {
+                Position::Utility | Position::Bench | Position::InjuredList => None,
+                _ => Some(pos),
+            }
+        })
+        .collect()
+}
+
 /// A single draft pick record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DraftPick {
@@ -131,6 +216,10 @@ pub struct DraftPick {
     pub price: u32,
     /// ESPN external player ID, if available.
     pub espn_player_id: Option<String>,
+    /// ESPN eligible slot IDs for multi-position awareness.
+    /// Empty if not available (manual entry, old data).
+    #[serde(default)]
+    pub eligible_slots: Vec<u16>,
 }
 
 #[cfg(test)]
@@ -246,10 +335,108 @@ mod tests {
             position: "OF".to_string(),
             price: 45,
             espn_player_id: Some("12345".to_string()),
+            eligible_slots: vec![],
         };
         assert_eq!(pick.pick_number, 1);
         assert_eq!(pick.price, 45);
         assert_eq!(pick.position, "OF");
         assert_eq!(pick.espn_player_id, Some("12345".to_string()));
+        assert!(pick.eligible_slots.is_empty());
+    }
+
+    // -- ESPN slot ID mapping tests --
+
+    #[test]
+    fn position_from_espn_slot_standard_positions() {
+        assert_eq!(position_from_espn_slot(ESPN_SLOT_C), Some(Position::Catcher));
+        assert_eq!(position_from_espn_slot(ESPN_SLOT_1B), Some(Position::FirstBase));
+        assert_eq!(position_from_espn_slot(ESPN_SLOT_2B), Some(Position::SecondBase));
+        assert_eq!(position_from_espn_slot(ESPN_SLOT_3B), Some(Position::ThirdBase));
+        assert_eq!(position_from_espn_slot(ESPN_SLOT_SS), Some(Position::ShortStop));
+        assert_eq!(position_from_espn_slot(ESPN_SLOT_LF), Some(Position::LeftField));
+        assert_eq!(position_from_espn_slot(ESPN_SLOT_CF), Some(Position::CenterField));
+        assert_eq!(position_from_espn_slot(ESPN_SLOT_RF), Some(Position::RightField));
+        assert_eq!(position_from_espn_slot(ESPN_SLOT_DH), Some(Position::DesignatedHitter));
+        assert_eq!(position_from_espn_slot(ESPN_SLOT_UTIL), Some(Position::Utility));
+        assert_eq!(position_from_espn_slot(ESPN_SLOT_SP), Some(Position::StartingPitcher));
+        assert_eq!(position_from_espn_slot(ESPN_SLOT_RP), Some(Position::ReliefPitcher));
+        assert_eq!(position_from_espn_slot(ESPN_SLOT_BE), Some(Position::Bench));
+        assert_eq!(position_from_espn_slot(ESPN_SLOT_IL), Some(Position::InjuredList));
+    }
+
+    #[test]
+    fn position_from_espn_slot_combo_slots_return_none() {
+        assert_eq!(position_from_espn_slot(ESPN_SLOT_OF), None);
+        assert_eq!(position_from_espn_slot(ESPN_SLOT_MI), None);
+        assert_eq!(position_from_espn_slot(ESPN_SLOT_CI), None);
+        assert_eq!(position_from_espn_slot(ESPN_SLOT_P), None);
+    }
+
+    #[test]
+    fn position_from_espn_slot_unknown_returns_none() {
+        assert_eq!(position_from_espn_slot(99), None);
+        assert_eq!(position_from_espn_slot(255), None);
+    }
+
+    #[test]
+    fn espn_slot_from_position_roundtrip() {
+        let positions = [
+            Position::Catcher,
+            Position::FirstBase,
+            Position::SecondBase,
+            Position::ThirdBase,
+            Position::ShortStop,
+            Position::LeftField,
+            Position::CenterField,
+            Position::RightField,
+            Position::DesignatedHitter,
+            Position::Utility,
+            Position::StartingPitcher,
+            Position::ReliefPitcher,
+            Position::Bench,
+            Position::InjuredList,
+        ];
+        for pos in positions {
+            let slot_id = espn_slot_from_position(pos);
+            let roundtripped = position_from_espn_slot(slot_id);
+            assert_eq!(roundtripped, Some(pos), "Roundtrip failed for {:?} (slot {})", pos, slot_id);
+        }
+    }
+
+    #[test]
+    fn playing_positions_from_slots_filters_meta_slots() {
+        // Mookie Betts: SS, 2B, OF, LF, CF, RF, DH, UTIL, BE, IL
+        let slots = vec![
+            ESPN_SLOT_SS, ESPN_SLOT_2B, ESPN_SLOT_OF, ESPN_SLOT_LF,
+            ESPN_SLOT_CF, ESPN_SLOT_RF, ESPN_SLOT_DH, ESPN_SLOT_UTIL,
+            ESPN_SLOT_BE, ESPN_SLOT_IL,
+        ];
+        let positions = playing_positions_from_slots(&slots);
+        // Should include SS, 2B, LF, CF, RF, DH
+        // Should NOT include UTIL, BE, IL, or OF (combo slot -> None)
+        assert!(positions.contains(&Position::ShortStop));
+        assert!(positions.contains(&Position::SecondBase));
+        assert!(positions.contains(&Position::LeftField));
+        assert!(positions.contains(&Position::CenterField));
+        assert!(positions.contains(&Position::RightField));
+        assert!(positions.contains(&Position::DesignatedHitter));
+        assert!(!positions.contains(&Position::Utility));
+        assert!(!positions.contains(&Position::Bench));
+        assert!(!positions.contains(&Position::InjuredList));
+        assert_eq!(positions.len(), 6);
+    }
+
+    #[test]
+    fn playing_positions_from_slots_empty() {
+        let positions = playing_positions_from_slots(&[]);
+        assert!(positions.is_empty());
+    }
+
+    #[test]
+    fn playing_positions_from_slots_pitcher() {
+        let slots = vec![ESPN_SLOT_SP, ESPN_SLOT_P, ESPN_SLOT_BE, ESPN_SLOT_IL];
+        let positions = playing_positions_from_slots(&slots);
+        // Only SP should survive (P is combo, BE and IL are meta)
+        assert_eq!(positions, vec![Position::StartingPitcher]);
     }
 }

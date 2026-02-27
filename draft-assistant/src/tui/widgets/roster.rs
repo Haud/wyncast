@@ -121,6 +121,7 @@ mod tests {
                 name: "Pete Alonso".to_string(),
                 price: 28,
                 position: Position::FirstBase,
+                eligible_slots: vec![],
             }),
         };
         assert_eq!(format_slot_text(&slot), "1B: Pete Alonso ($28)");
@@ -134,6 +135,7 @@ mod tests {
                 name: "Gerrit Cole".to_string(),
                 price: 35,
                 position: Position::StartingPitcher,
+                eligible_slots: vec![],
             }),
         };
         assert_eq!(format_slot_text(&slot), "SP: Gerrit Cole ($35)");
@@ -161,6 +163,7 @@ mod tests {
                     name: "Salvador Perez".to_string(),
                     price: 12,
                     position: Position::Catcher,
+                    eligible_slots: vec![],
                 }),
             },
             RosterSlot {

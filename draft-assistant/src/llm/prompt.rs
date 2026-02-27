@@ -967,6 +967,7 @@ mod tests {
             current_bid: 1,
             current_bidder: None,
             time_remaining: Some(30),
+            eligible_slots: vec![],
         };
         let roster = Roster::new(&test_roster_config());
         let needs = CategoryNeeds::uniform(0.5);
@@ -1011,6 +1012,7 @@ mod tests {
             current_bid: 5,
             current_bidder: Some("Team 3".into()),
             time_remaining: Some(25),
+            eligible_slots: vec![],
         };
         let roster = Roster::new(&test_roster_config());
         let needs = CategoryNeeds::uniform(0.5);
@@ -1088,6 +1090,7 @@ mod tests {
             position: "SP".into(),
             price: 50,
             espn_player_id: None,
+            eligible_slots: vec![],
         });
 
         let inflation = InflationTracker::new();
@@ -1131,6 +1134,7 @@ mod tests {
             position: "1B".into(),
             price: 25,
             espn_player_id: None,
+            eligible_slots: vec![],
         });
 
         // Draft an SP (different position)
@@ -1142,6 +1146,7 @@ mod tests {
             position: "SP".into(),
             price: 40,
             espn_player_id: None,
+            eligible_slots: vec![],
         });
 
         let player = make_hitter("My 1B", 6.0, vec![Position::FirstBase], 22.0);
@@ -1167,6 +1172,7 @@ mod tests {
                 position: "1B".into(),
                 price: 20 + i,
                 espn_player_id: None,
+                eligible_slots: vec![],
             });
         }
 

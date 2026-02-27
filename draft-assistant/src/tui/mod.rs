@@ -455,6 +455,7 @@ mod tests {
             current_bid: 45,
             current_bidder: Some("Team Beta".to_string()),
             time_remaining: Some(30),
+            eligible_slots: vec![],
         };
         apply_ui_update(&mut state, UiUpdate::NominationUpdate(Box::new(nom)));
 
@@ -478,6 +479,7 @@ mod tests {
             current_bid: 10,
             current_bidder: None,
             time_remaining: None,
+            eligible_slots: vec![],
         });
         state.analysis_text = "some analysis".to_string();
 

@@ -194,6 +194,7 @@ function pageContextScript() {
           playerName: p.playerName || p.player_name || p.fullName || p.name || '',
           position: p.position || p.defaultPosition || p.pos || '',
           price: Number(p.price || p.salary || p.cost || 0),
+          eligibleSlots: Array.isArray(p.eligibleSlots) ? p.eligibleSlots.map(Number) : [],
         })).filter(p => p.playerName); // Filter out empty/invalid picks
       }
 
@@ -211,6 +212,7 @@ function pageContextScript() {
           timeRemaining: nom.timeRemaining != null ? Number(nom.timeRemaining) :
                          nom.time_remaining != null ? Number(nom.time_remaining) :
                          nom.timer != null ? Number(nom.timer) : null,
+          eligibleSlots: Array.isArray(nom.eligibleSlots) ? nom.eligibleSlots.map(Number) : [],
         };
       }
 
@@ -503,6 +505,7 @@ function scrapeDom() {
           playerName: playerName,
           position: position,
           price: parsePrice(priceStr),
+          eligibleSlots: [],
         });
       }
     });
@@ -521,6 +524,7 @@ function scrapeDom() {
           currentBid: parsePrice(extractText(nomContainer, SELECTORS.currentBid)),
           currentBidder: extractText(nomContainer, SELECTORS.currentBidder) || null,
           timeRemaining: parseTime(timeStr),
+          eligibleSlots: [],
         };
       }
     }

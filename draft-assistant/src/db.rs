@@ -123,6 +123,7 @@ impl Database {
                     position: row.get(4)?,
                     price: row.get(5)?,
                     espn_player_id: row.get(6)?,
+                    eligible_slots: vec![],
                 })
             })
             .context("failed to query draft picks")?
@@ -307,6 +308,7 @@ mod tests {
             position: "SS".to_string(),
             price: 25,
             espn_player_id: None,
+            eligible_slots: vec![],
         }
     }
 
@@ -353,6 +355,7 @@ mod tests {
             position: "OF".to_string(),
             price: 40,
             espn_player_id: Some("espn_2".to_string()),
+            eligible_slots: vec![],
         };
 
         db.record_pick(&pick1).unwrap();

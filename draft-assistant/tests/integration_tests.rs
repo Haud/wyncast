@@ -303,6 +303,7 @@ fn mock_event_to_pick(event: &MockDraftEvent) -> DraftPick {
         position: event.position.clone(),
         price: event.price,
         espn_player_id: Some(event.espn_player_id.clone()),
+        eligible_slots: vec![],
     }
 }
 
@@ -801,6 +802,7 @@ fn nomination_analysis_prompt_contains_required_sections() {
         current_bid: 5,
         current_bidder: None,
         time_remaining: Some(30),
+        eligible_slots: vec![],
     };
 
     let prompt = draft_assistant::llm::prompt::build_nomination_analysis_prompt(
@@ -1402,6 +1404,7 @@ fn inflation_increases_with_overpay() {
         position: "DH".into(),
         price: 80, // Very high overpay
         espn_player_id: Some("espn_100".into()),
+        eligible_slots: vec![],
     };
 
     state.process_new_picks(vec![pick]);
@@ -1433,6 +1436,7 @@ fn database_round_trip_with_all_fields() {
         position: "OF".into(),
         price: 55,
         espn_player_id: Some("espn_101".into()),
+        eligible_slots: vec![],
     };
 
     db.record_pick(&pick).unwrap();
@@ -1461,6 +1465,7 @@ fn database_idempotent_pick_recording() {
         position: "OF".into(),
         price: 55,
         espn_player_id: None,
+        eligible_slots: vec![],
     };
 
     // Record the same pick twice (INSERT OR IGNORE)
@@ -1599,6 +1604,7 @@ fn end_to_end_pipeline() {
             current_bid: 1,
             current_bidder: None,
             time_remaining: Some(30),
+            eligible_slots: vec![],
         };
 
         let prompt = draft_assistant::llm::prompt::build_nomination_analysis_prompt(

@@ -187,6 +187,7 @@ mod tests {
             current_bid: 45,
             current_bidder: Some("Team Beta".to_string()),
             time_remaining: Some(30),
+            eligible_slots: vec![],
         };
         let lines = build_nomination_lines(&nom, None);
         assert_eq!(lines.len(), 2);
@@ -201,6 +202,7 @@ mod tests {
             current_bid: 45,
             current_bidder: Some("Team Beta".to_string()),
             time_remaining: Some(30),
+            eligible_slots: vec![],
         };
         let analysis = InstantAnalysis {
             player_name: "Mike Trout".to_string(),
@@ -234,6 +236,7 @@ mod tests {
             current_bid: 55,
             current_bidder: None,
             time_remaining: None,
+            eligible_slots: vec![],
         });
         terminal
             .draw(|frame| render(frame, frame.area(), &state))

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::pick::Position;
+use super::pick::{Position, position_from_espn_slot};
 
 /// A player assigned to a roster slot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -12,6 +12,8 @@ pub struct RosteredPlayer {
     pub name: String,
     pub price: u32,
     pub position: Position,
+    /// ESPN eligible slot IDs. Empty if not available.
+    pub eligible_slots: Vec<u16>,
 }
 
 /// A single slot on a team's roster.
@@ -81,6 +83,7 @@ impl Roster {
             name: name.to_string(),
             price,
             position: pos,
+            eligible_slots: vec![],
         };
 
         // 1. Try dedicated position slot
@@ -141,6 +144,92 @@ impl Roster {
         }
 
         false
+    }
+
+    /// Add a player using ESPN eligible slot IDs for multi-position placement.
+    ///
+    /// Slot assignment priority:
+    /// 1. Try each eligible position slot (mapped from ESPN slot IDs, in slot order)
+    /// 2. Try UTIL slot (for hitters)
+    /// 3. Try bench slot
+    ///
+    /// Falls back to single-position `add_player()` if eligible_slots is empty.
+    pub fn add_player_with_slots(
+        &mut self,
+        name: &str,
+        position_str: &str,
+        price: u32,
+        eligible_slots: &[u16],
+    ) -> bool {
+        // Fall back to single-position logic if no slots provided
+        if eligible_slots.is_empty() {
+            return self.add_player(name, position_str, price);
+        }
+
+        let display_pos = Position::from_str_pos(position_str).unwrap_or(Position::Bench);
+        let is_hitter = display_pos.is_hitter();
+
+        let player = RosteredPlayer {
+            name: name.to_string(),
+            price,
+            position: display_pos,
+            eligible_slots: eligible_slots.to_vec(),
+        };
+
+        // 1. Try each eligible position slot (skip meta-slots like UTIL/BE/IL)
+        for &slot_id in eligible_slots {
+            if let Some(pos) = position_from_espn_slot(slot_id) {
+                // Skip meta slots - handled in steps 2 and 3
+                if matches!(pos, Position::Utility | Position::Bench | Position::InjuredList) {
+                    continue;
+                }
+                if let Some(slot) = self.slots.iter_mut().find(|s| s.position == pos && s.player.is_none()) {
+                    slot.player = Some(player);
+                    return true;
+                }
+            }
+        }
+
+        // 2. Try UTIL slot (for hitters only)
+        if is_hitter {
+            if let Some(slot) = self.slots.iter_mut().find(|s| s.position == Position::Utility && s.player.is_none()) {
+                slot.player = Some(player);
+                return true;
+            }
+        }
+
+        // 3. Try bench slot
+        if let Some(slot) = self.slots.iter_mut().find(|s| s.position == Position::Bench && s.player.is_none()) {
+            slot.player = Some(player);
+            return true;
+        }
+
+        false
+    }
+
+    /// Whether there is an empty slot for any of the given ESPN eligible slots.
+    ///
+    /// Checks eligible position slots, UTIL (if hitter), and bench.
+    pub fn has_empty_slot_for_slots(&self, eligible_slots: &[u16], is_hitter: bool) -> bool {
+        // Check each eligible position slot
+        for &slot_id in eligible_slots {
+            if let Some(pos) = position_from_espn_slot(slot_id) {
+                if matches!(pos, Position::Utility | Position::Bench | Position::InjuredList) {
+                    continue;
+                }
+                if self.has_empty_slot(pos) {
+                    return true;
+                }
+            }
+        }
+
+        // Check UTIL for hitters
+        if is_hitter && self.has_empty_slot(Position::Utility) {
+            return true;
+        }
+
+        // Check bench
+        self.has_empty_slot(Position::Bench)
     }
 
     /// Count of empty slots, excluding IL slots.
@@ -400,6 +489,92 @@ mod tests {
     fn add_player_invalid_position() {
         let mut roster = Roster::new(&test_roster_config());
         assert!(!roster.add_player("Player", "XX", 5));
+    }
+
+    // -- Multi-position (eligible_slots) tests --
+
+    #[test]
+    fn add_player_with_slots_multi_position() {
+        let mut roster = Roster::new(&test_roster_config());
+        // Mookie Betts: eligible at SS(4), 2B(2), RF(10), UTIL(12), BE(16), IL(17)
+        let slots = vec![4, 2, 10, 12, 16, 17];
+        // Fill SS slot first
+        roster.add_player("Other SS", "SS", 10);
+        // Mookie should go to 2B (next eligible position)
+        assert!(roster.add_player_with_slots("Mookie Betts", "SS", 40, &slots));
+        let slot_2b = roster.slots.iter().find(|s| s.position == Position::SecondBase).unwrap();
+        assert!(slot_2b.player.is_some());
+        assert_eq!(slot_2b.player.as_ref().unwrap().name, "Mookie Betts");
+    }
+
+    #[test]
+    fn add_player_with_slots_falls_back_to_util() {
+        let mut roster = Roster::new(&test_roster_config());
+        // Player eligible only at C(0), UTIL(12), BE(16)
+        let slots = vec![0, 12, 16, 17];
+        // Fill C slot
+        roster.add_player("Other C", "C", 10);
+        // Should go to UTIL since C is full
+        assert!(roster.add_player_with_slots("Player 2", "C", 8, &slots));
+        let util = roster.slots.iter().find(|s| s.position == Position::Utility).unwrap();
+        assert!(util.player.is_some());
+        assert_eq!(util.player.as_ref().unwrap().name, "Player 2");
+    }
+
+    #[test]
+    fn add_player_with_slots_empty_falls_back() {
+        let mut roster = Roster::new(&test_roster_config());
+        // Empty eligible_slots should use single-position fallback
+        assert!(roster.add_player_with_slots("Mike Trout", "CF", 45, &[]));
+        let cf = roster.slots.iter().find(|s| s.position == Position::CenterField).unwrap();
+        assert!(cf.player.is_some());
+        assert_eq!(cf.player.as_ref().unwrap().name, "Mike Trout");
+    }
+
+    #[test]
+    fn add_player_with_slots_pitcher_skips_util() {
+        let mut roster = Roster::new(&test_roster_config());
+        // Fill all 5 SP slots
+        for i in 0..5 {
+            roster.add_player(&format!("SP {}", i), "SP", 10);
+        }
+        // SP with eligible_slots should go to bench, not UTIL
+        let slots = vec![14, 16, 17]; // SP, BE, IL
+        assert!(roster.add_player_with_slots("Extra SP", "SP", 5, &slots));
+        let util = roster.slots.iter().find(|s| s.position == Position::Utility).unwrap();
+        assert!(util.player.is_none());
+    }
+
+    #[test]
+    fn has_empty_slot_for_slots_multi_position() {
+        let mut roster = Roster::new(&test_roster_config());
+        roster.add_player("Player", "SS", 10);
+        // SS(4) is full, but 2B(2) should still be available
+        let slots = vec![4, 2, 12, 16, 17];
+        assert!(roster.has_empty_slot_for_slots(&slots, true));
+    }
+
+    #[test]
+    fn has_empty_slot_for_slots_only_bench_left() {
+        let mut config = HashMap::new();
+        config.insert("C".to_string(), 1);
+        config.insert("BE".to_string(), 1);
+        let mut roster = Roster::new(&config);
+        roster.add_player("Player", "C", 10);
+        // C is full, no UTIL, but bench is available
+        let slots = vec![0, 16]; // C, BE
+        assert!(roster.has_empty_slot_for_slots(&slots, true));
+    }
+
+    #[test]
+    fn has_empty_slot_for_slots_all_full() {
+        let mut config = HashMap::new();
+        config.insert("C".to_string(), 1);
+        let mut roster = Roster::new(&config);
+        roster.add_player("Player", "C", 10);
+        // No UTIL, no bench
+        let slots = vec![0]; // just C
+        assert!(!roster.has_empty_slot_for_slots(&slots, true));
     }
 
     #[test]
