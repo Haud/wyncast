@@ -194,8 +194,9 @@ pub struct CredentialsConfig {
 /// `config/strategy.toml`, and (optionally) `config/credentials.toml`,
 /// all relative to the given `base_dir`.
 ///
-/// Note: call `ensure_config_files` first to copy defaults for any missing files.
-pub fn load_config_from(base_dir: &Path) -> Result<Config, ConfigError> {
+/// This is the lower-level loading primitive that does not auto-copy defaults.
+/// Prefer `load_config()` which handles default initialization automatically.
+pub(crate) fn load_config_from(base_dir: &Path) -> Result<Config, ConfigError> {
     let config_dir = base_dir.join("config");
 
     // --- league.toml (required) ---
@@ -262,6 +263,17 @@ pub fn ensure_config_files(base_dir: &Path) -> Result<Vec<PathBuf>, ConfigError>
     let config_dir = base_dir.join("config");
 
     if !defaults_dir.exists() {
+        // If config/ also doesn't exist, the app will fail to load config.
+        // Return an error with a clear message about the missing defaults directory.
+        if !config_dir.exists() {
+            return Err(ConfigError::DefaultsCopyError {
+                message: format!(
+                    "neither defaults/ nor config/ directory found in {}; \
+                     run from the project root or ensure defaults/ is present",
+                    base_dir.display()
+                ),
+            });
+        }
         return Ok(vec![]);
     }
 
@@ -281,24 +293,44 @@ pub fn ensure_config_files(base_dir: &Path) -> Result<Vec<PathBuf>, ConfigError>
         })?;
         let path = entry.path();
 
-        // Skip non-files and .example files
+        // Skip non-files and entries without a file name
         if !path.is_file() {
             continue;
         }
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name.ends_with(".example") {
-                continue;
-            }
-        }
+        let Some(file_name) = path.file_name() else {
+            continue;
+        };
 
-        let file_name = path.file_name().unwrap();
+        // Skip .example template files
+        if file_name.to_str().is_some_and(|n| n.ends_with(".example")) {
+            continue;
+        }
         let target = config_dir.join(file_name);
 
-        if !target.exists() {
-            std::fs::copy(&path, &target).map_err(|e| ConfigError::DefaultsCopyError {
-                message: format!("failed to copy {} to {}: {e}", path.display(), target.display()),
-            })?;
-            copied.push(target);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)
+        {
+            Ok(mut dest) => {
+                let content = std::fs::read(&path).map_err(|e| ConfigError::DefaultsCopyError {
+                    message: format!("failed to read {}: {e}", path.display()),
+                })?;
+                std::io::Write::write_all(&mut dest, &content).map_err(|e| {
+                    ConfigError::DefaultsCopyError {
+                        message: format!("failed to write {}: {e}", target.display()),
+                    }
+                })?;
+                copied.push(target);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // File already exists in config/, skip it
+            }
+            Err(e) => {
+                return Err(ConfigError::DefaultsCopyError {
+                    message: format!("failed to create {}: {e}", target.display()),
+                });
+            }
         }
     }
 
@@ -892,9 +924,30 @@ team_id = "team_1"
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
 
-        // No defaults/ directory
+        // Create config/ so it's not an error (just no defaults to copy)
+        fs::create_dir_all(tmp.join("config")).unwrap();
+
+        // No defaults/ directory, but config/ exists - should succeed
         let copied = ensure_config_files(&tmp).expect("should succeed");
         assert!(copied.is_empty());
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn ensure_config_files_errors_when_both_dirs_missing() {
+        let tmp = std::env::temp_dir().join("config_test_both_missing");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        // Neither defaults/ nor config/ exist
+        let err = ensure_config_files(&tmp).unwrap_err();
+        match &err {
+            ConfigError::DefaultsCopyError { message } => {
+                assert!(message.contains("neither defaults/ nor config/"));
+            }
+            other => panic!("expected DefaultsCopyError, got: {other}"),
+        }
 
         let _ = fs::remove_dir_all(&tmp);
     }
