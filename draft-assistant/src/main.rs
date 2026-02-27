@@ -12,15 +12,14 @@
 // 9. TUI placeholder (wait for Ctrl+C)
 // 10. Cleanup on exit
 
-mod app;
-mod config;
-mod db;
-mod draft;
-mod llm;
-mod protocol;
-mod tui;
-mod valuation;
-mod ws_server;
+use draft_assistant::app;
+use draft_assistant::config;
+use draft_assistant::db;
+use draft_assistant::draft;
+use draft_assistant::llm;
+use draft_assistant::tui;
+use draft_assistant::valuation;
+use draft_assistant::ws_server;
 
 use anyhow::Context;
 use tokio::sync::mpsc;

@@ -1,0 +1,126 @@
+[
+  {
+    "type": "STATE_UPDATE",
+    "timestamp": 1700000001,
+    "payload": {
+      "picks": [
+        {"pickNumber": 1, "teamId": "team_3", "teamName": "Sluggers", "playerId": "espn_100", "playerName": "Shohei Ohtani", "position": "DH", "price": 62}
+      ],
+      "currentNomination": {"playerId": "espn_101", "playerName": "Aaron Judge", "position": "OF", "nominatedBy": "Aces", "currentBid": 5, "currentBidder": null, "timeRemaining": 30},
+      "myTeamId": "team_1",
+      "source": "test"
+    }
+  },
+  {
+    "type": "STATE_UPDATE",
+    "timestamp": 1700000002,
+    "payload": {
+      "picks": [
+        {"pickNumber": 1, "teamId": "team_3", "teamName": "Sluggers", "playerId": "espn_100", "playerName": "Shohei Ohtani", "position": "DH", "price": 62},
+        {"pickNumber": 2, "teamId": "team_4", "teamName": "Aces", "playerId": "espn_101", "playerName": "Aaron Judge", "position": "OF", "price": 55}
+      ],
+      "currentNomination": {"playerId": "espn_102", "playerName": "Juan Soto", "position": "OF", "nominatedBy": "Bombers", "currentBid": 1, "currentBidder": null, "timeRemaining": 30},
+      "myTeamId": "team_1",
+      "source": "test"
+    }
+  },
+  {
+    "type": "STATE_UPDATE",
+    "timestamp": 1700000003,
+    "payload": {
+      "picks": [
+        {"pickNumber": 1, "teamId": "team_3", "teamName": "Sluggers", "playerId": "espn_100", "playerName": "Shohei Ohtani", "position": "DH", "price": 62},
+        {"pickNumber": 2, "teamId": "team_4", "teamName": "Aces", "playerId": "espn_101", "playerName": "Aaron Judge", "position": "OF", "price": 55},
+        {"pickNumber": 3, "teamId": "team_5", "teamName": "Bombers", "playerId": "espn_102", "playerName": "Juan Soto", "position": "OF", "price": 48}
+      ],
+      "currentNomination": {"playerId": "espn_103", "playerName": "Bobby Witt Jr.", "position": "SS", "nominatedBy": "Rockets", "currentBid": 1, "currentBidder": null, "timeRemaining": 30},
+      "myTeamId": "team_1",
+      "source": "test"
+    }
+  },
+  {
+    "type": "STATE_UPDATE",
+    "timestamp": 1700000004,
+    "payload": {
+      "picks": [
+        {"pickNumber": 1, "teamId": "team_3", "teamName": "Sluggers", "playerId": "espn_100", "playerName": "Shohei Ohtani", "position": "DH", "price": 62},
+        {"pickNumber": 2, "teamId": "team_4", "teamName": "Aces", "playerId": "espn_101", "playerName": "Aaron Judge", "position": "OF", "price": 55},
+        {"pickNumber": 3, "teamId": "team_5", "teamName": "Bombers", "playerId": "espn_102", "playerName": "Juan Soto", "position": "OF", "price": 48},
+        {"pickNumber": 4, "teamId": "team_6", "teamName": "Rockets", "playerId": "espn_103", "playerName": "Bobby Witt Jr.", "position": "SS", "price": 42}
+      ],
+      "currentNomination": {"playerId": "espn_104", "playerName": "Mookie Betts", "position": "SS", "nominatedBy": "Thunder", "currentBid": 1, "currentBidder": null, "timeRemaining": 30},
+      "myTeamId": "team_1",
+      "source": "test"
+    }
+  },
+  {
+    "type": "STATE_UPDATE",
+    "timestamp": 1700000005,
+    "payload": {
+      "picks": [
+        {"pickNumber": 1, "teamId": "team_3", "teamName": "Sluggers", "playerId": "espn_100", "playerName": "Shohei Ohtani", "position": "DH", "price": 62},
+        {"pickNumber": 2, "teamId": "team_4", "teamName": "Aces", "playerId": "espn_101", "playerName": "Aaron Judge", "position": "OF", "price": 55},
+        {"pickNumber": 3, "teamId": "team_5", "teamName": "Bombers", "playerId": "espn_102", "playerName": "Juan Soto", "position": "OF", "price": 48},
+        {"pickNumber": 4, "teamId": "team_6", "teamName": "Rockets", "playerId": "espn_103", "playerName": "Bobby Witt Jr.", "position": "SS", "price": 42},
+        {"pickNumber": 5, "teamId": "team_7", "teamName": "Thunder", "playerId": "espn_104", "playerName": "Mookie Betts", "position": "SS", "price": 40}
+      ],
+      "currentNomination": {"playerId": "espn_105", "playerName": "Trea Turner", "position": "SS", "nominatedBy": "Cyclones", "currentBid": 1, "currentBidder": null, "timeRemaining": 30},
+      "myTeamId": "team_1",
+      "source": "test"
+    }
+  },
+  {
+    "type": "STATE_UPDATE",
+    "timestamp": 1700000006,
+    "payload": {
+      "picks": [
+        {"pickNumber": 1, "teamId": "team_3", "teamName": "Sluggers", "playerId": "espn_100", "playerName": "Shohei Ohtani", "position": "DH", "price": 62},
+        {"pickNumber": 2, "teamId": "team_4", "teamName": "Aces", "playerId": "espn_101", "playerName": "Aaron Judge", "position": "OF", "price": 55},
+        {"pickNumber": 3, "teamId": "team_5", "teamName": "Bombers", "playerId": "espn_102", "playerName": "Juan Soto", "position": "OF", "price": 48},
+        {"pickNumber": 4, "teamId": "team_6", "teamName": "Rockets", "playerId": "espn_103", "playerName": "Bobby Witt Jr.", "position": "SS", "price": 42},
+        {"pickNumber": 5, "teamId": "team_7", "teamName": "Thunder", "playerId": "espn_104", "playerName": "Mookie Betts", "position": "SS", "price": 40},
+        {"pickNumber": 6, "teamId": "team_8", "teamName": "Cyclones", "playerId": "espn_105", "playerName": "Trea Turner", "position": "SS", "price": 38}
+      ],
+      "currentNomination": {"playerId": "espn_106", "playerName": "Freddie Freeman", "position": "1B", "nominatedBy": "Flames", "currentBid": 1, "currentBidder": null, "timeRemaining": 30},
+      "myTeamId": "team_1",
+      "source": "test"
+    }
+  },
+  {
+    "type": "STATE_UPDATE",
+    "timestamp": 1700000007,
+    "payload": {
+      "picks": [
+        {"pickNumber": 1, "teamId": "team_3", "teamName": "Sluggers", "playerId": "espn_100", "playerName": "Shohei Ohtani", "position": "DH", "price": 62},
+        {"pickNumber": 2, "teamId": "team_4", "teamName": "Aces", "playerId": "espn_101", "playerName": "Aaron Judge", "position": "OF", "price": 55},
+        {"pickNumber": 3, "teamId": "team_5", "teamName": "Bombers", "playerId": "espn_102", "playerName": "Juan Soto", "position": "OF", "price": 48},
+        {"pickNumber": 4, "teamId": "team_6", "teamName": "Rockets", "playerId": "espn_103", "playerName": "Bobby Witt Jr.", "position": "SS", "price": 42},
+        {"pickNumber": 5, "teamId": "team_7", "teamName": "Thunder", "playerId": "espn_104", "playerName": "Mookie Betts", "position": "SS", "price": 40},
+        {"pickNumber": 6, "teamId": "team_8", "teamName": "Cyclones", "playerId": "espn_105", "playerName": "Trea Turner", "position": "SS", "price": 38},
+        {"pickNumber": 7, "teamId": "team_9", "teamName": "Flames", "playerId": "espn_106", "playerName": "Freddie Freeman", "position": "1B", "price": 36}
+      ],
+      "currentNomination": {"playerId": "espn_107", "playerName": "Gerrit Cole", "position": "SP", "nominatedBy": "Vipers", "currentBid": 1, "currentBidder": null, "timeRemaining": 30},
+      "myTeamId": "team_1",
+      "source": "test"
+    }
+  },
+  {
+    "type": "STATE_UPDATE",
+    "timestamp": 1700000008,
+    "payload": {
+      "picks": [
+        {"pickNumber": 1, "teamId": "team_3", "teamName": "Sluggers", "playerId": "espn_100", "playerName": "Shohei Ohtani", "position": "DH", "price": 62},
+        {"pickNumber": 2, "teamId": "team_4", "teamName": "Aces", "playerId": "espn_101", "playerName": "Aaron Judge", "position": "OF", "price": 55},
+        {"pickNumber": 3, "teamId": "team_5", "teamName": "Bombers", "playerId": "espn_102", "playerName": "Juan Soto", "position": "OF", "price": 48},
+        {"pickNumber": 4, "teamId": "team_6", "teamName": "Rockets", "playerId": "espn_103", "playerName": "Bobby Witt Jr.", "position": "SS", "price": 42},
+        {"pickNumber": 5, "teamId": "team_7", "teamName": "Thunder", "playerId": "espn_104", "playerName": "Mookie Betts", "position": "SS", "price": 40},
+        {"pickNumber": 6, "teamId": "team_8", "teamName": "Cyclones", "playerId": "espn_105", "playerName": "Trea Turner", "position": "SS", "price": 38},
+        {"pickNumber": 7, "teamId": "team_9", "teamName": "Flames", "playerId": "espn_106", "playerName": "Freddie Freeman", "position": "1B", "price": 36},
+        {"pickNumber": 8, "teamId": "team_10", "teamName": "Vipers", "playerId": "espn_107", "playerName": "Gerrit Cole", "position": "SP", "price": 35}
+      ],
+      "currentNomination": null,
+      "myTeamId": "team_1",
+      "source": "test"
+    }
+  }
+]

@@ -68,6 +68,7 @@ fn directory_structure_exists() {
         "extension/content_scripts",
         "extension/icons",
         "tests",
+        "tests/fixtures",
     ];
     for dir in expected_dirs {
         assert!(Path::new(dir).is_dir(), "Expected directory '{}' to exist", dir);
@@ -79,6 +80,7 @@ fn directory_structure_exists() {
 fn source_files_exist() {
     let expected_files = [
         "src/main.rs",
+        "src/lib.rs",
         "src/app.rs",
         "src/config.rs",
         "src/ws_server.rs",
