@@ -205,14 +205,8 @@ pub fn espn_slot_from_position(pos: Position) -> u16 {
 pub fn playing_positions_from_slots(eligible_slots: &[u16]) -> Vec<Position> {
     eligible_slots
         .iter()
-        .filter_map(|&slot_id| {
-            let pos = position_from_espn_slot(slot_id)?;
-            // Filter out non-playing slots
-            match pos {
-                Position::Utility | Position::Bench | Position::InjuredList => None,
-                _ => Some(pos),
-            }
-        })
+        .flat_map(|&slot_id| positions_from_espn_slot(slot_id))
+        .filter(|pos| !pos.is_meta_slot())
         .collect()
 }
 
@@ -430,7 +424,7 @@ mod tests {
         ];
         let positions = playing_positions_from_slots(&slots);
         // Should include SS, 2B, LF, CF, RF, DH
-        // Should NOT include UTIL, BE, IL, or OF (combo slot -> None)
+        // OF combo slot (5) expands to LF, CF, RF — producing duplicates with the individual slots
         assert!(positions.contains(&Position::ShortStop));
         assert!(positions.contains(&Position::SecondBase));
         assert!(positions.contains(&Position::LeftField));
@@ -440,7 +434,22 @@ mod tests {
         assert!(!positions.contains(&Position::Utility));
         assert!(!positions.contains(&Position::Bench));
         assert!(!positions.contains(&Position::InjuredList));
-        assert_eq!(positions.len(), 6);
+        // SS(1) + 2B(1) + OF->LF,CF,RF(3) + LF(1) + CF(1) + RF(1) + DH(1) = 9
+        assert_eq!(positions.len(), 9);
+    }
+
+    #[test]
+    fn playing_positions_from_slots_expands_combo_slots() {
+        // Player with only OF combo slot (5) — should expand to LF, CF, RF
+        let slots = vec![ESPN_SLOT_OF, ESPN_SLOT_UTIL, ESPN_SLOT_BE, ESPN_SLOT_IL];
+        let positions = playing_positions_from_slots(&slots);
+        assert!(positions.contains(&Position::LeftField));
+        assert!(positions.contains(&Position::CenterField));
+        assert!(positions.contains(&Position::RightField));
+        assert!(!positions.contains(&Position::Utility));
+        assert!(!positions.contains(&Position::Bench));
+        assert!(!positions.contains(&Position::InjuredList));
+        assert_eq!(positions.len(), 3);
     }
 
     #[test]
@@ -453,8 +462,11 @@ mod tests {
     fn playing_positions_from_slots_pitcher() {
         let slots = vec![ESPN_SLOT_SP, ESPN_SLOT_P, ESPN_SLOT_BE, ESPN_SLOT_IL];
         let positions = playing_positions_from_slots(&slots);
-        // Only SP should survive (P is combo, BE and IL are meta)
-        assert_eq!(positions, vec![Position::StartingPitcher]);
+        // SP survives directly; P combo expands to SP+RP; BE and IL are meta (filtered out)
+        assert!(positions.contains(&Position::StartingPitcher));
+        assert!(positions.contains(&Position::ReliefPitcher));
+        // SP(1) + P->SP,RP(2) = 3
+        assert_eq!(positions.len(), 3);
     }
 
     // -- positions_from_espn_slot tests --

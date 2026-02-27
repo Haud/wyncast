@@ -68,6 +68,11 @@ impl Database {
         )
         .context("failed to create database schema")?;
 
+        // Migration: add eligible_slots column if it doesn't exist (for pre-v0.2 databases)
+        conn.execute_batch(
+            "ALTER TABLE draft_picks ADD COLUMN eligible_slots TEXT;"
+        ).ok(); // Silently ignore if column already exists (ALTER TABLE fails with "duplicate column name")
+
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -736,5 +741,153 @@ mod tests {
             )
             .unwrap();
         assert!(player_id.is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // Schema migration: eligible_slots column added to pre-existing table
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn migration_adds_eligible_slots_to_existing_table() {
+        // Simulate a pre-v0.2 database that lacks the eligible_slots column.
+        let conn = Connection::open(":memory:").unwrap();
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA busy_timeout = 5000;
+             PRAGMA foreign_keys = ON;",
+        )
+        .unwrap();
+        conn.execute_batch(
+            "CREATE TABLE players (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                name        TEXT NOT NULL,
+                team        TEXT NOT NULL,
+                positions   TEXT NOT NULL,
+                player_type TEXT NOT NULL,
+                UNIQUE(name, team)
+            );
+            CREATE TABLE projections (
+                player_id INTEGER NOT NULL REFERENCES players(id),
+                source    TEXT NOT NULL,
+                stat_name TEXT NOT NULL,
+                value     REAL NOT NULL,
+                PRIMARY KEY (player_id, source, stat_name)
+            );
+            CREATE TABLE draft_picks (
+                pick_number    INTEGER PRIMARY KEY,
+                team_id        TEXT NOT NULL,
+                team_name      TEXT NOT NULL,
+                player_name    TEXT NOT NULL,
+                position       TEXT NOT NULL,
+                price          INTEGER NOT NULL,
+                player_id      INTEGER REFERENCES players(id),
+                espn_player_id TEXT,
+                timestamp      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+            CREATE TABLE draft_state (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+
+        // Insert a legacy pick (no eligible_slots column yet)
+        conn.execute(
+            "INSERT INTO draft_picks (pick_number, team_id, team_name, player_name, position, price)
+             VALUES (1, 'team-1', 'Vorticists', 'Legacy Player', 'SS', 20)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        // Now use a temp file so Database::open can re-open the same DB.
+        // We use an in-memory approach by opening the raw connection, attaching
+        // the legacy schema, then letting Database::open do the migration.
+        // Actually, let's use a temp file for this test.
+        let tmp_dir = std::env::temp_dir();
+        let db_path = tmp_dir.join(format!("test_migration_{}.db", std::process::id()));
+        let db_path_str = db_path.to_str().unwrap();
+
+        // Create legacy database on disk
+        {
+            let conn = Connection::open(db_path_str).unwrap();
+            conn.execute_batch(
+                "PRAGMA journal_mode = WAL;
+                 PRAGMA busy_timeout = 5000;
+                 PRAGMA foreign_keys = ON;",
+            )
+            .unwrap();
+            conn.execute_batch(
+                "CREATE TABLE players (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name        TEXT NOT NULL,
+                    team        TEXT NOT NULL,
+                    positions   TEXT NOT NULL,
+                    player_type TEXT NOT NULL,
+                    UNIQUE(name, team)
+                );
+                CREATE TABLE projections (
+                    player_id INTEGER NOT NULL REFERENCES players(id),
+                    source    TEXT NOT NULL,
+                    stat_name TEXT NOT NULL,
+                    value     REAL NOT NULL,
+                    PRIMARY KEY (player_id, source, stat_name)
+                );
+                CREATE TABLE draft_picks (
+                    pick_number    INTEGER PRIMARY KEY,
+                    team_id        TEXT NOT NULL,
+                    team_name      TEXT NOT NULL,
+                    player_name    TEXT NOT NULL,
+                    position       TEXT NOT NULL,
+                    price          INTEGER NOT NULL,
+                    player_id      INTEGER REFERENCES players(id),
+                    espn_player_id TEXT,
+                    timestamp      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                );
+                CREATE TABLE draft_state (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO draft_picks (pick_number, team_id, team_name, player_name, position, price)
+                 VALUES (1, 'team-1', 'Vorticists', 'Legacy Player', 'SS', 20)",
+                [],
+            )
+            .unwrap();
+        }
+
+        // Open with Database::open — migration should add eligible_slots column
+        let db = Database::open(db_path_str).expect("migration should succeed");
+
+        // Verify legacy pick can be loaded (eligible_slots defaults to empty)
+        let picks = db.load_picks().unwrap();
+        assert_eq!(picks.len(), 1);
+        assert_eq!(picks[0].player_name, "Legacy Player");
+        assert!(picks[0].eligible_slots.is_empty());
+
+        // Verify new picks with eligible_slots can be recorded
+        let new_pick = DraftPick {
+            pick_number: 2,
+            team_id: "team-2".to_string(),
+            team_name: "Mudcats".to_string(),
+            player_name: "New Player".to_string(),
+            position: "CF".to_string(),
+            price: 35,
+            espn_player_id: Some("espn_99".to_string()),
+            eligible_slots: vec![9, 5, 12, 16, 17],
+        };
+        db.record_pick(&new_pick).unwrap();
+
+        let picks = db.load_picks().unwrap();
+        assert_eq!(picks.len(), 2);
+        assert_eq!(picks[1].player_name, "New Player");
+        assert_eq!(picks[1].eligible_slots, vec![9, 5, 12, 16, 17]);
+
+        // Clean up temp file
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path_str));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path_str));
     }
 }

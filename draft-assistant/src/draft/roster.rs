@@ -166,15 +166,16 @@ impl Roster {
             return self.add_player(name, position_str, price);
         }
 
-        let display_pos = Position::from_str_pos(position_str).unwrap_or(Position::Bench);
-        // Derive is_hitter from eligible_slots if the position string is unknown
-        let is_hitter = if display_pos == Position::Bench && Position::from_str_pos(position_str).is_none() {
-            // Unknown position string -- check if any eligible slot is a hitter position
-            eligible_slots.iter().any(|&slot_id| {
-                positions_from_espn_slot(slot_id).iter().any(|p| p.is_hitter())
-            })
-        } else {
-            display_pos.is_hitter()
+        let parsed_pos = Position::from_str_pos(position_str);
+        let display_pos = parsed_pos.unwrap_or(Position::Bench);
+        let is_hitter = match parsed_pos {
+            Some(pos) => pos.is_hitter(),
+            None => {
+                // Unknown position string — derive from eligible_slots
+                eligible_slots.iter().any(|&slot_id| {
+                    positions_from_espn_slot(slot_id).iter().any(|p| p.is_hitter())
+                })
+            }
         };
 
         let player = RosteredPlayer {
