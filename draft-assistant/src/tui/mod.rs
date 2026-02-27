@@ -15,11 +15,12 @@ use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers};
 use futures_util::StreamExt;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use tokio::sync::mpsc;
 
-use crate::draft::pick::Position;
+use crate::draft::pick::{DraftPick, Position};
+use crate::draft::roster::RosterSlot;
 use crate::protocol::{
     AppSnapshot, ConnectionStatus, InstantAnalysis, LlmStatus, NominationInfo, TabId, UiUpdate,
     UserCommand,
@@ -61,6 +62,23 @@ impl Default for BudgetStatus {
             avg_per_slot: 0.0,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// TeamSummary
+// ---------------------------------------------------------------------------
+
+/// Lightweight summary of a team's draft state for the Teams widget.
+#[derive(Debug, Clone)]
+pub struct TeamSummary {
+    /// Team display name.
+    pub name: String,
+    /// Remaining salary cap.
+    pub budget_remaining: u32,
+    /// Number of filled roster slots.
+    pub slots_filled: usize,
+    /// Total draftable roster slots.
+    pub total_slots: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -108,6 +126,12 @@ pub struct ViewState {
     pub filter_mode: bool,
     /// Position filter for the available players table.
     pub position_filter: Option<Position>,
+    /// Chronological list of completed draft picks.
+    pub draft_log: Vec<DraftPick>,
+    /// Summary of each team's draft state.
+    pub team_summaries: Vec<TeamSummary>,
+    /// User's roster slots (position + optional player).
+    pub my_roster: Vec<RosterSlot>,
 }
 
 impl Default for ViewState {
@@ -131,6 +155,9 @@ impl Default for ViewState {
             filter_text: String::new(),
             filter_mode: false,
             position_filter: None,
+            draft_log: Vec::new(),
+            team_summaries: Vec::new(),
+            my_roster: Vec::new(),
         }
     }
 }
@@ -193,132 +220,34 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
 }
 
 // ---------------------------------------------------------------------------
-// Render frame (placeholder widgets)
+// Render frame
 // ---------------------------------------------------------------------------
 
 /// Render the complete dashboard frame.
 ///
-/// Each zone gets a placeholder `Paragraph` widget. Real widget
-/// implementations will be added in Task 15.
+/// Delegates each zone to its dedicated widget module.
 fn render_frame(frame: &mut Frame, state: &ViewState) {
     let layout = build_layout(frame.area());
 
-    render_status_bar(frame, &layout, state);
-    render_nomination_banner(frame, &layout, state);
-    render_main_panel(frame, &layout, state);
-    render_roster(frame, &layout);
-    render_scarcity(frame, &layout);
-    render_budget(frame, &layout);
+    widgets::status_bar::render(frame, layout.status_bar, state);
+    widgets::nomination_banner::render(frame, layout.nomination_banner, state);
+
+    // Main panel: tab-dependent content
+    match state.active_tab {
+        TabId::Analysis => widgets::llm_analysis::render(frame, layout.main_panel, state),
+        TabId::NomPlan => widgets::nomination_plan::render(frame, layout.main_panel, state),
+        TabId::Available => widgets::available::render(frame, layout.main_panel, state),
+        TabId::DraftLog => widgets::draft_log::render(frame, layout.main_panel, state),
+        TabId::Teams => widgets::teams::render(frame, layout.main_panel, state),
+    }
+
+    // Sidebar widgets
+    widgets::roster::render(frame, layout.roster, state);
+    widgets::scarcity::render(frame, layout.scarcity, state);
+    widgets::budget::render(frame, layout.budget, state);
+
+    // Help bar
     render_help_bar(frame, &layout);
-}
-
-fn render_status_bar(frame: &mut Frame, layout: &AppLayout, state: &ViewState) {
-    let conn_str = match state.connection_status {
-        ConnectionStatus::Connected => "Connected",
-        ConnectionStatus::Disconnected => "Disconnected",
-    };
-    let text = format!(
-        " Pick {}/{} | {} | Tab: {:?}",
-        state.pick_number, state.total_picks, conn_str, state.active_tab
-    );
-    let paragraph = Paragraph::new(Line::from(vec![
-        Span::styled(text, Style::default().fg(Color::White)),
-    ]))
-    .style(Style::default().bg(Color::DarkGray));
-    frame.render_widget(paragraph, layout.status_bar);
-}
-
-fn render_nomination_banner(frame: &mut Frame, layout: &AppLayout, state: &ViewState) {
-    let content = if let Some(ref nom) = state.current_nomination {
-        let bidder = nom
-            .current_bidder
-            .as_deref()
-            .unwrap_or("--");
-        let timer = nom
-            .time_remaining
-            .map(|t| format!("{}s", t))
-            .unwrap_or_else(|| "--".to_string());
-        format!(
-            "{} ({}) | Bid: ${} by {} | Timer: {} | Nom by: {}",
-            nom.player_name, nom.position, nom.current_bid, bidder, timer, nom.nominated_by
-        )
-    } else {
-        "No active nomination".to_string()
-    };
-
-    let paragraph = Paragraph::new(content).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("Nomination"),
-    );
-    frame.render_widget(paragraph, layout.nomination_banner);
-}
-
-fn render_main_panel(frame: &mut Frame, layout: &AppLayout, state: &ViewState) {
-    let title = match state.active_tab {
-        TabId::Analysis => "Analysis",
-        TabId::NomPlan => "Nomination Plan",
-        TabId::Available => "Available Players",
-        TabId::DraftLog => "Draft Log",
-        TabId::Teams => "Teams",
-    };
-
-    let content = match state.active_tab {
-        TabId::Analysis => {
-            if state.analysis_text.is_empty() {
-                match state.analysis_status {
-                    LlmStatus::Idle => "Waiting for nomination...".to_string(),
-                    LlmStatus::Streaming => "Streaming...".to_string(),
-                    LlmStatus::Complete => "Analysis complete (empty).".to_string(),
-                    LlmStatus::Error => "Analysis error.".to_string(),
-                }
-            } else {
-                state.analysis_text.clone()
-            }
-        }
-        TabId::NomPlan => {
-            if state.plan_text.is_empty() {
-                "No nomination plan yet.".to_string()
-            } else {
-                state.plan_text.clone()
-            }
-        }
-        _ => format!("{} (placeholder)", title),
-    };
-
-    let paragraph = Paragraph::new(content).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(title),
-    );
-    frame.render_widget(paragraph, layout.main_panel);
-}
-
-fn render_roster(frame: &mut Frame, layout: &AppLayout) {
-    let paragraph = Paragraph::new("Roster (placeholder)").block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("My Roster"),
-    );
-    frame.render_widget(paragraph, layout.roster);
-}
-
-fn render_scarcity(frame: &mut Frame, layout: &AppLayout) {
-    let paragraph = Paragraph::new("Scarcity (placeholder)").block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("Scarcity"),
-    );
-    frame.render_widget(paragraph, layout.scarcity);
-}
-
-fn render_budget(frame: &mut Frame, layout: &AppLayout) {
-    let paragraph = Paragraph::new("Budget (placeholder)").block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("Budget"),
-    );
-    frame.render_widget(paragraph, layout.budget);
 }
 
 fn render_help_bar(frame: &mut Frame, layout: &AppLayout) {
@@ -460,6 +389,9 @@ mod tests {
         assert!(!state.filter_mode);
         assert!(state.filter_text.is_empty());
         assert!(state.position_filter.is_none());
+        assert!(state.draft_log.is_empty());
+        assert!(state.team_summaries.is_empty());
+        assert!(state.my_roster.is_empty());
     }
 
     #[test]
