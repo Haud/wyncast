@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
-use tracing::warn;
+use tracing::{info, warn};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -90,7 +90,7 @@ pub enum ProjectionError {
 
 /// Razzball hitter CSV row. All counting stats are f64 because Razzball uses
 /// fractional projections (e.g. 120.6 HR). Extra columns are silently ignored
-/// via `#[serde(flatten)]`.
+/// via `csv::ReaderBuilder::flexible(true)`.
 #[derive(Debug, Deserialize)]
 #[allow(dead_code, non_snake_case)]
 struct RawRazzballHitter {
@@ -107,9 +107,6 @@ struct RawRazzballHitter {
     SB: f64,
     #[serde(alias = "BA")]
     AVG: f64,
-    /// Absorb any extra columns Razzball includes.
-    #[serde(flatten)]
-    _extra: HashMap<String, serde_json::Value>,
 }
 
 /// Razzball pitcher CSV row (combined SP+RP). The POS column determines
@@ -127,15 +124,12 @@ struct RawRazzballPitcher {
     IP: f64,
     W: f64,
     SV: f64,
-    #[serde(alias = "HD")]
+    #[serde(default, alias = "HD")]
     HLD: f64,
     ERA: f64,
     WHIP: f64,
     #[serde(alias = "SO")]
     K: f64,
-    /// Absorb any extra columns Razzball includes.
-    #[serde(flatten)]
-    _extra: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -149,6 +143,11 @@ struct RawAdp {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Returns true if all given f64 values are finite and non-negative.
+fn all_valid_counts(values: &[f64]) -> bool {
+    values.iter().all(|v| v.is_finite() && *v >= 0.0)
+}
+
 /// Returns true if all given f64 values are finite (not NaN or Infinity).
 fn all_finite(values: &[f64]) -> bool {
     values.iter().all(|v| v.is_finite())
@@ -159,11 +158,15 @@ fn all_finite(values: &[f64]) -> bool {
 // ---------------------------------------------------------------------------
 
 fn load_hitters_from_reader<R: Read>(rdr: R) -> Result<Vec<HitterProjection>, csv::Error> {
-    let mut reader = csv::Reader::from_reader(rdr);
+    let mut reader = csv::ReaderBuilder::new().flexible(true).from_reader(rdr);
     let mut hitters = Vec::new();
     for result in reader.deserialize::<RawRazzballHitter>() {
         match result {
             Ok(raw) => {
+                if !all_valid_counts(&[raw.PA, raw.AB, raw.H, raw.HR, raw.R, raw.RBI, raw.BB, raw.SB]) {
+                    warn!("skipping hitter '{}': non-finite or negative counting stat", raw.Name.trim());
+                    continue;
+                }
                 if !raw.AVG.is_finite() {
                     warn!("skipping hitter '{}': non-finite AVG value", raw.Name.trim());
                     continue;
@@ -191,13 +194,17 @@ fn load_hitters_from_reader<R: Read>(rdr: R) -> Result<Vec<HitterProjection>, cs
 }
 
 fn load_pitchers_from_reader<R: Read>(rdr: R) -> Result<Vec<PitcherProjection>, csv::Error> {
-    let mut reader = csv::Reader::from_reader(rdr);
+    let mut reader = csv::ReaderBuilder::new().flexible(true).from_reader(rdr);
     let mut pitchers = Vec::new();
     for result in reader.deserialize::<RawRazzballPitcher>() {
         match result {
             Ok(raw) => {
-                if !all_finite(&[raw.IP, raw.ERA, raw.WHIP]) {
-                    warn!("skipping pitcher '{}': non-finite IP/ERA/WHIP value", raw.Name.trim());
+                if !all_valid_counts(&[raw.G, raw.GS, raw.IP, raw.K, raw.W, raw.SV, raw.HLD]) {
+                    warn!("skipping pitcher '{}': non-finite or negative counting stat", raw.Name.trim());
+                    continue;
+                }
+                if !all_finite(&[raw.ERA, raw.WHIP]) {
+                    warn!("skipping pitcher '{}': non-finite ERA/WHIP value", raw.Name.trim());
                     continue;
                 }
                 let pos_str = raw.POS.trim().to_uppercase();
@@ -303,10 +310,24 @@ pub fn load_all(config: &Config) -> Result<AllProjections, ProjectionError> {
 }
 
 /// Load all projection data from explicit paths. Exposed for testing and flexibility.
+///
+/// ADP data is optional — if the file is missing, an empty map is used and
+/// players will simply have `adp: None` in their valuations.
 pub fn load_all_from_paths(paths: &DataPaths) -> Result<AllProjections, ProjectionError> {
     let hitters = load_hitter_projections(Path::new(&paths.hitters))?;
     let pitchers = load_pitcher_projections(Path::new(&paths.pitchers))?;
-    let adp = load_adp(Path::new(&paths.adp))?;
+
+    let adp_path = Path::new(&paths.adp);
+    let adp = match load_adp(adp_path) {
+        Ok(map) => map,
+        Err(ProjectionError::Io { ref source, .. })
+            if source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            info!("ADP file not found at {:?}, ADP data will be unavailable", adp_path);
+            HashMap::new()
+        }
+        Err(e) => return Err(e),
+    };
 
     if hitters.is_empty() {
         return Err(ProjectionError::Validation(
@@ -650,6 +671,41 @@ Inf Pitcher,NYY,SP,32,32,200.0,16,0,0,inf,1.05,250";
         let pitchers = load_pitchers_from_reader(csv_data.as_bytes()).unwrap();
         assert_eq!(pitchers.len(), 1);
         assert_eq!(pitchers[0].name, "Valid Pitcher");
+    }
+
+    #[test]
+    fn hitter_negative_stat_skipped() {
+        let csv_data = "\
+Name,Team,PA,AB,H,HR,R,RBI,BB,SB,AVG
+Valid Player,NYY,600,500,150,30,90,80,70,10,0.300
+Negative HR,NYY,600,500,150,-5,90,80,70,10,0.300";
+
+        let hitters = load_hitters_from_reader(csv_data.as_bytes()).unwrap();
+        assert_eq!(hitters.len(), 1);
+        assert_eq!(hitters[0].name, "Valid Player");
+    }
+
+    #[test]
+    fn pitcher_negative_stat_skipped() {
+        let csv_data = "\
+Name,Team,POS,G,GS,IP,W,SV,HLD,ERA,WHIP,K
+Valid Pitcher,NYY,SP,32,32,200.0,16,0,0,2.80,1.05,250
+Negative K,NYY,SP,32,32,200.0,16,0,0,2.80,1.05,-10";
+
+        let pitchers = load_pitchers_from_reader(csv_data.as_bytes()).unwrap();
+        assert_eq!(pitchers.len(), 1);
+        assert_eq!(pitchers[0].name, "Valid Pitcher");
+    }
+
+    #[test]
+    fn pitcher_csv_without_hld_column_defaults_to_zero() {
+        let csv_data = "\
+Name,Team,POS,G,GS,IP,W,SV,ERA,WHIP,K
+Gerrit Cole,NYY,SP,32,32,200.0,16,0,2.80,1.05,250";
+
+        let pitchers = load_pitchers_from_reader(csv_data.as_bytes()).unwrap();
+        assert_eq!(pitchers.len(), 1);
+        assert_eq!(pitchers[0].hd, 0);
     }
 
     #[test]
