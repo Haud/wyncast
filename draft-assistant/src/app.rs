@@ -258,6 +258,8 @@ impl AppState {
     /// current state, and spawns a streaming task that sends tokens
     /// through the LLM event channel.
     pub fn trigger_nomination_analysis(&mut self, nomination: &ActiveNomination) {
+        self.cancel_llm_task();
+
         // Find the nominated player in our pool
         let player = self
             .available_players

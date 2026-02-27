@@ -149,7 +149,7 @@ pub fn build_nomination_analysis_prompt(
     prompt.push('\n');
 
     // Section 6: SIMILAR PLAYERS
-    let similar = find_similar_players(player, available_players, 3);
+    let similar = find_similar_players(player, available_players, inflation, 3);
     if !similar.is_empty() {
         prompt.push_str("## SIMILAR AVAILABLE PLAYERS\n");
         for sp in &similar {
@@ -603,6 +603,7 @@ pub fn find_market_comps(
 pub fn find_similar_players(
     player: &PlayerValuation,
     available_players: &[PlayerValuation],
+    inflation: &InflationTracker,
     count: usize,
 ) -> Vec<SimilarPlayerInfo> {
     if player.dollar_value <= 1.0 {
@@ -635,7 +636,7 @@ pub fn find_similar_players(
                 name: p.name.clone(),
                 position: positions_str,
                 dollar_value: p.dollar_value,
-                adjusted_value: p.dollar_value, // Caller can adjust if needed
+                adjusted_value: inflation.adjust(p.dollar_value),
             }
         })
         .collect();
@@ -1188,8 +1189,9 @@ mod tests {
             make_hitter("TooFar", 1.0, vec![Position::FirstBase], 5.0),
             make_hitter("WrongPos", 5.0, vec![Position::Catcher], 20.0),
         ];
+        let inflation = InflationTracker::new();
 
-        let similar = find_similar_players(&target, &available, 3);
+        let similar = find_similar_players(&target, &available, &inflation, 3);
 
         // Should find Similar1 and Similar2 but not TooFar or WrongPos
         assert_eq!(similar.len(), 2);
@@ -1202,8 +1204,9 @@ mod tests {
     fn find_similar_players_excludes_self() {
         let target = make_hitter("Target", 5.0, vec![Position::FirstBase], 20.0);
         let available = vec![target.clone()];
+        let inflation = InflationTracker::new();
 
-        let similar = find_similar_players(&target, &available, 3);
+        let similar = find_similar_players(&target, &available, &inflation, 3);
         assert!(similar.is_empty(), "should not include self");
     }
 
@@ -1217,8 +1220,9 @@ mod tests {
             make_hitter("S3", 5.0, vec![Position::FirstBase], 17.0),
             make_hitter("S4", 5.0, vec![Position::FirstBase], 16.0),
         ];
+        let inflation = InflationTracker::new();
 
-        let similar = find_similar_players(&target, &available, 2);
+        let similar = find_similar_players(&target, &available, &inflation, 2);
         assert_eq!(similar.len(), 2, "should respect count limit");
     }
 
@@ -1229,8 +1233,9 @@ mod tests {
             target.clone(),
             make_hitter("Other", 0.5, vec![Position::FirstBase], 1.0),
         ];
+        let inflation = InflationTracker::new();
 
-        let similar = find_similar_players(&target, &available, 3);
+        let similar = find_similar_players(&target, &available, &inflation, 3);
         assert!(similar.is_empty(), "should return empty for $1 player");
     }
 
