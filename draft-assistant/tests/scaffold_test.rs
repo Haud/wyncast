@@ -8,32 +8,32 @@ fn project_compiles() {
     assert!(true);
 }
 
-/// Verify that config/league.toml is valid TOML.
+/// Verify that defaults/league.toml is valid TOML.
 #[test]
 fn league_toml_is_valid() {
-    let content = std::fs::read_to_string("config/league.toml").expect("config/league.toml should exist");
+    let content = std::fs::read_to_string("defaults/league.toml").expect("defaults/league.toml should exist");
     let parsed: Result<toml::Value, _> = toml::from_str(&content);
-    assert!(parsed.is_ok(), "config/league.toml is not valid TOML: {:?}", parsed.err());
+    assert!(parsed.is_ok(), "defaults/league.toml is not valid TOML: {:?}", parsed.err());
 }
 
-/// Verify that config/strategy.toml is valid TOML.
+/// Verify that defaults/strategy.toml is valid TOML.
 #[test]
 fn strategy_toml_is_valid() {
     let content =
-        std::fs::read_to_string("config/strategy.toml").expect("config/strategy.toml should exist");
+        std::fs::read_to_string("defaults/strategy.toml").expect("defaults/strategy.toml should exist");
     let parsed: Result<toml::Value, _> = toml::from_str(&content);
-    assert!(parsed.is_ok(), "config/strategy.toml is not valid TOML: {:?}", parsed.err());
+    assert!(parsed.is_ok(), "defaults/strategy.toml is not valid TOML: {:?}", parsed.err());
 }
 
-/// Verify that config/credentials.toml.example is valid TOML.
+/// Verify that defaults/credentials.toml.example is valid TOML.
 #[test]
 fn credentials_example_is_valid_toml() {
-    let content = std::fs::read_to_string("config/credentials.toml.example")
-        .expect("config/credentials.toml.example should exist");
+    let content = std::fs::read_to_string("defaults/credentials.toml.example")
+        .expect("defaults/credentials.toml.example should exist");
     let parsed: Result<toml::Value, _> = toml::from_str(&content);
     assert!(
         parsed.is_ok(),
-        "config/credentials.toml.example is not valid TOML: {:?}",
+        "defaults/credentials.toml.example is not valid TOML: {:?}",
         parsed.err()
     );
 }
@@ -61,7 +61,7 @@ fn directory_structure_exists() {
         "src/llm",
         "src/tui",
         "src/tui/widgets",
-        "config",
+        "defaults",
         "data",
         "data/projections",
         "extension",
@@ -136,7 +136,7 @@ fn csv_files_have_headers() {
 /// Verify league.toml contains expected league settings.
 #[test]
 fn league_toml_has_correct_settings() {
-    let content = std::fs::read_to_string("config/league.toml").unwrap();
+    let content = std::fs::read_to_string("defaults/league.toml").unwrap();
     let config: toml::Value = toml::from_str(&content).unwrap();
 
     let league = config.get("league").expect("league section should exist");
@@ -177,7 +177,7 @@ fn league_toml_has_correct_settings() {
 /// Verify strategy.toml contains expected strategy settings.
 #[test]
 fn strategy_toml_has_correct_settings() {
-    let content = std::fs::read_to_string("config/strategy.toml").unwrap();
+    let content = std::fs::read_to_string("defaults/strategy.toml").unwrap();
     let config: toml::Value = toml::from_str(&content).unwrap();
 
     let budget = config.get("budget").expect("budget section should exist");
