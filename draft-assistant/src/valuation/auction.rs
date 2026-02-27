@@ -1025,6 +1025,7 @@ mod tests {
             position: "1B".into(),
             price: 50,
             espn_player_id: None,
+            eligible_slots: vec![],
         });
 
         // Available pool: remaining players with known dollar values

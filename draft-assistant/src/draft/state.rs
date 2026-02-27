@@ -39,6 +39,9 @@ pub struct ActiveNomination {
     pub current_bidder: Option<String>,
     /// Seconds remaining on the nomination timer, if known.
     pub time_remaining: Option<u32>,
+    /// ESPN eligible slot IDs for multi-position awareness.
+    #[serde(default)]
+    pub eligible_slots: Vec<u16>,
 }
 
 /// The complete state of the draft.
@@ -128,8 +131,12 @@ impl DraftState {
         if let Some(team) = self.teams.iter_mut().find(|t| t.team_id == pick.team_id) {
             team.budget_spent += pick.price;
             team.budget_remaining = team.budget_remaining.saturating_sub(pick.price);
-            team.roster
-                .add_player(&pick.player_name, &pick.position, pick.price);
+            team.roster.add_player_with_slots(
+                &pick.player_name,
+                &pick.position,
+                pick.price,
+                &pick.eligible_slots,
+            );
         }
         self.pick_count += 1;
         self.picks.push(pick);
@@ -197,6 +204,8 @@ pub struct PickPayload {
     pub player_name: String,
     pub position: String,
     pub price: u32,
+    #[serde(default)]
+    pub eligible_slots: Vec<u16>,
 }
 
 /// A nomination as received from the extension.
@@ -209,6 +218,8 @@ pub struct NominationPayload {
     pub current_bid: u32,
     pub current_bidder: Option<String>,
     pub time_remaining: Option<u32>,
+    #[serde(default)]
+    pub eligible_slots: Vec<u16>,
 }
 
 /// The result of comparing two consecutive state snapshots.
@@ -258,6 +269,7 @@ pub fn compute_state_diff(
                 position: pick_payload.position.clone(),
                 price: pick_payload.price,
                 espn_player_id: Some(pick_payload.player_id.clone()),
+                eligible_slots: pick_payload.eligible_slots.clone(),
             });
         }
     }
@@ -308,6 +320,7 @@ fn nomination_from_payload(payload: &NominationPayload) -> ActiveNomination {
         current_bid: payload.current_bid,
         current_bidder: payload.current_bidder.clone(),
         time_remaining: payload.time_remaining,
+        eligible_slots: payload.eligible_slots.clone(),
     }
 }
 
@@ -384,6 +397,7 @@ mod tests {
             position: "CF".to_string(),
             price: 45,
             espn_player_id: None,
+            eligible_slots: vec![],
         };
         state.record_pick(pick);
 
@@ -405,6 +419,7 @@ mod tests {
             position: "CF".to_string(),
             price: 45,
             espn_player_id: None,
+            eligible_slots: vec![],
         };
         state.record_pick(pick);
 
@@ -424,6 +439,7 @@ mod tests {
             position: "CF".to_string(),
             price: 45,
             espn_player_id: None,
+            eligible_slots: vec![],
         });
         state.record_pick(DraftPick {
             pick_number: 2,
@@ -433,6 +449,7 @@ mod tests {
             position: "SP".to_string(),
             price: 50,
             espn_player_id: None,
+            eligible_slots: vec![],
         });
         state.record_pick(DraftPick {
             pick_number: 3,
@@ -442,6 +459,7 @@ mod tests {
             position: "RF".to_string(),
             price: 35,
             espn_player_id: None,
+            eligible_slots: vec![],
         });
 
         assert_eq!(state.pick_count, 3);
@@ -468,6 +486,7 @@ mod tests {
             position: "SP".to_string(),
             price: 30,
             espn_player_id: None,
+            eligible_slots: vec![],
         });
         state.record_pick(DraftPick {
             pick_number: 2,
@@ -477,6 +496,7 @@ mod tests {
             position: "1B".to_string(),
             price: 25,
             espn_player_id: None,
+            eligible_slots: vec![],
         });
         assert_eq!(state.total_spent(), 55);
     }
@@ -502,6 +522,7 @@ mod tests {
                 position: "CF".to_string(),
                 price: 45,
                 espn_player_id: None,
+                eligible_slots: vec![],
             },
             DraftPick {
                 pick_number: 2,
@@ -511,6 +532,7 @@ mod tests {
                 position: "SP".to_string(),
                 price: 50,
                 espn_player_id: None,
+                eligible_slots: vec![],
             },
             DraftPick {
                 pick_number: 3,
@@ -520,6 +542,7 @@ mod tests {
                 position: "RF".to_string(),
                 price: 35,
                 espn_player_id: None,
+                eligible_slots: vec![],
             },
         ];
 
@@ -550,6 +573,7 @@ mod tests {
             position: "C".to_string(),
             price: 20,
             espn_player_id: None,
+            eligible_slots: vec![],
         });
         assert_eq!(state.pick_count, 1);
 
@@ -562,6 +586,7 @@ mod tests {
             position: "SP".to_string(),
             price: 30,
             espn_player_id: None,
+            eligible_slots: vec![],
         }];
         state.restore_from_picks(new_picks);
 
@@ -592,6 +617,7 @@ mod tests {
             player_name: player.to_string(),
             position: pos.to_string(),
             price,
+            eligible_slots: vec![],
         }
     }
 
@@ -609,6 +635,7 @@ mod tests {
             current_bid: bid,
             current_bidder: bidder.map(|s| s.to_string()),
             time_remaining: Some(30),
+            eligible_slots: vec![],
         }
     }
 

@@ -111,6 +111,7 @@ mod tests {
             position: "CF".to_string(),
             price: 45,
             espn_player_id: None,
+            eligible_slots: vec![],
         };
         assert_eq!(
             format_pick(&pick),
@@ -180,6 +181,7 @@ mod tests {
                 position: "SP".to_string(),
                 price: 30,
                 espn_player_id: None,
+                eligible_slots: vec![],
             },
             DraftPick {
                 pick_number: 2,
@@ -189,6 +191,7 @@ mod tests {
                 position: "C".to_string(),
                 price: 15,
                 espn_player_id: None,
+                eligible_slots: vec![],
             },
         ];
         terminal

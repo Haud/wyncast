@@ -284,6 +284,7 @@ impl AppState {
             current_bid: nomination.current_bid,
             current_bidder: nomination.current_bidder.clone(),
             time_remaining: nomination.time_remaining,
+            eligible_slots: nomination.eligible_slots.clone(),
         };
 
         let system = prompt::system_prompt();
@@ -374,6 +375,7 @@ impl AppState {
                     player_name: p.player_name.clone(),
                     position: p.position.clone(),
                     price: p.price,
+                    eligible_slots: p.eligible_slots.clone(),
                 })
                 .collect(),
             current_nomination: payload.current_nomination.as_ref().map(|n| {
@@ -385,6 +387,7 @@ impl AppState {
                     current_bid: n.current_bid,
                     current_bidder: n.current_bidder.clone(),
                     time_remaining: n.time_remaining,
+                    eligible_slots: n.eligible_slots.clone(),
                 }
             }),
         }
@@ -550,6 +553,7 @@ async fn handle_state_update(
                 current_bid: nomination.current_bid,
                 current_bidder: nomination.current_bidder.clone(),
                 time_remaining: nomination.time_remaining,
+                eligible_slots: nomination.eligible_slots.clone(),
             };
             let _ = ui_tx
                 .send(UiUpdate::NominationUpdate(Box::new(nom_info)))
@@ -572,6 +576,7 @@ async fn handle_state_update(
                 current_bid: nomination.current_bid,
                 current_bidder: nomination.current_bidder.clone(),
                 time_remaining: nomination.time_remaining,
+                eligible_slots: nomination.eligible_slots.clone(),
             };
             let _ = ui_tx
                 .send(UiUpdate::NominationUpdate(Box::new(nom_info)))
@@ -679,6 +684,7 @@ async fn handle_user_command(
                     position: "UTIL".to_string(),
                     price,
                     espn_player_id: None,
+                    eligible_slots: vec![],
                 };
                 state.process_new_picks(vec![pick]);
             }
@@ -1137,6 +1143,7 @@ mod tests {
             position: "1B".into(),
             price: 45,
             espn_player_id: None,
+            eligible_slots: vec![],
         };
 
         state.process_new_picks(vec![pick]);
@@ -1169,6 +1176,7 @@ mod tests {
             position: "1B".into(),
             price: 45,
             espn_player_id: None,
+            eligible_slots: vec![],
         };
 
         state.process_new_picks(vec![pick]);
@@ -1197,6 +1205,7 @@ mod tests {
             position: "1B".into(),
             price: 45,
             espn_player_id: None,
+            eligible_slots: vec![],
         };
 
         state.process_new_picks(vec![pick]);
@@ -1232,6 +1241,7 @@ mod tests {
             position: "1B".into(),
             price: 45,
             espn_player_id: Some("espn_123".into()),
+            eligible_slots: vec![],
         };
 
         state.process_new_picks(vec![pick]);
@@ -1258,6 +1268,7 @@ mod tests {
                 position: "1B".into(),
                 price: 45,
                 espn_player_id: None,
+                eligible_slots: vec![],
             },
             DraftPick {
                 pick_number: 2,
@@ -1267,6 +1278,7 @@ mod tests {
                 position: "SP".into(),
                 price: 50,
                 espn_player_id: None,
+                eligible_slots: vec![],
             },
         ];
 
@@ -1294,6 +1306,7 @@ mod tests {
             position: "2B".into(),
             price: 30,
             espn_player_id: None,
+            eligible_slots: vec![],
         };
 
         state.process_new_picks(vec![pick]);
@@ -1329,6 +1342,7 @@ mod tests {
             current_bid: 5,
             current_bidder: None,
             time_remaining: Some(30),
+            eligible_slots: vec![],
         };
 
         let _analysis = state.handle_nomination(&nomination);
@@ -1364,6 +1378,7 @@ mod tests {
             current_bid: 5,
             current_bidder: None,
             time_remaining: Some(30),
+            eligible_slots: vec![],
         };
 
         let analysis = state.handle_nomination(&nomination);
@@ -1386,6 +1401,7 @@ mod tests {
             current_bid: 1,
             current_bidder: None,
             time_remaining: Some(30),
+            eligible_slots: vec![],
         };
 
         let analysis = state.handle_nomination(&nomination);
@@ -1411,6 +1427,7 @@ mod tests {
             current_bid: 5,
             current_bidder: None,
             time_remaining: Some(30),
+            eligible_slots: vec![],
         };
         state.handle_nomination(&nom1);
         state.nomination_analysis_text = "Some previous analysis...".into();
@@ -1425,6 +1442,7 @@ mod tests {
             current_bid: 3,
             current_bidder: None,
             time_remaining: Some(30),
+            eligible_slots: vec![],
         };
         state.handle_nomination(&nom2);
 
@@ -1453,6 +1471,7 @@ mod tests {
             current_bid: 5,
             current_bidder: None,
             time_remaining: Some(30),
+            eligible_slots: vec![],
         };
         state.handle_nomination(&nom);
         state.nomination_analysis_text = "Analysis text".into();
@@ -1486,6 +1505,7 @@ mod tests {
                 position: "1B".into(),
                 price: 45,
                 espn_player_id: None,
+                eligible_slots: vec![],
             },
             DraftPick {
                 pick_number: 2,
@@ -1495,6 +1515,7 @@ mod tests {
                 position: "SP".into(),
                 price: 50,
                 espn_player_id: None,
+                eligible_slots: vec![],
             },
         ];
         for pick in &picks {
@@ -1736,6 +1757,7 @@ mod tests {
                 player_name: "Player One".into(),
                 position: "SP".into(),
                 price: 30,
+                eligible_slots: vec![14, 13, 16, 17],
             }],
             current_nomination: Some(crate::protocol::NominationData {
                 player_id: "espn_2".into(),
@@ -1745,6 +1767,7 @@ mod tests {
                 current_bid: 10,
                 current_bidder: Some("Team 3".into()),
                 time_remaining: Some(25),
+                eligible_slots: vec![1, 7, 12, 16, 17],
             }),
             my_team_id: Some("team_1".into()),
             source: Some("test".into()),

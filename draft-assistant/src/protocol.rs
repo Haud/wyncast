@@ -58,6 +58,8 @@ pub struct PickData {
     pub player_name: String,
     pub position: String,
     pub price: u32,
+    #[serde(default)]
+    pub eligible_slots: Vec<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -70,6 +72,8 @@ pub struct NominationData {
     pub current_bid: u32,
     pub current_bidder: Option<String>,
     pub time_remaining: Option<u32>,
+    #[serde(default)]
+    pub eligible_slots: Vec<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -213,6 +217,7 @@ pub struct NominationInfo {
     pub current_bid: u32,
     pub current_bidder: Option<String>,
     pub time_remaining: Option<u32>,
+    pub eligible_slots: Vec<u16>,
 }
 
 /// Instant analysis result for a nominated player.
@@ -268,6 +273,7 @@ mod tests {
                     player_name: "Shohei Ohtani".to_string(),
                     position: "DH".to_string(),
                     price: 62,
+                    eligible_slots: vec![11, 12, 16, 17],
                 }],
                 current_nomination: Some(NominationData {
                     player_id: "67890".to_string(),
@@ -277,6 +283,7 @@ mod tests {
                     current_bid: 55,
                     current_bidder: Some("Team Beta".to_string()),
                     time_remaining: Some(15),
+                    eligible_slots: vec![5, 8, 9, 10, 11, 12, 16, 17],
                 }),
                 my_team_id: Some("team_7".to_string()),
                 source: Some("dom_scraper".to_string()),
@@ -490,6 +497,7 @@ mod tests {
                     player_name: "Player".to_string(),
                     position: "C".to_string(),
                     price: 10,
+                    eligible_slots: vec![],
                 }],
                 current_nomination: None,
                 my_team_id: Some("team_5".to_string()),
@@ -505,9 +513,11 @@ mod tests {
         assert!(json.contains("playerName"));
         assert!(json.contains("currentNomination"));
         assert!(json.contains("myTeamId"));
+        assert!(json.contains("eligibleSlots"));
         // Verify snake_case keys are NOT present
         assert!(!json.contains("pick_number"));
         assert!(!json.contains("player_name"));
+        assert!(!json.contains("eligible_slots"));
     }
 
     // -- Placeholder struct defaults --
@@ -518,5 +528,67 @@ mod tests {
         assert_eq!(snap.pick_count, 0);
         assert_eq!(snap.total_picks, 0);
         assert_eq!(snap.active_tab, None);
+    }
+
+    // -- eligible_slots backward compatibility --
+
+    #[test]
+    fn eligible_slots_defaults_to_empty_when_omitted() {
+        // JSON without eligibleSlots fields should still deserialize
+        // thanks to #[serde(default)]
+        let json = r#"{
+            "type": "STATE_UPDATE",
+            "timestamp": 1700000000,
+            "payload": {
+                "picks": [
+                    {
+                        "pickNumber": 1,
+                        "teamId": "team_1",
+                        "teamName": "Team 1",
+                        "playerId": "p1",
+                        "playerName": "Player One",
+                        "position": "SP",
+                        "price": 30
+                    }
+                ],
+                "currentNomination": {
+                    "playerId": "p2",
+                    "playerName": "Player Two",
+                    "position": "1B",
+                    "nominatedBy": "Team 2",
+                    "currentBid": 5,
+                    "currentBidder": null,
+                    "timeRemaining": 30
+                },
+                "myTeamId": "team_1",
+                "source": "test"
+            }
+        }"#;
+        let msg: ExtensionMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ExtensionMessage::StateUpdate { payload, .. } => {
+                assert!(payload.picks[0].eligible_slots.is_empty());
+                let nom = payload.current_nomination.unwrap();
+                assert!(nom.eligible_slots.is_empty());
+            }
+            _ => panic!("expected StateUpdate variant"),
+        }
+    }
+
+    #[test]
+    fn eligible_slots_round_trip_with_values() {
+        let pick_data = PickData {
+            pick_number: 1,
+            team_id: "team_1".into(),
+            team_name: "Team 1".into(),
+            player_id: "p1".into(),
+            player_name: "Mookie Betts".into(),
+            position: "SS".into(),
+            price: 40,
+            eligible_slots: vec![4, 2, 5, 8, 9, 10, 11, 12, 16, 17],
+        };
+        let json = serde_json::to_string(&pick_data).unwrap();
+        let parsed: PickData = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.eligible_slots, vec![4, 2, 5, 8, 9, 10, 11, 12, 16, 17]);
     }
 }
