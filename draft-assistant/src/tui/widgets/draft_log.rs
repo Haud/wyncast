@@ -4,6 +4,8 @@
 // Each: "#{pick} {team}: {player} ({pos}) -- ${price}"
 // Color: green if price < value (bargain), red if price > value (overpay), white if close
 
+use std::collections::HashMap;
+
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
@@ -28,13 +30,16 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
         return;
     }
 
+    // Build a name->value lookup map once to avoid O(n*m) scanning
+    let value_map = build_value_map(&state.available_players);
+
     // Build list items in reverse chronological order
     let items: Vec<ListItem> = state
         .draft_log
         .iter()
         .rev()
         .map(|pick| {
-            let value = find_player_value(&state.available_players, &pick.player_name);
+            let value = value_map.get(pick.player_name.as_str()).copied();
             let color = pick_color(pick.price, value);
             let text = format_pick(pick);
             ListItem::new(Line::from(Span::styled(text, Style::default().fg(color))))
@@ -80,12 +85,12 @@ pub fn pick_color(price: u32, value: Option<f64>) -> Color {
     }
 }
 
-/// Look up a player's dollar value from the available players list.
-fn find_player_value(players: &[PlayerValuation], name: &str) -> Option<f64> {
+/// Build a HashMap of player name -> dollar value for O(1) lookups.
+fn build_value_map(players: &[PlayerValuation]) -> HashMap<&str, f64> {
     players
         .iter()
-        .find(|p| p.name == name)
-        .map(|p| p.dollar_value)
+        .map(|p| (p.name.as_str(), p.dollar_value))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

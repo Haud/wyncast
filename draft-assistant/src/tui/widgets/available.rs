@@ -69,7 +69,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
         })
         .collect();
 
-    let title = build_title(state);
+    let title = build_title(state, filtered.len());
 
     let widths = [
         ratatui::layout::Constraint::Length(4),
@@ -133,8 +133,8 @@ pub fn format_positions(positions: &[Position]) -> String {
         .join("/")
 }
 
-/// Build the title with filter info.
-fn build_title(state: &ViewState) -> Line<'static> {
+/// Build the title with filter info and pre-computed count.
+fn build_title(state: &ViewState, filtered_count: usize) -> Line<'static> {
     let mut title = String::from("Available Players");
     if let Some(ref pos) = state.position_filter {
         title.push_str(&format!(" [{}]", pos.display_str()));
@@ -142,13 +142,7 @@ fn build_title(state: &ViewState) -> Line<'static> {
     if !state.filter_text.is_empty() {
         title.push_str(&format!(" \"{}\"", state.filter_text));
     }
-    let count = filter_players(
-        &state.available_players,
-        state.position_filter.as_ref(),
-        &state.filter_text,
-    )
-    .len();
-    title.push_str(&format!(" ({})", count));
+    title.push_str(&format!(" ({})", filtered_count));
     Line::from(title)
 }
 
