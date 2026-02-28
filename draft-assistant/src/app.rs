@@ -5,8 +5,10 @@
 // the complete application state and pushes UI updates to the TUI render loop.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 use tracing::{info, warn};
 
 use crate::config::Config;
@@ -47,6 +49,18 @@ pub enum LlmMode {
 }
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// How long to wait without receiving any WebSocket message before
+/// considering the extension connection stale and transitioning to
+/// `Disconnected`.
+pub const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How often to check for heartbeat timeout in the main event loop.
+pub const HEARTBEAT_CHECK_INTERVAL: Duration = Duration::from_secs(5);
+
+// ---------------------------------------------------------------------------
 // AppState
 // ---------------------------------------------------------------------------
 
@@ -67,6 +81,10 @@ pub struct AppState {
     pub nomination_plan_text: String,
     pub nomination_plan_status: LlmStatus,
     pub connection_status: ConnectionStatus,
+    /// Timestamp of the last WebSocket message (or connection event) received.
+    /// `None` when not connected. Used to detect stale connections when the
+    /// browser tab is closed without a clean WebSocket close frame.
+    pub last_ws_message_time: Option<Instant>,
     pub active_tab: TabId,
     pub category_needs: CategoryNeeds,
     /// LLM client for streaming Claude API calls. Wrapped in Arc for
@@ -107,6 +125,7 @@ impl AppState {
             nomination_plan_text: String::new(),
             nomination_plan_status: LlmStatus::Idle,
             connection_status: ConnectionStatus::Disconnected,
+            last_ws_message_time: None,
             active_tab: TabId::Analysis,
             category_needs: CategoryNeeds::default(),
             llm_client: Arc::new(llm_client),
@@ -516,6 +535,14 @@ pub async fn run(
     // the recv future with a pending future so tokio::select! never spins on it.
     let mut llm_open = true;
 
+    // Interval timer for heartbeat timeout checks. Fires every
+    // HEARTBEAT_CHECK_INTERVAL; the handler compares Instant::now()
+    // against `state.last_ws_message_time` to detect stale connections.
+    let mut heartbeat_interval = tokio::time::interval(HEARTBEAT_CHECK_INTERVAL);
+    // The first tick completes immediately; consume it so the first
+    // real check happens after one full interval.
+    heartbeat_interval.tick().await;
+
     loop {
         tokio::select! {
             // --- WebSocket events ---
@@ -524,14 +551,39 @@ pub async fn run(
                     Some(WsEvent::Connected { addr }) => {
                         info!("Extension connected from {}", addr);
                         state.connection_status = ConnectionStatus::Connected;
+                        state.last_ws_message_time = Some(Instant::now());
                         let _ = ui_tx.send(UiUpdate::ConnectionStatus(ConnectionStatus::Connected)).await;
                     }
                     Some(WsEvent::Disconnected) => {
                         info!("Extension disconnected");
                         state.connection_status = ConnectionStatus::Disconnected;
+                        state.last_ws_message_time = None;
                         let _ = ui_tx.send(UiUpdate::ConnectionStatus(ConnectionStatus::Disconnected)).await;
                     }
                     Some(WsEvent::Message(json_str)) => {
+                        // If we had marked the connection as stale-disconnected
+                        // (heartbeat timeout) but are now receiving messages
+                        // again, restore Connected. We detect this case by
+                        // checking that `last_ws_message_time` is `Some` --
+                        // it is only `Some` if a `WsEvent::Connected` was
+                        // previously received, so a bare `Disconnected` initial
+                        // state (last_ws_message_time == None) won't trigger
+                        // this.
+                        if state.connection_status == ConnectionStatus::Disconnected
+                            && state.last_ws_message_time.is_some()
+                        {
+                            info!("Extension connection restored (received message after stale timeout)");
+                            state.connection_status = ConnectionStatus::Connected;
+                            let _ = ui_tx.send(UiUpdate::ConnectionStatus(ConnectionStatus::Connected)).await;
+                        }
+                        // Only track message timestamps when we have an active
+                        // connection (last_ws_message_time is Some from a prior
+                        // Connected event). This avoids false "reconnect" signals
+                        // when the ws_server forwards messages without a
+                        // preceding Connected event.
+                        if state.last_ws_message_time.is_some() {
+                            state.last_ws_message_time = Some(Instant::now());
+                        }
                         handle_ws_message(&mut state, &json_str, &ui_tx).await;
                     }
                     None => {
@@ -568,6 +620,25 @@ pub async fn run(
                     None => {
                         info!("Command channel closed, shutting down");
                         break;
+                    }
+                }
+            }
+
+            // --- Heartbeat timeout check ---
+            _ = heartbeat_interval.tick() => {
+                if state.connection_status == ConnectionStatus::Connected {
+                    if let Some(last_time) = state.last_ws_message_time {
+                        let elapsed = last_time.elapsed();
+                        if elapsed > HEARTBEAT_TIMEOUT {
+                            warn!(
+                                "No WebSocket message received for {:?}, marking connection as stale",
+                                elapsed
+                            );
+                            state.connection_status = ConnectionStatus::Disconnected;
+                            let _ = ui_tx
+                                .send(UiUpdate::ConnectionStatus(ConnectionStatus::Disconnected))
+                                .await;
+                        }
                     }
                 }
             }
@@ -1949,5 +2020,315 @@ mod tests {
         assert_eq!(nom.player_name, "Player Two");
         assert_eq!(nom.current_bid, 10);
         assert_eq!(nom.current_bidder, Some("Team 3".into()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: Heartbeat timeout detection
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn last_ws_message_time_starts_as_none() {
+        let state = create_test_app_state();
+        assert!(state.last_ws_message_time.is_none());
+        assert_eq!(state.connection_status, ConnectionStatus::Disconnected);
+    }
+
+    #[tokio::test]
+    async fn connected_event_sets_last_ws_message_time() {
+        let state = create_test_app_state();
+        let (ws_tx, ws_rx) = mpsc::channel(16);
+        let (_llm_tx, llm_rx) = mpsc::channel(16);
+        let (cmd_tx, cmd_rx) = mpsc::channel(16);
+        let (ui_tx, mut ui_rx) = mpsc::channel(64);
+
+        // We need to inspect state after the event loop processes the
+        // Connected event. We use a channel to coordinate: send Connected,
+        // receive the UI update, then send Quit. The state is owned by
+        // the event loop, so we verify behavior through UI updates.
+        let handle = tokio::spawn(run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+
+        ws_tx
+            .send(WsEvent::Connected { addr: "test:1234".into() })
+            .await
+            .unwrap();
+
+        // Should receive Connected status
+        let update = ui_rx.recv().await.unwrap();
+        assert!(matches!(
+            update,
+            UiUpdate::ConnectionStatus(ConnectionStatus::Connected)
+        ));
+
+        cmd_tx.send(UserCommand::Quit).await.unwrap();
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn disconnected_event_clears_last_ws_message_time() {
+        let state = create_test_app_state();
+        let (ws_tx, ws_rx) = mpsc::channel(16);
+        let (_llm_tx, llm_rx) = mpsc::channel(16);
+        let (cmd_tx, cmd_rx) = mpsc::channel(16);
+        let (ui_tx, mut ui_rx) = mpsc::channel(64);
+
+        let handle = tokio::spawn(run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+
+        // Connect first
+        ws_tx
+            .send(WsEvent::Connected { addr: "test:1234".into() })
+            .await
+            .unwrap();
+        let _ = ui_rx.recv().await.unwrap(); // Connected
+
+        // Then disconnect
+        ws_tx.send(WsEvent::Disconnected).await.unwrap();
+        let update = ui_rx.recv().await.unwrap();
+        assert!(matches!(
+            update,
+            UiUpdate::ConnectionStatus(ConnectionStatus::Disconnected)
+        ));
+
+        cmd_tx.send(UserCommand::Quit).await.unwrap();
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn heartbeat_timeout_transitions_to_disconnected() {
+        // Use tokio::time::pause() to control time in the test.
+        tokio::time::pause();
+
+        let state = create_test_app_state();
+        let (ws_tx, ws_rx) = mpsc::channel(16);
+        let (_llm_tx, llm_rx) = mpsc::channel(16);
+        let (cmd_tx, cmd_rx) = mpsc::channel(16);
+        let (ui_tx, mut ui_rx) = mpsc::channel(64);
+
+        let handle = tokio::spawn(run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+
+        // Connect
+        ws_tx
+            .send(WsEvent::Connected { addr: "test:1234".into() })
+            .await
+            .unwrap();
+        let update = ui_rx.recv().await.unwrap();
+        assert!(matches!(
+            update,
+            UiUpdate::ConnectionStatus(ConnectionStatus::Connected)
+        ));
+
+        // Advance time past the heartbeat timeout + check interval.
+        // HEARTBEAT_TIMEOUT = 15s, HEARTBEAT_CHECK_INTERVAL = 5s.
+        // The first check fires at 5s (connected at ~0s, last message at ~0s,
+        // elapsed ~5s < 15s timeout). The fourth check fires at 20s
+        // (elapsed ~20s > 15s timeout), so we should get Disconnected.
+        tokio::time::advance(Duration::from_secs(21)).await;
+
+        // Yield to let the interval tick and process.
+        tokio::task::yield_now().await;
+        // May need a few yields for the event loop to process the tick
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+
+        // We should eventually receive a Disconnected status from the
+        // heartbeat timeout check.
+        let update = tokio::time::timeout(Duration::from_secs(5), ui_rx.recv())
+            .await
+            .expect("Should receive UI update within timeout")
+            .expect("Channel should not be closed");
+        assert!(
+            matches!(update, UiUpdate::ConnectionStatus(ConnectionStatus::Disconnected)),
+            "Expected ConnectionStatus(Disconnected) from heartbeat timeout, got {:?}",
+            update
+        );
+
+        cmd_tx.send(UserCommand::Quit).await.unwrap();
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn message_resets_heartbeat_timer() {
+        // Use tokio::time::pause() to control time.
+        tokio::time::pause();
+
+        let state = create_test_app_state();
+        let (ws_tx, ws_rx) = mpsc::channel(16);
+        let (_llm_tx, llm_rx) = mpsc::channel(16);
+        let (cmd_tx, cmd_rx) = mpsc::channel(16);
+        let (ui_tx, mut ui_rx) = mpsc::channel(64);
+
+        let handle = tokio::spawn(run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+
+        // Connect
+        ws_tx
+            .send(WsEvent::Connected { addr: "test:1234".into() })
+            .await
+            .unwrap();
+        let update = ui_rx.recv().await.unwrap();
+        assert!(matches!(
+            update,
+            UiUpdate::ConnectionStatus(ConnectionStatus::Connected)
+        ));
+
+        // Advance 10 seconds (under the 15s timeout)
+        tokio::time::advance(Duration::from_secs(10)).await;
+        for _ in 0..5 {
+            tokio::task::yield_now().await;
+        }
+
+        // Send a heartbeat message to reset the timer
+        let heartbeat = r#"{"type":"EXTENSION_HEARTBEAT","payload":{"timestamp":123}}"#;
+        ws_tx
+            .send(WsEvent::Message(heartbeat.into()))
+            .await
+            .unwrap();
+
+        // Give the event loop time to process
+        for _ in 0..5 {
+            tokio::task::yield_now().await;
+        }
+
+        // Advance another 10 seconds (total 20s from start, but only 10s
+        // from last message, so still under timeout)
+        tokio::time::advance(Duration::from_secs(10)).await;
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+
+        // Should NOT have received a Disconnected status, because the
+        // heartbeat message reset the timer. Try receiving with a very
+        // short timeout -- we expect it to time out (no Disconnected event).
+        let result = tokio::time::timeout(Duration::from_millis(100), ui_rx.recv()).await;
+        assert!(
+            result.is_err(),
+            "Should NOT receive Disconnected status (heartbeat reset the timer)"
+        );
+
+        cmd_tx.send(UserCommand::Quit).await.unwrap();
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn stale_disconnect_reconnects_on_new_message() {
+        // Use tokio::time::pause() to control time.
+        tokio::time::pause();
+
+        let state = create_test_app_state();
+        let (ws_tx, ws_rx) = mpsc::channel(16);
+        let (_llm_tx, llm_rx) = mpsc::channel(16);
+        let (cmd_tx, cmd_rx) = mpsc::channel(16);
+        let (ui_tx, mut ui_rx) = mpsc::channel(64);
+
+        let handle = tokio::spawn(run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+
+        // Connect
+        ws_tx
+            .send(WsEvent::Connected { addr: "test:1234".into() })
+            .await
+            .unwrap();
+        let update = ui_rx.recv().await.unwrap();
+        assert!(matches!(
+            update,
+            UiUpdate::ConnectionStatus(ConnectionStatus::Connected)
+        ));
+
+        // Advance past the heartbeat timeout to trigger stale disconnect
+        tokio::time::advance(Duration::from_secs(21)).await;
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+
+        // Should receive Disconnected from heartbeat timeout
+        let update = tokio::time::timeout(Duration::from_secs(5), ui_rx.recv())
+            .await
+            .expect("Should receive UI update")
+            .expect("Channel should not be closed");
+        assert!(
+            matches!(update, UiUpdate::ConnectionStatus(ConnectionStatus::Disconnected)),
+            "Expected Disconnected from heartbeat timeout, got {:?}",
+            update
+        );
+
+        // Now send a new message (simulating extension coming back)
+        let heartbeat = r#"{"type":"EXTENSION_HEARTBEAT","payload":{"timestamp":456}}"#;
+        ws_tx
+            .send(WsEvent::Message(heartbeat.into()))
+            .await
+            .unwrap();
+
+        // Should receive Connected status (reconnect from stale)
+        let update = tokio::time::timeout(Duration::from_secs(5), ui_rx.recv())
+            .await
+            .expect("Should receive UI update")
+            .expect("Channel should not be closed");
+        assert!(
+            matches!(update, UiUpdate::ConnectionStatus(ConnectionStatus::Connected)),
+            "Expected ConnectionStatus(Connected) after stale reconnect, got {:?}",
+            update
+        );
+
+        cmd_tx.send(UserCommand::Quit).await.unwrap();
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn clean_disconnect_does_not_reconnect_on_message() {
+        // When the ws_server sends a proper Disconnected event (clean close),
+        // last_ws_message_time is set to None, so a subsequent Message
+        // should NOT trigger a reconnect.
+        let state = create_test_app_state();
+        let (ws_tx, ws_rx) = mpsc::channel(16);
+        let (_llm_tx, llm_rx) = mpsc::channel(16);
+        let (cmd_tx, cmd_rx) = mpsc::channel(16);
+        let (ui_tx, mut ui_rx) = mpsc::channel(64);
+
+        let handle = tokio::spawn(run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+
+        // Connect
+        ws_tx
+            .send(WsEvent::Connected { addr: "test:1234".into() })
+            .await
+            .unwrap();
+        let update = ui_rx.recv().await.unwrap();
+        assert!(matches!(
+            update,
+            UiUpdate::ConnectionStatus(ConnectionStatus::Connected)
+        ));
+
+        // Clean disconnect (from ws_server)
+        ws_tx.send(WsEvent::Disconnected).await.unwrap();
+        let update = ui_rx.recv().await.unwrap();
+        assert!(matches!(
+            update,
+            UiUpdate::ConnectionStatus(ConnectionStatus::Disconnected)
+        ));
+
+        // Send a heartbeat (this should be processed without triggering
+        // a reconnect, because last_ws_message_time was cleared to None
+        // by the Disconnected event)
+        let heartbeat = r#"{"type":"EXTENSION_HEARTBEAT","payload":{"timestamp":789}}"#;
+        ws_tx
+            .send(WsEvent::Message(heartbeat.into()))
+            .await
+            .unwrap();
+
+        // Give time for processing
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        // Should NOT receive a Connected status. Use a very short timeout
+        // to confirm nothing arrives.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            ui_rx.recv(),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "Should NOT receive ConnectionStatus(Connected) after clean disconnect"
+        );
+
+        cmd_tx.send(UserCommand::Quit).await.unwrap();
+        let _ = handle.await;
     }
 }
