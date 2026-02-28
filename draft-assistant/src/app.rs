@@ -2658,4 +2658,542 @@ mod tests {
         cmd_tx.send(UserCommand::Quit).await.unwrap();
         let _ = handle.await;
     }
+
+    // -----------------------------------------------------------------------
+    // Tests: Roster snapshot correctness (issue: same player in every slot)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_snapshot_roster_shows_only_my_team_players() {
+        let mut state = create_test_app_state();
+
+        // Record picks for different teams:
+        // Pick 1: H_Star -> Team 1 (my team)
+        // Pick 2: P_Ace -> Team 2 (other team)
+        // Pick 3: H_Good -> Team 1 (my team)
+        state.process_new_picks(vec![
+            DraftPick {
+                pick_number: 1,
+                team_id: "1".into(),
+                team_name: "Team 1".into(),
+                player_name: "H_Star".into(),
+                position: "1B".into(),
+                price: 45,
+                espn_player_id: None,
+                eligible_slots: vec![],
+            },
+            DraftPick {
+                pick_number: 2,
+                team_id: "2".into(),
+                team_name: "Team 2".into(),
+                player_name: "P_Ace".into(),
+                position: "SP".into(),
+                price: 50,
+                espn_player_id: None,
+                eligible_slots: vec![],
+            },
+            DraftPick {
+                pick_number: 3,
+                team_id: "1".into(),
+                team_name: "Team 1".into(),
+                player_name: "H_Good".into(),
+                position: "2B".into(),
+                price: 30,
+                espn_player_id: None,
+                eligible_slots: vec![],
+            },
+        ]);
+
+        let snapshot = state.build_snapshot();
+
+        // My team (Team 1) should have exactly 2 filled roster slots
+        let filled_slots: Vec<_> = snapshot
+            .my_roster
+            .iter()
+            .filter(|s| s.player.is_some())
+            .collect();
+        assert_eq!(
+            filled_slots.len(),
+            2,
+            "Expected 2 filled slots for my team, got {}. Filled: {:?}",
+            filled_slots.len(),
+            filled_slots
+                .iter()
+                .map(|s| format!(
+                    "{}: {}",
+                    s.position.display_str(),
+                    s.player.as_ref().unwrap().name
+                ))
+                .collect::<Vec<_>>()
+        );
+
+        // Verify the correct players are in the correct slots
+        let player_names: Vec<&str> = filled_slots
+            .iter()
+            .map(|s| s.player.as_ref().unwrap().name.as_str())
+            .collect();
+        assert!(
+            player_names.contains(&"H_Star"),
+            "H_Star should be in my roster"
+        );
+        assert!(
+            player_names.contains(&"H_Good"),
+            "H_Good should be in my roster"
+        );
+        assert!(
+            !player_names.contains(&"P_Ace"),
+            "P_Ace should NOT be in my roster (Team 2 player)"
+        );
+
+        // Verify each filled slot has a DIFFERENT player
+        let unique_names: std::collections::HashSet<&str> =
+            player_names.iter().copied().collect();
+        assert_eq!(
+            unique_names.len(),
+            filled_slots.len(),
+            "Each filled slot should have a unique player name"
+        );
+    }
+
+    #[test]
+    fn build_snapshot_roster_correct_position_assignment() {
+        let mut state = create_test_app_state();
+
+        // Record picks for my team with different positions
+        state.process_new_picks(vec![
+            DraftPick {
+                pick_number: 1,
+                team_id: "1".into(),
+                team_name: "Team 1".into(),
+                player_name: "H_Star".into(),
+                position: "1B".into(),
+                price: 45,
+                espn_player_id: None,
+                eligible_slots: vec![],
+            },
+            DraftPick {
+                pick_number: 2,
+                team_id: "1".into(),
+                team_name: "Team 1".into(),
+                player_name: "P_Ace".into(),
+                position: "SP".into(),
+                price: 50,
+                espn_player_id: None,
+                eligible_slots: vec![],
+            },
+        ]);
+
+        let snapshot = state.build_snapshot();
+
+        // Verify 1B slot has H_Star
+        let slot_1b = snapshot
+            .my_roster
+            .iter()
+            .find(|s| s.position == Position::FirstBase)
+            .expect("should have a 1B slot");
+        assert!(slot_1b.player.is_some(), "1B slot should be filled");
+        assert_eq!(slot_1b.player.as_ref().unwrap().name, "H_Star");
+
+        // Verify an SP slot has P_Ace
+        let sp_filled: Vec<_> = snapshot
+            .my_roster
+            .iter()
+            .filter(|s| s.position == Position::StartingPitcher && s.player.is_some())
+            .collect();
+        assert_eq!(sp_filled.len(), 1, "Should have exactly 1 filled SP slot");
+        assert_eq!(sp_filled[0].player.as_ref().unwrap().name, "P_Ace");
+
+        // Verify other slots are empty
+        let other_filled: Vec<_> = snapshot
+            .my_roster
+            .iter()
+            .filter(|s| {
+                s.player.is_some()
+                    && s.position != Position::FirstBase
+                    && s.position != Position::StartingPitcher
+            })
+            .collect();
+        assert!(
+            other_filled.is_empty(),
+            "No other slots should be filled, but found: {:?}",
+            other_filled
+                .iter()
+                .map(|s| format!(
+                    "{}: {}",
+                    s.position.display_str(),
+                    s.player.as_ref().unwrap().name
+                ))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Simulate the exact first-STATE_UPDATE scenario:
+    /// - Teams not registered yet
+    /// - Picks arrive before reconcile_budgets
+    /// - Then reconcile_budgets registers teams and replays pending picks
+    /// - Then set_my_team_by_name
+    /// - Then build_snapshot
+    #[test]
+    fn first_state_update_roster_correctness() {
+        let config = test_config();
+        let draft_state = DraftState::new(260, &test_roster_config());
+        // Note: NOT calling reconcile_budgets yet (simulates first update)
+        assert!(draft_state.teams.is_empty());
+
+        let mut available = test_players();
+        crate::valuation::recalculate_all(
+            &mut available,
+            &config.league,
+            &config.strategy,
+            &draft_state,
+        );
+        let db = Database::open(":memory:").expect("in-memory db");
+        let llm_client = LlmClient::Disabled;
+        let (llm_tx, _llm_rx) = mpsc::channel(16);
+
+        let mut state = AppState::new(
+            config,
+            draft_state,
+            available,
+            empty_projections(),
+            db,
+            llm_client,
+            llm_tx,
+        );
+
+        // Step 1: process_new_picks while teams are empty
+        // (simulates what happens in handle_state_update before reconcile_budgets)
+        state.process_new_picks(vec![
+            DraftPick {
+                pick_number: 1,
+                team_id: "Team Alpha".into(), // DOM scraping uses name as ID
+                team_name: "Team Alpha".into(),
+                player_name: "H_Star".into(),
+                position: "1B".into(),
+                price: 45,
+                espn_player_id: None,
+                eligible_slots: vec![],
+            },
+            DraftPick {
+                pick_number: 2,
+                team_id: "Team Beta".into(),
+                team_name: "Team Beta".into(),
+                player_name: "P_Ace".into(),
+                position: "SP".into(),
+                price: 50,
+                espn_player_id: None,
+                eligible_slots: vec![],
+            },
+        ]);
+
+        // Teams are still empty after process_new_picks
+        assert!(state.draft_state.teams.is_empty());
+        // But picks are stored
+        assert_eq!(state.draft_state.picks.len(), 2);
+
+        // Step 2: reconcile_budgets registers teams (first call)
+        // This also calls replay_pending_picks
+        let budgets = vec![
+            crate::draft::state::TeamBudgetPayload {
+                team_id: "1".into(),
+                team_name: "Team Alpha".into(),
+                budget: 215, // 260 - 45
+            },
+            crate::draft::state::TeamBudgetPayload {
+                team_id: "2".into(),
+                team_name: "Team Beta".into(),
+                budget: 210, // 260 - 50
+            },
+        ];
+        let teams_registered = state.draft_state.reconcile_budgets(&budgets);
+        assert!(teams_registered);
+
+        // Step 3: set my team
+        state.draft_state.set_my_team_by_name("Team Alpha");
+
+        // Step 4: build snapshot
+        let snapshot = state.build_snapshot();
+
+        // My team (Team Alpha) should have exactly 1 player (H_Star at 1B)
+        let filled: Vec<_> = snapshot
+            .my_roster
+            .iter()
+            .filter(|s| s.player.is_some())
+            .collect();
+        assert_eq!(
+            filled.len(),
+            1,
+            "Expected 1 filled slot for Team Alpha, got {}. Filled: {:?}",
+            filled.len(),
+            filled
+                .iter()
+                .map(|s| format!(
+                    "{}: {}",
+                    s.position.display_str(),
+                    s.player.as_ref().unwrap().name
+                ))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(filled[0].player.as_ref().unwrap().name, "H_Star");
+
+        // Team Beta should have P_Ace, not on my roster
+        let team_beta = state.draft_state.team("2").unwrap();
+        assert_eq!(team_beta.roster.filled_count(), 1);
+    }
+
+    /// Simulate multiple consecutive state updates (as happens in normal operation).
+    /// Each update sends the full pick list; only truly new picks should be processed.
+    #[test]
+    fn consecutive_state_updates_no_duplicate_roster_entries() {
+        let mut state = create_test_app_state();
+
+        // Build internal payloads as they would come from the extension
+        use crate::draft::state::{
+            compute_state_diff, PickPayload, StateUpdatePayload as InternalStatePayload,
+        };
+
+        // First update: 1 pick
+        let payload1 = InternalStatePayload {
+            picks: vec![PickPayload {
+                pick_number: 1,
+                team_id: "1".into(),
+                team_name: "Team 1".into(),
+                player_id: "p1".into(),
+                player_name: "H_Star".into(),
+                position: "1B".into(),
+                price: 45,
+                eligible_slots: vec![],
+            }],
+            current_nomination: None,
+            teams: vec![],
+            pick_count: Some(1),
+            total_picks: Some(260),
+        };
+
+        let diff1 = compute_state_diff(&None, &payload1);
+        assert_eq!(diff1.new_picks.len(), 1);
+        state.process_new_picks(diff1.new_picks);
+
+        let snapshot1 = state.build_snapshot();
+        let filled1: Vec<_> = snapshot1
+            .my_roster
+            .iter()
+            .filter(|s| s.player.is_some())
+            .collect();
+        assert_eq!(filled1.len(), 1, "After 1st update: 1 filled slot");
+        assert_eq!(filled1[0].player.as_ref().unwrap().name, "H_Star");
+
+        // Second update: same 1 pick (no changes)
+        let diff2 = compute_state_diff(&Some(payload1.clone()), &payload1);
+        assert!(diff2.new_picks.is_empty(), "No new picks on duplicate update");
+
+        // Third update: 2 picks (one new)
+        let payload3 = InternalStatePayload {
+            picks: vec![
+                PickPayload {
+                    pick_number: 1,
+                    team_id: "1".into(),
+                    team_name: "Team 1".into(),
+                    player_id: "p1".into(),
+                    player_name: "H_Star".into(),
+                    position: "1B".into(),
+                    price: 45,
+                    eligible_slots: vec![],
+                },
+                PickPayload {
+                    pick_number: 2,
+                    team_id: "2".into(),
+                    team_name: "Team 2".into(),
+                    player_id: "p2".into(),
+                    player_name: "P_Ace".into(),
+                    position: "SP".into(),
+                    price: 50,
+                    eligible_slots: vec![],
+                },
+            ],
+            current_nomination: None,
+            teams: vec![],
+            pick_count: Some(2),
+            total_picks: Some(260),
+        };
+
+        let diff3 = compute_state_diff(&Some(payload1.clone()), &payload3);
+        assert_eq!(diff3.new_picks.len(), 1, "Only 1 new pick on 3rd update");
+        assert_eq!(diff3.new_picks[0].player_name, "P_Ace");
+        state.process_new_picks(diff3.new_picks);
+
+        let snapshot3 = state.build_snapshot();
+        let filled3: Vec<_> = snapshot3
+            .my_roster
+            .iter()
+            .filter(|s| s.player.is_some())
+            .collect();
+        // Team 1 has H_Star; P_Ace went to Team 2
+        assert_eq!(filled3.len(), 1, "After 3rd update: still 1 filled slot for my team");
+        assert_eq!(filled3[0].player.as_ref().unwrap().name, "H_Star");
+
+        // Fourth update: 3 picks (one more for my team)
+        let payload4 = InternalStatePayload {
+            picks: vec![
+                PickPayload {
+                    pick_number: 1,
+                    team_id: "1".into(),
+                    team_name: "Team 1".into(),
+                    player_id: "p1".into(),
+                    player_name: "H_Star".into(),
+                    position: "1B".into(),
+                    price: 45,
+                    eligible_slots: vec![],
+                },
+                PickPayload {
+                    pick_number: 2,
+                    team_id: "2".into(),
+                    team_name: "Team 2".into(),
+                    player_id: "p2".into(),
+                    player_name: "P_Ace".into(),
+                    position: "SP".into(),
+                    price: 50,
+                    eligible_slots: vec![],
+                },
+                PickPayload {
+                    pick_number: 3,
+                    team_id: "1".into(),
+                    team_name: "Team 1".into(),
+                    player_id: "p3".into(),
+                    player_name: "H_Good".into(),
+                    position: "2B".into(),
+                    price: 30,
+                    eligible_slots: vec![],
+                },
+            ],
+            current_nomination: None,
+            teams: vec![],
+            pick_count: Some(3),
+            total_picks: Some(260),
+        };
+
+        let diff4 = compute_state_diff(&Some(payload3), &payload4);
+        assert_eq!(diff4.new_picks.len(), 1, "Only 1 new pick on 4th update");
+        assert_eq!(diff4.new_picks[0].player_name, "H_Good");
+        state.process_new_picks(diff4.new_picks);
+
+        let snapshot4 = state.build_snapshot();
+        let filled4: Vec<_> = snapshot4
+            .my_roster
+            .iter()
+            .filter(|s| s.player.is_some())
+            .collect();
+        assert_eq!(filled4.len(), 2, "After 4th update: 2 filled slots for my team");
+
+        // Each filled slot should have a DIFFERENT player
+        let names: Vec<&str> = filled4
+            .iter()
+            .map(|s| s.player.as_ref().unwrap().name.as_str())
+            .collect();
+        let unique: std::collections::HashSet<&str> = names.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            2,
+            "Both slots should have different players, got: {:?}",
+            names
+        );
+        assert!(names.contains(&"H_Star"));
+        assert!(names.contains(&"H_Good"));
+    }
+
+    /// Test what happens when pick team_id doesn't match registered team_id
+    /// (as happens with DOM scraping where teamId = team name, not numeric ID).
+    /// The team_name fallback should correctly route picks.
+    #[test]
+    fn picks_with_name_as_team_id_route_correctly() {
+        let mut state = create_test_app_state();
+
+        // Simulate DOM scraping where teamId = teamName (not numeric)
+        state.process_new_picks(vec![
+            DraftPick {
+                pick_number: 1,
+                team_id: "Team 1".into(), // name as ID (DOM scraping style)
+                team_name: "Team 1".into(),
+                player_name: "H_Star".into(),
+                position: "1B".into(),
+                price: 45,
+                espn_player_id: None,
+                eligible_slots: vec![],
+            },
+            DraftPick {
+                pick_number: 2,
+                team_id: "Team 2".into(), // name as ID
+                team_name: "Team 2".into(),
+                player_name: "P_Ace".into(),
+                position: "SP".into(),
+                price: 50,
+                espn_player_id: None,
+                eligible_slots: vec![],
+            },
+        ]);
+
+        // Team 1 (my team) should have H_Star
+        let my_team = state.draft_state.my_team().unwrap();
+        assert_eq!(
+            my_team.roster.filled_count(),
+            1,
+            "Team 1 should have 1 player"
+        );
+        let filled: Vec<_> = my_team
+            .roster
+            .slots
+            .iter()
+            .filter(|s| s.player.is_some())
+            .collect();
+        assert_eq!(filled[0].player.as_ref().unwrap().name, "H_Star");
+
+        // Team 2 should have P_Ace
+        let team2 = state.draft_state.team("2").unwrap();
+        assert_eq!(
+            team2.roster.filled_count(),
+            1,
+            "Team 2 should have 1 player"
+        );
+    }
+
+    /// Test what happens when team_name in pick doesn't match any registered team.
+    /// The pick should be stored but NOT assigned to any team roster.
+    #[test]
+    fn unmatched_team_pick_not_assigned_to_any_roster() {
+        let mut state = create_test_app_state();
+
+        state.process_new_picks(vec![DraftPick {
+            pick_number: 1,
+            team_id: "Nonexistent Team".into(),
+            team_name: "Nonexistent Team".into(),
+            player_name: "H_Star".into(),
+            position: "1B".into(),
+            price: 45,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        }]);
+
+        // Pick should be recorded
+        assert_eq!(state.draft_state.pick_count, 1);
+        assert_eq!(state.draft_state.picks.len(), 1);
+
+        // But no team should have any filled roster slots
+        for team in &state.draft_state.teams {
+            assert_eq!(
+                team.roster.filled_count(),
+                0,
+                "Team {} should have 0 players when pick team doesn't match",
+                team.team_name
+            );
+        }
+
+        // My roster should be empty
+        let snapshot = state.build_snapshot();
+        let filled: Vec<_> = snapshot
+            .my_roster
+            .iter()
+            .filter(|s| s.player.is_some())
+            .collect();
+        assert!(filled.is_empty(), "My roster should be empty");
+    }
 }

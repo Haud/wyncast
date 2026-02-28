@@ -261,6 +261,13 @@ impl Roster {
         budget_remaining.saturating_sub(reserved)
     }
 
+    /// Whether a player with the given name is already on this roster.
+    pub fn has_player(&self, name: &str) -> bool {
+        self.slots
+            .iter()
+            .any(|s| s.player.as_ref().map_or(false, |p| p.name == name))
+    }
+
     /// Number of filled (non-empty) slots.
     pub fn filled_count(&self) -> usize {
         self.slots.iter().filter(|s| s.player.is_some()).count()
@@ -443,6 +450,30 @@ mod tests {
 
         roster.add_player("Test", "C", 5);
         assert!(!roster.has_empty_slot(Position::Catcher));
+    }
+
+    #[test]
+    fn has_player_empty_roster() {
+        let roster = Roster::new(&test_roster_config());
+        assert!(!roster.has_player("Mike Trout"));
+    }
+
+    #[test]
+    fn has_player_after_add() {
+        let mut roster = Roster::new(&test_roster_config());
+        roster.add_player("Mike Trout", "CF", 45);
+        assert!(roster.has_player("Mike Trout"));
+        assert!(!roster.has_player("Shohei Ohtani"));
+    }
+
+    #[test]
+    fn has_player_multiple_players() {
+        let mut roster = Roster::new(&test_roster_config());
+        roster.add_player("Mike Trout", "CF", 45);
+        roster.add_player("Mookie Betts", "RF", 35);
+        assert!(roster.has_player("Mike Trout"));
+        assert!(roster.has_player("Mookie Betts"));
+        assert!(!roster.has_player("Aaron Judge"));
     }
 
     #[test]

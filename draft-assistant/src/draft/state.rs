@@ -115,7 +115,18 @@ impl DraftState {
     ///
     /// Updates the winning team's budget and roster, increments the pick count,
     /// and appends the pick to the history.
+    ///
+    /// Deduplication: if a pick with the same `pick_number` has already been
+    /// recorded, the call is a no-op. This guards against unstable pick numbers
+    /// from the ESPN DOM scraper (virtualized pick list) and crash-recovery
+    /// replays that could otherwise cause the same player to appear in multiple
+    /// roster slots.
     pub fn record_pick(&mut self, pick: DraftPick) {
+        // Skip if this pick_number was already recorded (deduplication).
+        if self.picks.iter().any(|p| p.pick_number == pick.pick_number) {
+            return;
+        }
+
         // Look up team by team_id first; fall back to team_name when the ID
         // is empty or doesn't match (DOM scraping uses team names as IDs).
         let team_idx = self
@@ -129,14 +140,20 @@ impl DraftState {
             });
 
         if let Some(team) = team_idx.map(|i| &mut self.teams[i]) {
-            team.budget_spent += pick.price;
-            team.budget_remaining = team.budget_remaining.saturating_sub(pick.price);
-            team.roster.add_player_with_slots(
-                &pick.player_name,
-                &pick.position,
-                pick.price,
-                &pick.eligible_slots,
-            );
+            // Only update budget and roster if this player isn't already on
+            // the team's roster. This guards against the same physical pick
+            // being re-processed with a different pick_number (e.g. when
+            // ESPN's virtualized pick list causes renumbering).
+            if !team.roster.has_player(&pick.player_name) {
+                team.budget_spent += pick.price;
+                team.budget_remaining = team.budget_remaining.saturating_sub(pick.price);
+                team.roster.add_player_with_slots(
+                    &pick.player_name,
+                    &pick.position,
+                    pick.price,
+                    &pick.eligible_slots,
+                );
+            }
         }
         self.pick_count += 1;
         self.picks.push(pick);
@@ -1071,5 +1088,259 @@ mod tests {
         assert_eq!(diff.new_picks.len(), 1);
         assert_eq!(diff.new_picks[0].pick_number, 3);
         assert_eq!(diff.new_picks[0].player_name, "Player C");
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: record_pick deduplication
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn record_pick_dedup_by_pick_number() {
+        let mut state = create_test_state();
+
+        let pick = DraftPick {
+            pick_number: 1,
+            team_id: "1".to_string(),
+            team_name: "Team 1".to_string(),
+            player_name: "Mike Trout".to_string(),
+            position: "CF".to_string(),
+            price: 45,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        };
+
+        state.record_pick(pick.clone());
+        assert_eq!(state.pick_count, 1);
+        assert_eq!(state.picks.len(), 1);
+
+        let team = state.team("1").unwrap();
+        assert_eq!(team.roster.filled_count(), 1);
+        assert_eq!(team.budget_spent, 45);
+
+        // Record same pick_number again — should be a no-op
+        state.record_pick(pick);
+        assert_eq!(state.pick_count, 1, "pick_count should not increase on dup");
+        assert_eq!(state.picks.len(), 1, "picks vec should not grow on dup");
+
+        let team = state.team("1").unwrap();
+        assert_eq!(
+            team.roster.filled_count(),
+            1,
+            "roster should still have 1 player after dup"
+        );
+        assert_eq!(
+            team.budget_spent, 45,
+            "budget_spent should not change on dup"
+        );
+    }
+
+    #[test]
+    fn record_pick_dedup_by_player_name_on_roster() {
+        let mut state = create_test_state();
+
+        // Record pick #1 for Mike Trout on Team 1
+        state.record_pick(DraftPick {
+            pick_number: 1,
+            team_id: "1".to_string(),
+            team_name: "Team 1".to_string(),
+            player_name: "Mike Trout".to_string(),
+            position: "CF".to_string(),
+            price: 45,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        });
+
+        let team = state.team("1").unwrap();
+        assert_eq!(team.roster.filled_count(), 1);
+
+        // Record same player with DIFFERENT pick_number (simulates ESPN renumbering).
+        // The player is already on Team 1's roster, so the roster and budget
+        // should NOT be updated, but the pick is still stored in the picks list.
+        state.record_pick(DraftPick {
+            pick_number: 101, // Different number (renumbered)
+            team_id: "1".to_string(),
+            team_name: "Team 1".to_string(),
+            player_name: "Mike Trout".to_string(),
+            position: "CF".to_string(),
+            price: 45,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        });
+
+        assert_eq!(
+            state.pick_count, 2,
+            "pick_count should increase (different pick_number)"
+        );
+        assert_eq!(
+            state.picks.len(),
+            2,
+            "picks vec should grow (different pick_number)"
+        );
+
+        let team = state.team("1").unwrap();
+        assert_eq!(
+            team.roster.filled_count(),
+            1,
+            "roster should still have 1 player (player already on roster)"
+        );
+        assert_eq!(
+            team.budget_spent, 45,
+            "budget_spent should not double (player already on roster)"
+        );
+    }
+
+    #[test]
+    fn record_pick_different_players_same_team_not_deduped() {
+        let mut state = create_test_state();
+
+        state.record_pick(DraftPick {
+            pick_number: 1,
+            team_id: "1".to_string(),
+            team_name: "Team 1".to_string(),
+            player_name: "Mike Trout".to_string(),
+            position: "CF".to_string(),
+            price: 45,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        });
+        state.record_pick(DraftPick {
+            pick_number: 2,
+            team_id: "1".to_string(),
+            team_name: "Team 1".to_string(),
+            player_name: "Mookie Betts".to_string(),
+            position: "RF".to_string(),
+            price: 35,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        });
+
+        assert_eq!(state.pick_count, 2);
+        assert_eq!(state.picks.len(), 2);
+
+        let team = state.team("1").unwrap();
+        assert_eq!(team.roster.filled_count(), 2);
+        assert_eq!(team.budget_spent, 80);
+
+        // Verify each player is in the correct slot
+        let cf = team
+            .roster
+            .slots
+            .iter()
+            .find(|s| s.position == crate::draft::pick::Position::CenterField)
+            .unwrap();
+        assert_eq!(cf.player.as_ref().unwrap().name, "Mike Trout");
+
+        let rf = team
+            .roster
+            .slots
+            .iter()
+            .find(|s| s.position == crate::draft::pick::Position::RightField)
+            .unwrap();
+        assert_eq!(rf.player.as_ref().unwrap().name, "Mookie Betts");
+    }
+
+    #[test]
+    fn crash_recovery_plus_first_update_no_duplicate_roster_entries() {
+        let roster_config = test_roster_config();
+        let mut state = DraftState::new(260, &roster_config);
+
+        // Simulate crash recovery: store picks before teams are registered
+        let recovery_picks = vec![
+            DraftPick {
+                pick_number: 1,
+                team_id: "Team Alpha".to_string(),
+                team_name: "Team Alpha".to_string(),
+                player_name: "Shohei Ohtani".to_string(),
+                position: "DH".to_string(),
+                price: 62,
+                espn_player_id: None,
+                eligible_slots: vec![],
+            },
+            DraftPick {
+                pick_number: 2,
+                team_id: "Team Beta".to_string(),
+                team_name: "Team Beta".to_string(),
+                player_name: "Aaron Judge".to_string(),
+                position: "CF".to_string(),
+                price: 55,
+                espn_player_id: None,
+                eligible_slots: vec![],
+            },
+        ];
+        state.restore_from_picks(recovery_picks);
+
+        // Now simulate first extension STATE_UPDATE arriving with the same picks
+        // (this is what happens after crash recovery when the extension reconnects).
+        // process_new_picks would call record_pick for each.
+        state.record_pick(DraftPick {
+            pick_number: 1,
+            team_id: "Team Alpha".to_string(),
+            team_name: "Team Alpha".to_string(),
+            player_name: "Shohei Ohtani".to_string(),
+            position: "DH".to_string(),
+            price: 62,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        });
+        state.record_pick(DraftPick {
+            pick_number: 2,
+            team_id: "Team Beta".to_string(),
+            team_name: "Team Beta".to_string(),
+            player_name: "Aaron Judge".to_string(),
+            position: "CF".to_string(),
+            price: 55,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        });
+        // Also a new pick
+        state.record_pick(DraftPick {
+            pick_number: 3,
+            team_id: "Team Alpha".to_string(),
+            team_name: "Team Alpha".to_string(),
+            player_name: "Mookie Betts".to_string(),
+            position: "SS".to_string(),
+            price: 40,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        });
+
+        // Picks 1 and 2 should be deduped (already in self.picks from recovery)
+        // Only pick 3 should be truly new
+        assert_eq!(state.picks.len(), 3, "Should have 3 unique picks");
+        assert_eq!(state.pick_count, 3);
+
+        // Now register teams and replay
+        let budgets = vec![
+            TeamBudgetPayload {
+                team_id: "1".to_string(),
+                team_name: "Team Alpha".to_string(),
+                budget: 158, // 260 - 62 - 40
+            },
+            TeamBudgetPayload {
+                team_id: "2".to_string(),
+                team_name: "Team Beta".to_string(),
+                budget: 205, // 260 - 55
+            },
+        ];
+        state.reconcile_budgets(&budgets);
+        state.set_my_team_by_name("Team Alpha");
+
+        // Team Alpha should have exactly 2 players (Ohtani + Betts), not duplicates
+        let my_team = state.my_team().unwrap();
+        assert_eq!(
+            my_team.roster.filled_count(),
+            2,
+            "Team Alpha should have exactly 2 players, not duplicates"
+        );
+
+        // Verify the correct players
+        assert!(my_team.roster.has_player("Shohei Ohtani"));
+        assert!(my_team.roster.has_player("Mookie Betts"));
+        assert!(!my_team.roster.has_player("Aaron Judge"));
+
+        // Team Beta should have exactly 1 player (Judge)
+        let team_beta = state.team("2").unwrap();
+        assert_eq!(team_beta.roster.filled_count(), 1);
+        assert!(team_beta.roster.has_player("Aaron Judge"));
     }
 }
