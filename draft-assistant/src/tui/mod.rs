@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use crossterm::event::{Event, EventStream};
 use futures_util::StreamExt;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -255,12 +255,10 @@ fn render_help_bar(frame: &mut Frame, layout: &AppLayout) {
     let paragraph = Paragraph::new(Line::from(vec![
         Span::styled(
             text,
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::DIM),
+            Style::default().fg(Color::Gray),
         ),
     ]))
-    .style(Style::default().bg(Color::DarkGray));
+    .style(Style::default().bg(Color::Black));
     frame.render_widget(paragraph, layout.help_bar);
 }
 
