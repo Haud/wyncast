@@ -1,51 +1,59 @@
 // ESPN Draft Page Content Script
-// Injects a page-context script for React state extraction, falls back to DOM scraping.
+// Scrapes draft state from ESPN's DOM and relays it to the background script.
 // Communicates with the background script via browser.runtime.sendMessage.
 
 'use strict';
 
 // ---------------------------------------------------------------------------
-// Configurable ESPN selectors and constants
-// All ESPN-specific selectors should be updated after inspecting the live draft page.
+// ESPN DOM selectors (verified against live ESPN auction draft page)
 // ---------------------------------------------------------------------------
 
-// VERIFY: inspect live ESPN draft page — these are best-guess selectors
 const SELECTORS = {
-  // Draft container candidates (tried in order)
-  draftContainers: [
-    '[class*="Draft"]',           // VERIFY: inspect live ESPN draft page
-    '#draft-app',                 // VERIFY: inspect live ESPN draft page
-    '.draft-board',               // VERIFY: inspect live ESPN draft page
-    '[class*="draft"]',           // VERIFY: inspect live ESPN draft page
-    '.draftBoard',                // VERIFY: inspect live ESPN draft page
-    '#espn-draft',                // VERIFY: inspect live ESPN draft page
-  ],
+  // Top-level draft container
+  draftContainer: 'div.draft-content-wrapper',
 
-  // DOM scraping selectors (used when React extraction fails)
-  pickRows:          '.pick-row, [class*="PickRow"], [class*="pickRow"], tr[class*="pick"]',  // VERIFY: inspect live ESPN draft page
-  pickTeamName:      '.pick-team, [class*="teamName"], [class*="TeamName"], td:nth-child(1)', // VERIFY: inspect live ESPN draft page
-  pickPlayerName:    '.pick-player, [class*="playerName"], [class*="PlayerName"], td:nth-child(2)', // VERIFY: inspect live ESPN draft page
-  pickPrice:         '.pick-price, [class*="price"], [class*="Price"], td:nth-child(3)',      // VERIFY: inspect live ESPN draft page
-  pickPosition:      '.pick-position, [class*="position"], [class*="Position"], td:nth-child(4)', // VERIFY: inspect live ESPN draft page
+  // Pick counter (e.g. "PK 128 OF 260")
+  pickLabel: 'div.clock__label',
 
-  // Nomination area
-  nominationContainer: '[class*="Nomination"], [class*="nomination"], .auction-block, [class*="AuctionBlock"]', // VERIFY: inspect live ESPN draft page
-  nominationPlayer:    '[class*="nomPlayer"], [class*="NomPlayer"], .nom-player-name',        // VERIFY: inspect live ESPN draft page
-  nominationPosition:  '[class*="nomPosition"], [class*="NomPosition"], .nom-position',       // VERIFY: inspect live ESPN draft page
-  nominatedBy:         '[class*="nominatedBy"], [class*="NominatedBy"], .nom-team',            // VERIFY: inspect live ESPN draft page
-  currentBid:          '[class*="currentBid"], [class*="CurrentBid"], .bid-amount',            // VERIFY: inspect live ESPN draft page
-  currentBidder:       '[class*="bidder"], [class*="Bidder"], .bid-team',                      // VERIFY: inspect live ESPN draft page
-  timeRemaining:       '[class*="timer"], [class*="Timer"], [class*="countdown"], .timer',     // VERIFY: inspect live ESPN draft page
+  // Clock digits: 4 spans inside div.clock__digits for MM:SS
+  clockDigits: 'div.clock__digits > span.clock__digit',
 
-  // My team identification
-  myTeamIndicator:     '[class*="myTeam"], [class*="MyTeam"], .my-team, [class*="owner"]',     // VERIFY: inspect live ESPN draft page
+  // Team budget list (pick train carousel)
+  teamBudgetItems: 'ul.picklist > li.picklist--item',
+  teamBudgetName: 'div.team-name.truncate',
+  teamBudgetCash: 'div.cash',
+  teamBudgetOwnModifier: 'auction-pick-component--own',
+
+  // Current nomination / bidding area
+  nominationContainer: 'div.pickArea',
+  playerSelected: 'div[data-testid="player-selected"]',
+  nominationPlayerName: 'span.playerinfo__playername',
+  nominationPlayerTeam: 'span.playerinfo__playerteam',
+  nominationPlayerPos: 'span.playerinfo__playerpos',
+  nominationPreDraftVal: 'span.player-default-bid',
+  nominationCurrentOffer: 'div.current-amount',
+  nominationBidButton: 'button.bid-player__button',
+
+  // Bid history within nomination area
+  bidHistoryContainer: 'div.bid-history__container',
+  bidHistoryItems: 'ul.bid-history__list > li.bid',
+  bidHistoryOwnBid: 'li.bid.own-bid',
+
+  // Pick history / draft log (right column)
+  pickLogEntries: 'li.pick-message__container',
+  pickLogPlayerName: 'span.playerinfo__playername',
+  pickLogPlayerTeam: 'span.playerinfo__playerteam',
+  pickLogPlayerPos: 'span.playerinfo__playerpos',
+  pickLogInfo: 'div.pick-info',
+
+  // My team identification via pick train
+  myTeamContent: 'div.content.auction-pick-component--own',
+
+  // Roster table (left sidebar)
+  rosterModule: 'div.roster-module',
+  rosterRows: 'div.roster-module tr.Table__TR--sm',
+  rosterDropdown: 'div.roster__dropdown select.dropdown__select',
 };
-
-// React fiber property prefixes to search for
-const REACT_FIBER_PREFIXES = ['__reactFiber$', '__reactInternalInstance$']; // VERIFY: inspect live ESPN draft page
-
-// Component state keys that indicate draft state
-const DRAFT_STATE_KEYS = ['draftState', 'draftPicks', 'picks', 'auction', 'draft']; // VERIFY: inspect live ESPN draft page
 
 // Timing constants
 const MUTATION_DEBOUNCE_MS = 250;
@@ -72,279 +80,348 @@ function error(...args) {
 }
 
 // ---------------------------------------------------------------------------
-// Step 1: Inject page-context script for React state access
-// Content scripts run in an isolated world and cannot access page JS globals.
-// We inject a <script> element that runs in the page context.
+// DOM Scraping (primary extraction method)
 // ---------------------------------------------------------------------------
 
-function injectPageScript() {
-  const script = document.createElement('script');
-  script.textContent = `(${pageContextScript.toString()})();`;
-  (document.head || document.documentElement).appendChild(script);
-  script.remove(); // Clean up DOM; the code is already executing
-  log('Injected page-context script for React state extraction');
+/**
+ * Extract text content from an element matched by a selector within a parent.
+ */
+function extractText(parent, selector) {
+  if (!parent || !selector) return '';
+  try {
+    const el = parent.querySelector(selector);
+    return el ? el.textContent.trim() : '';
+  } catch (e) {
+    return '';
+  }
 }
 
 /**
- * This function runs in the PAGE context (not the content script context).
- * It has access to the actual DOM element properties including React fiber internals.
- * It posts extracted state back to the content script via window.postMessage.
+ * Parse a price string like "$42", "$5 - Team Name", or "42" into a number.
  */
-function pageContextScript() {
-  const LOG_PREFIX = '[WyndhamDraftSync:PageCtx]';
+function parsePrice(priceStr) {
+  if (!priceStr) return 0;
+  const cleaned = priceStr.replace(/[^0-9]/g, '');
+  return parseInt(cleaned, 10) || 0;
+}
 
-  // VERIFY: inspect live ESPN draft page — these are best-guess selectors
-  const DRAFT_ROOT_SELECTORS = [
-    '[class*="Draft"]',
-    '#draft-app',
-    '.draft-board',
-    '[class*="draft"]',
-    '.draftBoard',
-    '#espn-draft',
-  ];
-
-  // VERIFY: inspect live ESPN draft page
-  const REACT_FIBER_PREFIXES = ['__reactFiber$', '__reactInternalInstance$'];
-  const DRAFT_STATE_KEYS = ['draftState', 'draftPicks', 'picks', 'auction', 'draft'];
-
-  /**
-   * Find the React fiber key on a DOM element.
-   */
-  function findFiberKey(element) {
-    if (!element) return null;
-    const keys = Object.keys(element);
-    for (const prefix of REACT_FIBER_PREFIXES) {
-      const key = keys.find(k => k.startsWith(prefix));
-      if (key) return key;
+/**
+ * Parse the clock digits from the 4 span elements into seconds remaining.
+ * Clock format: MM:SS displayed as 4 separate span.clock__digit elements.
+ */
+function parseClockDigits() {
+  try {
+    const digits = document.querySelectorAll(SELECTORS.clockDigits);
+    if (digits.length >= 4) {
+      const mm = parseInt(digits[0].textContent + digits[1].textContent, 10) || 0;
+      const ss = parseInt(digits[2].textContent + digits[3].textContent, 10) || 0;
+      return mm * 60 + ss;
     }
-    return null;
+  } catch (e) {
+    // Clock not available
   }
+  return null;
+}
 
-  /**
-   * Walk up the React fiber tree looking for a component whose state or props
-   * contain draft-related data.
-   */
-  function findDraftState(fiber, maxDepth = 50) {
-    let current = fiber;
-    let depth = 0;
-
-    while (current && depth < maxDepth) {
-      // Check memoizedState (hooks or class state)
-      const state = current.memoizedState;
-      if (state && typeof state === 'object') {
-        for (const key of DRAFT_STATE_KEYS) {
-          if (state[key]) {
-            return { source: 'memoizedState', data: state };
-          }
-        }
-      }
-
-      // Check memoizedProps
-      const props = current.memoizedProps;
-      if (props && typeof props === 'object') {
-        for (const key of DRAFT_STATE_KEYS) {
-          if (props[key]) {
-            return { source: 'memoizedProps', data: props };
-          }
-        }
-      }
-
-      // Check pendingProps
-      const pendingProps = current.pendingProps;
-      if (pendingProps && typeof pendingProps === 'object') {
-        for (const key of DRAFT_STATE_KEYS) {
-          if (pendingProps[key]) {
-            return { source: 'pendingProps', data: pendingProps };
-          }
-        }
-      }
-
-      // Walk up the fiber tree (try return first, which is the parent fiber)
-      current = current.return;
-      depth++;
-    }
-
-    return null;
-  }
-
-  /**
-   * Normalize extracted React state into the protocol format.
-   * The shape depends on what ESPN's React components actually store.
-   */
-  function normalizeReactState(rawState) {
-    // VERIFY: inspect live ESPN draft page — the actual state shape will vary
-    const result = {
-      picks: [],
-      currentNomination: null,
-      myTeamId: null,
-    };
-
-    try {
-      // Try common state shapes
-      const data = rawState.data || rawState;
-
-      // Extract picks
-      const picks = data.draftPicks || data.picks || data.draftState?.picks || [];
-      if (Array.isArray(picks)) {
-        result.picks = picks.map((p, idx) => ({
-          pickNumber: p.pickNumber || p.pick_number || p.id || idx + 1,
-          teamId: String(p.teamId || p.team_id || p.ownerId || ''),
-          teamName: p.teamName || p.team_name || p.ownerName || '',
-          playerId: String(p.playerId || p.player_id || p.id || ''),
-          playerName: p.playerName || p.player_name || p.fullName || p.name || '',
-          position: p.position || p.defaultPosition || p.pos || '',
-          price: Number(p.price || p.salary || p.cost || 0),
-          eligibleSlots: Array.isArray(p.eligibleSlots)
-            ? p.eligibleSlots.filter(x => typeof x === 'number').slice(0, 32).filter(n => Number.isInteger(n) && n >= 0 && n <= 65535)
-            : [],
-        })).filter(p => p.playerName); // Filter out empty/invalid picks
-      }
-
-      // Extract current nomination
-      const nom = data.currentNomination || data.nomination || data.auction?.currentNomination
-        || data.draftState?.currentNomination;
-      if (nom && (nom.playerName || nom.player_name || nom.fullName || nom.name)) {
-        result.currentNomination = {
-          playerId: String(nom.playerId || nom.player_id || nom.id || ''),
-          playerName: nom.playerName || nom.player_name || nom.fullName || nom.name || '',
-          position: nom.position || nom.defaultPosition || nom.pos || '',
-          nominatedBy: nom.nominatedBy || nom.nominated_by || nom.nominator || '',
-          currentBid: Number(nom.currentBid || nom.current_bid || nom.bid || 0),
-          currentBidder: nom.currentBidder || nom.current_bidder || nom.highBidder || null,
-          timeRemaining: nom.timeRemaining != null ? Number(nom.timeRemaining) :
-                         nom.time_remaining != null ? Number(nom.time_remaining) :
-                         nom.timer != null ? Number(nom.timer) : null,
-          eligibleSlots: Array.isArray(nom.eligibleSlots)
-            ? nom.eligibleSlots.filter(x => typeof x === 'number').slice(0, 32).filter(n => Number.isInteger(n) && n >= 0 && n <= 65535)
-            : [],
+/**
+ * Parse "PK 128 OF 260" from the clock label into { current, total }.
+ */
+function parsePickLabel() {
+  try {
+    const label = document.querySelector(SELECTORS.pickLabel);
+    if (label) {
+      const match = label.textContent.match(/PK\s+(\d+)\s+OF\s+(\d+)/i);
+      if (match) {
+        return {
+          current: parseInt(match[1], 10),
+          total: parseInt(match[2], 10),
         };
       }
+    }
+  } catch (e) {
+    // Label not available
+  }
+  return null;
+}
 
-      // Extract my team ID
-      result.myTeamId = data.myTeamId || data.my_team_id || data.currentTeamId
-        || data.ownerTeamId || data.draftState?.myTeamId || null;
-      if (result.myTeamId !== null) {
-        result.myTeamId = String(result.myTeamId);
+/**
+ * Parse a pick-info string like "$5 - Boscolo Colon" into { price, teamName }.
+ */
+function parsePickInfo(infoStr) {
+  if (!infoStr) return { price: 0, teamName: '' };
+  // Format: "$5 - Team Name" or "$15 - Team Name"
+  const match = infoStr.match(/^\$(\d+)\s*-\s*(.+)$/);
+  if (match) {
+    return {
+      price: parseInt(match[1], 10) || 0,
+      teamName: match[2].trim(),
+    };
+  }
+  // Fallback: try to extract just the price
+  return {
+    price: parsePrice(infoStr),
+    teamName: infoStr.replace(/\$\d+\s*-?\s*/, '').trim(),
+  };
+}
+
+/**
+ * Parse "Current offer: $2" into a number.
+ */
+function parseCurrentOffer(offerStr) {
+  if (!offerStr) return 0;
+  const match = offerStr.match(/\$(\d+)/);
+  return match ? parseInt(match[1], 10) : 0;
+}
+
+/**
+ * Extract the current bidder from the bid history list.
+ * The most recent bid entry that is not the "own-bid" is the current high bidder.
+ * The first entry in the list is the most recent bid.
+ */
+function extractCurrentBidder() {
+  try {
+    const items = document.querySelectorAll(SELECTORS.bidHistoryItems);
+    if (items.length > 0) {
+      // First item is most recent bid: e.g. "$2 Jamaica Jiggle Party"
+      const text = items[0].textContent.trim();
+      // Parse "$N TeamName" format
+      const match = text.match(/^\$\d+\s+(.+)$/);
+      return match ? match[1].trim() : text;
+    }
+  } catch (e) {
+    // Bid history not available
+  }
+  return null;
+}
+
+/**
+ * Extract the nominating team from the bid history.
+ * In ESPN's auction, the first bid is typically from the nominating team.
+ * The last entry in the bid history list is the original nomination.
+ */
+function extractNominatedBy() {
+  try {
+    const items = document.querySelectorAll(SELECTORS.bidHistoryItems);
+    if (items.length > 0) {
+      // Last item is the original nomination
+      const lastItem = items[items.length - 1];
+      const text = lastItem.textContent.trim();
+      const match = text.match(/^\$\d+\s+(.+)$/);
+      return match ? match[1].trim() : text;
+    }
+  } catch (e) {
+    // Bid history not available
+  }
+  return '';
+}
+
+/**
+ * Extract team budgets from the pick train carousel.
+ * Returns an array of { teamName, budget } objects.
+ */
+function scrapeTeamBudgets() {
+  const teams = [];
+  try {
+    const items = document.querySelectorAll(SELECTORS.teamBudgetItems);
+    items.forEach((item) => {
+      const name = extractText(item, SELECTORS.teamBudgetName);
+      const cashStr = extractText(item, SELECTORS.teamBudgetCash);
+      if (name) {
+        // Strip the leading number + dot from team name: "1. London Ligers" -> "London Ligers"
+        const cleanName = name.replace(/^\d+\.\s*/, '');
+        teams.push({
+          teamName: cleanName,
+          budget: parsePrice(cashStr),
+        });
       }
-    } catch (e) {
-      console.warn(LOG_PREFIX, 'Error normalizing React state:', e);
-    }
-
-    return result;
+    });
+  } catch (e) {
+    error('Error scraping team budgets:', e);
   }
+  return teams;
+}
 
-  /**
-   * Attempt to extract draft state from React internals.
-   * Returns null if extraction fails.
-   */
-  function extractReactState() {
-    // Find a draft root element
-    for (const selector of DRAFT_ROOT_SELECTORS) {
-      try {
-        const elements = document.querySelectorAll(selector);
-        for (const el of elements) {
-          const fiberKey = findFiberKey(el);
-          if (!fiberKey) continue;
-
-          const fiber = el[fiberKey];
-          if (!fiber) continue;
-
-          const draftState = findDraftState(fiber);
-          if (draftState) {
-            const normalized = normalizeReactState(draftState);
-            return normalized;
-          }
-        }
-      } catch (e) {
-        // Selector might be invalid or element access might fail
-        continue;
+/**
+ * Identify my team from the pick train using the own-team modifier class.
+ * Returns the team name, or null if not found.
+ */
+function identifyMyTeam() {
+  try {
+    const ownContent = document.querySelector(SELECTORS.myTeamContent);
+    if (ownContent) {
+      const nameEl = ownContent.querySelector(SELECTORS.teamBudgetName);
+      if (nameEl) {
+        const name = nameEl.textContent.trim();
+        return name.replace(/^\d+\.\s*/, '');
       }
     }
+  } catch (e) {
+    // Could not identify own team
+  }
+  return null;
+}
 
-    return null;
+/**
+ * Scrape completed picks from the draft log (right column).
+ * Pick log entries are in reverse chronological order (most recent first).
+ * Returns picks in chronological order (oldest first) with pick numbers.
+ */
+function scrapePickLog() {
+  const picks = [];
+  try {
+    const entries = document.querySelectorAll(SELECTORS.pickLogEntries);
+    // Entries are most-recent-first; we want chronological order
+    const entriesArray = Array.from(entries).reverse();
+
+    entriesArray.forEach((entry, idx) => {
+      const playerName = extractText(entry, SELECTORS.pickLogPlayerName);
+      const playerTeam = extractText(entry, SELECTORS.pickLogPlayerTeam);
+      const position = extractText(entry, SELECTORS.pickLogPlayerPos);
+      const pickInfoStr = extractText(entry, SELECTORS.pickLogInfo);
+
+      if (playerName) {
+        const { price, teamName } = parsePickInfo(pickInfoStr);
+        picks.push({
+          pickNumber: idx + 1,
+          teamId: '',
+          teamName: teamName,
+          playerId: '',
+          playerName: playerName,
+          position: position,
+          price: price,
+          eligibleSlots: [],
+        });
+      }
+    });
+  } catch (e) {
+    error('Error scraping pick log:', e);
+  }
+  return picks;
+}
+
+/**
+ * Scrape the current nomination from the pick area.
+ */
+function scrapeCurrentNomination() {
+  try {
+    const pickArea = document.querySelector(SELECTORS.nominationContainer);
+    if (!pickArea) return null;
+
+    const playerSelected = pickArea.querySelector(SELECTORS.playerSelected);
+    if (!playerSelected) return null;
+
+    const playerName = extractText(playerSelected, SELECTORS.nominationPlayerName);
+    if (!playerName) return null;
+
+    const position = extractText(playerSelected, SELECTORS.nominationPlayerPos);
+    const offerStr = extractText(playerSelected, SELECTORS.nominationCurrentOffer);
+    const currentBid = parseCurrentOffer(offerStr);
+    const timeRemaining = parseClockDigits();
+    const currentBidder = extractCurrentBidder();
+    const nominatedBy = extractNominatedBy();
+
+    return {
+      playerId: '',
+      playerName: playerName,
+      position: position,
+      nominatedBy: nominatedBy,
+      currentBid: currentBid,
+      currentBidder: currentBidder,
+      timeRemaining: timeRemaining,
+      eligibleSlots: [],
+    };
+  } catch (e) {
+    error('Error scraping nomination:', e);
+  }
+  return null;
+}
+
+/**
+ * Scrape complete draft state from the DOM.
+ */
+function scrapeDom() {
+  const state = {
+    picks: [],
+    currentNomination: null,
+    myTeamId: null,
+    teams: [],
+    source: 'dom_scrape',
+  };
+
+  try {
+    // Scrape completed picks from the draft log
+    state.picks = scrapePickLog();
+
+    // Scrape current nomination
+    state.currentNomination = scrapeCurrentNomination();
+
+    // Scrape team budgets from pick train
+    state.teams = scrapeTeamBudgets();
+
+    // Identify my team
+    const myTeamName = identifyMyTeam();
+    if (myTeamName) {
+      // Use team name as ID since ESPN DOM doesn't expose numeric team IDs
+      state.myTeamId = myTeamName;
+    }
+  } catch (e) {
+    error('DOM scraping error:', e);
   }
 
-  /**
-   * Post the extracted state back to the content script.
-   */
-  function postState() {
-    const reactState = extractReactState();
-
-    if (reactState) {
-      window.postMessage({
-        source: 'wyndham-draft-sync',
-        type: 'REACT_STATE',
-        payload: reactState,
-        extractionSource: 'react_state',
-      }, window.location.origin);
-    } else {
-      // Signal that React extraction failed so content script can use DOM fallback
-      window.postMessage({
-        source: 'wyndham-draft-sync',
-        type: 'REACT_EXTRACTION_FAILED',
-      }, window.location.origin);
-    }
-  }
-
-  // Listen for extraction requests from the content script
-  window.addEventListener('message', (event) => {
-    if (event.source !== window) return;
-    if (!event.data || event.data.source !== 'wyndham-draft-sync-request') return;
-
-    if (event.data.type === 'EXTRACT_STATE') {
-      postState();
-    }
-  });
-
-  console.log(LOG_PREFIX, 'Page-context script ready');
+  return state;
 }
 
 // ---------------------------------------------------------------------------
-// Step 2: Listen for state updates from page context
+// State handling and forwarding to background script
 // ---------------------------------------------------------------------------
 
-/** Last state received from either React extraction or DOM scraping */
+/** Last state sent (for deduplication) */
 let lastState = null;
 
-/** Whether React extraction is working (if false, use DOM fallback) */
-let reactExtractionAvailable = true;
-
-/** Track consecutive React failures to switch to DOM-only mode */
-let reactFailureCount = 0;
-const MAX_REACT_FAILURES = 5;
-
-window.addEventListener('message', (event) => {
-  if (event.source !== window) return;
-  if (!event.data || event.data.source !== 'wyndham-draft-sync') return;
-
-  if (event.data.type === 'REACT_STATE') {
-    reactFailureCount = 0;
-    reactExtractionAvailable = true;
-    const state = event.data.payload;
-    state.source = 'react_state';
-    handleStateUpdate(state);
-  } else if (event.data.type === 'REACT_EXTRACTION_FAILED') {
-    reactFailureCount++;
-    if (reactFailureCount >= MAX_REACT_FAILURES) {
-      reactExtractionAvailable = false;
-    }
-    // Fall back to DOM scraping
-    const domState = scrapeDom();
-    if (domState) {
-      handleStateUpdate(domState);
-    }
+/**
+ * Process an extracted state update and forward to the background script.
+ */
+function handleStateUpdate(state) {
+  // Simple deduplication: skip if the state is identical to the last one sent
+  const stateJson = JSON.stringify(state);
+  if (stateJson === lastState) {
+    return;
   }
-});
+  lastState = stateJson;
+
+  const message = {
+    source: 'wyndham-draft-sync',
+    type: 'STATE_UPDATE',
+    timestamp: Date.now(),
+    payload: {
+      picks: state.picks || [],
+      currentNomination: state.currentNomination || null,
+      myTeamId: state.myTeamId || null,
+      teams: state.teams || [],
+      source: state.source || 'unknown',
+    },
+  };
+
+  // Send to background script via browser.runtime.sendMessage
+  try {
+    browser.runtime.sendMessage(message).catch((err) => {
+      // Background script might not be ready yet
+      warn('Failed to send message to background:', err.message || err);
+    });
+  } catch (e) {
+    warn('runtime.sendMessage not available:', e.message || e);
+  }
+}
 
 // ---------------------------------------------------------------------------
-// Step 3: MutationObserver for draft container changes
+// MutationObserver for draft container changes
 // ---------------------------------------------------------------------------
 
 let mutationObserver = null;
 let debounceTimer = null;
 
 /**
- * Request state extraction (triggers page-context script or DOM fallback).
+ * Request state extraction via DOM scraping.
  * Debounced to avoid excessive extractions during rapid DOM mutations.
  */
 function requestStateExtraction() {
@@ -353,18 +430,9 @@ function requestStateExtraction() {
   }
   debounceTimer = setTimeout(() => {
     debounceTimer = null;
-    if (reactExtractionAvailable) {
-      // Ask the page-context script to extract React state
-      window.postMessage({
-        source: 'wyndham-draft-sync-request',
-        type: 'EXTRACT_STATE',
-      }, window.location.origin);
-    } else {
-      // React not available, use DOM scraping directly
-      const domState = scrapeDom();
-      if (domState) {
-        handleStateUpdate(domState);
-      }
+    const domState = scrapeDom();
+    if (domState) {
+      handleStateUpdate(domState);
     }
   }, MUTATION_DEBOUNCE_MS);
 }
@@ -385,9 +453,7 @@ function startObserving(target) {
     childList: true,
     subtree: true,
     characterData: true,
-    // Observe all attribute changes. MutationObserver attributeFilter only
-    // accepts exact attribute names (not glob patterns), so we omit the filter
-    // to catch changes to class, style, data-* attributes, and any others.
+    // Observe all attribute changes to catch class/style/data-* updates
     attributes: true,
   });
 
@@ -398,23 +464,18 @@ function startObserving(target) {
 }
 
 // ---------------------------------------------------------------------------
-// Step 4: Poll for draft container element, then start observing
+// Poll for draft container element, then start observing
 // ---------------------------------------------------------------------------
 
 /**
- * Find the draft container element using configured selectors.
+ * Find the draft container element.
  */
 function findDraftContainer() {
-  for (const selector of SELECTORS.draftContainers) {
-    try {
-      const el = document.querySelector(selector);
-      if (el) return el;
-    } catch (e) {
-      // Invalid selector, skip
-      continue;
-    }
+  try {
+    return document.querySelector(SELECTORS.draftContainer);
+  } catch (e) {
+    return null;
   }
-  return null;
 }
 
 function initObserver() {
@@ -439,152 +500,6 @@ function initObserver() {
 }
 
 // ---------------------------------------------------------------------------
-// DOM Scraping Fallback
-// ---------------------------------------------------------------------------
-
-/**
- * Extract text content from an element matched by a selector within a parent.
- */
-function extractText(parent, selector) {
-  if (!parent || !selector) return '';
-  try {
-    const el = parent.querySelector(selector);
-    return el ? el.textContent.trim() : '';
-  } catch (e) {
-    return '';
-  }
-}
-
-/**
- * Parse a price string like "$42" or "42" into a number.
- */
-function parsePrice(priceStr) {
-  if (!priceStr) return 0;
-  const cleaned = priceStr.replace(/[^0-9]/g, '');
-  return parseInt(cleaned, 10) || 0;
-}
-
-/**
- * Parse a time string like "0:15" or "15" into seconds.
- */
-function parseTime(timeStr) {
-  if (!timeStr) return null;
-  const cleaned = timeStr.trim();
-  // Handle "M:SS" format
-  const colonMatch = cleaned.match(/(\d+):(\d+)/);
-  if (colonMatch) {
-    return parseInt(colonMatch[1], 10) * 60 + parseInt(colonMatch[2], 10);
-  }
-  // Handle plain seconds
-  const num = parseInt(cleaned.replace(/[^0-9]/g, ''), 10);
-  return isNaN(num) ? null : num;
-}
-
-/**
- * Scrape draft state from the DOM as a fallback when React extraction fails.
- */
-function scrapeDom() {
-  const state = {
-    picks: [],
-    currentNomination: null,
-    myTeamId: null,
-    source: 'dom_scrape',
-  };
-
-  try {
-    // Scrape completed picks
-    const pickRows = document.querySelectorAll(SELECTORS.pickRows);
-    pickRows.forEach((row, idx) => {
-      const teamName = extractText(row, SELECTORS.pickTeamName);
-      const playerName = extractText(row, SELECTORS.pickPlayerName);
-      const priceStr = extractText(row, SELECTORS.pickPrice);
-      const position = extractText(row, SELECTORS.pickPosition);
-
-      if (playerName) {
-        state.picks.push({
-          pickNumber: idx + 1,
-          teamId: '',       // DOM scraping may not have team ID
-          teamName: teamName,
-          playerId: '',     // DOM scraping may not have player ID
-          playerName: playerName,
-          position: position,
-          price: parsePrice(priceStr),
-          eligibleSlots: [],
-        });
-      }
-    });
-
-    // Scrape current nomination
-    const nomContainer = document.querySelector(SELECTORS.nominationContainer);
-    if (nomContainer) {
-      const playerName = extractText(nomContainer, SELECTORS.nominationPlayer);
-      if (playerName) {
-        const timeStr = extractText(nomContainer, SELECTORS.timeRemaining);
-        state.currentNomination = {
-          playerId: '',
-          playerName: playerName,
-          position: extractText(nomContainer, SELECTORS.nominationPosition),
-          nominatedBy: extractText(nomContainer, SELECTORS.nominatedBy),
-          currentBid: parsePrice(extractText(nomContainer, SELECTORS.currentBid)),
-          currentBidder: extractText(nomContainer, SELECTORS.currentBidder) || null,
-          timeRemaining: parseTime(timeStr),
-          eligibleSlots: [],
-        };
-      }
-    }
-
-    // Try to find my team indicator
-    const myTeamEl = document.querySelector(SELECTORS.myTeamIndicator);
-    if (myTeamEl) {
-      // The team ID might be in a data attribute or we just use the text
-      state.myTeamId = myTeamEl.dataset.teamId || myTeamEl.dataset.id || null;
-    }
-  } catch (e) {
-    error('DOM scraping error:', e);
-  }
-
-  return state;
-}
-
-// ---------------------------------------------------------------------------
-// State handling and forwarding to background script
-// ---------------------------------------------------------------------------
-
-/**
- * Process an extracted state update and forward to the background script.
- */
-function handleStateUpdate(state) {
-  // Simple deduplication: skip if the state is identical to the last one sent
-  const stateJson = JSON.stringify(state);
-  if (stateJson === lastState) {
-    return;
-  }
-  lastState = stateJson;
-
-  const message = {
-    source: 'wyndham-draft-sync',
-    type: 'STATE_UPDATE',
-    timestamp: Date.now(),
-    payload: {
-      picks: state.picks || [],
-      currentNomination: state.currentNomination || null,
-      myTeamId: state.myTeamId || null,
-      source: state.source || 'unknown',
-    },
-  };
-
-  // Send to background script via browser.runtime.sendMessage
-  try {
-    browser.runtime.sendMessage(message).catch((err) => {
-      // Background script might not be ready yet
-      warn('Failed to send message to background:', err.message || err);
-    });
-  } catch (e) {
-    warn('runtime.sendMessage not available:', e.message || e);
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Periodic polling fallback
 // Posts state updates at regular intervals even without DOM mutations,
 // in case MutationObserver misses changes (e.g., virtual DOM updates that
@@ -602,12 +517,9 @@ function startPeriodicPolling() {
 // ---------------------------------------------------------------------------
 
 function init() {
-  log('Initializing ESPN draft page scraper');
+  log('Initializing ESPN draft page scraper (DOM-only mode)');
 
-  // Step 1: Inject page-context script
-  injectPageScript();
-
-  // Step 4: Poll for draft container and start observing
+  // Poll for draft container and start observing
   initObserver();
 
   // Start periodic polling fallback

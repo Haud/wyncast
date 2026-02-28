@@ -1761,6 +1761,7 @@ mod tests {
                 eligible_slots: vec![1, 7, 12, 16, 17],
             }),
             my_team_id: Some("team_1".into()),
+            teams: vec![],
             source: Some("test".into()),
         };
 

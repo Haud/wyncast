@@ -45,6 +45,8 @@ pub struct StateUpdatePayload {
     #[serde(default)]
     pub current_nomination: Option<NominationData>,
     pub my_team_id: Option<String>,
+    #[serde(default)]
+    pub teams: Vec<TeamBudgetData>,
     pub source: Option<String>,
 }
 
@@ -74,6 +76,13 @@ pub struct NominationData {
     pub time_remaining: Option<u32>,
     #[serde(default)]
     pub eligible_slots: Vec<u16>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamBudgetData {
+    pub team_name: String,
+    pub budget: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -286,6 +295,10 @@ mod tests {
                     eligible_slots: vec![5, 8, 9, 10, 11, 12, 16, 17],
                 }),
                 my_team_id: Some("team_7".to_string()),
+                teams: vec![TeamBudgetData {
+                    team_name: "Vorticists".to_string(),
+                    budget: 198,
+                }],
                 source: Some("dom_scraper".to_string()),
             },
         };
@@ -501,6 +514,7 @@ mod tests {
                 }],
                 current_nomination: None,
                 my_team_id: Some("team_5".to_string()),
+                teams: vec![],
                 source: Some("test".to_string()),
             },
         };
