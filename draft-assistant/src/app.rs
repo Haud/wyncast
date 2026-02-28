@@ -73,6 +73,9 @@ pub struct AppState {
     pub inflation: InflationTracker,
     pub scarcity: Vec<ScarcityEntry>,
     pub db: Database,
+    /// Unique identifier for the current draft session. Picks are scoped to
+    /// this ID so restarts don't replay picks from a different draft.
+    pub draft_id: String,
     pub previous_extension_state: Option<StateUpdatePayload>,
     pub current_llm_task: Option<tokio::task::JoinHandle<()>>,
     pub llm_mode: Option<LlmMode>,
@@ -97,12 +100,16 @@ pub struct AppState {
 
 impl AppState {
     /// Create a new AppState with the given components.
+    ///
+    /// The `draft_id` identifies the current draft session. On startup, callers
+    /// should load the stored draft_id from the database (or generate a new one).
     pub fn new(
         config: Config,
         draft_state: DraftState,
         available_players: Vec<PlayerValuation>,
         all_projections: AllProjections,
         db: Database,
+        draft_id: String,
         llm_client: LlmClient,
         llm_tx: mpsc::Sender<LlmEvent>,
     ) -> Self {
@@ -117,6 +124,7 @@ impl AppState {
             inflation,
             scarcity,
             db,
+            draft_id,
             previous_extension_state: None,
             current_llm_task: None,
             llm_mode: None,
@@ -159,7 +167,7 @@ impl AppState {
             self.draft_state.record_pick(pick.clone());
 
             // Persist to DB
-            if let Err(e) = self.db.record_pick(pick) {
+            if let Err(e) = self.db.record_pick(pick, &self.draft_id) {
                 warn!("Failed to persist pick to DB: {}", e);
             }
 
@@ -685,11 +693,48 @@ async fn handle_ws_message(
 ///
 /// Performs differential state detection, processes new picks,
 /// and handles nomination changes.
+///
+/// On the first STATE_UPDATE of a session, detects whether a new draft has
+/// started by comparing the extension's pick count against the DB. If the
+/// extension reports fewer picks than the DB has for the current draft_id,
+/// a new draft session is started with a fresh draft_id.
 async fn handle_state_update(
     state: &mut AppState,
     ext_payload: crate::protocol::StateUpdatePayload,
     ui_tx: &mpsc::Sender<UiUpdate>,
 ) {
+    // --- New draft detection ---
+    // On the very first STATE_UPDATE (before we have a previous_extension_state),
+    // check whether the extension's pick list is consistent with our DB state.
+    // If the extension reports fewer picks than the DB has for the current
+    // draft_id, a new draft has started; generate a fresh draft_id. This
+    // handles both the clean-start case (extension at 0, DB at N) and the
+    // mid-draft restart case (extension at 3 in a new draft, DB at 50 from
+    // the old draft).
+    if state.previous_extension_state.is_none() {
+        let extension_pick_count = ext_payload.picks.len();
+        let has_existing_picks = state
+            .db
+            .has_draft_in_progress(&state.draft_id)
+            .unwrap_or(false);
+
+        if has_existing_picks {
+            let db_pick_count = state.db.pick_count(&state.draft_id).unwrap_or(0);
+            if extension_pick_count < db_pick_count {
+                let new_draft_id = Database::generate_draft_id();
+                info!(
+                    "New draft detected: extension has {} picks but DB has {} for draft_id={}. \
+                     Starting new draft session: {}",
+                    extension_pick_count, db_pick_count, state.draft_id, new_draft_id
+                );
+                state.draft_id = new_draft_id.clone();
+                if let Err(e) = state.db.set_draft_id(&new_draft_id) {
+                    warn!("Failed to persist new draft_id: {}", e);
+                }
+            }
+        }
+    }
+
     let internal_payload = AppState::convert_extension_state(&ext_payload);
 
     // Compute diff against previous state
@@ -974,17 +1019,20 @@ async fn handle_user_command(
 
 /// Restore application state from the database after a crash/restart.
 ///
-/// If the DB has draft picks recorded, loads them and replays them
-/// into the DraftState, then recalculates valuations.
+/// If the DB has draft picks recorded for the current draft_id, loads them
+/// and replays them into the DraftState, then recalculates valuations.
 pub fn recover_from_db(state: &mut AppState) -> anyhow::Result<bool> {
-    if !state.db.has_draft_in_progress()? {
-        info!("No draft in progress, starting fresh");
+    if !state.db.has_draft_in_progress(&state.draft_id)? {
+        info!("No draft in progress for draft_id={}, starting fresh", state.draft_id);
         return Ok(false);
     }
 
-    let picks = state.db.load_picks()?;
+    let picks = state.db.load_picks(&state.draft_id)?;
     let pick_count = picks.len();
-    info!("Crash recovery: restoring {} picks from DB", pick_count);
+    info!(
+        "Crash recovery: restoring {} picks from DB for draft_id={}",
+        pick_count, state.draft_id
+    );
 
     // Restore picks into DraftState (takes ownership)
     state.draft_state.restore_from_picks(picks);
@@ -1384,10 +1432,11 @@ mod tests {
         );
 
         let db = Database::open(":memory:").expect("in-memory db");
+        let draft_id = Database::generate_draft_id();
         let llm_client = LlmClient::Disabled;
         let (llm_tx, _llm_rx) = mpsc::channel(16);
 
-        AppState::new(config, draft_state, available, empty_projections(), db, llm_client, llm_tx)
+        AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx)
     }
 
     // -----------------------------------------------------------------------
@@ -1512,7 +1561,7 @@ mod tests {
         state.process_new_picks(vec![pick]);
 
         // Verify the pick was persisted to DB
-        let db_picks = state.db.load_picks().unwrap();
+        let db_picks = state.db.load_picks(&state.draft_id).unwrap();
         assert_eq!(db_picks.len(), 1);
         assert_eq!(db_picks[0].player_name, "H_Star");
         assert_eq!(db_picks[0].price, 45);
@@ -1759,6 +1808,7 @@ mod tests {
     fn crash_recovery_restores_state() {
         let config = test_config();
         let db = Database::open(":memory:").expect("in-memory db");
+        let draft_id = Database::generate_draft_id();
 
         // Record some picks into the database (simulating a previous session)
         let picks = vec![
@@ -1784,9 +1834,9 @@ mod tests {
             },
         ];
         for pick in &picks {
-            db.record_pick(pick).unwrap();
+            db.record_pick(pick, &draft_id).unwrap();
         }
-        assert!(db.has_draft_in_progress().unwrap());
+        assert!(db.has_draft_in_progress(&draft_id).unwrap());
 
         // Create a fresh AppState (simulating restart)
         let mut draft_state = DraftState::new(260, &test_roster_config());
@@ -1805,7 +1855,7 @@ mod tests {
 
         let llm_client = LlmClient::Disabled;
         let (llm_tx, _llm_rx) = mpsc::channel(16);
-        let mut state = AppState::new(config, draft_state, available, empty_projections(), db, llm_client, llm_tx);
+        let mut state = AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx);
 
         // Run crash recovery
         let recovered = recover_from_db(&mut state).unwrap();
@@ -1836,6 +1886,7 @@ mod tests {
     fn crash_recovery_no_picks_returns_false() {
         let config = test_config();
         let db = Database::open(":memory:").expect("in-memory db");
+        let draft_id = Database::generate_draft_id();
         let mut draft_state = DraftState::new(260, &test_roster_config());
         draft_state.reconcile_budgets(&test_espn_budgets());
         draft_state.set_my_team_by_name("Team 1");
@@ -1843,7 +1894,7 @@ mod tests {
 
         let llm_client = LlmClient::Disabled;
         let (llm_tx, _llm_rx) = mpsc::channel(16);
-        let mut state = AppState::new(config, draft_state, available, empty_projections(), db, llm_client, llm_tx);
+        let mut state = AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx);
 
         let recovered = recover_from_db(&mut state).unwrap();
         assert!(!recovered);

@@ -42,6 +42,23 @@ async fn main() -> anyhow::Result<()> {
     let db = db::Database::open(&config.db_path).context("failed to open database")?;
     info!("Database opened at {}", config.db_path);
 
+    // Load or generate the draft ID. On first run (or after a full DB clear)
+    // there is no stored draft_id, so we generate a fresh one. On subsequent
+    // runs we reuse the stored draft_id so crash recovery loads the correct
+    // picks.
+    let draft_id = match db.get_draft_id()? {
+        Some(id) => {
+            info!("Resuming draft session: {}", id);
+            id
+        }
+        None => {
+            let id = db::Database::generate_draft_id();
+            db.set_draft_id(&id)?;
+            info!("Starting new draft session: {}", id);
+            id
+        }
+    };
+
     // 4. Load projections and compute initial valuations
     info!("Loading projections...");
     let projections = valuation::projections::load_all(&config)
@@ -85,6 +102,7 @@ async fn main() -> anyhow::Result<()> {
         available_players,
         projections,
         db,
+        draft_id,
         llm_client,
         llm_tx.clone(),
     );
