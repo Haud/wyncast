@@ -249,6 +249,10 @@ function identifyMyTeam() {
  * Scrape completed picks from the draft log (right column).
  * Pick log entries are in reverse chronological order (most recent first).
  * Returns picks in chronological order (oldest first) with pick numbers.
+ *
+ * ESPN virtualizes the pick list, so only a window of recent picks may be
+ * present in the DOM. We use the pick counter label ("PK 128 OF 260") to
+ * compute correct absolute pick numbers instead of relying on array index.
  */
 function scrapePickLog() {
   const picks = [];
@@ -257,15 +261,26 @@ function scrapePickLog() {
     // Entries are most-recent-first; we want chronological order
     const entriesArray = Array.from(entries).reverse();
 
+    // Use ESPN's pick counter to compute absolute pick numbers.
+    // If the label says "PK 128 OF 260" and we have 30 entries visible,
+    // they represent picks 99-128 (not 1-30).
+    const pickLabel = parsePickLabel();
+    const totalPicksSoFar = pickLabel ? pickLabel.current : entriesArray.length;
+
     entriesArray.forEach((entry, idx) => {
       const playerName = extractText(entry, SELECTORS.pickLogPlayerName);
-      const position = extractText(entry, SELECTORS.pickLogPlayerPos);
+      let position = extractText(entry, SELECTORS.pickLogPlayerPos);
       const pickInfoStr = extractText(entry, SELECTORS.pickLogInfo);
+
+      // Handle compound position strings like "SP, RP" — take only the first
+      if (position.includes(',')) {
+        position = position.split(',')[0].trim();
+      }
 
       if (playerName) {
         const { price, teamName } = parsePickInfo(pickInfoStr);
         picks.push({
-          pickNumber: idx + 1,
+          pickNumber: totalPicksSoFar - entriesArray.length + idx + 1,
           teamId: teamName,
           teamName: teamName,
           playerId: '',
@@ -296,12 +311,18 @@ function scrapeCurrentNomination() {
     const playerName = extractText(playerSelected, SELECTORS.nominationPlayerName);
     if (!playerName) return null;
 
-    const position = extractText(playerSelected, SELECTORS.nominationPlayerPos);
+    let position = extractText(playerSelected, SELECTORS.nominationPlayerPos);
     const offerStr = extractText(playerSelected, SELECTORS.nominationCurrentOffer);
     const currentBid = parseCurrentOffer(offerStr);
     const timeRemaining = parseClockDigits();
-    // Query bid history once and pass to both extraction functions
-    const bidItems = document.querySelectorAll(SELECTORS.bidHistoryItems);
+
+    // Handle compound position strings like "SP, RP" — take only the first
+    if (position.includes(',')) {
+      position = position.split(',')[0].trim();
+    }
+
+    // Query bid history scoped to the pickArea, not the entire document
+    const bidItems = pickArea.querySelectorAll(SELECTORS.bidHistoryItems);
     const currentBidder = extractCurrentBidder(bidItems);
     const nominatedBy = extractNominatedBy(bidItems);
 
@@ -388,7 +409,11 @@ function computeFingerprint(state) {
     '|' +
     (state.myTeamId || '') +
     '|' +
-    teamBudgets
+    teamBudgets +
+    '|' +
+    (state.pickCount ?? '') +
+    '|' +
+    (state.totalPicks ?? '')
   );
 }
 
@@ -412,8 +437,8 @@ function handleStateUpdate(state) {
       currentNomination: state.currentNomination || null,
       myTeamId: state.myTeamId || null,
       teams: state.teams || [],
-      pickCount: state.pickCount || null,
-      totalPicks: state.totalPicks || null,
+      pickCount: state.pickCount ?? null,
+      totalPicks: state.totalPicks ?? null,
       source: state.source || 'unknown',
     },
   };

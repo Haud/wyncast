@@ -537,14 +537,14 @@ async fn handle_state_update(
     // Compute diff against previous state
     let diff = compute_state_diff(&state.previous_extension_state, &internal_payload);
 
-    // Reconcile team budgets from ESPN-scraped data
-    if !internal_payload.teams.is_empty() {
-        state
-            .draft_state
-            .reconcile_budgets(&internal_payload.teams);
+    // Process new picks first (updates local budget tracking)
+    if !diff.new_picks.is_empty() {
+        info!("Processing {} new picks", diff.new_picks.len());
+        state.process_new_picks(diff.new_picks);
     }
 
-    // Update pick count / total picks from ESPN clock label if available
+    // Update pick count / total picks from ESPN clock label if available.
+    // Done after process_new_picks so ESPN's authoritative count takes precedence.
     if let Some(pc) = internal_payload.pick_count {
         state.draft_state.pick_count = pc as usize;
     }
@@ -552,10 +552,12 @@ async fn handle_state_update(
         state.draft_state.total_picks = tp as usize;
     }
 
-    // Process new picks
-    if !diff.new_picks.is_empty() {
-        info!("Processing {} new picks", diff.new_picks.len());
-        state.process_new_picks(diff.new_picks);
+    // Reconcile team budgets from ESPN-scraped data.
+    // Done last so ESPN truth overrides any drift from local pick tracking.
+    if !internal_payload.teams.is_empty() {
+        state
+            .draft_state
+            .reconcile_budgets(&internal_payload.teams);
     }
 
     // Handle nomination changes

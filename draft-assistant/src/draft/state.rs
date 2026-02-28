@@ -869,6 +869,103 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_budgets_overrides_local_tracking() {
+        let mut state = DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
+
+        // Record some picks to set budget_spent/budget_remaining via local tracking
+        state.record_pick(DraftPick {
+            pick_number: 1,
+            team_id: "team_1".to_string(),
+            team_name: "Team 1".to_string(),
+            player_name: "Mike Trout".to_string(),
+            position: "CF".to_string(),
+            price: 45,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        });
+        state.record_pick(DraftPick {
+            pick_number: 2,
+            team_id: "team_2".to_string(),
+            team_name: "Team 2".to_string(),
+            player_name: "Shohei Ohtani".to_string(),
+            position: "SP".to_string(),
+            price: 50,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        });
+
+        // Verify local tracking state before reconciliation
+        let team1 = state.team("team_1").unwrap();
+        assert_eq!(team1.budget_spent, 45);
+        assert_eq!(team1.budget_remaining, 215);
+        let team2 = state.team("team_2").unwrap();
+        assert_eq!(team2.budget_spent, 50);
+        assert_eq!(team2.budget_remaining, 210);
+
+        // Reconcile with ESPN data that differs from local tracking
+        // (simulating drift or missed picks)
+        let espn_budgets = vec![
+            TeamBudgetPayload {
+                team_name: "Team 1".to_string(),
+                budget: 200, // ESPN says $200 remaining (vs local $215)
+            },
+            TeamBudgetPayload {
+                team_name: "Team 2".to_string(),
+                budget: 205, // ESPN says $205 remaining (vs local $210)
+            },
+        ];
+        state.reconcile_budgets(&espn_budgets);
+
+        // Verify ESPN values override local tracking
+        let team1 = state.team("team_1").unwrap();
+        assert_eq!(team1.budget_remaining, 200);
+        assert_eq!(team1.budget_spent, 60); // 260 - 200
+        let team2 = state.team("team_2").unwrap();
+        assert_eq!(team2.budget_remaining, 205);
+        assert_eq!(team2.budget_spent, 55); // 260 - 205
+    }
+
+    #[test]
+    fn reconcile_budgets_skips_non_matching_teams() {
+        let mut state = DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
+
+        // Record a pick to establish some local state
+        state.record_pick(DraftPick {
+            pick_number: 1,
+            team_id: "team_1".to_string(),
+            team_name: "Team 1".to_string(),
+            player_name: "Mike Trout".to_string(),
+            position: "CF".to_string(),
+            price: 45,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        });
+
+        // Reconcile with ESPN data that includes a non-existent team
+        let espn_budgets = vec![
+            TeamBudgetPayload {
+                team_name: "Nonexistent Team".to_string(),
+                budget: 100,
+            },
+            TeamBudgetPayload {
+                team_name: "Team 1".to_string(),
+                budget: 210,
+            },
+        ];
+        state.reconcile_budgets(&espn_budgets);
+
+        // Team 1 should be updated from ESPN
+        let team1 = state.team("team_1").unwrap();
+        assert_eq!(team1.budget_remaining, 210);
+        assert_eq!(team1.budget_spent, 50); // 260 - 210
+
+        // Team 2 should be unaffected (no ESPN data for it)
+        let team2 = state.team("team_2").unwrap();
+        assert_eq!(team2.budget_remaining, 260);
+        assert_eq!(team2.budget_spent, 0);
+    }
+
+    #[test]
     fn diff_detects_new_picks_when_reordered() {
         // Previous had picks 1 and 2
         let previous = StateUpdatePayload {
