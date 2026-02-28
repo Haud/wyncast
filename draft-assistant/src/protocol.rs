@@ -47,6 +47,12 @@ pub struct StateUpdatePayload {
     pub my_team_id: Option<String>,
     #[serde(default)]
     pub teams: Vec<TeamBudgetData>,
+    /// Current pick number from the ESPN clock label (e.g. "PK 128 OF 260").
+    #[serde(default)]
+    pub pick_count: Option<u32>,
+    /// Total number of picks from the ESPN clock label.
+    #[serde(default)]
+    pub total_picks: Option<u32>,
     pub source: Option<String>,
 }
 
@@ -299,6 +305,8 @@ mod tests {
                     team_name: "Vorticists".to_string(),
                     budget: 198,
                 }],
+                pick_count: None,
+                total_picks: None,
                 source: Some("dom_scraper".to_string()),
             },
         };
@@ -515,6 +523,8 @@ mod tests {
                 current_nomination: None,
                 my_team_id: Some("team_5".to_string()),
                 teams: vec![],
+                pick_count: None,
+                total_picks: None,
                 source: Some("test".to_string()),
             },
         };

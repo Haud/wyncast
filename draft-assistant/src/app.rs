@@ -13,7 +13,7 @@ use crate::config::Config;
 use crate::db::Database;
 use crate::draft::state::{
     compute_state_diff, ActiveNomination, DraftState, NominationPayload, PickPayload,
-    StateUpdatePayload,
+    StateUpdatePayload, TeamBudgetPayload,
 };
 use crate::llm::client::LlmClient;
 use crate::llm::prompt;
@@ -390,6 +390,16 @@ impl AppState {
                     eligible_slots: n.eligible_slots.clone(),
                 }
             }),
+            teams: payload
+                .teams
+                .iter()
+                .map(|t| TeamBudgetPayload {
+                    team_name: t.team_name.clone(),
+                    budget: t.budget,
+                })
+                .collect(),
+            pick_count: payload.pick_count,
+            total_picks: payload.total_picks,
         }
     }
 }
@@ -526,6 +536,21 @@ async fn handle_state_update(
 
     // Compute diff against previous state
     let diff = compute_state_diff(&state.previous_extension_state, &internal_payload);
+
+    // Reconcile team budgets from ESPN-scraped data
+    if !internal_payload.teams.is_empty() {
+        state
+            .draft_state
+            .reconcile_budgets(&internal_payload.teams);
+    }
+
+    // Update pick count / total picks from ESPN clock label if available
+    if let Some(pc) = internal_payload.pick_count {
+        state.draft_state.pick_count = pc as usize;
+    }
+    if let Some(tp) = internal_payload.total_picks {
+        state.draft_state.total_picks = tp as usize;
+    }
 
     // Process new picks
     if !diff.new_picks.is_empty() {
@@ -1762,6 +1787,8 @@ mod tests {
             }),
             my_team_id: Some("team_1".into()),
             teams: vec![],
+            pick_count: None,
+            total_picks: None,
             source: Some("test".into()),
         };
 

@@ -22,37 +22,25 @@ const SELECTORS = {
   teamBudgetItems: 'ul.picklist > li.picklist--item',
   teamBudgetName: 'div.team-name.truncate',
   teamBudgetCash: 'div.cash',
-  teamBudgetOwnModifier: 'auction-pick-component--own',
 
   // Current nomination / bidding area
   nominationContainer: 'div.pickArea',
   playerSelected: 'div[data-testid="player-selected"]',
   nominationPlayerName: 'span.playerinfo__playername',
-  nominationPlayerTeam: 'span.playerinfo__playerteam',
   nominationPlayerPos: 'span.playerinfo__playerpos',
-  nominationPreDraftVal: 'span.player-default-bid',
   nominationCurrentOffer: 'div.current-amount',
-  nominationBidButton: 'button.bid-player__button',
 
   // Bid history within nomination area
-  bidHistoryContainer: 'div.bid-history__container',
   bidHistoryItems: 'ul.bid-history__list > li.bid',
-  bidHistoryOwnBid: 'li.bid.own-bid',
 
   // Pick history / draft log (right column)
   pickLogEntries: 'li.pick-message__container',
   pickLogPlayerName: 'span.playerinfo__playername',
-  pickLogPlayerTeam: 'span.playerinfo__playerteam',
   pickLogPlayerPos: 'span.playerinfo__playerpos',
   pickLogInfo: 'div.pick-info',
 
   // My team identification via pick train
   myTeamContent: 'div.content.auction-pick-component--own',
-
-  // Roster table (left sidebar)
-  rosterModule: 'div.roster-module',
-  rosterRows: 'div.roster-module tr.Table__TR--sm',
-  rosterDropdown: 'div.roster__dropdown select.dropdown__select',
 };
 
 // Timing constants
@@ -174,16 +162,14 @@ function parseCurrentOffer(offerStr) {
 }
 
 /**
- * Extract the current bidder from the bid history list.
- * The most recent bid entry that is not the "own-bid" is the current high bidder.
+ * Extract the current bidder from a pre-queried bid history NodeList.
  * The first entry in the list is the most recent bid.
  */
-function extractCurrentBidder() {
+function extractCurrentBidder(bidItems) {
   try {
-    const items = document.querySelectorAll(SELECTORS.bidHistoryItems);
-    if (items.length > 0) {
+    if (bidItems && bidItems.length > 0) {
       // First item is most recent bid: e.g. "$2 Jamaica Jiggle Party"
-      const text = items[0].textContent.trim();
+      const text = bidItems[0].textContent.trim();
       // Parse "$N TeamName" format
       const match = text.match(/^\$\d+\s+(.+)$/);
       return match ? match[1].trim() : text;
@@ -195,16 +181,14 @@ function extractCurrentBidder() {
 }
 
 /**
- * Extract the nominating team from the bid history.
- * In ESPN's auction, the first bid is typically from the nominating team.
+ * Extract the nominating team from a pre-queried bid history NodeList.
  * The last entry in the bid history list is the original nomination.
  */
-function extractNominatedBy() {
+function extractNominatedBy(bidItems) {
   try {
-    const items = document.querySelectorAll(SELECTORS.bidHistoryItems);
-    if (items.length > 0) {
+    if (bidItems && bidItems.length > 0) {
       // Last item is the original nomination
-      const lastItem = items[items.length - 1];
+      const lastItem = bidItems[bidItems.length - 1];
       const text = lastItem.textContent.trim();
       const match = text.match(/^\$\d+\s+(.+)$/);
       return match ? match[1].trim() : text;
@@ -275,7 +259,6 @@ function scrapePickLog() {
 
     entriesArray.forEach((entry, idx) => {
       const playerName = extractText(entry, SELECTORS.pickLogPlayerName);
-      const playerTeam = extractText(entry, SELECTORS.pickLogPlayerTeam);
       const position = extractText(entry, SELECTORS.pickLogPlayerPos);
       const pickInfoStr = extractText(entry, SELECTORS.pickLogInfo);
 
@@ -283,7 +266,7 @@ function scrapePickLog() {
         const { price, teamName } = parsePickInfo(pickInfoStr);
         picks.push({
           pickNumber: idx + 1,
-          teamId: '',
+          teamId: teamName,
           teamName: teamName,
           playerId: '',
           playerName: playerName,
@@ -317,8 +300,10 @@ function scrapeCurrentNomination() {
     const offerStr = extractText(playerSelected, SELECTORS.nominationCurrentOffer);
     const currentBid = parseCurrentOffer(offerStr);
     const timeRemaining = parseClockDigits();
-    const currentBidder = extractCurrentBidder();
-    const nominatedBy = extractNominatedBy();
+    // Query bid history once and pass to both extraction functions
+    const bidItems = document.querySelectorAll(SELECTORS.bidHistoryItems);
+    const currentBidder = extractCurrentBidder(bidItems);
+    const nominatedBy = extractNominatedBy(bidItems);
 
     return {
       playerId: '',
@@ -345,6 +330,8 @@ function scrapeDom() {
     currentNomination: null,
     myTeamId: null,
     teams: [],
+    pickCount: null,
+    totalPicks: null,
     source: 'dom_scrape',
   };
 
@@ -357,6 +344,13 @@ function scrapeDom() {
 
     // Scrape team budgets from pick train
     state.teams = scrapeTeamBudgets();
+
+    // Parse pick counter label (e.g. "PK 128 OF 260")
+    const pickLabel = parsePickLabel();
+    if (pickLabel) {
+      state.pickCount = pickLabel.current;
+      state.totalPicks = pickLabel.total;
+    }
 
     // Identify my team
     const myTeamName = identifyMyTeam();
@@ -375,19 +369,39 @@ function scrapeDom() {
 // State handling and forwarding to background script
 // ---------------------------------------------------------------------------
 
-/** Last state sent (for deduplication) */
-let lastState = null;
+/** Last state fingerprint (for deduplication, excludes timeRemaining) */
+let lastFingerprint = null;
+
+/**
+ * Compute a lightweight fingerprint of the state for deduplication.
+ * Excludes timeRemaining since it changes every second and would defeat dedup.
+ */
+function computeFingerprint(state) {
+  const picks = state.picks || [];
+  const nom = state.currentNomination;
+  const teams = state.teams || [];
+  const teamBudgets = teams.map((t) => t.teamName + ':' + t.budget).join(',');
+  return (
+    picks.length +
+    '|' +
+    (nom ? nom.playerName + '|' + nom.currentBid + '|' + (nom.currentBidder || '') : 'none') +
+    '|' +
+    (state.myTeamId || '') +
+    '|' +
+    teamBudgets
+  );
+}
 
 /**
  * Process an extracted state update and forward to the background script.
  */
 function handleStateUpdate(state) {
-  // Simple deduplication: skip if the state is identical to the last one sent
-  const stateJson = JSON.stringify(state);
-  if (stateJson === lastState) {
+  // Deduplication: skip if the fingerprint (excluding timeRemaining) is unchanged
+  const fingerprint = computeFingerprint(state);
+  if (fingerprint === lastFingerprint) {
     return;
   }
-  lastState = stateJson;
+  lastFingerprint = fingerprint;
 
   const message = {
     source: 'wyndham-draft-sync',
@@ -398,6 +412,8 @@ function handleStateUpdate(state) {
       currentNomination: state.currentNomination || null,
       myTeamId: state.myTeamId || null,
       teams: state.teams || [],
+      pickCount: state.pickCount || null,
+      totalPicks: state.totalPicks || null,
       source: state.source || 'unknown',
     },
   };
@@ -453,8 +469,9 @@ function startObserving(target) {
     childList: true,
     subtree: true,
     characterData: true,
-    // Observe all attribute changes to catch class/style/data-* updates
+    // Only observe class and data-testid attribute changes to avoid noise
     attributes: true,
+    attributeFilter: ['class', 'data-testid'],
   });
 
   log('MutationObserver attached to:', target.tagName, target.className || target.id || '');
