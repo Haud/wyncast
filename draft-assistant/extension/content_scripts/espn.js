@@ -266,10 +266,15 @@ function scrapePickLog() {
     const entriesArray = Array.from(entries).reverse();
 
     // Use ESPN's pick counter to compute absolute pick numbers.
+    // The pick label shows the CURRENT nomination (in-progress), e.g.
+    // "PK 2 OF 260" means pick #2 is being nominated, so only 1 pick is
+    // complete. Subtract 1 to get the count of completed picks.
     // If the label says "PK 128 OF 260" and we have 30 entries visible,
-    // they represent picks 99-128 (not 1-30).
+    // they represent picks 98-127 (not 1-30).
     const pickLabel = parsePickLabel();
-    const totalPicksSoFar = pickLabel ? pickLabel.current : entriesArray.length;
+    const completedPicks = pickLabel
+      ? Math.max(pickLabel.current - 1, entriesArray.length)
+      : entriesArray.length;
 
     entriesArray.forEach((entry, idx) => {
       const playerName = extractText(entry, SELECTORS.pickLogPlayerName);
@@ -284,7 +289,7 @@ function scrapePickLog() {
       if (playerName) {
         const { price, teamName } = parsePickInfo(pickInfoStr);
         picks.push({
-          pickNumber: totalPicksSoFar - entriesArray.length + idx + 1,
+          pickNumber: completedPicks - entriesArray.length + idx + 1,
           teamId: teamName,
           teamName: teamName,
           playerId: '',
