@@ -324,9 +324,7 @@ mod tests {
                 gs_per_week: 7,
             },
             teams: HashMap::new(),
-            my_team: MyTeam {
-                team_id: "team_1".into(),
-            },
+            my_team: None,
         }
     }
 
@@ -1005,16 +1003,22 @@ mod tests {
         roster_config.insert("SP".into(), 1);
         roster_config.insert("BE".into(), 1);
 
-        let teams: Vec<(String, String)> = (1..=10)
-            .map(|i| (format!("team_{}", i), format!("Team {}", i)))
+        let espn_budgets: Vec<crate::draft::state::TeamBudgetPayload> = (1..=10)
+            .map(|i| crate::draft::state::TeamBudgetPayload {
+                team_id: format!("{}", i),
+                team_name: format!("Team {}", i),
+                budget: 260,
+            })
             .collect();
 
-        let mut draft_state = DraftState::new(teams, "team_1", 260, &roster_config);
+        let mut draft_state = DraftState::new(260, &roster_config);
+        draft_state.reconcile_budgets(&espn_budgets);
+        draft_state.set_my_team_by_name("Team 1");
 
         // Team 1 drafts a player for $50
         draft_state.record_pick(DraftPick {
             pick_number: 1,
-            team_id: "team_1".into(),
+            team_id: "1".into(),
             team_name: "Team 1".into(),
             player_name: "Drafted Star".into(),
             position: "1B".into(),

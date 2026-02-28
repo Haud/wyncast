@@ -2,6 +2,11 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::draft::pick::DraftPick;
+use crate::draft::roster::RosterSlot;
+use crate::valuation::scarcity::ScarcityEntry;
+use crate::valuation::zscore::PlayerValuation;
+
 // ---------------------------------------------------------------------------
 // Extension -> Backend messages (JSON over WebSocket)
 // ---------------------------------------------------------------------------
@@ -87,6 +92,10 @@ pub struct NominationData {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct TeamBudgetData {
+    /// ESPN team ID extracted from the pick train (e.g. "1", "2").
+    /// Optional for backward compatibility with older extension messages.
+    #[serde(default)]
+    pub team_id: Option<String>,
     pub team_name: String,
     pub budget: u32,
 }
@@ -148,7 +157,7 @@ pub enum UserCommand {
 }
 
 /// Updates pushed from the app orchestrator to the TUI render loop.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum UiUpdate {
     /// Full state snapshot for a complete redraw.
     StateSnapshot(Box<AppSnapshot>),
@@ -216,11 +225,43 @@ pub enum ScrollDirection {
 // ---------------------------------------------------------------------------
 
 /// Snapshot of the full application state, sent to the TUI for rendering.
-#[derive(Debug, Clone, Default, PartialEq)]
+///
+/// Carries all recalculated data after picks are processed so the TUI
+/// can update its ViewState in one shot.
+#[derive(Debug, Clone)]
 pub struct AppSnapshot {
     pub pick_count: usize,
     pub total_picks: usize,
     pub active_tab: Option<TabId>,
+    /// Remaining player pool with updated valuations.
+    pub available_players: Vec<PlayerValuation>,
+    /// Recomputed positional scarcity indices.
+    pub positional_scarcity: Vec<ScarcityEntry>,
+    /// Chronological list of completed draft picks.
+    pub draft_log: Vec<DraftPick>,
+    /// User's roster slots (position + optional player).
+    pub my_roster: Vec<RosterSlot>,
+    /// Budget fields for the user's team.
+    pub budget_spent: u32,
+    pub budget_remaining: u32,
+    pub salary_cap: u32,
+    /// Current league-wide inflation rate.
+    pub inflation_rate: f64,
+    /// Maximum bid the user can make right now.
+    pub max_bid: u32,
+    /// Average dollars remaining per empty roster slot.
+    pub avg_per_slot: f64,
+    /// Per-team summaries (name, budget, slots filled/total).
+    pub team_snapshots: Vec<TeamSnapshot>,
+}
+
+/// Lightweight summary of a team's draft state for the snapshot.
+#[derive(Debug, Clone)]
+pub struct TeamSnapshot {
+    pub name: String,
+    pub budget_remaining: u32,
+    pub slots_filled: usize,
+    pub total_slots: usize,
 }
 
 /// Info about the current active nomination.
@@ -302,6 +343,7 @@ mod tests {
                 }),
                 my_team_id: Some("team_7".to_string()),
                 teams: vec![TeamBudgetData {
+                    team_id: Some("3".to_string()),
                     team_name: "Vorticists".to_string(),
                     budget: 198,
                 }],
@@ -544,14 +586,31 @@ mod tests {
         assert!(!json.contains("eligible_slots"));
     }
 
-    // -- Placeholder struct defaults --
+    // -- AppSnapshot construction --
 
     #[test]
-    fn app_snapshot_default() {
-        let snap = AppSnapshot::default();
+    fn app_snapshot_construction() {
+        let snap = AppSnapshot {
+            pick_count: 0,
+            total_picks: 0,
+            active_tab: None,
+            available_players: vec![],
+            positional_scarcity: vec![],
+            draft_log: vec![],
+            my_roster: vec![],
+            budget_spent: 0,
+            budget_remaining: 260,
+            salary_cap: 260,
+            inflation_rate: 1.0,
+            max_bid: 0,
+            avg_per_slot: 0.0,
+            team_snapshots: vec![],
+        };
         assert_eq!(snap.pick_count, 0);
         assert_eq!(snap.total_picks, 0);
         assert_eq!(snap.active_tab, None);
+        assert!(snap.available_players.is_empty());
+        assert!(snap.team_snapshots.is_empty());
     }
 
     // -- eligible_slots backward compatibility --

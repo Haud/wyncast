@@ -377,9 +377,7 @@ mod tests {
                 gs_per_week: 7,
             },
             teams: HashMap::new(),
-            my_team: MyTeam {
-                team_id: "team_1".into(),
-            },
+            my_team: None,
         }
     }
 
@@ -488,10 +486,21 @@ mod tests {
         }
     }
 
-    fn test_teams() -> Vec<(String, String)> {
+    fn test_espn_budgets() -> Vec<crate::draft::state::TeamBudgetPayload> {
         (1..=2)
-            .map(|i| (format!("team_{}", i), format!("Team {}", i)))
+            .map(|i| crate::draft::state::TeamBudgetPayload {
+                team_id: format!("{}", i),
+                team_name: format!("Team {}", i),
+                budget: 260,
+            })
             .collect()
+    }
+
+    fn create_test_draft_state() -> DraftState {
+        let mut state = DraftState::new(260, &test_roster_config());
+        state.reconcile_budgets(&test_espn_budgets());
+        state.set_my_team_by_name("Team 1");
+        state
     }
 
     fn test_roster_config() -> HashMap<String, usize> {
@@ -516,12 +525,7 @@ mod tests {
     fn recalculate_all_removes_player_changes_values() {
         let league = test_league_config();
         let strategy = test_strategy_config();
-        let draft_state = DraftState::new(
-            test_teams(),
-            "team_1",
-            league.salary_cap,
-            &test_roster_config(),
-        );
+        let draft_state = create_test_draft_state();
 
         // Create a pool of hitters and pitchers with varied stats.
         let mut players = vec![
@@ -591,12 +595,7 @@ mod tests {
     fn recalculate_all_empty_pool() {
         let league = test_league_config();
         let strategy = test_strategy_config();
-        let draft_state = DraftState::new(
-            test_teams(),
-            "team_1",
-            league.salary_cap,
-            &test_roster_config(),
-        );
+        let draft_state = create_test_draft_state();
 
         let mut players: Vec<PlayerValuation> = Vec::new();
         recalculate_all(&mut players, &league, &strategy, &draft_state);
@@ -607,12 +606,7 @@ mod tests {
     fn recalculate_all_pitchers_only() {
         let league = test_league_config();
         let strategy = test_strategy_config();
-        let draft_state = DraftState::new(
-            test_teams(),
-            "team_1",
-            league.salary_cap,
-            &test_roster_config(),
-        );
+        let draft_state = create_test_draft_state();
 
         let mut players = vec![
             make_pitcher("SP1", 220, 16, 0, 0, 190.0, 3.00, 1.05, PitcherType::SP),
@@ -633,12 +627,7 @@ mod tests {
     fn recalculate_all_hitters_only() {
         let league = test_league_config();
         let strategy = test_strategy_config();
-        let draft_state = DraftState::new(
-            test_teams(),
-            "team_1",
-            league.salary_cap,
-            &test_roster_config(),
-        );
+        let draft_state = create_test_draft_state();
 
         let mut players = vec![
             make_hitter("H1", 90, 35, 95, 60, 15, 550, 0.290, vec![Position::FirstBase]),

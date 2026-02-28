@@ -47,16 +47,15 @@ fn roster_config() -> HashMap<String, usize> {
     m
 }
 
-/// Build a 10-team list -- single source of truth for team data.
-fn ten_teams() -> Vec<(String, String)> {
+/// Build ESPN-style team budget data for 10 teams, each with $260 budget.
+fn ten_team_budgets() -> Vec<draft_assistant::draft::state::TeamBudgetPayload> {
     (1..=10)
-        .map(|i| (format!("team_{i}"), format!("Team {i}")))
+        .map(|i| draft_assistant::draft::state::TeamBudgetPayload {
+            team_id: format!("{}", i),
+            team_name: format!("Team {}", i),
+            budget: 260,
+        })
         .collect()
-}
-
-/// Build a teams HashMap for LeagueConfig (derived from `ten_teams()`).
-fn teams_map() -> HashMap<String, String> {
-    ten_teams().into_iter().collect()
 }
 
 /// Build a test-ready Config with inline league/strategy settings (no files).
@@ -94,10 +93,8 @@ fn inline_config() -> Config {
             max_rp: 7,
             gs_per_week: 7,
         },
-        teams: teams_map(),
-        my_team: MyTeam {
-            team_id: "team_1".into(),
-        },
+        teams: HashMap::new(),
+        my_team: None,
     };
 
     let strategy = StrategyConfig {
@@ -166,13 +163,15 @@ fn load_fixture_projections(config: &Config) -> AllProjections {
 }
 
 /// Create a full AppState wired up with fixture data, in-memory DB, and
-/// LLM disabled.
+/// LLM disabled. Teams are registered from ESPN-style budget data.
 fn create_test_app_state_from_fixtures() -> AppState {
     let config = inline_config();
     let projections = load_fixture_projections(&config);
     let mut available = load_fixture_players(&config);
 
-    let draft_state = DraftState::new(ten_teams(), "team_1", 260, &roster_config());
+    let mut draft_state = DraftState::new(260, &roster_config());
+    draft_state.reconcile_budgets(&ten_team_budgets());
+    draft_state.set_my_team_by_name("Team 1");
 
     // Recalculate with draft state for consistency
     draft_assistant::valuation::recalculate_all(
@@ -212,7 +211,7 @@ pub fn generate_mock_draft_events() -> Vec<MockDraftEvent> {
     vec![
         MockDraftEvent {
             pick_number: 1,
-            team_id: "team_3".into(),
+            team_id: "3".into(),
             team_name: "Team 3".into(),
             player_name: "Shohei Ohtani".into(),
             position: "DH".into(),
@@ -221,7 +220,7 @@ pub fn generate_mock_draft_events() -> Vec<MockDraftEvent> {
         },
         MockDraftEvent {
             pick_number: 2,
-            team_id: "team_4".into(),
+            team_id: "4".into(),
             team_name: "Team 4".into(),
             player_name: "Aaron Judge".into(),
             position: "OF".into(),
@@ -230,7 +229,7 @@ pub fn generate_mock_draft_events() -> Vec<MockDraftEvent> {
         },
         MockDraftEvent {
             pick_number: 3,
-            team_id: "team_5".into(),
+            team_id: "5".into(),
             team_name: "Team 5".into(),
             player_name: "Juan Soto".into(),
             position: "OF".into(),
@@ -239,7 +238,7 @@ pub fn generate_mock_draft_events() -> Vec<MockDraftEvent> {
         },
         MockDraftEvent {
             pick_number: 4,
-            team_id: "team_6".into(),
+            team_id: "6".into(),
             team_name: "Team 6".into(),
             player_name: "Bobby Witt Jr.".into(),
             position: "SS".into(),
@@ -248,7 +247,7 @@ pub fn generate_mock_draft_events() -> Vec<MockDraftEvent> {
         },
         MockDraftEvent {
             pick_number: 5,
-            team_id: "team_7".into(),
+            team_id: "7".into(),
             team_name: "Team 7".into(),
             player_name: "Mookie Betts".into(),
             position: "SS".into(),
@@ -257,7 +256,7 @@ pub fn generate_mock_draft_events() -> Vec<MockDraftEvent> {
         },
         MockDraftEvent {
             pick_number: 6,
-            team_id: "team_8".into(),
+            team_id: "8".into(),
             team_name: "Team 8".into(),
             player_name: "Trea Turner".into(),
             position: "SS".into(),
@@ -266,7 +265,7 @@ pub fn generate_mock_draft_events() -> Vec<MockDraftEvent> {
         },
         MockDraftEvent {
             pick_number: 7,
-            team_id: "team_9".into(),
+            team_id: "9".into(),
             team_name: "Team 9".into(),
             player_name: "Freddie Freeman".into(),
             position: "1B".into(),
@@ -275,7 +274,7 @@ pub fn generate_mock_draft_events() -> Vec<MockDraftEvent> {
         },
         MockDraftEvent {
             pick_number: 8,
-            team_id: "team_10".into(),
+            team_id: "10".into(),
             team_name: "Team 10".into(),
             player_name: "Gerrit Cole".into(),
             position: "SP".into(),
@@ -529,7 +528,10 @@ fn crash_recovery_restores_picks_and_continues() {
     assert!(db.has_draft_in_progress().unwrap());
 
     // Simulate restart: create a fresh AppState with the same DB
-    let draft_state = DraftState::new(ten_teams(), "team_1", 260, &roster_config());
+    let mut draft_state = DraftState::new(260, &roster_config());
+    draft_state.reconcile_budgets(&ten_team_budgets());
+    draft_state.set_my_team_by_name("Team 1");
+
     draft_assistant::valuation::recalculate_all(
         &mut available,
         &config.league,
@@ -568,11 +570,11 @@ fn crash_recovery_restores_picks_and_continues() {
     assert!(!state.available_players.iter().any(|p| p.name == "Juan Soto"));
 
     // Budget should be updated for each team
-    let team3 = state.draft_state.team("team_3").unwrap();
+    let team3 = state.draft_state.team("3").unwrap();
     assert_eq!(team3.budget_spent, 62);
-    let team4 = state.draft_state.team("team_4").unwrap();
+    let team4 = state.draft_state.team("4").unwrap();
     assert_eq!(team4.budget_spent, 55);
-    let team5 = state.draft_state.team("team_5").unwrap();
+    let team5 = state.draft_state.team("5").unwrap();
     assert_eq!(team5.budget_spent, 48);
 
     // Inflation and scarcity should be recalculated
@@ -597,7 +599,9 @@ fn crash_recovery_empty_db_returns_false() {
     let config = inline_config();
     let projections = load_fixture_projections(&config);
     let available = load_fixture_players(&config);
-    let draft_state = DraftState::new(ten_teams(), "team_1", 260, &roster_config());
+    let mut draft_state = DraftState::new(260, &roster_config());
+    draft_state.reconcile_budgets(&ten_team_budgets());
+    draft_state.set_my_team_by_name("Team 1");
     let db = Database::open(":memory:").expect("in-memory db");
     let llm_client = LlmClient::Disabled;
     let (llm_tx, _llm_rx) = mpsc::channel(16);
@@ -782,7 +786,7 @@ fn nomination_analysis_prompt_contains_required_sections() {
     let prompt = draft_assistant::llm::prompt::build_nomination_analysis_prompt(
         &player,
         &nomination,
-        &state.draft_state.my_team().roster,
+        &state.draft_state.my_team().unwrap().roster,
         &state.category_needs,
         &state.scarcity,
         &state.available_players,
@@ -832,7 +836,7 @@ fn nomination_planning_prompt_contains_required_sections() {
     let state = create_test_app_state_from_fixtures();
 
     let prompt = draft_assistant::llm::prompt::build_nomination_planning_prompt(
-        &state.draft_state.my_team().roster,
+        &state.draft_state.my_team().unwrap().roster,
         &state.category_needs,
         &state.scarcity,
         &state.available_players,
@@ -1131,7 +1135,16 @@ async fn event_loop_processes_state_update_with_picks() {
     );
     ws_tx.send(WsEvent::Message(json)).await.unwrap();
 
-    // Should receive a NominationUpdate
+    // Should receive a StateSnapshot first (new picks trigger snapshot)
+    let update = ui_rx.recv().await.unwrap();
+    match update {
+        UiUpdate::StateSnapshot(snapshot) => {
+            assert!(snapshot.pick_count > 0, "Pick count should be > 0 after processing picks");
+        }
+        other => panic!("Expected StateSnapshot, got {:?}", other),
+    }
+
+    // Then receive the NominationUpdate
     let update = ui_rx.recv().await.unwrap();
     match update {
         UiUpdate::NominationUpdate(info) => {
@@ -1167,18 +1180,18 @@ async fn event_loop_handles_connection_lifecycle() {
         .unwrap();
 
     let update = ui_rx.recv().await.unwrap();
-    assert_eq!(
-        update,
-        UiUpdate::ConnectionStatus(ConnectionStatus::Connected)
+    assert!(
+        matches!(update, UiUpdate::ConnectionStatus(ConnectionStatus::Connected)),
+        "Expected ConnectionStatus(Connected), got {:?}", update
     );
 
     // Send disconnected
     ws_tx.send(WsEvent::Disconnected).await.unwrap();
 
     let update = ui_rx.recv().await.unwrap();
-    assert_eq!(
-        update,
-        UiUpdate::ConnectionStatus(ConnectionStatus::Disconnected)
+    assert!(
+        matches!(update, UiUpdate::ConnectionStatus(ConnectionStatus::Disconnected)),
+        "Expected ConnectionStatus(Disconnected), got {:?}", update
     );
 
     // Quit
@@ -1207,7 +1220,14 @@ async fn event_loop_incremental_state_updates() {
     );
     ws_tx.send(WsEvent::Message(json1)).await.unwrap();
 
-    // Should receive NominationUpdate for Aaron Judge
+    // Should receive StateSnapshot first (new picks trigger snapshot)
+    let update = ui_rx.recv().await.unwrap();
+    assert!(
+        matches!(&update, UiUpdate::StateSnapshot(_)),
+        "Expected StateSnapshot, got {:?}", update
+    );
+
+    // Then receive NominationUpdate for Aaron Judge
     let update = ui_rx.recv().await.unwrap();
     match &update {
         UiUpdate::NominationUpdate(info) => {
@@ -1224,13 +1244,31 @@ async fn event_loop_incremental_state_updates() {
     );
     ws_tx.send(WsEvent::Message(json2)).await.unwrap();
 
-    // Should receive NominationUpdate for Juan Soto (new nomination)
+    // Should receive StateSnapshot first (new pick triggers snapshot)
+    let update2 = ui_rx.recv().await.unwrap();
+    assert!(
+        matches!(&update2, UiUpdate::StateSnapshot(_)),
+        "Expected StateSnapshot, got {:?}", update2
+    );
+
+    // Then NominationCleared (previous nomination resolved) followed by
+    // NominationUpdate for Juan Soto
     let update2 = ui_rx.recv().await.unwrap();
     match &update2 {
+        UiUpdate::NominationCleared => {
+            // Previous nomination was cleared; next should be the new one
+            let update3 = ui_rx.recv().await.unwrap();
+            match &update3 {
+                UiUpdate::NominationUpdate(info) => {
+                    assert_eq!(info.player_name, "Juan Soto");
+                }
+                other => panic!("Expected NominationUpdate for Juan Soto after NominationCleared, got {:?}", other),
+            }
+        }
         UiUpdate::NominationUpdate(info) => {
             assert_eq!(info.player_name, "Juan Soto");
         }
-        other => panic!("Expected NominationUpdate for Juan Soto, got {:?}", other),
+        other => panic!("Expected NominationCleared or NominationUpdate for Juan Soto, got {:?}", other),
     }
 
     // Quit
@@ -1257,11 +1295,12 @@ fn mock_event_generator_produces_valid_events() {
         );
     }
 
-    // All team_ids should be valid
+    // All team_ids should be valid (numeric string format from ESPN)
     for event in &events {
         assert!(
-            event.team_id.starts_with("team_"),
-            "Team ID should start with team_"
+            event.team_id.parse::<u32>().is_ok(),
+            "Team ID should be a numeric string, got: {}",
+            event.team_id
         );
     }
 
@@ -1567,7 +1606,7 @@ fn end_to_end_pipeline() {
         let prompt = draft_assistant::llm::prompt::build_nomination_analysis_prompt(
             player,
             &nomination,
-            &state.draft_state.my_team().roster,
+            &state.draft_state.my_team().unwrap().roster,
             &state.category_needs,
             &state.scarcity,
             &state.available_players,

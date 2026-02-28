@@ -174,6 +174,37 @@ impl ViewState {
         if let Some(tab) = snapshot.active_tab {
             self.active_tab = tab;
         }
+
+        // Recalculated data from the valuation pipeline
+        self.available_players = snapshot.available_players;
+        self.positional_scarcity = snapshot.positional_scarcity;
+        self.draft_log = snapshot.draft_log;
+        self.my_roster = snapshot.my_roster;
+
+        // Budget status
+        self.budget = BudgetStatus {
+            spent: snapshot.budget_spent,
+            remaining: snapshot.budget_remaining,
+            cap: snapshot.salary_cap,
+            inflation_rate: snapshot.inflation_rate,
+            max_bid: snapshot.max_bid,
+            avg_per_slot: snapshot.avg_per_slot,
+        };
+
+        // Inflation rate
+        self.inflation = snapshot.inflation_rate;
+
+        // Team summaries
+        self.team_summaries = snapshot
+            .team_snapshots
+            .into_iter()
+            .map(|ts| TeamSummary {
+                name: ts.name,
+                budget_remaining: ts.budget_remaining,
+                slots_filled: ts.slots_filled,
+                total_slots: ts.total_slots,
+            })
+            .collect();
     }
 }
 
@@ -362,6 +393,7 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::TeamSnapshot;
 
     #[test]
     fn view_state_default_is_sensible() {
@@ -398,14 +430,30 @@ mod tests {
         assert!((budget.avg_per_slot - 0.0).abs() < f64::EPSILON);
     }
 
+    /// Helper to build a test AppSnapshot with sensible defaults.
+    fn test_snapshot(pick_count: usize, total_picks: usize, active_tab: Option<TabId>) -> AppSnapshot {
+        AppSnapshot {
+            pick_count,
+            total_picks,
+            active_tab,
+            available_players: vec![],
+            positional_scarcity: vec![],
+            draft_log: vec![],
+            my_roster: vec![],
+            budget_spent: 0,
+            budget_remaining: 260,
+            salary_cap: 260,
+            inflation_rate: 1.0,
+            max_bid: 0,
+            avg_per_slot: 0.0,
+            team_snapshots: vec![],
+        }
+    }
+
     #[test]
     fn apply_snapshot_updates_fields() {
         let mut state = ViewState::default();
-        let snapshot = AppSnapshot {
-            pick_count: 42,
-            total_picks: 260,
-            active_tab: Some(TabId::DraftLog),
-        };
+        let snapshot = test_snapshot(42, 260, Some(TabId::DraftLog));
         state.apply_snapshot(snapshot);
         assert_eq!(state.pick_number, 42);
         assert_eq!(state.total_picks, 260);
@@ -416,11 +464,7 @@ mod tests {
     fn apply_snapshot_preserves_tab_when_none() {
         let mut state = ViewState::default();
         state.active_tab = TabId::Available;
-        let snapshot = AppSnapshot {
-            pick_count: 10,
-            total_picks: 260,
-            active_tab: None,
-        };
+        let snapshot = test_snapshot(10, 260, None);
         state.apply_snapshot(snapshot);
         assert_eq!(state.pick_number, 10);
         assert_eq!(state.active_tab, TabId::Available);
@@ -429,15 +473,50 @@ mod tests {
     #[test]
     fn apply_ui_update_state_snapshot() {
         let mut state = ViewState::default();
-        let snapshot = AppSnapshot {
-            pick_count: 5,
-            total_picks: 100,
-            active_tab: Some(TabId::Teams),
-        };
+        let snapshot = test_snapshot(5, 100, Some(TabId::Teams));
         apply_ui_update(&mut state, UiUpdate::StateSnapshot(Box::new(snapshot)));
         assert_eq!(state.pick_number, 5);
         assert_eq!(state.total_picks, 100);
         assert_eq!(state.active_tab, TabId::Teams);
+    }
+
+    #[test]
+    fn apply_snapshot_updates_budget_and_teams() {
+        let mut state = ViewState::default();
+        let mut snapshot = test_snapshot(10, 260, None);
+        snapshot.budget_spent = 100;
+        snapshot.budget_remaining = 160;
+        snapshot.inflation_rate = 1.15;
+        snapshot.max_bid = 140;
+        snapshot.avg_per_slot = 10.0;
+        snapshot.team_snapshots = vec![
+            TeamSnapshot {
+                name: "Team 1".into(),
+                budget_remaining: 160,
+                slots_filled: 5,
+                total_slots: 26,
+            },
+            TeamSnapshot {
+                name: "Team 2".into(),
+                budget_remaining: 200,
+                slots_filled: 3,
+                total_slots: 26,
+            },
+        ];
+
+        state.apply_snapshot(snapshot);
+
+        assert_eq!(state.budget.spent, 100);
+        assert_eq!(state.budget.remaining, 160);
+        assert!((state.budget.inflation_rate - 1.15).abs() < f64::EPSILON);
+        assert_eq!(state.budget.max_bid, 140);
+        assert!((state.inflation - 1.15).abs() < f64::EPSILON);
+        assert_eq!(state.team_summaries.len(), 2);
+        assert_eq!(state.team_summaries[0].name, "Team 1");
+        assert_eq!(state.team_summaries[0].budget_remaining, 160);
+        assert_eq!(state.team_summaries[0].slots_filled, 5);
+        assert_eq!(state.team_summaries[1].name, "Team 2");
+        assert_eq!(state.team_summaries[1].budget_remaining, 200);
     }
 
     #[test]

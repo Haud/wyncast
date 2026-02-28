@@ -59,16 +59,8 @@ async fn main() -> anyhow::Result<()> {
         available_players.len()
     );
 
-    // 5. Initialize DraftState
-    let teams: Vec<(String, String)> = config
-        .league
-        .teams
-        .iter()
-        .map(|(id, name)| (id.clone(), name.clone()))
-        .collect();
+    // 5. Initialize DraftState (teams populated dynamically from ESPN live data)
     let draft_state = draft::state::DraftState::new(
-        teams,
-        &config.league.my_team.team_id,
         config.league.salary_cap,
         &config.league.roster,
     );

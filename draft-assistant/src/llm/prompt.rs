@@ -121,12 +121,18 @@ pub fn build_nomination_analysis_prompt(
     // Section 3: MY ROSTER
     prompt.push_str("## MY ROSTER\n");
     prompt.push_str(&format_roster_for_prompt(my_roster));
-    let my_team = draft_state.my_team();
-    prompt.push_str(&format!(
-        "Budget: ${} remaining | {} slots open\n\n",
-        my_team.budget_remaining,
-        my_roster.empty_slots(),
-    ));
+    if let Some(my_team) = draft_state.my_team() {
+        prompt.push_str(&format!(
+            "Budget: ${} remaining | {} slots open\n\n",
+            my_team.budget_remaining,
+            my_roster.empty_slots(),
+        ));
+    } else {
+        prompt.push_str(&format!(
+            "Budget: (unknown) | {} slots open\n\n",
+            my_roster.empty_slots(),
+        ));
+    }
 
     // Section 4: CATEGORY NEEDS
     prompt.push_str("## CATEGORY NEEDS\n");
@@ -198,6 +204,8 @@ pub fn build_nomination_planning_prompt(
     inflation: &InflationTracker,
 ) -> String {
     let my_team = draft_state.my_team();
+    let my_budget = my_team.map(|t| t.budget_remaining).unwrap_or(0);
+    let my_team_id = my_team.map(|t| t.team_id.as_str()).unwrap_or("");
     let mut prompt = String::with_capacity(2048);
 
     // Section 1: Header
@@ -205,7 +213,7 @@ pub fn build_nomination_planning_prompt(
         "## NOMINATION PLANNING\n\
          Pick #{} | My budget: ${} | Inflation rate: {:.2}x | {} open slots\n\n",
         draft_state.pick_count + 1,
-        my_team.budget_remaining,
+        my_budget,
         inflation.inflation_rate,
         my_roster.empty_slots(),
     ));
@@ -235,7 +243,7 @@ pub fn build_nomination_planning_prompt(
     // Section 5: OPPONENT BUDGET SNAPSHOT
     prompt.push_str("## OPPONENT BUDGETS\n");
     for team in &draft_state.teams {
-        if team.team_id == my_team.team_id {
+        if team.team_id == my_team_id {
             continue;
         }
         prompt.push_str(&format!(
@@ -682,12 +690,15 @@ pub fn find_nominate_to_sell_candidates(
     }
 
     // Count how many opponents need each position (have empty slots).
-    let my_team_id = &draft_state.my_team().team_id;
+    let my_team_id = draft_state
+        .my_team()
+        .map(|t| t.team_id.clone())
+        .unwrap_or_default();
     let mut position_demand: std::collections::HashMap<Position, usize> =
         std::collections::HashMap::new();
 
     for team in &draft_state.teams {
-        if team.team_id == *my_team_id {
+        if team.team_id == my_team_id {
             continue;
         }
         for &pos in &filled_positions {
@@ -876,23 +887,27 @@ mod tests {
                 max_rp: 7,
                 gs_per_week: 7,
             },
-            teams: {
-                let mut t = HashMap::new();
-                for i in 1..=10 {
-                    t.insert(format!("team_{}", i), format!("Team {}", i));
-                }
-                t
-            },
-            my_team: MyTeam {
-                team_id: "team_1".into(),
-            },
+            teams: HashMap::new(),
+            my_team: None,
         }
     }
 
-    fn test_teams() -> Vec<(String, String)> {
+    fn test_espn_budgets() -> Vec<crate::draft::state::TeamBudgetPayload> {
         (1..=10)
-            .map(|i| (format!("team_{}", i), format!("Team {}", i)))
+            .map(|i| crate::draft::state::TeamBudgetPayload {
+                team_id: format!("{}", i),
+                team_name: format!("Team {}", i),
+                budget: 260,
+            })
             .collect()
+    }
+
+    /// Helper: create a DraftState with teams pre-registered from ESPN data.
+    fn create_test_draft_state() -> DraftState {
+        let mut state = DraftState::new(260, &test_roster_config());
+        state.reconcile_budgets(&test_espn_budgets());
+        state.set_my_team_by_name("Team 1");
+        state
     }
 
     fn make_hitter(name: &str, vor: f64, positions: Vec<Position>, dollar: f64) -> PlayerValuation {
@@ -975,7 +990,7 @@ mod tests {
             make_hitter("Similar CF", 8.0, vec![Position::CenterField], 38.0),
         ];
         let scarcity = compute_scarcity(&available, &league);
-        let draft_state = DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
+        let draft_state = create_test_draft_state();
         let inflation = InflationTracker::new();
 
         let prompt = build_nomination_analysis_prompt(
@@ -1017,7 +1032,7 @@ mod tests {
         let league = test_league_config();
         let available = vec![player.clone()];
         let scarcity = compute_scarcity(&available, &league);
-        let draft_state = DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
+        let draft_state = create_test_draft_state();
         let inflation = InflationTracker::new();
 
         let prompt = build_nomination_analysis_prompt(
@@ -1049,7 +1064,7 @@ mod tests {
             make_pitcher("P1", 7.0, PitcherType::SP, 30.0),
         ];
         let scarcity = compute_scarcity(&available, &league);
-        let draft_state = DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
+        let draft_state = create_test_draft_state();
         let inflation = InflationTracker::new();
 
         let prompt = build_nomination_planning_prompt(
@@ -1077,7 +1092,7 @@ mod tests {
         let league = test_league_config();
         let available = vec![make_hitter("H1", 10.0, vec![Position::FirstBase], 40.0)];
         let scarcity = compute_scarcity(&available, &league);
-        let mut draft_state = DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
+        let mut draft_state = create_test_draft_state();
 
         // Record a pick so Team 2 has spent money
         draft_state.record_pick(DraftPick {
@@ -1111,7 +1126,7 @@ mod tests {
 
     #[test]
     fn find_market_comps_empty_draft() {
-        let draft_state = DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
+        let draft_state = create_test_draft_state();
         let player = make_hitter("Test", 5.0, vec![Position::FirstBase], 20.0);
         let available = vec![player.clone()];
 
@@ -1121,7 +1136,7 @@ mod tests {
 
     #[test]
     fn find_market_comps_with_picks() {
-        let mut draft_state = DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
+        let mut draft_state = create_test_draft_state();
 
         // Draft a first baseman for $25
         draft_state.record_pick(DraftPick {
@@ -1159,7 +1174,7 @@ mod tests {
 
     #[test]
     fn find_market_comps_limits_to_5() {
-        let mut draft_state = DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
+        let mut draft_state = create_test_draft_state();
 
         for i in 0..10 {
             draft_state.record_pick(DraftPick {
@@ -1256,7 +1271,7 @@ mod tests {
             make_hitter("Cheap CF", 2.0, vec![Position::CenterField], 5.0),
         ];
 
-        let draft_state = DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
+        let draft_state = create_test_draft_state();
 
         let candidates = find_nominate_to_sell_candidates(&available, &roster, &draft_state, 5);
 
@@ -1275,7 +1290,7 @@ mod tests {
             make_hitter("Cheap C", 0.5, vec![Position::Catcher], 3.0),
         ];
 
-        let draft_state = DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
+        let draft_state = create_test_draft_state();
 
         let candidates = find_nominate_to_sell_candidates(&available, &roster, &draft_state, 5);
         assert!(candidates.is_empty(), "should not nominate cheap players to sell");
@@ -1289,7 +1304,7 @@ mod tests {
             make_hitter("Good 1B", 10.0, vec![Position::FirstBase], 40.0),
         ];
 
-        let draft_state = DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
+        let draft_state = create_test_draft_state();
 
         let candidates = find_nominate_to_sell_candidates(&available, &roster, &draft_state, 5);
         assert!(candidates.is_empty(), "should not sell when no positions filled");

@@ -31,18 +31,5 @@ max_sp = 7
 max_rp = 7
 gs_per_week = 7
 
-[league.teams]
-# Map of team_id to team_name (populate from ESPN or manually)
-team_1 = "Team_1"
-team_2 = "Team_2"
-team_3 = "Team_3"
-team_4 = "Team_4"
-team_5 = "Team_5"
-team_6 = "Team_6"
-team_7 = "Team_7"
-team_8 = "Team_8"
-team_9 = "Team_9"
-team_10 = "Team_10"
-
-[league.my_team]
-team_id = "team_1"
+# Team names are populated dynamically from ESPN's live draft data.
+# No static team definitions needed.
