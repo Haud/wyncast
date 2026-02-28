@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use super::pick::DraftPick;
 use super::roster::Roster;
@@ -129,7 +130,9 @@ impl DraftState {
     /// Record a completed draft pick.
     ///
     /// Updates the winning team's budget and roster, increments the pick count,
-    /// and appends the pick to the history.
+    /// and appends the pick to the history. If the team is not yet known (e.g.
+    /// ESPN sends real team names that don't match config placeholders), the
+    /// team is auto-registered with default budget values.
     pub fn record_pick(&mut self, pick: DraftPick) {
         // Look up team by team_id first; fall back to team_name when the ID
         // is empty or doesn't match (DOM scraping uses team names as IDs).
@@ -143,16 +146,43 @@ impl DraftState {
                     .position(|t| !pick.team_name.is_empty() && t.team_name == pick.team_name)
             });
 
-        if let Some(team) = team_idx.map(|i| &mut self.teams[i]) {
-            team.budget_spent += pick.price;
-            team.budget_remaining = team.budget_remaining.saturating_sub(pick.price);
-            team.roster.add_player_with_slots(
-                &pick.player_name,
-                &pick.position,
-                pick.price,
-                &pick.eligible_slots,
+        // If no existing team matched, auto-register from the pick data.
+        let team_idx = team_idx.unwrap_or_else(|| {
+            let id = if pick.team_id.is_empty() {
+                pick.team_name.clone()
+            } else {
+                pick.team_id.clone()
+            };
+            let name = if pick.team_name.is_empty() {
+                pick.team_id.clone()
+            } else {
+                pick.team_name.clone()
+            };
+            warn!(
+                "Auto-registered unknown team: '{}' (id='{}')",
+                name, id
             );
-        }
+            let new_team = TeamState {
+                team_id: id,
+                team_name: name,
+                roster: Roster::new(&self.roster_config),
+                budget_spent: 0,
+                budget_remaining: self.salary_cap,
+            };
+            self.teams.push(new_team);
+            self.teams.len() - 1
+        });
+
+        let team = &mut self.teams[team_idx];
+        team.budget_spent += pick.price;
+        team.budget_remaining = team.budget_remaining.saturating_sub(pick.price);
+        team.roster.add_player_with_slots(
+            &pick.player_name,
+            &pick.position,
+            pick.price,
+            &pick.eligible_slots,
+        );
+
         self.pick_count += 1;
         self.picks.push(pick);
     }
@@ -161,17 +191,44 @@ impl DraftState {
     ///
     /// Uses the ESPN-reported remaining budget as the source of truth
     /// and adjusts `budget_remaining` and `budget_spent` accordingly.
+    /// If a team name from ESPN doesn't match any known team, the team
+    /// is auto-registered.
     pub fn reconcile_budgets(&mut self, espn_budgets: &[TeamBudgetPayload]) {
         for budget_data in espn_budgets {
-            // Match by team_name since DOM scraping doesn't provide numeric IDs
-            if let Some(team) = self
+            // Match by team_name since DOM scraping doesn't provide numeric IDs.
+            // Try case-insensitive match as a fallback.
+            let idx = self
                 .teams
-                .iter_mut()
-                .find(|t| t.team_name == budget_data.team_name)
-            {
-                team.budget_remaining = budget_data.budget;
-                team.budget_spent = self.salary_cap.saturating_sub(budget_data.budget);
-            }
+                .iter()
+                .position(|t| t.team_name == budget_data.team_name)
+                .or_else(|| {
+                    self.teams.iter().position(|t| {
+                        t.team_name.eq_ignore_ascii_case(&budget_data.team_name)
+                    })
+                });
+
+            let idx = match idx {
+                Some(i) => i,
+                None => {
+                    warn!(
+                        "Auto-registered unknown team from budget reconciliation: '{}'",
+                        budget_data.team_name
+                    );
+                    let new_team = TeamState {
+                        team_id: budget_data.team_name.clone(),
+                        team_name: budget_data.team_name.clone(),
+                        roster: Roster::new(&self.roster_config),
+                        budget_spent: 0,
+                        budget_remaining: self.salary_cap,
+                    };
+                    self.teams.push(new_team);
+                    self.teams.len() - 1
+                }
+            };
+
+            let team = &mut self.teams[idx];
+            team.budget_remaining = budget_data.budget;
+            team.budget_spent = self.salary_cap.saturating_sub(budget_data.budget);
         }
     }
 
@@ -926,7 +983,7 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_budgets_skips_non_matching_teams() {
+    fn reconcile_budgets_auto_registers_unknown_teams() {
         let mut state = DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
 
         // Record a pick to establish some local state
@@ -941,10 +998,12 @@ mod tests {
             eligible_slots: vec![],
         });
 
-        // Reconcile with ESPN data that includes a non-existent team
+        let initial_team_count = state.teams.len();
+
+        // Reconcile with ESPN data that includes an unknown team name
         let espn_budgets = vec![
             TeamBudgetPayload {
-                team_name: "Nonexistent Team".to_string(),
+                team_name: "Jamaica Jiggle Party".to_string(),
                 budget: 100,
             },
             TeamBudgetPayload {
@@ -959,10 +1018,83 @@ mod tests {
         assert_eq!(team1.budget_remaining, 210);
         assert_eq!(team1.budget_spent, 50); // 260 - 210
 
+        // Unknown team should have been auto-registered
+        assert_eq!(state.teams.len(), initial_team_count + 1);
+        let new_team = state.teams.iter().find(|t| t.team_name == "Jamaica Jiggle Party").unwrap();
+        assert_eq!(new_team.budget_remaining, 100);
+        assert_eq!(new_team.budget_spent, 160); // 260 - 100
+
         // Team 2 should be unaffected (no ESPN data for it)
         let team2 = state.team("team_2").unwrap();
         assert_eq!(team2.budget_remaining, 260);
         assert_eq!(team2.budget_spent, 0);
+    }
+
+    #[test]
+    fn record_pick_auto_registers_unknown_team() {
+        let mut state = DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
+        let initial_team_count = state.teams.len();
+
+        // Simulate a pick from a team name that doesn't match any config placeholder
+        state.record_pick(DraftPick {
+            pick_number: 1,
+            team_id: "".to_string(),
+            team_name: "Jamaica Jiggle Party".to_string(),
+            player_name: "Mike Trout".to_string(),
+            position: "CF".to_string(),
+            price: 45,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        });
+
+        // The unknown team should have been auto-registered
+        assert_eq!(state.teams.len(), initial_team_count + 1);
+        assert_eq!(state.pick_count, 1);
+        assert_eq!(state.picks.len(), 1);
+
+        // The new team should have correct budget and roster
+        let new_team = state.teams.iter().find(|t| t.team_name == "Jamaica Jiggle Party").unwrap();
+        assert_eq!(new_team.budget_spent, 45);
+        assert_eq!(new_team.budget_remaining, 215);
+        assert_eq!(new_team.roster.filled_count(), 1);
+    }
+
+    #[test]
+    fn record_pick_reuses_auto_registered_team() {
+        let mut state = DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
+
+        // First pick auto-registers the team
+        state.record_pick(DraftPick {
+            pick_number: 1,
+            team_id: "".to_string(),
+            team_name: "Jamaica Jiggle Party".to_string(),
+            player_name: "Mike Trout".to_string(),
+            position: "CF".to_string(),
+            price: 45,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        });
+        let team_count_after_first = state.teams.len();
+
+        // Second pick from the same team should reuse the existing entry
+        state.record_pick(DraftPick {
+            pick_number: 2,
+            team_id: "".to_string(),
+            team_name: "Jamaica Jiggle Party".to_string(),
+            player_name: "Shohei Ohtani".to_string(),
+            position: "SP".to_string(),
+            price: 50,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        });
+
+        // No new team entry should be created
+        assert_eq!(state.teams.len(), team_count_after_first);
+
+        let team = state.teams.iter().find(|t| t.team_name == "Jamaica Jiggle Party").unwrap();
+        assert_eq!(team.budget_spent, 95);
+        assert_eq!(team.budget_remaining, 165);
+        assert_eq!(team.roster.filled_count(), 2);
     }
 
     #[test]
