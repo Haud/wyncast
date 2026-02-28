@@ -134,8 +134,9 @@ impl DraftState {
     /// ESPN sends real team names that don't match config placeholders), the
     /// team is auto-registered with default budget values.
     pub fn record_pick(&mut self, pick: DraftPick) {
-        // Look up team by team_id first; fall back to team_name when the ID
-        // is empty or doesn't match (DOM scraping uses team names as IDs).
+        // Look up team by team_id first; fall back to exact team_name match,
+        // then case-insensitive team_name match (DOM scraping may send
+        // differently-cased names).
         let team_idx = self
             .teams
             .iter()
@@ -144,6 +145,12 @@ impl DraftState {
                 self.teams
                     .iter()
                     .position(|t| !pick.team_name.is_empty() && t.team_name == pick.team_name)
+            })
+            .or_else(|| {
+                self.teams.iter().position(|t| {
+                    !pick.team_name.is_empty()
+                        && t.team_name.eq_ignore_ascii_case(&pick.team_name)
+                })
             });
 
         // If no existing team matched, auto-register from the pick data.
@@ -1095,6 +1102,34 @@ mod tests {
         assert_eq!(team.budget_spent, 95);
         assert_eq!(team.budget_remaining, 165);
         assert_eq!(team.roster.filled_count(), 2);
+    }
+
+    #[test]
+    fn record_pick_case_insensitive_team_name_fallback() {
+        let mut state = DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
+        let initial_team_count = state.teams.len();
+
+        // Send a pick with team_name cased differently from the registered "Team 1"
+        state.record_pick(DraftPick {
+            pick_number: 1,
+            team_id: "".to_string(),
+            team_name: "TEAM 1".to_string(), // uppercase, should still match "Team 1"
+            player_name: "Mike Trout".to_string(),
+            position: "CF".to_string(),
+            price: 45,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        });
+
+        // No new team should have been auto-registered
+        assert_eq!(state.teams.len(), initial_team_count);
+        assert_eq!(state.pick_count, 1);
+
+        // Budget should have been charged to the existing "Team 1" entry
+        let team1 = state.team("team_1").unwrap();
+        assert_eq!(team1.budget_spent, 45);
+        assert_eq!(team1.budget_remaining, 215);
+        assert_eq!(team1.roster.filled_count(), 1);
     }
 
     #[test]
