@@ -133,17 +133,17 @@ impl DraftState {
     pub fn record_pick(&mut self, pick: DraftPick) {
         // Look up team by team_id first; fall back to team_name when the ID
         // is empty or doesn't match (DOM scraping uses team names as IDs).
-        let team = self
+        let team_idx = self
             .teams
-            .iter_mut()
-            .find(|t| !pick.team_id.is_empty() && t.team_id == pick.team_id)
+            .iter()
+            .position(|t| !pick.team_id.is_empty() && t.team_id == pick.team_id)
             .or_else(|| {
                 self.teams
-                    .iter_mut()
-                    .find(|t| !pick.team_name.is_empty() && t.team_name == pick.team_name)
+                    .iter()
+                    .position(|t| !pick.team_name.is_empty() && t.team_name == pick.team_name)
             });
 
-        if let Some(team) = team {
+        if let Some(team) = team_idx.map(|i| &mut self.teams[i]) {
             team.budget_spent += pick.price;
             team.budget_remaining = team.budget_remaining.saturating_sub(pick.price);
             team.roster.add_player_with_slots(
