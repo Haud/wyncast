@@ -178,8 +178,10 @@ impl DraftState {
     /// all teams from the ESPN data, building the full team registry.
     /// On subsequent calls, it uses the ESPN-reported remaining budget as the
     /// source of truth and adjusts `budget_remaining` and `budget_spent`.
-    /// Returns `true` if this call registered teams for the first time.
-    pub fn reconcile_budgets(&mut self, espn_budgets: &[TeamBudgetPayload]) -> bool {
+    ///
+    /// Returns a [`ReconcileResult`] indicating whether teams were registered
+    /// for the first time and/or whether any budget values actually changed.
+    pub fn reconcile_budgets(&mut self, espn_budgets: &[TeamBudgetPayload]) -> ReconcileResult {
         if self.teams.is_empty() && !espn_budgets.is_empty() {
             // First call: auto-register all teams from ESPN data
             for budget_data in espn_budgets {
@@ -204,9 +206,13 @@ impl DraftState {
             // Replay any picks stored during crash recovery before teams existed
             self.replay_pending_picks();
 
-            return true;
+            return ReconcileResult {
+                teams_registered: true,
+                budgets_changed: true,
+            };
         }
 
+        let mut budgets_changed = false;
         for budget_data in espn_budgets {
             // Match by team_name since the pick train names are the canonical identifiers
             if let Some(team) = self
@@ -214,11 +220,19 @@ impl DraftState {
                 .iter_mut()
                 .find(|t| t.team_name == budget_data.team_name)
             {
-                team.budget_remaining = budget_data.budget;
-                team.budget_spent = self.salary_cap.saturating_sub(budget_data.budget);
+                let new_remaining = budget_data.budget;
+                let new_spent = self.salary_cap.saturating_sub(budget_data.budget);
+                if team.budget_remaining != new_remaining || team.budget_spent != new_spent {
+                    team.budget_remaining = new_remaining;
+                    team.budget_spent = new_spent;
+                    budgets_changed = true;
+                }
             }
         }
-        false
+        ReconcileResult {
+            teams_registered: false,
+            budgets_changed,
+        }
     }
 
     /// Total salary spent across all teams.
@@ -291,6 +305,19 @@ impl DraftState {
             self.record_pick(pick);
         }
     }
+}
+
+/// Result of reconciling team budgets with ESPN data.
+///
+/// Distinguishes between the first-time team registration (which is a
+/// structural change) and subsequent budget updates (which may or may not
+/// change values).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReconcileResult {
+    /// True if this call registered teams for the first time.
+    pub teams_registered: bool,
+    /// True if any team's budget was actually modified by this call.
+    pub budgets_changed: bool,
 }
 
 // --- Differential State Detection ---

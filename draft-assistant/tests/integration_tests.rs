@@ -1911,3 +1911,343 @@ fn draft_log_resilient_to_virtualized_list_renumbering() {
     let team3 = draft_state.team("3").unwrap();
     assert_eq!(team3.budget_spent, 20, "Team 3 should have spent $20 once");
 }
+
+// ===========================================================================
+// Test: Budget reconciliation and snapshot correctness
+// ===========================================================================
+
+/// Verify that reconcile_budgets returns budgets_changed=true when ESPN
+/// reports different budget values than what the local state holds.
+#[test]
+fn reconcile_budgets_returns_budgets_changed_when_values_differ() {
+    let mut state = create_test_app_state_from_fixtures();
+
+    // Record a pick so Team 3 has local budget = 260 - 62 = 198
+    let events = generate_mock_draft_events();
+    state.process_new_picks(vec![mock_event_to_pick(&events[0])]);
+
+    let team3 = state.draft_state.team("3").unwrap();
+    assert_eq!(team3.budget_remaining, 198);
+
+    // Now reconcile with ESPN data that shows a DIFFERENT budget for Team 3.
+    // This simulates ESPN's authoritative budget correction.
+    let mut updated_budgets = ten_team_budgets();
+    // ESPN says Team 3 has $195 remaining (e.g. ESPN accounts for something
+    // our local tracking missed)
+    updated_budgets[2].budget = 195;
+
+    let result = state.draft_state.reconcile_budgets(&updated_budgets);
+
+    assert!(!result.teams_registered, "teams were already registered");
+    assert!(
+        result.budgets_changed,
+        "budgets_changed should be true when ESPN reports different values"
+    );
+
+    // Verify ESPN's value took effect
+    let team3 = state.draft_state.team("3").unwrap();
+    assert_eq!(team3.budget_remaining, 195);
+    assert_eq!(team3.budget_spent, 65); // 260 - 195
+}
+
+/// Verify that reconcile_budgets returns budgets_changed=false when ESPN
+/// reports the exact same budget values as local state.
+#[test]
+fn reconcile_budgets_returns_no_change_when_values_same() {
+    let mut state = create_test_app_state_from_fixtures();
+
+    // All teams start at $260 which matches ten_team_budgets()
+    let result = state.draft_state.reconcile_budgets(&ten_team_budgets());
+
+    assert!(!result.teams_registered, "teams were already registered");
+    assert!(
+        !result.budgets_changed,
+        "budgets_changed should be false when values are identical"
+    );
+}
+
+/// Verify that reconcile_budgets returns teams_registered=true and
+/// budgets_changed=true on the first call.
+#[test]
+fn reconcile_budgets_first_call_registers_teams() {
+    let mut draft_state = DraftState::new(260, &roster_config());
+    assert!(draft_state.teams.is_empty());
+
+    let result = draft_state.reconcile_budgets(&ten_team_budgets());
+
+    assert!(
+        result.teams_registered,
+        "first call should register teams"
+    );
+    assert!(
+        result.budgets_changed,
+        "first call should report budgets changed (they went from nothing to populated)"
+    );
+    assert_eq!(draft_state.teams.len(), 10);
+}
+
+/// Verify that after picks are processed and budgets reconciled, the
+/// snapshot contains correct budget values for ALL teams (not just the
+/// user's team).
+#[test]
+fn snapshot_reflects_other_teams_budgets_after_picks_and_reconcile() {
+    let mut state = create_test_app_state_from_fixtures();
+    let events = generate_mock_draft_events();
+
+    // Process 3 picks: Team 3 ($62), Team 4 ($55), Team 5 ($48)
+    let picks: Vec<DraftPick> = events[..3].iter().map(mock_event_to_pick).collect();
+    state.process_new_picks(picks);
+
+    // Reconcile with ESPN budget data reflecting the picks
+    let mut updated_budgets = ten_team_budgets();
+    updated_budgets[2].budget = 198; // Team 3: 260 - 62
+    updated_budgets[3].budget = 205; // Team 4: 260 - 55
+    updated_budgets[4].budget = 212; // Team 5: 260 - 48
+    state.draft_state.reconcile_budgets(&updated_budgets);
+
+    // Build snapshot and verify team budgets
+    let snapshot = state.build_snapshot();
+
+    assert_eq!(snapshot.team_snapshots.len(), 10);
+
+    // Find each team in the snapshot and verify budgets
+    let team3_snap = snapshot
+        .team_snapshots
+        .iter()
+        .find(|t| t.name == "Team 3")
+        .expect("Team 3 should be in snapshot");
+    assert_eq!(team3_snap.budget_remaining, 198);
+
+    let team4_snap = snapshot
+        .team_snapshots
+        .iter()
+        .find(|t| t.name == "Team 4")
+        .expect("Team 4 should be in snapshot");
+    assert_eq!(team4_snap.budget_remaining, 205);
+
+    let team5_snap = snapshot
+        .team_snapshots
+        .iter()
+        .find(|t| t.name == "Team 5")
+        .expect("Team 5 should be in snapshot");
+    assert_eq!(team5_snap.budget_remaining, 212);
+
+    // Teams that did not pick should still show full budget
+    let team1_snap = snapshot
+        .team_snapshots
+        .iter()
+        .find(|t| t.name == "Team 1")
+        .expect("Team 1 should be in snapshot");
+    assert_eq!(team1_snap.budget_remaining, 260);
+}
+
+/// Build a JSON STATE_UPDATE message that includes team budget data.
+fn build_state_update_json_with_teams(
+    events: &[MockDraftEvent],
+    up_to_pick: u32,
+    team_budgets: &[(String, u32)], // (team_name, budget_remaining)
+    nomination: Option<(&str, &str, &str, &str)>,
+) -> String {
+    let picks: Vec<serde_json::Value> = events
+        .iter()
+        .filter(|e| e.pick_number <= up_to_pick)
+        .map(|e| {
+            serde_json::json!({
+                "pickNumber": e.pick_number,
+                "teamId": e.team_id,
+                "teamName": e.team_name,
+                "playerName": e.player_name,
+                "playerId": e.espn_player_id,
+                "position": e.position,
+                "price": e.price
+            })
+        })
+        .collect();
+
+    let teams: Vec<serde_json::Value> = team_budgets
+        .iter()
+        .map(|(name, budget)| {
+            serde_json::json!({
+                "teamName": name,
+                "budget": budget
+            })
+        })
+        .collect();
+
+    let nom_value = match nomination {
+        Some((pid, pname, pos, by)) => serde_json::json!({
+            "playerId": pid,
+            "playerName": pname,
+            "position": pos,
+            "nominatedBy": by,
+            "currentBid": 1,
+            "currentBidder": null,
+            "timeRemaining": 30
+        }),
+        None => serde_json::Value::Null,
+    };
+
+    serde_json::json!({
+        "type": "STATE_UPDATE",
+        "timestamp": 1700000000 + up_to_pick as u64,
+        "payload": {
+            "picks": picks,
+            "currentNomination": nom_value,
+            "myTeamId": "Team 1",
+            "teams": teams,
+            "source": "test"
+        }
+    })
+    .to_string()
+}
+
+/// Full event-loop test: verify that a state update containing team budget
+/// data (but no new picks beyond what was already processed) still triggers
+/// a TUI snapshot with the updated budgets.
+///
+/// This exercises the exact bug scenario: ESPN sends budget data that differs
+/// from local tracking, and even without new picks the TUI should receive the
+/// corrected budget values.
+#[tokio::test]
+async fn event_loop_budget_only_update_triggers_snapshot() {
+    let state = create_test_app_state_from_fixtures();
+
+    let (ws_tx, ws_rx) = mpsc::channel(16);
+    let (_llm_tx, llm_rx) = mpsc::channel(16);
+    let (cmd_tx, cmd_rx) = mpsc::channel(16);
+    let (ui_tx, mut ui_rx) = mpsc::channel(64);
+
+    let handle = tokio::spawn(app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+
+    // First: send a state update with 1 pick + team budgets (initial registration)
+    let events = generate_mock_draft_events();
+    let initial_budgets: Vec<(String, u32)> = (1..=10)
+        .map(|i| (format!("Team {}", i), 260))
+        .collect();
+    let json1 = build_state_update_json_with_teams(
+        &events,
+        1,
+        &initial_budgets,
+        Some(("espn_101", "Aaron Judge", "OF", "Team 4")),
+    );
+    ws_tx.send(WsEvent::Message(json1)).await.unwrap();
+
+    // Drain the snapshot + nomination from the first update
+    let update1 = ui_rx.recv().await.unwrap();
+    assert!(
+        matches!(&update1, UiUpdate::StateSnapshot(_)),
+        "Expected StateSnapshot from first update, got {:?}", update1
+    );
+    let update2 = ui_rx.recv().await.unwrap();
+    assert!(
+        matches!(&update2, UiUpdate::NominationUpdate(_)),
+        "Expected NominationUpdate from first update, got {:?}", update2
+    );
+
+    // Second: send a state update with the SAME pick (no new picks) but
+    // CHANGED budget data for Team 3. This simulates ESPN's budget updating
+    // asynchronously after a pick completes.
+    let mut changed_budgets = initial_budgets.clone();
+    // Team 3 budget dropped from 260 to 198 (they won a $62 pick)
+    changed_budgets[2].1 = 198;
+    let json2 = build_state_update_json_with_teams(
+        &events,
+        1,
+        &changed_budgets,
+        Some(("espn_101", "Aaron Judge", "OF", "Team 4")),
+    );
+    ws_tx.send(WsEvent::Message(json2)).await.unwrap();
+
+    // We should receive a StateSnapshot because budgets changed, even though
+    // there are no new picks. This is the core bug fix validation.
+    let update3 = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        ui_rx.recv(),
+    )
+    .await
+    .expect("should receive snapshot within timeout")
+    .expect("channel should not be closed");
+
+    match update3 {
+        UiUpdate::StateSnapshot(snapshot) => {
+            // Verify Team 3's budget is reflected in the snapshot
+            let team3 = snapshot
+                .team_snapshots
+                .iter()
+                .find(|t| t.name == "Team 3")
+                .expect("Team 3 should be in snapshot");
+            assert_eq!(
+                team3.budget_remaining, 198,
+                "Team 3 budget should be $198 in snapshot after reconciliation"
+            );
+        }
+        other => panic!(
+            "Expected StateSnapshot with updated budgets, got {:?}",
+            other
+        ),
+    }
+
+    // Clean up
+    cmd_tx.send(UserCommand::Quit).await.unwrap();
+    let result = handle.await.unwrap();
+    assert!(result.is_ok());
+}
+
+/// Verify that when budgets DON'T change, no redundant snapshot is sent.
+/// This ensures we don't regress on the optimization of only sending
+/// snapshots when something actually changed.
+#[tokio::test]
+async fn event_loop_same_budgets_no_redundant_snapshot() {
+    let state = create_test_app_state_from_fixtures();
+
+    let (ws_tx, ws_rx) = mpsc::channel(16);
+    let (_llm_tx, llm_rx) = mpsc::channel(16);
+    let (cmd_tx, cmd_rx) = mpsc::channel(16);
+    let (ui_tx, mut ui_rx) = mpsc::channel(64);
+
+    let handle = tokio::spawn(app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+
+    // First: send a state update with 1 pick + team budgets
+    let events = generate_mock_draft_events();
+    let budgets: Vec<(String, u32)> = (1..=10)
+        .map(|i| (format!("Team {}", i), 260))
+        .collect();
+    let json1 = build_state_update_json_with_teams(
+        &events,
+        1,
+        &budgets,
+        Some(("espn_101", "Aaron Judge", "OF", "Team 4")),
+    );
+    ws_tx.send(WsEvent::Message(json1)).await.unwrap();
+
+    // Drain the snapshot + nomination
+    let _ = ui_rx.recv().await.unwrap(); // StateSnapshot
+    let _ = ui_rx.recv().await.unwrap(); // NominationUpdate
+
+    // Second: send an identical state update (same picks, same budgets,
+    // same nomination). No new information.
+    let json2 = build_state_update_json_with_teams(
+        &events,
+        1,
+        &budgets,
+        Some(("espn_101", "Aaron Judge", "OF", "Team 4")),
+    );
+    ws_tx.send(WsEvent::Message(json2)).await.unwrap();
+
+    // No snapshot should be sent since nothing changed. Use a short
+    // timeout to verify nothing arrives.
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        ui_rx.recv(),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "Should NOT receive a snapshot when nothing changed (timeout expected)"
+    );
+
+    // Clean up
+    cmd_tx.send(UserCommand::Quit).await.unwrap();
+    let _ = handle.await;
+}
