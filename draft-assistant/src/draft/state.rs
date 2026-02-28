@@ -116,32 +116,44 @@ impl DraftState {
     /// Updates the winning team's budget and roster, increments the pick count,
     /// and appends the pick to the history.
     ///
-    /// Deduplication: if a pick with the same `pick_number` has already been
-    /// recorded, the call is a no-op. This guards against unstable pick numbers
-    /// from the ESPN DOM scraper (virtualized pick list) and crash-recovery
-    /// replays that could otherwise cause the same player to appear in multiple
-    /// roster slots.
+    /// Deduplication: if the same player (by identity) has already been
+    /// recorded, the call is a no-op. Player identity is determined by
+    /// (player_name, team_name) — this is stable even when ESPN's virtualized
+    /// pick list causes pick_number renumbering. Using pick_number alone for
+    /// dedup would cause new picks to be silently dropped when their number
+    /// had been previously claimed by a renumbered existing pick.
     pub fn record_pick(&mut self, pick: DraftPick) {
-        // Skip if this pick_number was already recorded (deduplication).
-        if self.picks.iter().any(|p| p.pick_number == pick.pick_number) {
+        // Guard: reject picks with empty player_name AND no ESPN player ID.
+        // Without either identifier, dedup and roster tracking are impossible.
+        let has_espn_id = pick
+            .espn_player_id
+            .as_ref()
+            .map_or(false, |id| !id.is_empty());
+        if pick.player_name.is_empty() && !has_espn_id {
+            warn!(
+                "Skipping pick with empty player_name and no ESPN player ID (pick_number={})",
+                pick.pick_number
+            );
             return;
         }
 
-        // Skip if this player was already recorded (deduplication by identity).
-        // ESPN's virtualized pick list can renumber picks, causing the same
-        // player to appear with a different pick_number. Deduplicate by ESPN
-        // player ID when available, falling back to player name.
-        let dominated = match &pick.espn_player_id {
-            Some(id) if !id.is_empty() => self
-                .picks
-                .iter()
-                .any(|p| p.espn_player_id.as_deref() == Some(id.as_str())),
-            _ => self
-                .picks
-                .iter()
-                .any(|p| p.player_name == pick.player_name),
-        };
-        if dominated {
+        // Skip if this player is already recorded (deduplication by identity).
+        // Player identity = (player_name, team_name), which is stable across
+        // ESPN's virtualized pick list renumbering. Also checks ESPN player ID
+        // when both sides have one.
+        let dominated_by_identity = self.picks.iter().any(|p| {
+            // Match by ESPN player ID if both are non-empty
+            if let (Some(ref new_id), Some(ref existing_id)) =
+                (&pick.espn_player_id, &p.espn_player_id)
+            {
+                if !new_id.is_empty() && !existing_id.is_empty() {
+                    return new_id == existing_id;
+                }
+            }
+            // Fall back to (player_name, team_name) identity
+            p.player_name == pick.player_name && p.team_name == pick.team_name
+        });
+        if dominated_by_identity {
             return;
         }
 
@@ -395,6 +407,14 @@ pub struct StateDiff {
 /// Compute the differences between two consecutive state snapshots.
 ///
 /// If `previous` is `None`, all picks and the current nomination are treated as new.
+///
+/// Pick detection uses **player identity** (ESPN player ID when available,
+/// falling back to player_name + team_name) rather than pick_number. This
+/// guards against unstable pick numbering from ESPN's virtualized pick list,
+/// where the pick counter label can increment before the new DOM entry appears,
+/// causing existing picks to be temporarily renumbered. Relying on pick_number
+/// would cause the real new pick to be missed when its number was already
+/// "claimed" by a renumbered existing pick in a previous snapshot.
 pub fn compute_state_diff(
     previous: &Option<StateUpdatePayload>,
     current: &StateUpdatePayload,
@@ -407,15 +427,39 @@ pub fn compute_state_diff(
         bid_updated: false,
     };
 
-    // Determine new picks by pick_number rather than array position.
-    // This handles cases where the extension may re-order picks.
-    let prev_pick_numbers: std::collections::HashSet<u32> = previous
+    // Build a set of player identities from the previous snapshot.
+    // Identity uses player_id (ESPN player ID) when non-empty, falling back
+    // to (player_name, team_name). This matches record_pick's dedup criteria,
+    // so compute_state_diff never emits a pick that record_pick would reject.
+    let prev_player_identities: std::collections::HashSet<String> = previous
         .as_ref()
-        .map(|p| p.picks.iter().map(|pk| pk.pick_number).collect())
+        .map(|p| {
+            p.picks
+                .iter()
+                .map(|pk| {
+                    if !pk.player_id.is_empty() {
+                        pk.player_id.clone()
+                    } else {
+                        format!("{}|{}", pk.player_name, pk.team_name)
+                    }
+                })
+                .collect()
+        })
         .unwrap_or_default();
 
     for pick_payload in &current.picks {
-        if !prev_pick_numbers.contains(&pick_payload.pick_number) {
+        let identity_key = if !pick_payload.player_id.is_empty() {
+            pick_payload.player_id.clone()
+        } else {
+            format!("{}|{}", pick_payload.player_name, pick_payload.team_name)
+        };
+        let dominated_by_identity = prev_player_identities.contains(&identity_key);
+
+        // A pick is new if its player identity was NOT in the previous snapshot.
+        // This is the sole check — pick_number is intentionally ignored because
+        // ESPN's virtualized pick list can renumber existing picks, and emitting
+        // already-known players would cause spurious DB writes and recalculations.
+        if !dominated_by_identity {
             diff.new_picks.push(DraftPick {
                 pick_number: pick_payload.pick_number,
                 team_id: pick_payload.team_id.clone(),
@@ -1135,7 +1179,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn record_pick_dedup_by_pick_number() {
+    fn record_pick_dedup_exact_duplicate() {
         let mut state = create_test_state();
 
         let pick = DraftPick {
@@ -1157,7 +1201,7 @@ mod tests {
         assert_eq!(team.roster.filled_count(), 1);
         assert_eq!(team.budget_spent, 45);
 
-        // Record same pick_number again — should be a no-op
+        // Record same pick again (same player identity) — should be a no-op
         state.record_pick(pick);
         assert_eq!(state.pick_count, 1, "pick_count should not increase on dup");
         assert_eq!(state.picks.len(), 1, "picks vec should not grow on dup");
@@ -1175,7 +1219,7 @@ mod tests {
     }
 
     #[test]
-    fn record_pick_dedup_by_player_name_different_pick_number() {
+    fn record_pick_dedup_by_player_identity() {
         let mut state = create_test_state();
 
         // Record pick #1 for Mike Trout on Team 1
@@ -1194,8 +1238,8 @@ mod tests {
         assert_eq!(team.roster.filled_count(), 1);
 
         // Record same player with DIFFERENT pick_number (simulates ESPN renumbering).
-        // The entire call should be a no-op: no new pick in picks list, no budget
-        // or roster changes.
+        // The player identity (name + team) matches, so this should be a
+        // complete no-op: no roster, budget, pick_count, or picks vec changes.
         state.record_pick(DraftPick {
             pick_number: 101, // Different number (renumbered)
             team_id: "1".to_string(),
@@ -1209,23 +1253,23 @@ mod tests {
 
         assert_eq!(
             state.pick_count, 1,
-            "pick_count should not increase (same player)"
+            "pick_count should NOT increase (same player identity)"
         );
         assert_eq!(
             state.picks.len(),
             1,
-            "picks vec should not grow (same player)"
+            "picks vec should NOT grow (same player identity)"
         );
 
         let team = state.team("1").unwrap();
         assert_eq!(
             team.roster.filled_count(),
             1,
-            "roster should still have 1 player"
+            "roster should still have 1 player (player already recorded)"
         );
         assert_eq!(
             team.budget_spent, 45,
-            "budget_spent should not change"
+            "budget_spent should not double (player already recorded)"
         );
     }
 
@@ -1258,6 +1302,96 @@ mod tests {
         });
 
         assert_eq!(state.pick_count, 1, "same ESPN ID should dedup");
+        assert_eq!(state.picks.len(), 1);
+    }
+
+    #[test]
+    fn record_pick_dedup_by_espn_player_id_different_name() {
+        let mut state = create_test_state();
+
+        // Record pick with ESPN player ID
+        state.record_pick(DraftPick {
+            pick_number: 1,
+            team_id: "1".to_string(),
+            team_name: "Team 1".to_string(),
+            player_name: "Mike Trout".to_string(),
+            position: "CF".to_string(),
+            price: 45,
+            espn_player_id: Some("33039".to_string()),
+            eligible_slots: vec![],
+        });
+
+        assert_eq!(state.pick_count, 1);
+
+        // Record same ESPN player ID but with a DIFFERENT name (e.g. name
+        // correction or encoding change). The ESPN ID match should trigger
+        // dedup regardless of the name mismatch.
+        state.record_pick(DraftPick {
+            pick_number: 2,
+            team_id: "1".to_string(),
+            team_name: "Team 1".to_string(),
+            player_name: "M. Trout".to_string(), // Different name
+            position: "CF".to_string(),
+            price: 45,
+            espn_player_id: Some("33039".to_string()), // Same ESPN ID
+            eligible_slots: vec![],
+        });
+
+        assert_eq!(
+            state.pick_count, 1,
+            "same ESPN ID with different name should still dedup"
+        );
+        assert_eq!(state.picks.len(), 1);
+        assert_eq!(
+            state.picks[0].player_name, "Mike Trout",
+            "original name should be preserved"
+        );
+    }
+
+    #[test]
+    fn record_pick_skip_empty_player_name_no_espn_id() {
+        let mut state = create_test_state();
+
+        // Try recording a pick with empty player_name and no ESPN ID —
+        // should be silently skipped.
+        state.record_pick(DraftPick {
+            pick_number: 1,
+            team_id: "1".to_string(),
+            team_name: "Team 1".to_string(),
+            player_name: "".to_string(),
+            position: "CF".to_string(),
+            price: 45,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        });
+
+        assert_eq!(
+            state.pick_count, 0,
+            "empty player_name with no ESPN ID should be skipped"
+        );
+        assert_eq!(state.picks.len(), 0);
+    }
+
+    #[test]
+    fn record_pick_empty_player_name_with_espn_id_accepted() {
+        let mut state = create_test_state();
+
+        // A pick with empty player_name but valid ESPN ID should be accepted.
+        state.record_pick(DraftPick {
+            pick_number: 1,
+            team_id: "1".to_string(),
+            team_name: "Team 1".to_string(),
+            player_name: "".to_string(),
+            position: "CF".to_string(),
+            price: 45,
+            espn_player_id: Some("33039".to_string()),
+            eligible_slots: vec![],
+        });
+
+        assert_eq!(
+            state.pick_count, 1,
+            "empty player_name but valid ESPN ID should be accepted"
+        );
         assert_eq!(state.picks.len(), 1);
     }
 
