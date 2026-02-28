@@ -408,12 +408,13 @@ pub struct StateDiff {
 ///
 /// If `previous` is `None`, all picks and the current nomination are treated as new.
 ///
-/// Pick detection uses **both** pick_number and player identity (player_name +
-/// team_name) to guard against unstable pick numbering from ESPN's virtualized
-/// pick list. When the ESPN pick counter label increments before the new DOM
-/// entry appears, existing picks can be temporarily renumbered. Relying solely
-/// on pick_number would cause the real new pick to be missed when its number
-/// was already "claimed" by a renumbered existing pick in a previous snapshot.
+/// Pick detection uses **player identity** (ESPN player ID when available,
+/// falling back to player_name + team_name) rather than pick_number. This
+/// guards against unstable pick numbering from ESPN's virtualized pick list,
+/// where the pick counter label can increment before the new DOM entry appears,
+/// causing existing picks to be temporarily renumbered. Relying on pick_number
+/// would cause the real new pick to be missed when its number was already
+/// "claimed" by a renumbered existing pick in a previous snapshot.
 pub fn compute_state_diff(
     previous: &Option<StateUpdatePayload>,
     current: &StateUpdatePayload,
