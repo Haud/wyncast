@@ -392,6 +392,35 @@ impl Database {
         )
     }
 
+    /// Atomically persist both the internal draft ID and the ESPN draft ID
+    /// in a single transaction, ensuring they are always consistent.
+    pub fn set_both_draft_ids(&self, draft_id: &str, espn_draft_id: &str) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn
+            .transaction()
+            .context("failed to begin draft ID transaction")?;
+
+        let draft_id_json = serde_json::to_string(&serde_json::Value::String(draft_id.to_string()))
+            .context("failed to serialize draft_id")?;
+        tx.execute(
+            "INSERT OR REPLACE INTO draft_state (key, value) VALUES (?1, ?2)",
+            params![Self::DRAFT_ID_KEY, draft_id_json],
+        )
+        .context("failed to save draft_id")?;
+
+        let espn_id_json =
+            serde_json::to_string(&serde_json::Value::String(espn_draft_id.to_string()))
+                .context("failed to serialize espn_draft_id")?;
+        tx.execute(
+            "INSERT OR REPLACE INTO draft_state (key, value) VALUES (?1, ?2)",
+            params![Self::ESPN_DRAFT_ID_KEY, espn_id_json],
+        )
+        .context("failed to save espn_draft_id")?;
+
+        tx.commit().context("failed to commit draft ID transaction")?;
+        Ok(())
+    }
+
     /// Generate a new unique draft ID based on the current UTC timestamp.
     ///
     /// Format: `draft_YYYYMMDD_HHMMSS_SSS` (e.g. `draft_20260228_143022_123`).
@@ -1131,17 +1160,50 @@ mod tests {
         assert!(db.get_espn_draft_id().unwrap().is_none());
 
         // Store an ESPN draft ID
-        db.set_espn_draft_id("espn_league_12345").unwrap();
+        db.set_espn_draft_id("espn_12345_2026").unwrap();
         assert_eq!(
             db.get_espn_draft_id().unwrap(),
-            Some("espn_league_12345".to_string())
+            Some("espn_12345_2026".to_string())
         );
 
         // Overwrite with a new ESPN draft ID
-        db.set_espn_draft_id("espn_teams_abcdef12").unwrap();
+        db.set_espn_draft_id("espn_67890_2026").unwrap();
         assert_eq!(
             db.get_espn_draft_id().unwrap(),
-            Some("espn_teams_abcdef12".to_string())
+            Some("espn_67890_2026".to_string())
+        );
+    }
+
+    #[test]
+    fn set_both_draft_ids_atomic() {
+        let db = test_db();
+
+        // Initially no draft IDs stored
+        assert!(db.get_draft_id().unwrap().is_none());
+        assert!(db.get_espn_draft_id().unwrap().is_none());
+
+        // Store both atomically
+        db.set_both_draft_ids("draft_20260228_120000_000", "espn_12345_2026")
+            .unwrap();
+        assert_eq!(
+            db.get_draft_id().unwrap(),
+            Some("draft_20260228_120000_000".to_string())
+        );
+        assert_eq!(
+            db.get_espn_draft_id().unwrap(),
+            Some("espn_12345_2026".to_string())
+        );
+
+        // Overwrite both atomically
+        db.set_both_draft_ids("draft_20260228_130000_000", "espn_67890_2026")
+            .unwrap();
+        assert_eq!(
+            db.get_draft_id().unwrap(),
+            Some("draft_20260228_130000_000".to_string())
+        );
+        assert_eq!(
+            db.get_espn_draft_id().unwrap(),
+            Some("espn_67890_2026".to_string())
         );
     }
 

@@ -401,80 +401,24 @@ function scrapeDom() {
 /**
  * Extract a stable draft identifier from the ESPN page.
  *
- * Tries multiple strategies in order of reliability:
- * 1. leagueId from the URL query string (stable per league/season)
- * 2. data-draft-id or data-league-id attribute on the draft container
- * 3. Fingerprint from sorted team names (stable for a given league/season)
+ * Combines the leagueId from the URL query string with the current year
+ * to produce a stable identifier per league per season.
+ * ESPN draft URLs look like: https://fantasy.espn.com/baseball/draft?leagueId=12345
  *
- * Returns a string identifier, or null if none could be determined.
+ * Returns a string like "espn_12345_2026", or null if leagueId is not in the URL.
  */
 function scrapeDraftId() {
-  // Strategy 1: Extract leagueId from the URL (e.g. ?leagueId=12345)
   try {
     const params = new URLSearchParams(window.location.search);
     const leagueId = params.get('leagueId');
     if (leagueId) {
-      return 'espn_league_' + leagueId;
+      const year = new Date().getFullYear();
+      return 'espn_' + leagueId + '_' + year;
     }
   } catch (e) {
     // URL parsing failed
   }
-
-  // Strategy 2: Look for data attributes on the draft container
-  try {
-    const container = document.querySelector(SELECTORS.draftContainer);
-    if (container) {
-      const draftId = container.getAttribute('data-draft-id');
-      if (draftId) {
-        return 'espn_draft_' + draftId;
-      }
-      const leagueId = container.getAttribute('data-league-id');
-      if (leagueId) {
-        return 'espn_league_' + leagueId;
-      }
-    }
-  } catch (e) {
-    // DOM query failed
-  }
-
-  // Strategy 3: Fingerprint from sorted team names
-  // Team names are stable for a given league/season, so sorting and
-  // hashing them produces a consistent identifier.
-  try {
-    const items = document.querySelectorAll(SELECTORS.teamBudgetItems);
-    const names = [];
-    items.forEach((item) => {
-      const name = extractText(item, SELECTORS.teamBudgetName);
-      if (name) {
-        // Strip the leading number prefix (e.g. "1. London Ligers" -> "London Ligers")
-        const cleaned = name.replace(/^\d+\.\s*/, '');
-        if (cleaned) {
-          names.push(cleaned);
-        }
-      }
-    });
-    if (names.length > 0) {
-      names.sort();
-      return 'espn_teams_' + simpleHash(names.join('|'));
-    }
-  } catch (e) {
-    // Team scraping failed
-  }
-
   return null;
-}
-
-/**
- * Simple string hash function (djb2) for generating a fingerprint.
- * Returns a hex string.
- */
-function simpleHash(str) {
-  let hash = 5381;
-  for (let i = 0; i < str.length; i++) {
-    hash = ((hash << 5) + hash + str.charCodeAt(i)) & 0xffffffff;
-  }
-  // Convert to unsigned 32-bit hex
-  return (hash >>> 0).toString(16);
 }
 
 // ---------------------------------------------------------------------------

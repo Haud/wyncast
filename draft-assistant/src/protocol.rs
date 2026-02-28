@@ -357,7 +357,7 @@ mod tests {
                 }],
                 pick_count: None,
                 total_picks: None,
-                draft_id: Some("espn_league_12345".to_string()),
+                draft_id: Some("espn_12345_2026".to_string()),
                 source: Some("dom_scraper".to_string()),
             },
         };
@@ -576,7 +576,7 @@ mod tests {
                 teams: vec![],
                 pick_count: None,
                 total_picks: None,
-                draft_id: Some("espn_league_42".to_string()),
+                draft_id: Some("espn_42_2026".to_string()),
                 source: Some("test".to_string()),
             },
         };
@@ -703,14 +703,14 @@ mod tests {
                 "picks": [],
                 "currentNomination": null,
                 "myTeamId": "team_1",
-                "draftId": "espn_league_12345",
+                "draftId": "espn_12345_2026",
                 "source": "test"
             }
         }"#;
         let msg: ExtensionMessage = serde_json::from_str(json).unwrap();
         match msg {
             ExtensionMessage::StateUpdate { payload, .. } => {
-                assert_eq!(payload.draft_id, Some("espn_league_12345".to_string()));
+                assert_eq!(payload.draft_id, Some("espn_12345_2026".to_string()));
             }
             _ => panic!("expected StateUpdate variant"),
         }
