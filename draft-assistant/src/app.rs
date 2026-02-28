@@ -23,6 +23,7 @@ use crate::protocol::{
     AppSnapshot, ConnectionStatus, ExtensionMessage, LlmEvent, LlmStatus, NominationInfo, TabId,
     TeamSnapshot, UiUpdate, UserCommand,
 };
+use crate::valuation;
 use crate::valuation::analysis::{compute_instant_analysis, CategoryNeeds, InstantAnalysis};
 use crate::valuation::auction::InflationTracker;
 use crate::valuation::projections::AllProjections;
@@ -73,6 +74,15 @@ pub struct AppState {
     pub inflation: InflationTracker,
     pub scarcity: Vec<ScarcityEntry>,
     pub db: Database,
+    /// Unique identifier for the current draft session. Picks are scoped to
+    /// this ID so restarts don't replay picks from a different draft.
+    pub draft_id: String,
+    /// Draft identifier scraped from the ESPN page by the extension (e.g.
+    /// league ID from URL or team-name fingerprint). Used to detect when
+    /// the extension is reporting state from a different draft than the one
+    /// stored in `draft_id`. `None` until the first STATE_UPDATE arrives
+    /// with a non-null `draftId`.
+    pub espn_draft_id: Option<String>,
     pub previous_extension_state: Option<StateUpdatePayload>,
     pub current_llm_task: Option<tokio::task::JoinHandle<()>>,
     pub llm_mode: Option<LlmMode>,
@@ -97,12 +107,16 @@ pub struct AppState {
 
 impl AppState {
     /// Create a new AppState with the given components.
+    ///
+    /// The `draft_id` identifies the current draft session. On startup, callers
+    /// should load the stored draft_id from the database (or generate a new one).
     pub fn new(
         config: Config,
         draft_state: DraftState,
         available_players: Vec<PlayerValuation>,
         all_projections: AllProjections,
         db: Database,
+        draft_id: String,
         llm_client: LlmClient,
         llm_tx: mpsc::Sender<LlmEvent>,
     ) -> Self {
@@ -117,6 +131,8 @@ impl AppState {
             inflation,
             scarcity,
             db,
+            draft_id,
+            espn_draft_id: None,
             previous_extension_state: None,
             current_llm_task: None,
             llm_mode: None,
@@ -159,7 +175,7 @@ impl AppState {
             self.draft_state.record_pick(pick.clone());
 
             // Persist to DB
-            if let Err(e) = self.db.record_pick(pick) {
+            if let Err(e) = self.db.record_pick(pick, &self.draft_id) {
                 warn!("Failed to persist pick to DB: {}", e);
             }
 
@@ -685,11 +701,85 @@ async fn handle_ws_message(
 ///
 /// Performs differential state detection, processes new picks,
 /// and handles nomination changes.
+///
+/// On each STATE_UPDATE, checks whether the extension's `draftId` matches
+/// the stored ESPN draft identifier. If they differ, a new draft session is
+/// started with a fresh internal draft_id and all in-memory state is reset.
+/// This is resilient across disconnects because it relies on a stable
+/// identifier derived from the ESPN page URL rather than comparing pick counts.
 async fn handle_state_update(
     state: &mut AppState,
     ext_payload: crate::protocol::StateUpdatePayload,
     ui_tx: &mpsc::Sender<UiUpdate>,
 ) {
+    // --- New draft detection via ESPN draft identifier ---
+    // The extension derives a stable draft identifier from the ESPN page URL
+    // (leagueId + year). When this ID differs from what we have stored, a new
+    // draft has started and we reset all in-memory state.
+    if let Some(ref ext_draft_id) = ext_payload.draft_id {
+        match &state.espn_draft_id {
+            Some(stored_espn_id) if stored_espn_id != ext_draft_id => {
+                // ESPN draft ID changed -> new draft
+                let new_draft_id = Database::generate_draft_id();
+                info!(
+                    "New draft detected: ESPN draft ID changed from '{}' to '{}'. \
+                     Starting new draft session: {}",
+                    stored_espn_id, ext_draft_id, new_draft_id
+                );
+                // Persist to DB first -- only reset in-memory state if the
+                // write succeeds so we never diverge from the database.
+                match state.db.set_both_draft_ids(&new_draft_id, ext_draft_id) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        warn!(
+                            "Failed to persist draft IDs, skipping draft reset: {}",
+                            e
+                        );
+                        // Skip the entire reset; keep current in-memory state
+                        // consistent with what the database still holds.
+                        return;
+                    }
+                }
+                state.draft_id = new_draft_id.clone();
+                state.espn_draft_id = Some(ext_draft_id.clone());
+                // Reset in-memory draft state for the new draft
+                state.draft_state = DraftState::new(
+                    state.config.league.salary_cap,
+                    &state.config.league.roster,
+                );
+                state.available_players =
+                    valuation::compute_initial(&state.all_projections, &state.config)
+                        .unwrap_or_default();
+                state.scarcity =
+                    compute_scarcity(&state.available_players, &state.config.league);
+                state.inflation = InflationTracker::new();
+                state.previous_extension_state = None;
+                // Clear LLM state so stale analysis from the previous draft
+                // doesn't bleed into the new session.
+                if let Some(handle) = state.current_llm_task.take() {
+                    handle.abort();
+                }
+                state.llm_mode = None;
+                state.nomination_analysis_text.clear();
+                state.nomination_analysis_status = LlmStatus::Idle;
+                state.nomination_plan_text.clear();
+                state.nomination_plan_status = LlmStatus::Idle;
+                state.category_needs = CategoryNeeds::default();
+            }
+            None => {
+                // First time receiving an ESPN draft ID -- store it.
+                info!("ESPN draft ID received: {}", ext_draft_id);
+                state.espn_draft_id = Some(ext_draft_id.clone());
+                if let Err(e) = state.db.set_espn_draft_id(ext_draft_id) {
+                    warn!("Failed to persist ESPN draft_id: {}", e);
+                }
+            }
+            _ => {
+                // Same ESPN draft ID, no action needed.
+            }
+        }
+    }
+
     let internal_payload = AppState::convert_extension_state(&ext_payload);
 
     // Compute diff against previous state
@@ -974,17 +1064,20 @@ async fn handle_user_command(
 
 /// Restore application state from the database after a crash/restart.
 ///
-/// If the DB has draft picks recorded, loads them and replays them
-/// into the DraftState, then recalculates valuations.
+/// If the DB has draft picks recorded for the current draft_id, loads them
+/// and replays them into the DraftState, then recalculates valuations.
 pub fn recover_from_db(state: &mut AppState) -> anyhow::Result<bool> {
-    if !state.db.has_draft_in_progress()? {
-        info!("No draft in progress, starting fresh");
+    if !state.db.has_draft_in_progress(&state.draft_id)? {
+        info!("No draft in progress for draft_id={}, starting fresh", state.draft_id);
         return Ok(false);
     }
 
-    let picks = state.db.load_picks()?;
+    let picks = state.db.load_picks(&state.draft_id)?;
     let pick_count = picks.len();
-    info!("Crash recovery: restoring {} picks from DB", pick_count);
+    info!(
+        "Crash recovery: restoring {} picks from DB for draft_id={}",
+        pick_count, state.draft_id
+    );
 
     // Restore picks into DraftState (takes ownership)
     state.draft_state.restore_from_picks(picks);
@@ -1384,10 +1477,11 @@ mod tests {
         );
 
         let db = Database::open(":memory:").expect("in-memory db");
+        let draft_id = Database::generate_draft_id();
         let llm_client = LlmClient::Disabled;
         let (llm_tx, _llm_rx) = mpsc::channel(16);
 
-        AppState::new(config, draft_state, available, empty_projections(), db, llm_client, llm_tx)
+        AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx)
     }
 
     // -----------------------------------------------------------------------
@@ -1512,7 +1606,7 @@ mod tests {
         state.process_new_picks(vec![pick]);
 
         // Verify the pick was persisted to DB
-        let db_picks = state.db.load_picks().unwrap();
+        let db_picks = state.db.load_picks(&state.draft_id).unwrap();
         assert_eq!(db_picks.len(), 1);
         assert_eq!(db_picks[0].player_name, "H_Star");
         assert_eq!(db_picks[0].price, 45);
@@ -1759,6 +1853,7 @@ mod tests {
     fn crash_recovery_restores_state() {
         let config = test_config();
         let db = Database::open(":memory:").expect("in-memory db");
+        let draft_id = Database::generate_draft_id();
 
         // Record some picks into the database (simulating a previous session)
         let picks = vec![
@@ -1784,9 +1879,9 @@ mod tests {
             },
         ];
         for pick in &picks {
-            db.record_pick(pick).unwrap();
+            db.record_pick(pick, &draft_id).unwrap();
         }
-        assert!(db.has_draft_in_progress().unwrap());
+        assert!(db.has_draft_in_progress(&draft_id).unwrap());
 
         // Create a fresh AppState (simulating restart)
         let mut draft_state = DraftState::new(260, &test_roster_config());
@@ -1805,7 +1900,7 @@ mod tests {
 
         let llm_client = LlmClient::Disabled;
         let (llm_tx, _llm_rx) = mpsc::channel(16);
-        let mut state = AppState::new(config, draft_state, available, empty_projections(), db, llm_client, llm_tx);
+        let mut state = AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx);
 
         // Run crash recovery
         let recovered = recover_from_db(&mut state).unwrap();
@@ -1836,6 +1931,7 @@ mod tests {
     fn crash_recovery_no_picks_returns_false() {
         let config = test_config();
         let db = Database::open(":memory:").expect("in-memory db");
+        let draft_id = Database::generate_draft_id();
         let mut draft_state = DraftState::new(260, &test_roster_config());
         draft_state.reconcile_budgets(&test_espn_budgets());
         draft_state.set_my_team_by_name("Team 1");
@@ -1843,7 +1939,7 @@ mod tests {
 
         let llm_client = LlmClient::Disabled;
         let (llm_tx, _llm_rx) = mpsc::channel(16);
-        let mut state = AppState::new(config, draft_state, available, empty_projections(), db, llm_client, llm_tx);
+        let mut state = AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx);
 
         let recovered = recover_from_db(&mut state).unwrap();
         assert!(!recovered);
@@ -2049,7 +2145,8 @@ mod tests {
         let llm_client = LlmClient::Disabled;
         let (llm_tx, _llm_rx) = mpsc::channel(16);
 
-        AppState::new(config, draft_state, available, empty_projections(), db, llm_client, llm_tx)
+        let draft_id = Database::generate_draft_id();
+        AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx)
     }
 
     #[tokio::test]
@@ -2093,6 +2190,7 @@ mod tests {
             ],
             pick_count: None,
             total_picks: None,
+            draft_id: None,
             source: Some("test".into()),
         };
 
@@ -2160,6 +2258,7 @@ mod tests {
             teams: vec![],  // No teams!
             pick_count: None,
             total_picks: None,
+            draft_id: None,
             source: Some("test".into()),
         };
 
@@ -2209,6 +2308,7 @@ mod tests {
             ],
             pick_count: None,
             total_picks: None,
+            draft_id: None,
             source: Some("test".into()),
         };
 
@@ -2284,6 +2384,7 @@ mod tests {
             ],
             pick_count: None,
             total_picks: None,
+            draft_id: None,
             source: Some("test".into()),
         };
 
@@ -2334,6 +2435,7 @@ mod tests {
             teams: vec![],
             pick_count: None,
             total_picks: None,
+            draft_id: Some("espn_42_2026".into()),
             source: Some("test".into()),
         };
 
@@ -2848,6 +2950,7 @@ mod tests {
             &draft_state,
         );
         let db = Database::open(":memory:").expect("in-memory db");
+        let draft_id = Database::generate_draft_id();
         let llm_client = LlmClient::Disabled;
         let (llm_tx, _llm_rx) = mpsc::channel(16);
 
@@ -2857,6 +2960,7 @@ mod tests {
             available,
             empty_projections(),
             db,
+            draft_id,
             llm_client,
             llm_tx,
         );
@@ -3195,5 +3299,220 @@ mod tests {
             .filter(|s| s.player.is_some())
             .collect();
         assert!(filled.is_empty(), "My roster should be empty");
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: ESPN draft ID detection
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn first_espn_draft_id_is_stored() {
+        let mut state = create_test_app_state();
+        assert!(state.espn_draft_id.is_none());
+
+        let ext_payload = crate::protocol::StateUpdatePayload {
+            picks: vec![],
+            current_nomination: None,
+            my_team_id: None,
+            teams: vec![],
+            pick_count: None,
+            total_picks: None,
+            draft_id: Some("espn_12345_2026".into()),
+            source: Some("test".into()),
+        };
+
+        let (ui_tx, _ui_rx) = mpsc::channel(64);
+        handle_state_update(&mut state, ext_payload, &ui_tx).await;
+
+        // ESPN draft ID should now be stored in state
+        assert_eq!(state.espn_draft_id, Some("espn_12345_2026".into()));
+        // Internal draft_id should NOT change (same draft)
+        assert_eq!(state.draft_id, state.draft_id); // unchanged
+
+        // Should also be persisted in DB
+        let db_espn_id = state.db.get_espn_draft_id().unwrap();
+        assert_eq!(db_espn_id, Some("espn_12345_2026".into()));
+    }
+
+    #[tokio::test]
+    async fn same_espn_draft_id_does_not_start_new_session() {
+        let mut state = create_test_app_state();
+        let original_draft_id = state.draft_id.clone();
+
+        // Set up an existing ESPN draft ID
+        state.espn_draft_id = Some("espn_12345_2026".into());
+
+        let ext_payload = crate::protocol::StateUpdatePayload {
+            picks: vec![],
+            current_nomination: None,
+            my_team_id: None,
+            teams: vec![],
+            pick_count: None,
+            total_picks: None,
+            draft_id: Some("espn_12345_2026".into()),
+            source: Some("test".into()),
+        };
+
+        let (ui_tx, _ui_rx) = mpsc::channel(64);
+        handle_state_update(&mut state, ext_payload, &ui_tx).await;
+
+        // Draft ID should remain the same
+        assert_eq!(state.draft_id, original_draft_id);
+        assert_eq!(state.espn_draft_id, Some("espn_12345_2026".into()));
+    }
+
+    #[tokio::test]
+    async fn different_espn_draft_id_starts_new_session() {
+        let mut state = create_test_app_state();
+        // Use a known fixed draft_id so the generated one will differ
+        let original_draft_id = "test_original_draft_001".to_string();
+        state.draft_id = original_draft_id.clone();
+
+        // Simulate having a stored ESPN draft ID from a previous session
+        state.espn_draft_id = Some("espn_12345_2026".into());
+
+        // Extension now reports a different draft ID (different league/season)
+        let ext_payload = crate::protocol::StateUpdatePayload {
+            picks: vec![],
+            current_nomination: None,
+            my_team_id: None,
+            teams: vec![],
+            pick_count: None,
+            total_picks: None,
+            draft_id: Some("espn_67890_2026".into()),
+            source: Some("test".into()),
+        };
+
+        let (ui_tx, _ui_rx) = mpsc::channel(64);
+        handle_state_update(&mut state, ext_payload, &ui_tx).await;
+
+        // A new draft session should have been started
+        assert_ne!(state.draft_id, original_draft_id);
+        assert!(state.draft_id.starts_with("draft_"), "New draft ID should be generated: {}", state.draft_id);
+        assert_eq!(state.espn_draft_id, Some("espn_67890_2026".into()));
+
+        // New draft ID should be persisted
+        let db_draft_id = state.db.get_draft_id().unwrap();
+        assert_eq!(db_draft_id, Some(state.draft_id.clone()));
+
+        let db_espn_id = state.db.get_espn_draft_id().unwrap();
+        assert_eq!(db_espn_id, Some("espn_67890_2026".into()));
+
+        // In-memory draft state should be reset (no picks, no teams)
+        assert!(state.draft_state.picks.is_empty(), "Picks should be cleared on new draft");
+        assert!(state.draft_state.teams.is_empty(), "Teams should be cleared on new draft");
+    }
+
+    #[tokio::test]
+    async fn null_espn_draft_id_does_not_trigger_new_session() {
+        let mut state = create_test_app_state();
+        let original_draft_id = state.draft_id.clone();
+
+        // Simulate having a stored ESPN draft ID
+        state.espn_draft_id = Some("espn_12345_2026".into());
+
+        // Extension sends no draft ID (e.g., old extension version)
+        let ext_payload = crate::protocol::StateUpdatePayload {
+            picks: vec![],
+            current_nomination: None,
+            my_team_id: None,
+            teams: vec![],
+            pick_count: None,
+            total_picks: None,
+            draft_id: None,
+            source: Some("test".into()),
+        };
+
+        let (ui_tx, _ui_rx) = mpsc::channel(64);
+        handle_state_update(&mut state, ext_payload, &ui_tx).await;
+
+        // Draft ID should remain unchanged
+        assert_eq!(state.draft_id, original_draft_id);
+        assert_eq!(state.espn_draft_id, Some("espn_12345_2026".into()));
+    }
+
+    #[tokio::test]
+    async fn espn_draft_id_resilient_across_reconnects() {
+        let mut state = create_test_app_state();
+
+        // First connection: receive ESPN draft ID and process some picks
+        let ext_payload1 = crate::protocol::StateUpdatePayload {
+            picks: vec![crate::protocol::PickData {
+                pick_number: 1,
+                team_id: "1".into(),
+                team_name: "Team 1".into(),
+                player_id: "".into(),
+                player_name: "H_Star".into(),
+                position: "1B".into(),
+                price: 45,
+                eligible_slots: vec![],
+            }],
+            current_nomination: None,
+            my_team_id: Some("Team 1".into()),
+            teams: vec![
+                crate::protocol::TeamBudgetData {
+                    team_id: Some("1".into()),
+                    team_name: "Team 1".into(),
+                    budget: 215,
+                },
+                crate::protocol::TeamBudgetData {
+                    team_id: Some("2".into()),
+                    team_name: "Team 2".into(),
+                    budget: 260,
+                },
+            ],
+            pick_count: Some(1),
+            total_picks: Some(260),
+            draft_id: Some("espn_12345_2026".into()),
+            source: Some("test".into()),
+        };
+
+        let (ui_tx, _ui_rx) = mpsc::channel(64);
+        handle_state_update(&mut state, ext_payload1, &ui_tx).await;
+
+        let draft_id_after_first = state.draft_id.clone();
+        assert_eq!(state.espn_draft_id, Some("espn_12345_2026".into()));
+
+        // Simulate disconnect and reconnect -- previous_extension_state is
+        // cleared to None (simulating a fresh connection)
+        state.previous_extension_state = None;
+
+        // Second connection: same ESPN draft ID, same picks visible
+        let ext_payload2 = crate::protocol::StateUpdatePayload {
+            picks: vec![crate::protocol::PickData {
+                pick_number: 1,
+                team_id: "1".into(),
+                team_name: "Team 1".into(),
+                player_id: "".into(),
+                player_name: "H_Star".into(),
+                position: "1B".into(),
+                price: 45,
+                eligible_slots: vec![],
+            }],
+            current_nomination: None,
+            my_team_id: Some("Team 1".into()),
+            teams: vec![
+                crate::protocol::TeamBudgetData {
+                    team_id: Some("1".into()),
+                    team_name: "Team 1".into(),
+                    budget: 215,
+                },
+                crate::protocol::TeamBudgetData {
+                    team_id: Some("2".into()),
+                    team_name: "Team 2".into(),
+                    budget: 260,
+                },
+            ],
+            pick_count: Some(1),
+            total_picks: Some(260),
+            draft_id: Some("espn_12345_2026".into()),
+            source: Some("test".into()),
+        };
+
+        handle_state_update(&mut state, ext_payload2, &ui_tx).await;
+
+        // Draft ID should NOT change across reconnect with same ESPN ID
+        assert_eq!(state.draft_id, draft_id_after_first);
+        assert_eq!(state.espn_draft_id, Some("espn_12345_2026".into()));
     }
 }

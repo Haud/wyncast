@@ -357,6 +357,7 @@ function scrapeDom() {
     teams: [],
     pickCount: null,
     totalPicks: null,
+    draftId: null,
     source: 'dom_scrape',
   };
 
@@ -383,11 +384,45 @@ function scrapeDom() {
       // Use team name as ID since ESPN DOM doesn't expose numeric team IDs
       state.myTeamId = myTeamName;
     }
+
+    // Extract draft identifier
+    state.draftId = scrapeDraftId();
   } catch (e) {
     error('DOM scraping error:', e);
   }
 
   return state;
+}
+
+// ---------------------------------------------------------------------------
+// Draft identifier extraction
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract a stable draft identifier from the ESPN page.
+ *
+ * Combines the leagueId from the URL query string with the current year
+ * to produce a stable identifier per league per season.
+ * ESPN draft URLs look like: https://fantasy.espn.com/baseball/draft?leagueId=12345
+ *
+ * Returns a string like "espn_12345_2026", or null if leagueId is not in the URL.
+ */
+function scrapeDraftId() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const leagueId = params.get('leagueId');
+    if (leagueId) {
+      // NOTE: Uses the current calendar year. This means a draft that
+      // hypothetically spans midnight on Dec 31 would produce a different
+      // ID after the year rolls over. In practice this is not an issue
+      // because baseball drafts never cross the year boundary.
+      const year = new Date().getFullYear();
+      return 'espn_' + leagueId + '_' + year;
+    }
+  } catch (e) {
+    // URL parsing failed
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -417,7 +452,9 @@ function computeFingerprint(state) {
     '|' +
     (state.pickCount ?? '') +
     '|' +
-    (state.totalPicks ?? '')
+    (state.totalPicks ?? '') +
+    '|' +
+    (state.draftId || '')
   );
 }
 
@@ -443,6 +480,7 @@ function handleStateUpdate(state) {
       teams: state.teams || [],
       pickCount: state.pickCount ?? null,
       totalPicks: state.totalPicks ?? null,
+      draftId: state.draftId || null,
       source: state.source || 'unknown',
     },
   };

@@ -182,10 +182,11 @@ fn create_test_app_state_from_fixtures() -> AppState {
     );
 
     let db = Database::open(":memory:").expect("in-memory db");
+    let draft_id = Database::generate_draft_id();
     let llm_client = LlmClient::Disabled;
     let (llm_tx, _llm_rx) = mpsc::channel(16);
 
-    AppState::new(config, draft_state, available, projections, db, llm_client, llm_tx)
+    AppState::new(config, draft_state, available, projections, db, draft_id, llm_client, llm_tx)
 }
 
 // ===========================================================================
@@ -432,7 +433,7 @@ fn full_draft_simulation_via_process_new_picks() {
     }
 
     // DB should have all 8 picks persisted
-    let db_picks = state.db.load_picks().unwrap();
+    let db_picks = state.db.load_picks(&state.draft_id).unwrap();
     assert_eq!(db_picks.len(), 8, "DB should have 8 picks persisted");
     assert_eq!(db_picks[0].player_name, "Shohei Ohtani");
     assert_eq!(db_picks[7].player_name, "Gerrit Cole");
@@ -518,14 +519,16 @@ fn crash_recovery_restores_picks_and_continues() {
 
     // Simulate a first session: create state, record picks, then "crash"
     let db = Database::open(":memory:").expect("in-memory db");
+    let draft_id = Database::generate_draft_id();
 
     // Record 3 picks directly to DB (simulating a previous session)
     let events = generate_mock_draft_events();
     for event in &events[..3] {
         let pick = mock_event_to_pick(event);
-        db.record_pick(&pick).unwrap();
+        db.record_pick(&pick, &draft_id).unwrap();
     }
-    assert!(db.has_draft_in_progress().unwrap());
+    db.set_draft_id(&draft_id).unwrap();
+    assert!(db.has_draft_in_progress(&draft_id).unwrap());
 
     // Simulate restart: create a fresh AppState with the same DB
     let mut draft_state = DraftState::new(260, &roster_config());
@@ -548,6 +551,7 @@ fn crash_recovery_restores_picks_and_continues() {
         available,
         projections,
         db,
+        draft_id,
         llm_client,
         llm_tx,
     );
@@ -589,7 +593,7 @@ fn crash_recovery_restores_picks_and_continues() {
     assert!(!state.available_players.iter().any(|p| p.name == "Bobby Witt Jr."));
 
     // All 4 picks should be in the DB
-    let db_picks = state.db.load_picks().unwrap();
+    let db_picks = state.db.load_picks(&state.draft_id).unwrap();
     assert_eq!(db_picks.len(), 4);
 }
 
@@ -603,6 +607,7 @@ fn crash_recovery_empty_db_returns_false() {
     draft_state.reconcile_budgets(&ten_team_budgets());
     draft_state.set_my_team_by_name("Team 1");
     let db = Database::open(":memory:").expect("in-memory db");
+    let draft_id = Database::generate_draft_id();
     let llm_client = LlmClient::Disabled;
     let (llm_tx, _llm_rx) = mpsc::channel(16);
     let mut state = AppState::new(
@@ -611,6 +616,7 @@ fn crash_recovery_empty_db_returns_false() {
         available,
         projections,
         db,
+        draft_id,
         llm_client,
         llm_tx,
     );
@@ -1440,6 +1446,7 @@ fn inflation_increases_with_overpay() {
 #[test]
 fn database_round_trip_with_all_fields() {
     let db = Database::open(":memory:").expect("in-memory db");
+    let draft_id = Database::generate_draft_id();
 
     let pick = DraftPick {
         pick_number: 1,
@@ -1452,10 +1459,10 @@ fn database_round_trip_with_all_fields() {
         eligible_slots: vec![],
     };
 
-    db.record_pick(&pick).unwrap();
-    assert!(db.has_draft_in_progress().unwrap());
+    db.record_pick(&pick, &draft_id).unwrap();
+    assert!(db.has_draft_in_progress(&draft_id).unwrap());
 
-    let loaded = db.load_picks().unwrap();
+    let loaded = db.load_picks(&draft_id).unwrap();
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded[0].pick_number, 1);
     assert_eq!(loaded[0].team_id, "team_1");
@@ -1469,6 +1476,7 @@ fn database_round_trip_with_all_fields() {
 #[test]
 fn database_idempotent_pick_recording() {
     let db = Database::open(":memory:").expect("in-memory db");
+    let draft_id = Database::generate_draft_id();
 
     let pick = DraftPick {
         pick_number: 1,
@@ -1482,10 +1490,10 @@ fn database_idempotent_pick_recording() {
     };
 
     // Record the same pick twice (INSERT OR IGNORE)
-    db.record_pick(&pick).unwrap();
-    db.record_pick(&pick).unwrap();
+    db.record_pick(&pick, &draft_id).unwrap();
+    db.record_pick(&pick, &draft_id).unwrap();
 
-    let loaded = db.load_picks().unwrap();
+    let loaded = db.load_picks(&draft_id).unwrap();
     assert_eq!(loaded.len(), 1, "Duplicate picks should be idempotent");
 }
 
@@ -1582,9 +1590,9 @@ fn end_to_end_pipeline() {
     assert_eq!(state.available_players.len(), initial_pool_size - 4);
 
     // 5. Verify crash recovery would work with this state
-    let db_picks = state.db.load_picks().unwrap();
+    let db_picks = state.db.load_picks(&state.draft_id).unwrap();
     assert_eq!(db_picks.len(), 4);
-    assert!(state.db.has_draft_in_progress().unwrap());
+    assert!(state.db.has_draft_in_progress(&state.draft_id).unwrap());
 
     // 6. Verify prompt generation works with the current state
     // Find a player still in the pool
