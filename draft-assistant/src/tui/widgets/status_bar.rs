@@ -29,14 +29,14 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
     ));
 
     // Separator
-    spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+    spans.push(Span::styled(" | ", Style::default().fg(Color::Gray)));
 
     // Tab bar
     let tabs = tab_spans(state.active_tab);
     spans.extend(tabs);
 
     let paragraph = Paragraph::new(Line::from(spans))
-        .style(Style::default().bg(Color::DarkGray));
+        .style(Style::default().bg(Color::Black));
     frame.render_widget(paragraph, area);
 }
 
@@ -66,7 +66,7 @@ pub fn tab_spans(active: TabId) -> Vec<Span<'static>> {
                 .bg(Color::White)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Gray)
+            Style::default().fg(Color::White)
         };
         spans.push(Span::styled(format!("[{}]", label), style));
         spans.push(Span::raw(" "));
