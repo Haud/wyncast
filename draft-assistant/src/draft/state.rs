@@ -95,9 +95,12 @@ impl DraftState {
         // Sort teams by team_id for deterministic ordering
         team_states.sort_by(|a, b| a.team_id.cmp(&b.team_id));
 
+        // Match by team_id first; fall back to team_name when the extension
+        // sends the display name instead of a numeric ID (DOM scraping mode).
         let my_team_idx = team_states
             .iter()
             .position(|t| t.team_id == my_team_id)
+            .or_else(|| team_states.iter().position(|t| t.team_name == my_team_id))
             .unwrap_or(0);
 
         // Total picks = sum of draftable (non-IL) slots per team
@@ -128,7 +131,19 @@ impl DraftState {
     /// Updates the winning team's budget and roster, increments the pick count,
     /// and appends the pick to the history.
     pub fn record_pick(&mut self, pick: DraftPick) {
-        if let Some(team) = self.teams.iter_mut().find(|t| t.team_id == pick.team_id) {
+        // Look up team by team_id first; fall back to team_name when the ID
+        // is empty or doesn't match (DOM scraping uses team names as IDs).
+        let team = self
+            .teams
+            .iter_mut()
+            .find(|t| !pick.team_id.is_empty() && t.team_id == pick.team_id)
+            .or_else(|| {
+                self.teams
+                    .iter_mut()
+                    .find(|t| !pick.team_name.is_empty() && t.team_name == pick.team_name)
+            });
+
+        if let Some(team) = team {
             team.budget_spent += pick.price;
             team.budget_remaining = team.budget_remaining.saturating_sub(pick.price);
             team.roster.add_player_with_slots(
@@ -140,6 +155,24 @@ impl DraftState {
         }
         self.pick_count += 1;
         self.picks.push(pick);
+    }
+
+    /// Reconcile team budgets with data scraped from the ESPN DOM.
+    ///
+    /// Uses the ESPN-reported remaining budget as the source of truth
+    /// and adjusts `budget_remaining` and `budget_spent` accordingly.
+    pub fn reconcile_budgets(&mut self, espn_budgets: &[TeamBudgetPayload]) {
+        for budget_data in espn_budgets {
+            // Match by team_name since DOM scraping doesn't provide numeric IDs
+            if let Some(team) = self
+                .teams
+                .iter_mut()
+                .find(|t| t.team_name == budget_data.team_name)
+            {
+                team.budget_remaining = budget_data.budget;
+                team.budget_spent = self.salary_cap.saturating_sub(budget_data.budget);
+            }
+        }
     }
 
     /// Total salary spent across all teams.
@@ -185,13 +218,29 @@ impl DraftState {
 
 // --- Differential State Detection ---
 
-/// Payload representing the current draft state as received from the extension.
+/// Budget data for a team as scraped from the ESPN DOM.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TeamBudgetPayload {
+    pub team_name: String,
+    pub budget: u32,
+}
+
+/// Payload representing the current draft state as received from the extension.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StateUpdatePayload {
     /// All picks completed so far.
     pub picks: Vec<PickPayload>,
     /// The currently active nomination, if any.
     pub current_nomination: Option<NominationPayload>,
+    /// Team budget data from the ESPN pick train carousel.
+    #[serde(default)]
+    pub teams: Vec<TeamBudgetPayload>,
+    /// Current pick number from the ESPN clock label (e.g. "PK 128 OF 260").
+    #[serde(default)]
+    pub pick_count: Option<u32>,
+    /// Total number of picks from the ESPN clock label.
+    #[serde(default)]
+    pub total_picks: Option<u32>,
 }
 
 /// A single pick as received from the extension.
@@ -293,7 +342,16 @@ pub fn compute_state_diff(
             diff.nomination_cleared = true;
         }
         (Some(prev), Some(curr)) => {
-            if prev.player_id != curr.player_id {
+            // Detect nomination change: compare by player_id when available,
+            // fall back to player_name (+ position) when IDs are empty
+            // (DOM scraping doesn't provide player IDs).
+            let is_different_player = if !prev.player_id.is_empty() && !curr.player_id.is_empty() {
+                prev.player_id != curr.player_id
+            } else {
+                prev.player_name != curr.player_name || prev.position != curr.position
+            };
+
+            if is_different_player {
                 // Different player nominated
                 diff.nomination_changed = true;
                 diff.new_nomination = Some(nomination_from_payload(curr));
@@ -647,6 +705,7 @@ mod tests {
                 make_pick_payload(2, "team_2", "Player B", "CF", 30),
             ],
             current_nomination: Some(make_nomination("p3", "Player C", 5, None)),
+            ..Default::default()
         };
 
         let diff = compute_state_diff(&None, &current);
@@ -663,6 +722,7 @@ mod tests {
         let state = StateUpdatePayload {
             picks: vec![make_pick_payload(1, "team_1", "Player A", "SP", 20)],
             current_nomination: Some(make_nomination("p2", "Player B", 10, Some("team_2"))),
+            ..Default::default()
         };
 
         let diff = compute_state_diff(&Some(state.clone()), &state);
@@ -678,6 +738,7 @@ mod tests {
         let previous = StateUpdatePayload {
             picks: vec![make_pick_payload(1, "team_1", "Player A", "SP", 20)],
             current_nomination: None,
+            ..Default::default()
         };
         let current = StateUpdatePayload {
             picks: vec![
@@ -686,6 +747,7 @@ mod tests {
                 make_pick_payload(3, "team_3", "Player C", "1B", 15),
             ],
             current_nomination: None,
+            ..Default::default()
         };
 
         let diff = compute_state_diff(&Some(previous), &current);
@@ -699,10 +761,12 @@ mod tests {
         let previous = StateUpdatePayload {
             picks: vec![],
             current_nomination: None,
+            ..Default::default()
         };
         let current = StateUpdatePayload {
             picks: vec![],
             current_nomination: Some(make_nomination("p1", "Player A", 1, None)),
+            ..Default::default()
         };
 
         let diff = compute_state_diff(&Some(previous), &current);
@@ -720,10 +784,12 @@ mod tests {
         let previous = StateUpdatePayload {
             picks: vec![],
             current_nomination: Some(make_nomination("p1", "Player A", 10, Some("team_2"))),
+            ..Default::default()
         };
         let current = StateUpdatePayload {
             picks: vec![make_pick_payload(1, "team_2", "Player A", "SP", 10)],
             current_nomination: None,
+            ..Default::default()
         };
 
         let diff = compute_state_diff(&Some(previous), &current);
@@ -738,10 +804,12 @@ mod tests {
         let previous = StateUpdatePayload {
             picks: vec![],
             current_nomination: Some(make_nomination("p1", "Player A", 10, Some("team_2"))),
+            ..Default::default()
         };
         let current = StateUpdatePayload {
             picks: vec![make_pick_payload(1, "team_2", "Player A", "SP", 10)],
             current_nomination: Some(make_nomination("p2", "Player B", 1, None)),
+            ..Default::default()
         };
 
         let diff = compute_state_diff(&Some(previous), &current);
@@ -759,10 +827,12 @@ mod tests {
         let previous = StateUpdatePayload {
             picks: vec![],
             current_nomination: Some(make_nomination("p1", "Player A", 5, None)),
+            ..Default::default()
         };
         let current = StateUpdatePayload {
             picks: vec![],
             current_nomination: Some(make_nomination("p1", "Player A", 12, Some("team_3"))),
+            ..Default::default()
         };
 
         let diff = compute_state_diff(&Some(previous), &current);
@@ -781,10 +851,12 @@ mod tests {
         let previous = StateUpdatePayload {
             picks: vec![],
             current_nomination: Some(make_nomination("p1", "Player A", 10, Some("team_2"))),
+            ..Default::default()
         };
         let current = StateUpdatePayload {
             picks: vec![],
             current_nomination: Some(make_nomination("p1", "Player A", 10, Some("team_3"))),
+            ..Default::default()
         };
 
         let diff = compute_state_diff(&Some(previous), &current);
@@ -797,6 +869,103 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_budgets_overrides_local_tracking() {
+        let mut state = DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
+
+        // Record some picks to set budget_spent/budget_remaining via local tracking
+        state.record_pick(DraftPick {
+            pick_number: 1,
+            team_id: "team_1".to_string(),
+            team_name: "Team 1".to_string(),
+            player_name: "Mike Trout".to_string(),
+            position: "CF".to_string(),
+            price: 45,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        });
+        state.record_pick(DraftPick {
+            pick_number: 2,
+            team_id: "team_2".to_string(),
+            team_name: "Team 2".to_string(),
+            player_name: "Shohei Ohtani".to_string(),
+            position: "SP".to_string(),
+            price: 50,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        });
+
+        // Verify local tracking state before reconciliation
+        let team1 = state.team("team_1").unwrap();
+        assert_eq!(team1.budget_spent, 45);
+        assert_eq!(team1.budget_remaining, 215);
+        let team2 = state.team("team_2").unwrap();
+        assert_eq!(team2.budget_spent, 50);
+        assert_eq!(team2.budget_remaining, 210);
+
+        // Reconcile with ESPN data that differs from local tracking
+        // (simulating drift or missed picks)
+        let espn_budgets = vec![
+            TeamBudgetPayload {
+                team_name: "Team 1".to_string(),
+                budget: 200, // ESPN says $200 remaining (vs local $215)
+            },
+            TeamBudgetPayload {
+                team_name: "Team 2".to_string(),
+                budget: 205, // ESPN says $205 remaining (vs local $210)
+            },
+        ];
+        state.reconcile_budgets(&espn_budgets);
+
+        // Verify ESPN values override local tracking
+        let team1 = state.team("team_1").unwrap();
+        assert_eq!(team1.budget_remaining, 200);
+        assert_eq!(team1.budget_spent, 60); // 260 - 200
+        let team2 = state.team("team_2").unwrap();
+        assert_eq!(team2.budget_remaining, 205);
+        assert_eq!(team2.budget_spent, 55); // 260 - 205
+    }
+
+    #[test]
+    fn reconcile_budgets_skips_non_matching_teams() {
+        let mut state = DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
+
+        // Record a pick to establish some local state
+        state.record_pick(DraftPick {
+            pick_number: 1,
+            team_id: "team_1".to_string(),
+            team_name: "Team 1".to_string(),
+            player_name: "Mike Trout".to_string(),
+            position: "CF".to_string(),
+            price: 45,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        });
+
+        // Reconcile with ESPN data that includes a non-existent team
+        let espn_budgets = vec![
+            TeamBudgetPayload {
+                team_name: "Nonexistent Team".to_string(),
+                budget: 100,
+            },
+            TeamBudgetPayload {
+                team_name: "Team 1".to_string(),
+                budget: 210,
+            },
+        ];
+        state.reconcile_budgets(&espn_budgets);
+
+        // Team 1 should be updated from ESPN
+        let team1 = state.team("team_1").unwrap();
+        assert_eq!(team1.budget_remaining, 210);
+        assert_eq!(team1.budget_spent, 50); // 260 - 210
+
+        // Team 2 should be unaffected (no ESPN data for it)
+        let team2 = state.team("team_2").unwrap();
+        assert_eq!(team2.budget_remaining, 260);
+        assert_eq!(team2.budget_spent, 0);
+    }
+
+    #[test]
     fn diff_detects_new_picks_when_reordered() {
         // Previous had picks 1 and 2
         let previous = StateUpdatePayload {
@@ -805,6 +974,7 @@ mod tests {
                 make_pick_payload(2, "team_2", "Player B", "CF", 30),
             ],
             current_nomination: None,
+            ..Default::default()
         };
         // Current has picks 2, 1, 3 (reordered, with one new pick)
         let current = StateUpdatePayload {
@@ -814,6 +984,7 @@ mod tests {
                 make_pick_payload(3, "team_3", "Player C", "1B", 15),
             ],
             current_nomination: None,
+            ..Default::default()
         };
 
         let diff = compute_state_diff(&Some(previous), &current);

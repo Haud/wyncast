@@ -45,6 +45,14 @@ pub struct StateUpdatePayload {
     #[serde(default)]
     pub current_nomination: Option<NominationData>,
     pub my_team_id: Option<String>,
+    #[serde(default)]
+    pub teams: Vec<TeamBudgetData>,
+    /// Current pick number from the ESPN clock label (e.g. "PK 128 OF 260").
+    #[serde(default)]
+    pub pick_count: Option<u32>,
+    /// Total number of picks from the ESPN clock label.
+    #[serde(default)]
+    pub total_picks: Option<u32>,
     pub source: Option<String>,
 }
 
@@ -74,6 +82,13 @@ pub struct NominationData {
     pub time_remaining: Option<u32>,
     #[serde(default)]
     pub eligible_slots: Vec<u16>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamBudgetData {
+    pub team_name: String,
+    pub budget: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -286,6 +301,12 @@ mod tests {
                     eligible_slots: vec![5, 8, 9, 10, 11, 12, 16, 17],
                 }),
                 my_team_id: Some("team_7".to_string()),
+                teams: vec![TeamBudgetData {
+                    team_name: "Vorticists".to_string(),
+                    budget: 198,
+                }],
+                pick_count: None,
+                total_picks: None,
                 source: Some("dom_scraper".to_string()),
             },
         };
@@ -501,6 +522,9 @@ mod tests {
                 }],
                 current_nomination: None,
                 my_team_id: Some("team_5".to_string()),
+                teams: vec![],
+                pick_count: None,
+                total_picks: None,
                 source: Some("test".to_string()),
             },
         };
