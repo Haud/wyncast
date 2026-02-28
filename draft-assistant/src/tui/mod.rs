@@ -189,9 +189,10 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
         }
         UiUpdate::NominationUpdate(nomination) => {
             state.current_nomination = Some(*nomination);
-            // Clear previous analysis text when a new nomination arrives
+            // Clear previous analysis text and instant analysis when a new nomination arrives
             state.analysis_text.clear();
             state.analysis_status = LlmStatus::Idle;
+            state.instant_analysis = None;
         }
         UiUpdate::BidUpdate(nomination) => {
             // Update nomination info (new bid) but preserve LLM streaming text
@@ -446,9 +447,17 @@ mod tests {
 
     #[test]
     fn apply_ui_update_nomination_update() {
+        use crate::protocol::{InstantAnalysis, InstantVerdict};
+
         let mut state = ViewState::default();
         state.analysis_text = "old analysis".to_string();
         state.analysis_status = LlmStatus::Complete;
+        state.instant_analysis = Some(InstantAnalysis {
+            player_name: "Old Player".to_string(),
+            dollar_value: 30.0,
+            adjusted_value: 28.0,
+            verdict: InstantVerdict::Pass,
+        });
 
         let nom = NominationInfo {
             player_name: "Mike Trout".to_string(),
@@ -469,6 +478,8 @@ mod tests {
         // Analysis text should be cleared for new nomination
         assert!(state.analysis_text.is_empty());
         assert_eq!(state.analysis_status, LlmStatus::Idle);
+        // instant_analysis should also be cleared to avoid stale data from previous nomination
+        assert!(state.instant_analysis.is_none());
     }
 
     #[test]
