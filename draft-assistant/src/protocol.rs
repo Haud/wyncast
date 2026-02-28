@@ -164,6 +164,9 @@ pub enum UiUpdate {
     ConnectionStatus(ConnectionStatus),
     /// A new nomination is active.
     NominationUpdate(Box<NominationInfo>),
+    /// Bid updated on the current nomination (same player, new bid amount).
+    /// Unlike NominationUpdate, this does NOT clear accumulated LLM text.
+    BidUpdate(Box<NominationInfo>),
     /// The current nomination was cleared (pick completed).
     NominationCleared,
 }

@@ -592,7 +592,7 @@ async fn handle_state_update(
             }
         }
     } else if diff.bid_updated {
-        // Same player, bid updated - update the nomination info
+        // Same player, bid updated - update the nomination info without clearing LLM text
         if let Some(ref nomination) = diff.new_nomination {
             state.draft_state.current_nomination = Some(nomination.clone());
 
@@ -606,7 +606,7 @@ async fn handle_state_update(
                 eligible_slots: nomination.eligible_slots.clone(),
             };
             let _ = ui_tx
-                .send(UiUpdate::NominationUpdate(Box::new(nom_info)))
+                .send(UiUpdate::BidUpdate(Box::new(nom_info)))
                 .await;
         }
     }
