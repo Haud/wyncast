@@ -1191,6 +1191,92 @@ mod tests {
     }
 
     #[test]
+    fn record_pick_dedup_by_espn_player_id_on_roster() {
+        let mut state = create_test_state();
+
+        // Record pick #1 for Mike Trout on Team 1 with an ESPN player ID
+        state.record_pick(DraftPick {
+            pick_number: 1,
+            team_id: "1".to_string(),
+            team_name: "Team 1".to_string(),
+            player_name: "Mike Trout".to_string(),
+            position: "CF".to_string(),
+            price: 45,
+            espn_player_id: Some("33003".to_string()),
+            eligible_slots: vec![],
+        });
+
+        let team = state.team("1").unwrap();
+        assert_eq!(team.roster.filled_count(), 1);
+        assert_eq!(team.budget_spent, 45);
+
+        // Same player (same ESPN ID) arrives with a different pick_number
+        // (simulates ESPN renumbering). Should NOT duplicate the roster entry
+        // or budget, but the pick itself is stored.
+        state.record_pick(DraftPick {
+            pick_number: 101,
+            team_id: "1".to_string(),
+            team_name: "Team 1".to_string(),
+            player_name: "Mike Trout".to_string(),
+            position: "CF".to_string(),
+            price: 45,
+            espn_player_id: Some("33003".to_string()),
+            eligible_slots: vec![],
+        });
+
+        assert_eq!(state.pick_count, 2, "pick_count increases (different pick_number)");
+        assert_eq!(state.picks.len(), 2, "picks vec grows (different pick_number)");
+
+        let team = state.team("1").unwrap();
+        assert_eq!(
+            team.roster.filled_count(),
+            1,
+            "roster should still have 1 player (ESPN ID dedup)"
+        );
+        assert_eq!(
+            team.budget_spent, 45,
+            "budget should not double (ESPN ID dedup)"
+        );
+    }
+
+    #[test]
+    fn record_pick_different_espn_ids_not_deduped() {
+        let mut state = create_test_state();
+
+        // Two different players (different ESPN IDs) with names that happen
+        // to be the same — should NOT be deduped.
+        state.record_pick(DraftPick {
+            pick_number: 1,
+            team_id: "1".to_string(),
+            team_name: "Team 1".to_string(),
+            player_name: "Will Smith".to_string(),
+            position: "C".to_string(),
+            price: 15,
+            espn_player_id: Some("40585".to_string()), // Catcher Will Smith
+            eligible_slots: vec![],
+        });
+        state.record_pick(DraftPick {
+            pick_number: 2,
+            team_id: "1".to_string(),
+            team_name: "Team 1".to_string(),
+            player_name: "Will Smith".to_string(),
+            position: "RP".to_string(),
+            price: 5,
+            espn_player_id: Some("36158".to_string()), // Pitcher Will Smith
+            eligible_slots: vec![],
+        });
+
+        assert_eq!(state.pick_count, 2);
+        let team = state.team("1").unwrap();
+        assert_eq!(
+            team.roster.filled_count(),
+            2,
+            "two different ESPN IDs should both be rostered even with the same name"
+        );
+        assert_eq!(team.budget_spent, 20);
+    }
+
+    #[test]
     fn record_pick_different_players_same_team_not_deduped() {
         let mut state = create_test_state();
 

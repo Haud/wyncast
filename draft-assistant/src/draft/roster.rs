@@ -275,8 +275,15 @@ impl Roster {
 
     /// Whether a player is already on this roster.
     ///
-    /// Matches by ESPN player ID first (if both the query and the rostered player
-    /// have one). Falls back to name comparison when either side lacks an ID.
+    /// Matching strategy:
+    /// - When **both** the query and the rostered player carry an ESPN player ID,
+    ///   the ID comparison is **authoritative**: if the IDs differ the players are
+    ///   considered different, even if the names happen to match. ESPN player IDs
+    ///   are globally unique and stable, so two distinct IDs always mean two
+    ///   distinct players (name collisions, nicknames, and typos are irrelevant).
+    /// - When **either** side lacks an ESPN player ID (e.g. manual entry, old
+    ///   data, or DOM scraping that didn't capture the ID), the method falls back
+    ///   to an exact name comparison.
     pub fn has_player(&self, name: &str, espn_player_id: Option<&str>) -> bool {
         self.slots.iter().any(|s| {
             s.player.as_ref().map_or(false, |p| {
@@ -498,6 +505,88 @@ mod tests {
         assert!(roster.has_player("Mike Trout", None));
         assert!(roster.has_player("Mookie Betts", None));
         assert!(!roster.has_player("Aaron Judge", None));
+    }
+
+    // -- ESPN ID matching tests for has_player --
+
+    #[test]
+    fn has_player_same_id_matches() {
+        let mut roster = Roster::new(&test_roster_config());
+        roster.add_player("Mike Trout", "CF", 45, Some("33003"));
+        // Same ESPN ID should match regardless of name
+        assert!(roster.has_player("Mike Trout", Some("33003")));
+    }
+
+    #[test]
+    fn has_player_different_id_does_not_match_even_if_same_name() {
+        let mut roster = Roster::new(&test_roster_config());
+        roster.add_player("Mike Trout", "CF", 45, Some("33003"));
+        // Same name but different ESPN ID — IDs are authoritative, so no match
+        assert!(
+            !roster.has_player("Mike Trout", Some("99999")),
+            "different ESPN IDs should NOT match, even with the same name"
+        );
+    }
+
+    #[test]
+    fn has_player_same_id_matches_different_name() {
+        let mut roster = Roster::new(&test_roster_config());
+        roster.add_player("Mike Trout", "CF", 45, Some("33003"));
+        // Same ESPN ID but different name (e.g. nickname, typo) — should match
+        assert!(
+            roster.has_player("M. Trout", Some("33003")),
+            "same ESPN ID should match even when names differ"
+        );
+    }
+
+    #[test]
+    fn has_player_query_has_id_roster_does_not_falls_back_to_name() {
+        let mut roster = Roster::new(&test_roster_config());
+        // Player added without an ESPN ID (e.g. manual entry)
+        roster.add_player("Mike Trout", "CF", 45, None);
+        // Query has an ESPN ID but rostered player does not — falls back to name
+        assert!(
+            roster.has_player("Mike Trout", Some("33003")),
+            "should fall back to name match when rostered player has no ID"
+        );
+        assert!(
+            !roster.has_player("Someone Else", Some("33003")),
+            "name mismatch should not match when rostered player has no ID"
+        );
+    }
+
+    #[test]
+    fn has_player_roster_has_id_query_does_not_falls_back_to_name() {
+        let mut roster = Roster::new(&test_roster_config());
+        // Player added with an ESPN ID
+        roster.add_player("Mike Trout", "CF", 45, Some("33003"));
+        // Query without an ESPN ID — falls back to name
+        assert!(
+            roster.has_player("Mike Trout", None),
+            "should fall back to name match when query has no ID"
+        );
+        assert!(
+            !roster.has_player("Someone Else", None),
+            "name mismatch should not match when query has no ID"
+        );
+    }
+
+    #[test]
+    fn has_player_multiple_players_with_ids() {
+        let mut roster = Roster::new(&test_roster_config());
+        roster.add_player("Mike Trout", "CF", 45, Some("33003"));
+        roster.add_player("Mookie Betts", "RF", 35, Some("33204"));
+        // Each player matched by their own ID
+        assert!(roster.has_player("Mike Trout", Some("33003")));
+        assert!(roster.has_player("Mookie Betts", Some("33204")));
+        // Mookie's ID matches Mookie on the roster, even though the name says
+        // "Mike Trout" — ID is authoritative, name is ignored when both present
+        assert!(
+            roster.has_player("Mike Trout", Some("33204")),
+            "ID 33204 matches Mookie Betts on the roster; name is irrelevant"
+        );
+        // An ID not on any rostered player should not match
+        assert!(!roster.has_player("Aaron Judge", Some("55555")));
     }
 
     #[test]
