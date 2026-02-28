@@ -1264,7 +1264,7 @@ mod tests {
     fn nominate_to_sell_finds_candidates() {
         let mut roster = Roster::new(&test_roster_config());
         // Fill the CF slot
-        roster.add_player("My CF", "CF", 30);
+        roster.add_player("My CF", "CF", 30, None);
 
         let available = vec![
             make_hitter("Good CF", 8.0, vec![Position::CenterField], 35.0),
@@ -1284,7 +1284,7 @@ mod tests {
     #[test]
     fn nominate_to_sell_excludes_cheap_players() {
         let mut roster = Roster::new(&test_roster_config());
-        roster.add_player("My C", "C", 10);
+        roster.add_player("My C", "C", 10, None);
 
         let available = vec![
             make_hitter("Cheap C", 0.5, vec![Position::Catcher], 3.0),
@@ -1315,8 +1315,8 @@ mod tests {
     #[test]
     fn format_roster_shows_empty_and_filled() {
         let mut roster = Roster::new(&test_roster_config());
-        roster.add_player("Mike Trout", "CF", 45);
-        roster.add_player("Corbin Burnes", "SP", 35);
+        roster.add_player("Mike Trout", "CF", 45, None);
+        roster.add_player("Corbin Burnes", "SP", 35, None);
 
         let formatted = format_roster_for_prompt(&roster);
 

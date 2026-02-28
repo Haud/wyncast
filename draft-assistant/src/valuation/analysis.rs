@@ -545,9 +545,9 @@ mod tests {
         let league = test_league_config();
         let mut roster = Roster::new(&test_roster_config());
         // Fill the catcher slot
-        roster.add_player("Existing C", "C", 10);
+        roster.add_player("Existing C", "C", 10, None);
         // Fill UTIL
-        roster.add_player("Existing UTIL", "C", 5);
+        roster.add_player("Existing UTIL", "C", 5, None);
 
         // Player with negative VOR at a filled position
         let player = make_hitter("Bad C", -2.0, vec![Position::Catcher], 1.0);

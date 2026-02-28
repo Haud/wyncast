@@ -122,6 +122,7 @@ mod tests {
                 price: 28,
                 position: Position::FirstBase,
                 eligible_slots: vec![],
+                espn_player_id: None,
             }),
         };
         assert_eq!(format_slot_text(&slot), "1B: Pete Alonso ($28)");
@@ -136,6 +137,7 @@ mod tests {
                 price: 35,
                 position: Position::StartingPitcher,
                 eligible_slots: vec![],
+                espn_player_id: None,
             }),
         };
         assert_eq!(format_slot_text(&slot), "SP: Gerrit Cole ($35)");
@@ -164,6 +166,7 @@ mod tests {
                     price: 12,
                     position: Position::Catcher,
                     eligible_slots: vec![],
+                    espn_player_id: None,
                 }),
             },
             RosterSlot {

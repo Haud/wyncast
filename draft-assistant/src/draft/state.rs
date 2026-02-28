@@ -144,7 +144,7 @@ impl DraftState {
             // the team's roster. This guards against the same physical pick
             // being re-processed with a different pick_number (e.g. when
             // ESPN's virtualized pick list causes renumbering).
-            if !team.roster.has_player(&pick.player_name) {
+            if !team.roster.has_player(&pick.player_name, pick.espn_player_id.as_deref()) {
                 team.budget_spent += pick.price;
                 team.budget_remaining = team.budget_remaining.saturating_sub(pick.price);
                 team.roster.add_player_with_slots(
@@ -152,6 +152,7 @@ impl DraftState {
                     &pick.position,
                     pick.price,
                     &pick.eligible_slots,
+                    pick.espn_player_id.as_deref(),
                 );
             }
         }
@@ -1334,13 +1335,13 @@ mod tests {
         );
 
         // Verify the correct players
-        assert!(my_team.roster.has_player("Shohei Ohtani"));
-        assert!(my_team.roster.has_player("Mookie Betts"));
-        assert!(!my_team.roster.has_player("Aaron Judge"));
+        assert!(my_team.roster.has_player("Shohei Ohtani", None));
+        assert!(my_team.roster.has_player("Mookie Betts", None));
+        assert!(!my_team.roster.has_player("Aaron Judge", None));
 
         // Team Beta should have exactly 1 player (Judge)
         let team_beta = state.team("2").unwrap();
         assert_eq!(team_beta.roster.filled_count(), 1);
-        assert!(team_beta.roster.has_player("Aaron Judge"));
+        assert!(team_beta.roster.has_player("Aaron Judge", None));
     }
 }
