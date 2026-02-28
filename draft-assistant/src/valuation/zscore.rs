@@ -484,10 +484,14 @@ pub fn compute_initial_zscores(
             league_avg_whip,
             weights,
         );
+        let pos = match pitcher.pitcher_type {
+            PitcherType::SP => Position::StartingPitcher,
+            PitcherType::RP => Position::ReliefPitcher,
+        };
         valuations.push(PlayerValuation {
             name: pitcher.name.clone(),
             team: pitcher.team.clone(),
-            positions: Vec::new(),
+            positions: vec![pos],
             is_pitcher: true,
             pitcher_type: Some(pitcher.pitcher_type),
             projection: PlayerProjectionData::Pitcher {
