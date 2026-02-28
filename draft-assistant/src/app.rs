@@ -15,7 +15,7 @@ use crate::config::Config;
 use crate::db::Database;
 use crate::draft::state::{
     compute_state_diff, ActiveNomination, DraftState, NominationPayload, PickPayload,
-    StateUpdatePayload, TeamBudgetPayload,
+    ReconcileResult, StateUpdatePayload, TeamBudgetPayload,
 };
 use crate::llm::client::LlmClient;
 use crate::llm::prompt;
@@ -803,15 +803,19 @@ async fn handle_state_update(
 
     // Reconcile team budgets from ESPN-scraped data.
     // On the first call this auto-registers all teams from ESPN and
-    // replays any crash-recovery picks. Returns true when teams were
-    // registered for the first time.
-    let teams_just_registered = if !internal_payload.teams.is_empty() {
+    // replays any crash-recovery picks. Returns a ReconcileResult
+    // indicating whether teams were registered and/or budgets changed.
+    let reconcile = if !internal_payload.teams.is_empty() {
         state
             .draft_state
             .reconcile_budgets(&internal_payload.teams)
     } else {
-        false
+        ReconcileResult {
+            teams_registered: false,
+            budgets_changed: false,
+        }
     };
+    let teams_just_registered = reconcile.teams_registered;
 
     // Set the user's team from the extension's myTeamId (a team name).
     // This must happen after reconcile_budgets so teams are registered.
@@ -827,7 +831,8 @@ async fn handle_state_update(
     // Only send when something actually changed — not on every ESPN poll.
     let has_changes = had_new_picks
         || internal_payload.pick_count.is_some()
-        || teams_just_registered;
+        || teams_just_registered
+        || reconcile.budgets_changed;
     if has_changes {
         let snapshot = state.build_snapshot();
         let _ = ui_tx
@@ -3009,8 +3014,8 @@ mod tests {
                 budget: 210, // 260 - 50
             },
         ];
-        let teams_registered = state.draft_state.reconcile_budgets(&budgets);
-        assert!(teams_registered);
+        let reconcile = state.draft_state.reconcile_budgets(&budgets);
+        assert!(reconcile.teams_registered);
 
         // Step 3: set my team
         state.draft_state.set_my_team_by_name("Team Alpha");
