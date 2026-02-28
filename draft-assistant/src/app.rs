@@ -796,6 +796,58 @@ async fn handle_state_update(
         }
     }
 
+    // If teams were just registered this update cycle, check if a nomination
+    // exists but was skipped because my_team() returned None (teams weren't
+    // ready yet). This handles two race conditions:
+    //
+    // 1. The first STATE_UPDATE contains both team data AND a nomination.
+    //    The diff-based nomination handling ran handle_nomination() which
+    //    succeeded because reconcile_budgets() already ran earlier in this
+    //    function. No retry needed (llm_mode will be Some).
+    //
+    // 2. An earlier STATE_UPDATE had a nomination but no teams. The
+    //    handle_nomination() call returned early (my_team() was None),
+    //    leaving current_nomination unset and llm_mode as None. A later
+    //    update now registers teams, but the diff sees the same nomination
+    //    (no change) so nomination handling is skipped. We detect this by
+    //    checking the payload's current_nomination directly.
+    if teams_just_registered && state.llm_mode.is_none() {
+        if let Some(ref nom_payload) = internal_payload.current_nomination {
+            let nomination = ActiveNomination {
+                player_name: nom_payload.player_name.clone(),
+                player_id: nom_payload.player_id.clone(),
+                position: nom_payload.position.clone(),
+                nominated_by: nom_payload.nominated_by.clone(),
+                current_bid: nom_payload.current_bid,
+                current_bidder: nom_payload.current_bidder.clone(),
+                time_remaining: nom_payload.time_remaining,
+                eligible_slots: nom_payload.eligible_slots.clone(),
+            };
+            info!(
+                "Teams just registered, retrying analysis for pending nomination: {}",
+                nomination.player_name
+            );
+            let analysis = state.handle_nomination(&nomination);
+
+            let nom_info = NominationInfo {
+                player_name: nomination.player_name.clone(),
+                position: nomination.position.clone(),
+                nominated_by: nomination.nominated_by.clone(),
+                current_bid: nomination.current_bid,
+                current_bidder: nomination.current_bidder.clone(),
+                time_remaining: nomination.time_remaining,
+                eligible_slots: nomination.eligible_slots.clone(),
+            };
+            let _ = ui_tx
+                .send(UiUpdate::NominationUpdate(Box::new(nom_info)))
+                .await;
+
+            if let Some(_analysis) = analysis {
+                info!("Instant analysis computed for retried nomination");
+            }
+        }
+    }
+
     // Store current state for next diff
     state.previous_extension_state = Some(internal_payload);
 }
@@ -1974,6 +2026,281 @@ mod tests {
         // Clean up
         cmd_tx.send(UserCommand::Quit).await.unwrap();
         let _ = handle.await;
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: Extension state conversion
+    // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // Tests: First nomination with delayed team registration
+    // -----------------------------------------------------------------------
+
+    /// Create an AppState WITHOUT teams registered (simulates the state
+    /// before the first STATE_UPDATE containing team budget data).
+    fn create_test_app_state_no_teams() -> AppState {
+        let config = test_config();
+        let draft_state = DraftState::new(260, &test_roster_config());
+        // Do NOT call reconcile_budgets or set_my_team_by_name
+
+        let available = test_players();
+
+        let db = Database::open(":memory:").expect("in-memory db");
+        let llm_client = LlmClient::Disabled;
+        let (llm_tx, _llm_rx) = mpsc::channel(16);
+
+        AppState::new(config, draft_state, available, empty_projections(), db, llm_client, llm_tx)
+    }
+
+    #[tokio::test]
+    async fn first_nomination_with_teams_in_same_update_triggers_analysis() {
+        // Scenario: The very first STATE_UPDATE from the extension contains
+        // both team budget data AND the first nomination. Teams aren't
+        // registered yet (no prior state updates). The nomination analysis
+        // should still be triggered because reconcile_budgets runs before
+        // nomination handling within handle_state_update.
+        let mut state = create_test_app_state_no_teams();
+        let (ui_tx, mut ui_rx) = mpsc::channel(64);
+
+        assert!(state.draft_state.teams.is_empty(), "Teams should start empty");
+        assert!(state.llm_mode.is_none(), "LLM mode should start as None");
+
+        // Simulate the first STATE_UPDATE with teams + nomination
+        let ext_payload = crate::protocol::StateUpdatePayload {
+            picks: vec![],
+            current_nomination: Some(crate::protocol::NominationData {
+                player_id: "espn_1".into(),
+                player_name: "H_Star".into(),
+                position: "1B".into(),
+                nominated_by: "Team 2".into(),
+                current_bid: 5,
+                current_bidder: None,
+                time_remaining: Some(30),
+                eligible_slots: vec![],
+            }),
+            my_team_id: Some("Team 1".into()),
+            teams: vec![
+                crate::protocol::TeamBudgetData {
+                    team_id: Some("1".into()),
+                    team_name: "Team 1".into(),
+                    budget: 260,
+                },
+                crate::protocol::TeamBudgetData {
+                    team_id: Some("2".into()),
+                    team_name: "Team 2".into(),
+                    budget: 260,
+                },
+            ],
+            pick_count: None,
+            total_picks: None,
+            source: Some("test".into()),
+        };
+
+        handle_state_update(&mut state, ext_payload, &ui_tx).await;
+
+        // Teams should now be registered
+        assert_eq!(state.draft_state.teams.len(), 2);
+
+        // LLM mode should be set (nomination analysis was triggered)
+        assert!(
+            state.llm_mode.is_some(),
+            "LLM mode should be set after first nomination with teams in same update"
+        );
+        assert!(matches!(
+            state.llm_mode,
+            Some(LlmMode::NominationAnalysis { .. })
+        ));
+
+        // current_nomination should be set on the draft state
+        assert!(state.draft_state.current_nomination.is_some());
+        assert_eq!(
+            state.draft_state.current_nomination.as_ref().unwrap().player_name,
+            "H_Star"
+        );
+
+        // Drain UI updates and verify we got a NominationUpdate
+        let mut got_nomination_update = false;
+        while let Ok(update) = ui_rx.try_recv() {
+            if let UiUpdate::NominationUpdate(info) = update {
+                assert_eq!(info.player_name, "H_Star");
+                got_nomination_update = true;
+            }
+        }
+        assert!(
+            got_nomination_update,
+            "Should have received a NominationUpdate"
+        );
+    }
+
+    #[tokio::test]
+    async fn first_nomination_before_teams_retries_after_registration() {
+        // Scenario: The first STATE_UPDATE has a nomination but NO team data.
+        // handle_nomination() fails because my_team() returns None.
+        // A second STATE_UPDATE arrives with team data (and the same nomination).
+        // The retry logic should detect the unanalyzed nomination and trigger analysis.
+        let mut state = create_test_app_state_no_teams();
+        let (ui_tx, mut ui_rx) = mpsc::channel(64);
+
+        assert!(state.draft_state.teams.is_empty());
+
+        // First STATE_UPDATE: nomination but no teams
+        let ext_payload_1 = crate::protocol::StateUpdatePayload {
+            picks: vec![],
+            current_nomination: Some(crate::protocol::NominationData {
+                player_id: "espn_1".into(),
+                player_name: "H_Star".into(),
+                position: "1B".into(),
+                nominated_by: "Team 2".into(),
+                current_bid: 5,
+                current_bidder: None,
+                time_remaining: Some(30),
+                eligible_slots: vec![],
+            }),
+            my_team_id: Some("Team 1".into()),
+            teams: vec![],  // No teams!
+            pick_count: None,
+            total_picks: None,
+            source: Some("test".into()),
+        };
+
+        handle_state_update(&mut state, ext_payload_1, &ui_tx).await;
+
+        // Teams should still be empty
+        assert!(state.draft_state.teams.is_empty());
+        // LLM mode should be None (nomination was skipped)
+        assert!(
+            state.llm_mode.is_none(),
+            "LLM mode should be None since teams aren't registered"
+        );
+        // current_nomination should NOT be set (handle_nomination returned early)
+        assert!(
+            state.draft_state.current_nomination.is_none(),
+            "current_nomination should be None since handle_nomination returned early"
+        );
+
+        // Drain any UI updates from first round
+        while ui_rx.try_recv().is_ok() {}
+
+        // Second STATE_UPDATE: teams arrive, same nomination still active
+        let ext_payload_2 = crate::protocol::StateUpdatePayload {
+            picks: vec![],
+            current_nomination: Some(crate::protocol::NominationData {
+                player_id: "espn_1".into(),
+                player_name: "H_Star".into(),
+                position: "1B".into(),
+                nominated_by: "Team 2".into(),
+                current_bid: 5,
+                current_bidder: None,
+                time_remaining: Some(25),  // Time ticked down
+                eligible_slots: vec![],
+            }),
+            my_team_id: Some("Team 1".into()),
+            teams: vec![
+                crate::protocol::TeamBudgetData {
+                    team_id: Some("1".into()),
+                    team_name: "Team 1".into(),
+                    budget: 260,
+                },
+                crate::protocol::TeamBudgetData {
+                    team_id: Some("2".into()),
+                    team_name: "Team 2".into(),
+                    budget: 260,
+                },
+            ],
+            pick_count: None,
+            total_picks: None,
+            source: Some("test".into()),
+        };
+
+        handle_state_update(&mut state, ext_payload_2, &ui_tx).await;
+
+        // Teams should now be registered
+        assert_eq!(state.draft_state.teams.len(), 2);
+
+        // LLM mode should now be set (retry triggered the analysis)
+        assert!(
+            state.llm_mode.is_some(),
+            "LLM mode should be set after teams registered with pending nomination"
+        );
+        assert!(matches!(
+            state.llm_mode,
+            Some(LlmMode::NominationAnalysis { .. })
+        ));
+
+        // current_nomination should now be set
+        assert!(state.draft_state.current_nomination.is_some());
+        assert_eq!(
+            state.draft_state.current_nomination.as_ref().unwrap().player_name,
+            "H_Star"
+        );
+
+        // Verify we got a NominationUpdate from the retry
+        let mut got_nomination_update = false;
+        while let Ok(update) = ui_rx.try_recv() {
+            if let UiUpdate::NominationUpdate(info) = update {
+                assert_eq!(info.player_name, "H_Star");
+                got_nomination_update = true;
+            }
+        }
+        assert!(
+            got_nomination_update,
+            "Should have received a NominationUpdate from the retry"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_does_not_fire_when_nomination_already_analyzed() {
+        // Scenario: Teams are registered in a state update that also contains
+        // a nomination, and the normal flow handles it. The retry should NOT
+        // fire a second time (llm_mode is already set).
+        let mut state = create_test_app_state_no_teams();
+        let (ui_tx, mut ui_rx) = mpsc::channel(64);
+
+        // First STATE_UPDATE with teams + nomination
+        let ext_payload = crate::protocol::StateUpdatePayload {
+            picks: vec![],
+            current_nomination: Some(crate::protocol::NominationData {
+                player_id: "espn_1".into(),
+                player_name: "H_Star".into(),
+                position: "1B".into(),
+                nominated_by: "Team 2".into(),
+                current_bid: 5,
+                current_bidder: None,
+                time_remaining: Some(30),
+                eligible_slots: vec![],
+            }),
+            my_team_id: Some("Team 1".into()),
+            teams: vec![
+                crate::protocol::TeamBudgetData {
+                    team_id: Some("1".into()),
+                    team_name: "Team 1".into(),
+                    budget: 260,
+                },
+                crate::protocol::TeamBudgetData {
+                    team_id: Some("2".into()),
+                    team_name: "Team 2".into(),
+                    budget: 260,
+                },
+            ],
+            pick_count: None,
+            total_picks: None,
+            source: Some("test".into()),
+        };
+
+        handle_state_update(&mut state, ext_payload, &ui_tx).await;
+
+        // Count NominationUpdate messages -- should be exactly 1
+        // (from the normal flow, not doubled by the retry)
+        let mut nomination_update_count = 0;
+        while let Ok(update) = ui_rx.try_recv() {
+            if matches!(update, UiUpdate::NominationUpdate(_)) {
+                nomination_update_count += 1;
+            }
+        }
+        assert_eq!(
+            nomination_update_count, 1,
+            "Should get exactly 1 NominationUpdate, not doubled by retry"
+        );
     }
 
     // -----------------------------------------------------------------------
