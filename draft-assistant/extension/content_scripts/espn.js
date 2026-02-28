@@ -201,7 +201,8 @@ function extractNominatedBy(bidItems) {
 
 /**
  * Extract team budgets from the pick train carousel.
- * Returns an array of { teamName, budget } objects.
+ * Returns an array of { teamId, teamName, budget } objects.
+ * The teamId is extracted from the leading number in the team name (e.g. "1. London Ligers" -> "1").
  */
 function scrapeTeamBudgets() {
   const teams = [];
@@ -211,9 +212,12 @@ function scrapeTeamBudgets() {
       const name = extractText(item, SELECTORS.teamBudgetName);
       const cashStr = extractText(item, SELECTORS.teamBudgetCash);
       if (name) {
-        // Strip the leading number + dot from team name: "1. London Ligers" -> "London Ligers"
-        const cleanName = name.replace(/^\d+\.\s*/, '');
+        // Extract the leading number as teamId and strip it from the name
+        const match = name.match(/^(\d+)\.\s*(.*)/);
+        const teamId = match ? match[1] : '';
+        const cleanName = match ? match[2] : name;
         teams.push({
+          teamId: teamId,
           teamName: cleanName,
           budget: parsePrice(cashStr),
         });

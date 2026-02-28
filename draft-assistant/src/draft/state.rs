@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use super::pick::DraftPick;
 use super::roster::Roster;
@@ -70,59 +71,43 @@ pub struct DraftState {
 impl DraftState {
     /// Create a new draft state.
     ///
+    /// Teams start empty and are populated dynamically from ESPN's live data
+    /// via `reconcile_budgets()`. The `my_team_idx` defaults to 0 and is
+    /// updated when the extension identifies the user's team.
+    ///
     /// # Arguments
-    /// - `teams`: Vec of (team_id, team_name) pairs
-    /// - `my_team_id`: The user's team ID
     /// - `salary_cap`: Per-team salary cap
     /// - `roster_config`: Position -> slot count mapping from league config
     pub fn new(
-        teams: Vec<(String, String)>,
-        my_team_id: &str,
         salary_cap: u32,
         roster_config: &HashMap<String, usize>,
     ) -> Self {
-        let mut team_states: Vec<TeamState> = teams
-            .into_iter()
-            .map(|(id, name)| TeamState {
-                team_id: id,
-                team_name: name,
-                roster: Roster::new(roster_config),
-                budget_spent: 0,
-                budget_remaining: salary_cap,
-            })
-            .collect();
-
-        // Sort teams by team_id for deterministic ordering
-        team_states.sort_by(|a, b| a.team_id.cmp(&b.team_id));
-
-        // Match by team_id first; fall back to team_name when the extension
-        // sends the display name instead of a numeric ID (DOM scraping mode).
-        let my_team_idx = team_states
-            .iter()
-            .position(|t| t.team_id == my_team_id)
-            .or_else(|| team_states.iter().position(|t| t.team_name == my_team_id))
-            .unwrap_or(0);
-
-        // Total picks = sum of draftable (non-IL) slots per team
-        let draftable_per_team = team_states
-            .first()
-            .map(|t| t.roster.draftable_count())
-            .unwrap_or(0);
-        let total_picks = draftable_per_team * team_states.len();
-
-        // Default nomination order: sequential by team index
-        let nomination_order: Vec<usize> = (0..team_states.len()).collect();
-
         DraftState {
-            teams: team_states,
+            teams: Vec::new(),
             picks: Vec::new(),
             current_nomination: None,
             pick_count: 0,
-            total_picks,
-            my_team_idx,
-            nomination_order,
+            total_picks: 0,
+            my_team_idx: 0,
+            nomination_order: Vec::new(),
             salary_cap,
             roster_config: roster_config.clone(),
+        }
+    }
+
+    /// Identify the user's team by matching a team name from the extension.
+    ///
+    /// The ESPN extension's `identifyMyTeam()` returns a team name (not an ID).
+    /// After teams are registered via `reconcile_budgets()`, this method
+    /// finds and sets `my_team_idx` by matching the name.
+    pub fn set_my_team_by_name(&mut self, team_name: &str) {
+        if let Some(idx) = self.teams.iter().position(|t| t.team_name == team_name) {
+            self.my_team_idx = idx;
+        } else {
+            warn!(
+                "Could not find team matching '{}' — my_team_idx remains at {}",
+                team_name, self.my_team_idx
+            );
         }
     }
 
@@ -159,11 +144,41 @@ impl DraftState {
 
     /// Reconcile team budgets with data scraped from the ESPN DOM.
     ///
-    /// Uses the ESPN-reported remaining budget as the source of truth
-    /// and adjusts `budget_remaining` and `budget_spent` accordingly.
-    pub fn reconcile_budgets(&mut self, espn_budgets: &[TeamBudgetPayload]) {
+    /// On the first call (when `self.teams` is empty), this auto-registers
+    /// all teams from the ESPN data, building the full team registry.
+    /// On subsequent calls, it uses the ESPN-reported remaining budget as the
+    /// source of truth and adjusts `budget_remaining` and `budget_spent`.
+    /// Returns `true` if this call registered teams for the first time.
+    pub fn reconcile_budgets(&mut self, espn_budgets: &[TeamBudgetPayload]) -> bool {
+        if self.teams.is_empty() && !espn_budgets.is_empty() {
+            // First call: auto-register all teams from ESPN data
+            for budget_data in espn_budgets {
+                self.teams.push(TeamState {
+                    team_id: budget_data.team_id.clone(),
+                    team_name: budget_data.team_name.clone(),
+                    roster: Roster::new(&self.roster_config),
+                    budget_spent: self.salary_cap.saturating_sub(budget_data.budget),
+                    budget_remaining: budget_data.budget,
+                });
+            }
+
+            // Compute total picks and nomination order now that teams are registered
+            let draftable_per_team = self
+                .teams
+                .first()
+                .map(|t| t.roster.draftable_count())
+                .unwrap_or(0);
+            self.total_picks = draftable_per_team * self.teams.len();
+            self.nomination_order = (0..self.teams.len()).collect();
+
+            // Replay any picks stored during crash recovery before teams existed
+            self.replay_pending_picks();
+
+            return true;
+        }
+
         for budget_data in espn_budgets {
-            // Match by team_name since DOM scraping doesn't provide numeric IDs
+            // Match by team_name since the pick train names are the canonical identifiers
             if let Some(team) = self
                 .teams
                 .iter_mut()
@@ -173,6 +188,7 @@ impl DraftState {
                 team.budget_spent = self.salary_cap.saturating_sub(budget_data.budget);
             }
         }
+        false
     }
 
     /// Total salary spent across all teams.
@@ -190,16 +206,33 @@ impl DraftState {
         self.teams.iter_mut().find(|t| t.team_id == team_id)
     }
 
-    /// Reference to the user's team state.
-    pub fn my_team(&self) -> &TeamState {
-        &self.teams[self.my_team_idx]
+    /// Reference to the user's team state, if teams have been registered.
+    ///
+    /// Returns `None` before `reconcile_budgets()` has populated the team list.
+    pub fn my_team(&self) -> Option<&TeamState> {
+        self.teams.get(self.my_team_idx)
     }
 
     /// Restore the draft state by replaying a sequence of picks.
     ///
     /// This is used for crash recovery: given a saved list of picks,
     /// replay them all to reconstruct the full state.
+    ///
+    /// If teams have not been registered yet (empty teams list), the picks
+    /// are stored in `self.picks` and `self.pick_count` is set, but team
+    /// budgets/rosters are not updated. When `reconcile_budgets()` later
+    /// registers teams, it will call `replay_pending_picks()` to apply
+    /// the stored picks against the newly registered teams.
     pub fn restore_from_picks(&mut self, picks: Vec<DraftPick>) {
+        self.current_nomination = None;
+
+        if self.teams.is_empty() {
+            // Teams not registered yet — store picks for deferred replay
+            self.pick_count = picks.len();
+            self.picks = picks;
+            return;
+        }
+
         // Reset state: rebuild rosters from stored config, reset budgets
         for team in &mut self.teams {
             team.budget_spent = 0;
@@ -208,9 +241,23 @@ impl DraftState {
         }
         self.picks.clear();
         self.pick_count = 0;
-        self.current_nomination = None;
 
         for pick in picks {
+            self.record_pick(pick);
+        }
+    }
+
+    /// Replay stored picks against newly registered teams.
+    ///
+    /// Called by `reconcile_budgets()` after the first team registration
+    /// when there are pending picks from crash recovery.
+    fn replay_pending_picks(&mut self) {
+        if self.picks.is_empty() {
+            return;
+        }
+        let pending = std::mem::take(&mut self.picks);
+        self.pick_count = 0;
+        for pick in pending {
             self.record_pick(pick);
         }
     }
@@ -221,6 +268,8 @@ impl DraftState {
 /// Budget data for a team as scraped from the ESPN DOM.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TeamBudgetPayload {
+    /// ESPN team ID extracted from the pick train (e.g. "1", "2").
+    pub team_id: String,
     pub team_name: String,
     pub budget: u32,
 }
@@ -404,52 +453,75 @@ mod tests {
         config
     }
 
-    fn test_teams() -> Vec<(String, String)> {
+    /// Create ESPN-style team budget data for 10 teams, each with $260 budget.
+    fn test_espn_budgets() -> Vec<TeamBudgetPayload> {
         (1..=10)
-            .map(|i| (format!("team_{}", i), format!("Team {}", i)))
+            .map(|i| TeamBudgetPayload {
+                team_id: format!("{}", i),
+                team_name: format!("Team {}", i),
+                budget: 260,
+            })
             .collect()
     }
 
+    /// Helper: create a DraftState with teams pre-registered from ESPN data.
+    fn create_test_state() -> DraftState {
+        let mut state = DraftState::new(260, &test_roster_config());
+        state.reconcile_budgets(&test_espn_budgets());
+        state.set_my_team_by_name("Team 1");
+        state
+    }
+
     #[test]
-    fn draft_state_creation() {
-        let state = DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
-        assert_eq!(state.teams.len(), 10);
+    fn draft_state_creation_starts_empty() {
+        let state = DraftState::new(260, &test_roster_config());
+        assert_eq!(state.teams.len(), 0);
         assert_eq!(state.pick_count, 0);
-        assert_eq!(state.my_team_idx, 0); // team_1 sorts first
+        assert_eq!(state.total_picks, 0);
+        assert_eq!(state.my_team_idx, 0);
         assert!(state.current_nomination.is_none());
     }
 
     #[test]
-    fn draft_state_teams_sorted() {
-        let mut teams = test_teams();
-        teams.reverse(); // Reverse order to test sorting
-        let state = DraftState::new(teams, "team_5", 260, &test_roster_config());
-        assert_eq!(state.teams[0].team_id, "team_1");
-        assert_eq!(state.teams[1].team_id, "team_10"); // "team_10" < "team_2" lexicographically
-        assert_eq!(state.teams[9].team_id, "team_9");
+    fn reconcile_budgets_registers_teams() {
+        let mut state = DraftState::new(260, &test_roster_config());
+        state.reconcile_budgets(&test_espn_budgets());
+        assert_eq!(state.teams.len(), 10);
+        // Teams are in ESPN order (not sorted by ID)
+        assert_eq!(state.teams[0].team_name, "Team 1");
+        assert_eq!(state.teams[0].team_id, "1");
+        assert_eq!(state.teams[9].team_name, "Team 10");
     }
 
     #[test]
-    fn draft_state_total_picks() {
-        let state = DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
+    fn draft_state_total_picks_after_registration() {
+        let state = create_test_state();
         // 26 draftable slots per team * 10 teams = 260
         assert_eq!(state.total_picks, 260);
     }
 
     #[test]
-    fn draft_state_my_team() {
-        let state = DraftState::new(test_teams(), "team_3", 260, &test_roster_config());
-        let my = state.my_team();
-        assert_eq!(my.team_id, "team_3");
+    fn set_my_team_by_name() {
+        let mut state = DraftState::new(260, &test_roster_config());
+        state.reconcile_budgets(&test_espn_budgets());
+        state.set_my_team_by_name("Team 3");
+        let my = state.my_team().expect("my_team should be Some after reconcile");
+        assert_eq!(my.team_name, "Team 3");
         assert_eq!(my.budget_remaining, 260);
     }
 
     #[test]
+    fn my_team_returns_none_when_teams_empty() {
+        let state = DraftState::new(260, &test_roster_config());
+        assert!(state.my_team().is_none());
+    }
+
+    #[test]
     fn record_pick_updates_budget() {
-        let mut state = DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
+        let mut state = create_test_state();
         let pick = DraftPick {
             pick_number: 1,
-            team_id: "team_1".to_string(),
+            team_id: "1".to_string(),
             team_name: "Team 1".to_string(),
             player_name: "Mike Trout".to_string(),
             position: "CF".to_string(),
@@ -459,7 +531,7 @@ mod tests {
         };
         state.record_pick(pick);
 
-        let team = state.team("team_1").unwrap();
+        let team = state.team("1").unwrap();
         assert_eq!(team.budget_spent, 45);
         assert_eq!(team.budget_remaining, 215);
         assert_eq!(state.pick_count, 1);
@@ -468,10 +540,10 @@ mod tests {
 
     #[test]
     fn record_pick_updates_roster() {
-        let mut state = DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
+        let mut state = create_test_state();
         let pick = DraftPick {
             pick_number: 1,
-            team_id: "team_1".to_string(),
+            team_id: "1".to_string(),
             team_name: "Team 1".to_string(),
             player_name: "Mike Trout".to_string(),
             position: "CF".to_string(),
@@ -481,17 +553,17 @@ mod tests {
         };
         state.record_pick(pick);
 
-        let team = state.team("team_1").unwrap();
+        let team = state.team("1").unwrap();
         assert_eq!(team.roster.filled_count(), 1);
     }
 
     #[test]
     fn record_multiple_picks() {
-        let mut state = DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
+        let mut state = create_test_state();
 
         state.record_pick(DraftPick {
             pick_number: 1,
-            team_id: "team_1".to_string(),
+            team_id: "1".to_string(),
             team_name: "Team 1".to_string(),
             player_name: "Mike Trout".to_string(),
             position: "CF".to_string(),
@@ -501,7 +573,7 @@ mod tests {
         });
         state.record_pick(DraftPick {
             pick_number: 2,
-            team_id: "team_2".to_string(),
+            team_id: "2".to_string(),
             team_name: "Team 2".to_string(),
             player_name: "Shohei Ohtani".to_string(),
             position: "SP".to_string(),
@@ -511,7 +583,7 @@ mod tests {
         });
         state.record_pick(DraftPick {
             pick_number: 3,
-            team_id: "team_1".to_string(),
+            team_id: "1".to_string(),
             team_name: "Team 1".to_string(),
             player_name: "Mookie Betts".to_string(),
             position: "RF".to_string(),
@@ -523,22 +595,22 @@ mod tests {
         assert_eq!(state.pick_count, 3);
         assert_eq!(state.picks.len(), 3);
 
-        let team1 = state.team("team_1").unwrap();
+        let team1 = state.team("1").unwrap();
         assert_eq!(team1.budget_spent, 80);
         assert_eq!(team1.budget_remaining, 180);
         assert_eq!(team1.roster.filled_count(), 2);
 
-        let team2 = state.team("team_2").unwrap();
+        let team2 = state.team("2").unwrap();
         assert_eq!(team2.budget_spent, 50);
         assert_eq!(team2.budget_remaining, 210);
     }
 
     #[test]
     fn total_spent() {
-        let mut state = DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
+        let mut state = create_test_state();
         state.record_pick(DraftPick {
             pick_number: 1,
-            team_id: "team_1".to_string(),
+            team_id: "1".to_string(),
             team_name: "Team 1".to_string(),
             player_name: "Player A".to_string(),
             position: "SP".to_string(),
@@ -548,7 +620,7 @@ mod tests {
         });
         state.record_pick(DraftPick {
             pick_number: 2,
-            team_id: "team_3".to_string(),
+            team_id: "3".to_string(),
             team_name: "Team 3".to_string(),
             player_name: "Player B".to_string(),
             position: "1B".to_string(),
@@ -561,9 +633,9 @@ mod tests {
 
     #[test]
     fn team_lookup() {
-        let state = DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
-        assert!(state.team("team_5").is_some());
-        assert_eq!(state.team("team_5").unwrap().team_name, "Team 5");
+        let state = create_test_state();
+        assert!(state.team("5").is_some());
+        assert_eq!(state.team("5").unwrap().team_name, "Team 5");
         assert!(state.team("nonexistent").is_none());
     }
 
@@ -574,7 +646,7 @@ mod tests {
         let picks = vec![
             DraftPick {
                 pick_number: 1,
-                team_id: "team_1".to_string(),
+                team_id: "1".to_string(),
                 team_name: "Team 1".to_string(),
                 player_name: "Mike Trout".to_string(),
                 position: "CF".to_string(),
@@ -584,7 +656,7 @@ mod tests {
             },
             DraftPick {
                 pick_number: 2,
-                team_id: "team_2".to_string(),
+                team_id: "2".to_string(),
                 team_name: "Team 2".to_string(),
                 player_name: "Shohei Ohtani".to_string(),
                 position: "SP".to_string(),
@@ -594,7 +666,7 @@ mod tests {
             },
             DraftPick {
                 pick_number: 3,
-                team_id: "team_1".to_string(),
+                team_id: "1".to_string(),
                 team_name: "Team 1".to_string(),
                 player_name: "Mookie Betts".to_string(),
                 position: "RF".to_string(),
@@ -604,14 +676,16 @@ mod tests {
             },
         ];
 
-        // Create a fresh state and restore from picks
-        let mut state = DraftState::new(test_teams(), "team_1", 260, &roster_config);
+        // Create a state with teams registered and restore from picks
+        let mut state = DraftState::new(260, &roster_config);
+        state.reconcile_budgets(&test_espn_budgets());
+        state.set_my_team_by_name("Team 1");
         state.restore_from_picks(picks);
 
         assert_eq!(state.pick_count, 3);
         assert_eq!(state.picks.len(), 3);
 
-        let team1 = state.team("team_1").unwrap();
+        let team1 = state.team("1").unwrap();
         assert_eq!(team1.budget_spent, 80);
         assert_eq!(team1.budget_remaining, 180);
         assert_eq!(team1.roster.filled_count(), 2);
@@ -620,12 +694,14 @@ mod tests {
     #[test]
     fn restore_from_picks_resets_previous_state() {
         let roster_config = test_roster_config();
-        let mut state = DraftState::new(test_teams(), "team_1", 260, &roster_config);
+        let mut state = DraftState::new(260, &roster_config);
+        state.reconcile_budgets(&test_espn_budgets());
+        state.set_my_team_by_name("Team 1");
 
         // Record some picks first
         state.record_pick(DraftPick {
             pick_number: 1,
-            team_id: "team_1".to_string(),
+            team_id: "1".to_string(),
             team_name: "Team 1".to_string(),
             player_name: "Old Player".to_string(),
             position: "C".to_string(),
@@ -638,7 +714,7 @@ mod tests {
         // Now restore from a different set of picks
         let new_picks = vec![DraftPick {
             pick_number: 1,
-            team_id: "team_2".to_string(),
+            team_id: "2".to_string(),
             team_name: "Team 2".to_string(),
             player_name: "New Player".to_string(),
             position: "SP".to_string(),
@@ -651,10 +727,10 @@ mod tests {
         // Old state should be completely replaced
         assert_eq!(state.pick_count, 1);
         assert_eq!(state.picks[0].player_name, "New Player");
-        let team1 = state.team("team_1").unwrap();
+        let team1 = state.team("1").unwrap();
         assert_eq!(team1.budget_spent, 0); // Old pick should be gone
         assert_eq!(team1.budget_remaining, 260);
-        let team2 = state.team("team_2").unwrap();
+        let team2 = state.team("2").unwrap();
         assert_eq!(team2.budget_spent, 30);
     }
 
@@ -870,12 +946,12 @@ mod tests {
 
     #[test]
     fn reconcile_budgets_overrides_local_tracking() {
-        let mut state = DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
+        let mut state = create_test_state();
 
         // Record some picks to set budget_spent/budget_remaining via local tracking
         state.record_pick(DraftPick {
             pick_number: 1,
-            team_id: "team_1".to_string(),
+            team_id: "1".to_string(),
             team_name: "Team 1".to_string(),
             player_name: "Mike Trout".to_string(),
             position: "CF".to_string(),
@@ -885,7 +961,7 @@ mod tests {
         });
         state.record_pick(DraftPick {
             pick_number: 2,
-            team_id: "team_2".to_string(),
+            team_id: "2".to_string(),
             team_name: "Team 2".to_string(),
             player_name: "Shohei Ohtani".to_string(),
             position: "SP".to_string(),
@@ -895,10 +971,10 @@ mod tests {
         });
 
         // Verify local tracking state before reconciliation
-        let team1 = state.team("team_1").unwrap();
+        let team1 = state.team("1").unwrap();
         assert_eq!(team1.budget_spent, 45);
         assert_eq!(team1.budget_remaining, 215);
-        let team2 = state.team("team_2").unwrap();
+        let team2 = state.team("2").unwrap();
         assert_eq!(team2.budget_spent, 50);
         assert_eq!(team2.budget_remaining, 210);
 
@@ -906,10 +982,12 @@ mod tests {
         // (simulating drift or missed picks)
         let espn_budgets = vec![
             TeamBudgetPayload {
+                team_id: "1".to_string(),
                 team_name: "Team 1".to_string(),
                 budget: 200, // ESPN says $200 remaining (vs local $215)
             },
             TeamBudgetPayload {
+                team_id: "2".to_string(),
                 team_name: "Team 2".to_string(),
                 budget: 205, // ESPN says $205 remaining (vs local $210)
             },
@@ -917,22 +995,22 @@ mod tests {
         state.reconcile_budgets(&espn_budgets);
 
         // Verify ESPN values override local tracking
-        let team1 = state.team("team_1").unwrap();
+        let team1 = state.team("1").unwrap();
         assert_eq!(team1.budget_remaining, 200);
         assert_eq!(team1.budget_spent, 60); // 260 - 200
-        let team2 = state.team("team_2").unwrap();
+        let team2 = state.team("2").unwrap();
         assert_eq!(team2.budget_remaining, 205);
         assert_eq!(team2.budget_spent, 55); // 260 - 205
     }
 
     #[test]
     fn reconcile_budgets_skips_non_matching_teams() {
-        let mut state = DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
+        let mut state = create_test_state();
 
         // Record a pick to establish some local state
         state.record_pick(DraftPick {
             pick_number: 1,
-            team_id: "team_1".to_string(),
+            team_id: "1".to_string(),
             team_name: "Team 1".to_string(),
             player_name: "Mike Trout".to_string(),
             position: "CF".to_string(),
@@ -944,10 +1022,12 @@ mod tests {
         // Reconcile with ESPN data that includes a non-existent team
         let espn_budgets = vec![
             TeamBudgetPayload {
+                team_id: "99".to_string(),
                 team_name: "Nonexistent Team".to_string(),
                 budget: 100,
             },
             TeamBudgetPayload {
+                team_id: "1".to_string(),
                 team_name: "Team 1".to_string(),
                 budget: 210,
             },
@@ -955,12 +1035,12 @@ mod tests {
         state.reconcile_budgets(&espn_budgets);
 
         // Team 1 should be updated from ESPN
-        let team1 = state.team("team_1").unwrap();
+        let team1 = state.team("1").unwrap();
         assert_eq!(team1.budget_remaining, 210);
         assert_eq!(team1.budget_spent, 50); // 260 - 210
 
         // Team 2 should be unaffected (no ESPN data for it)
-        let team2 = state.team("team_2").unwrap();
+        let team2 = state.team("2").unwrap();
         assert_eq!(team2.budget_remaining, 260);
         assert_eq!(team2.budget_spent, 0);
     }

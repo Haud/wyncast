@@ -18,8 +18,8 @@ use crate::draft::state::{
 use crate::llm::client::LlmClient;
 use crate::llm::prompt;
 use crate::protocol::{
-    ConnectionStatus, ExtensionMessage, LlmEvent, LlmStatus, NominationInfo, TabId, UiUpdate,
-    UserCommand,
+    AppSnapshot, ConnectionStatus, ExtensionMessage, LlmEvent, LlmStatus, NominationInfo, TabId,
+    TeamSnapshot, UiUpdate, UserCommand,
 };
 use crate::valuation::analysis::{compute_instant_analysis, CategoryNeeds, InstantAnalysis};
 use crate::valuation::auction::InflationTracker;
@@ -187,6 +187,68 @@ impl AppState {
         // Category needs would be recomputed based on the user's roster composition.
     }
 
+    /// Build an `AppSnapshot` from the current application state.
+    ///
+    /// This captures all recalculated data (available players, scarcity,
+    /// budget, inflation, draft log, roster, team summaries) into a single
+    /// snapshot that the TUI can apply in one shot.
+    pub fn build_snapshot(&self) -> AppSnapshot {
+        let my_team = self.draft_state.my_team();
+
+        let (my_roster, budget_spent, budget_remaining, max_bid, avg_per_slot) =
+            if let Some(team) = my_team {
+                let roster = team.roster.slots.clone();
+                let empty_slots = roster.iter().filter(|s| s.player.is_none()).count();
+                let avg = if empty_slots > 0 {
+                    team.budget_remaining as f64 / empty_slots as f64
+                } else {
+                    0.0
+                };
+                let max = if empty_slots > 1 {
+                    team.budget_remaining.saturating_sub((empty_slots as u32) - 1)
+                } else {
+                    team.budget_remaining
+                };
+                (roster, team.budget_spent, team.budget_remaining, max, avg)
+            } else {
+                // Teams not yet registered; return defaults
+                (Vec::new(), 0, self.config.league.salary_cap, self.config.league.salary_cap, 0.0)
+            };
+
+        let team_snapshots = self
+            .draft_state
+            .teams
+            .iter()
+            .map(|t| {
+                let filled = t.roster.filled_count();
+                let total = t.roster.draftable_count();
+                TeamSnapshot {
+                    name: t.team_name.clone(),
+                    budget_remaining: t.budget_remaining,
+                    slots_filled: filled,
+                    total_slots: total,
+                }
+            })
+            .collect();
+
+        AppSnapshot {
+            pick_count: self.draft_state.pick_count,
+            total_picks: self.draft_state.total_picks,
+            active_tab: None, // Don't override the user's active tab
+            available_players: self.available_players.clone(),
+            positional_scarcity: self.scarcity.clone(),
+            draft_log: self.draft_state.picks.clone(),
+            my_roster,
+            budget_spent,
+            budget_remaining,
+            salary_cap: self.config.league.salary_cap,
+            inflation_rate: self.inflation.inflation_rate,
+            max_bid,
+            avg_per_slot,
+            team_snapshots,
+        }
+    }
+
     /// Handle a new or changed nomination.
     ///
     /// Computes instant analysis and triggers LLM analysis (stub for now).
@@ -194,6 +256,14 @@ impl AppState {
         &mut self,
         nomination: &ActiveNomination,
     ) -> Option<InstantAnalysis> {
+        let my_team = match self.draft_state.my_team() {
+            Some(t) => t,
+            None => {
+                warn!("handle_nomination called before teams registered, skipping");
+                return None;
+            }
+        };
+
         // Find the nominated player in our available pool
         let player = self
             .available_players
@@ -203,7 +273,7 @@ impl AppState {
         let analysis = player.map(|p| {
             compute_instant_analysis(
                 p,
-                &self.draft_state.my_team().roster,
+                &my_team.roster,
                 &self.available_players,
                 &self.scarcity,
                 &self.inflation,
@@ -260,6 +330,14 @@ impl AppState {
     pub fn trigger_nomination_analysis(&mut self, nomination: &ActiveNomination) {
         self.cancel_llm_task();
 
+        let my_team = match self.draft_state.my_team() {
+            Some(t) => t,
+            None => {
+                warn!("trigger_nomination_analysis called before teams registered, skipping");
+                return;
+            }
+        };
+
         // Find the nominated player in our pool
         let player = self
             .available_players
@@ -291,7 +369,7 @@ impl AppState {
         let user_content = prompt::build_nomination_analysis_prompt(
             &player,
             &nom_info,
-            &self.draft_state.my_team().roster,
+            &my_team.roster,
             &self.category_needs,
             &self.scarcity,
             &self.available_players,
@@ -328,13 +406,21 @@ impl AppState {
     pub fn trigger_nomination_planning(&mut self) {
         self.cancel_llm_task();
 
+        let my_team = match self.draft_state.my_team() {
+            Some(t) => t,
+            None => {
+                warn!("trigger_nomination_planning called before teams registered, skipping");
+                return;
+            }
+        };
+
         self.llm_mode = Some(LlmMode::NominationPlanning);
         self.nomination_plan_text.clear();
         self.nomination_plan_status = LlmStatus::Streaming;
 
         let system = prompt::system_prompt();
         let user_content = prompt::build_nomination_planning_prompt(
-            &self.draft_state.my_team().roster,
+            &my_team.roster,
             &self.category_needs,
             &self.scarcity,
             &self.available_players,
@@ -394,6 +480,7 @@ impl AppState {
                 .teams
                 .iter()
                 .map(|t| TeamBudgetPayload {
+                    team_id: t.team_id.clone().unwrap_or_default(),
                     team_name: t.team_name.clone(),
                     budget: t.budget,
                 })
@@ -538,7 +625,8 @@ async fn handle_state_update(
     let diff = compute_state_diff(&state.previous_extension_state, &internal_payload);
 
     // Process new picks first (updates local budget tracking)
-    if !diff.new_picks.is_empty() {
+    let had_new_picks = !diff.new_picks.is_empty();
+    if had_new_picks {
         info!("Processing {} new picks", diff.new_picks.len());
         state.process_new_picks(diff.new_picks);
     }
@@ -553,11 +641,37 @@ async fn handle_state_update(
     }
 
     // Reconcile team budgets from ESPN-scraped data.
-    // Done last so ESPN truth overrides any drift from local pick tracking.
-    if !internal_payload.teams.is_empty() {
+    // On the first call this auto-registers all teams from ESPN and
+    // replays any crash-recovery picks. Returns true when teams were
+    // registered for the first time.
+    let teams_just_registered = if !internal_payload.teams.is_empty() {
         state
             .draft_state
-            .reconcile_budgets(&internal_payload.teams);
+            .reconcile_budgets(&internal_payload.teams)
+    } else {
+        false
+    };
+
+    // Set the user's team from the extension's myTeamId (a team name).
+    // This must happen after reconcile_budgets so teams are registered.
+    if let Some(ref my_team_name) = ext_payload.my_team_id {
+        if !my_team_name.is_empty() && !state.draft_state.teams.is_empty() {
+            state.draft_state.set_my_team_by_name(my_team_name);
+        }
+    }
+
+    // Send a state snapshot to the TUI so all recalculated data
+    // (available players, scarcity, budget, inflation, draft log,
+    // roster, team summaries) is reflected in the UI.
+    // Only send when something actually changed — not on every ESPN poll.
+    let has_changes = had_new_picks
+        || internal_payload.pick_count.is_some()
+        || teams_just_registered;
+    if has_changes {
+        let snapshot = state.build_snapshot();
+        let _ = ui_tx
+            .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
+            .await;
     }
 
     // Handle nomination changes
@@ -666,7 +780,7 @@ async fn handle_llm_event(
 async fn handle_user_command(
     state: &mut AppState,
     cmd: UserCommand,
-    _ui_tx: &mpsc::Sender<UiUpdate>,
+    ui_tx: &mpsc::Sender<UiUpdate>,
 ) {
     match cmd {
         UserCommand::SwitchTab(tab) => {
@@ -714,6 +828,12 @@ async fn handle_user_command(
                     eligible_slots: vec![],
                 };
                 state.process_new_picks(vec![pick]);
+
+                // Send updated state to TUI
+                let snapshot = state.build_snapshot();
+                let _ = ui_tx
+                    .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
+                    .await;
             }
         }
         UserCommand::Scroll { .. } => {
@@ -851,15 +971,8 @@ mod tests {
                 max_rp: 7,
                 gs_per_week: 7,
             },
-            teams: {
-                let mut t = HashMap::new();
-                t.insert("team_1".into(), "Team 1".into());
-                t.insert("team_2".into(), "Team 2".into());
-                t
-            },
-            my_team: MyTeam {
-                team_id: "team_1".into(),
-            },
+            teams: HashMap::new(),
+            my_team: None,
         }
     }
 
@@ -930,10 +1043,18 @@ mod tests {
         config
     }
 
-    fn test_teams() -> Vec<(String, String)> {
+    fn test_espn_budgets() -> Vec<crate::draft::state::TeamBudgetPayload> {
         vec![
-            ("team_1".into(), "Team 1".into()),
-            ("team_2".into(), "Team 2".into()),
+            crate::draft::state::TeamBudgetPayload {
+                team_id: "1".into(),
+                team_name: "Team 1".into(),
+                budget: 260,
+            },
+            crate::draft::state::TeamBudgetPayload {
+                team_id: "2".into(),
+                team_name: "Team 2".into(),
+                budget: 260,
+            },
         ]
     }
 
@@ -1124,8 +1245,11 @@ mod tests {
 
     fn create_test_app_state() -> AppState {
         let config = test_config();
-        let draft_state =
-            DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
+        let mut draft_state = DraftState::new(260, &test_roster_config());
+        // Register teams from ESPN data and set my team
+        draft_state.reconcile_budgets(&test_espn_budgets());
+        draft_state.set_my_team_by_name("Team 1");
+
         let mut available = test_players();
 
         // Run initial valuation so dollar values are set
@@ -1155,7 +1279,7 @@ mod tests {
 
         let pick = DraftPick {
             pick_number: 1,
-            team_id: "team_1".into(),
+            team_id: "1".into(),
             team_name: "Team 1".into(),
             player_name: "H_Star".into(),
             position: "1B".into(),
@@ -1177,7 +1301,7 @@ mod tests {
             .any(|p| p.name == "H_Star"));
 
         // Team budget should be updated
-        let team = state.draft_state.team("team_1").unwrap();
+        let team = state.draft_state.team("1").unwrap();
         assert_eq!(team.budget_spent, 45);
         assert_eq!(team.budget_remaining, 215);
     }
@@ -1188,7 +1312,7 @@ mod tests {
 
         let pick = DraftPick {
             pick_number: 1,
-            team_id: "team_1".into(),
+            team_id: "1".into(),
             team_name: "Team 1".into(),
             player_name: "H_Star".into(),
             position: "1B".into(),
@@ -1217,7 +1341,7 @@ mod tests {
 
         let pick = DraftPick {
             pick_number: 1,
-            team_id: "team_1".into(),
+            team_id: "1".into(),
             team_name: "Team 1".into(),
             player_name: "H_Star".into(),
             position: "1B".into(),
@@ -1253,7 +1377,7 @@ mod tests {
 
         let pick = DraftPick {
             pick_number: 1,
-            team_id: "team_1".into(),
+            team_id: "1".into(),
             team_name: "Team 1".into(),
             player_name: "H_Star".into(),
             position: "1B".into(),
@@ -1318,7 +1442,7 @@ mod tests {
 
         let pick = DraftPick {
             pick_number: 1,
-            team_id: "team_2".into(),
+            team_id: "2".into(),
             team_name: "Team 2".into(),
             player_name: "H_Good".into(),
             position: "2B".into(),
@@ -1334,7 +1458,7 @@ mod tests {
         assert_eq!(state.draft_state.picks[0].player_name, "H_Good");
 
         // Team 2 budget should be updated
-        let team2 = state.draft_state.team("team_2").unwrap();
+        let team2 = state.draft_state.team("2").unwrap();
         assert_eq!(team2.budget_spent, 30);
 
         // H_Good should not be in available pool
@@ -1517,7 +1641,7 @@ mod tests {
         let picks = vec![
             DraftPick {
                 pick_number: 1,
-                team_id: "team_1".into(),
+                team_id: "1".into(),
                 team_name: "Team 1".into(),
                 player_name: "H_Star".into(),
                 position: "1B".into(),
@@ -1527,7 +1651,7 @@ mod tests {
             },
             DraftPick {
                 pick_number: 2,
-                team_id: "team_2".into(),
+                team_id: "2".into(),
                 team_name: "Team 2".into(),
                 player_name: "P_Ace".into(),
                 position: "SP".into(),
@@ -1542,8 +1666,11 @@ mod tests {
         assert!(db.has_draft_in_progress().unwrap());
 
         // Create a fresh AppState (simulating restart)
-        let draft_state =
-            DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
+        let mut draft_state = DraftState::new(260, &test_roster_config());
+        // Register teams from ESPN data (simulating what happens at connection)
+        draft_state.reconcile_budgets(&test_espn_budgets());
+        draft_state.set_my_team_by_name("Team 1");
+
         let mut available = test_players();
         crate::valuation::recalculate_all(
             &mut available,
@@ -1576,9 +1703,9 @@ mod tests {
         assert!(!state.available_players.iter().any(|p| p.name == "P_Ace"));
 
         // Budget should be updated
-        let team1 = state.draft_state.team("team_1").unwrap();
+        let team1 = state.draft_state.team("1").unwrap();
         assert_eq!(team1.budget_spent, 45);
-        let team2 = state.draft_state.team("team_2").unwrap();
+        let team2 = state.draft_state.team("2").unwrap();
         assert_eq!(team2.budget_spent, 50);
     }
 
@@ -1586,8 +1713,9 @@ mod tests {
     fn crash_recovery_no_picks_returns_false() {
         let config = test_config();
         let db = Database::open(":memory:").expect("in-memory db");
-        let draft_state =
-            DraftState::new(test_teams(), "team_1", 260, &test_roster_config());
+        let mut draft_state = DraftState::new(260, &test_roster_config());
+        draft_state.reconcile_budgets(&test_espn_budgets());
+        draft_state.set_my_team_by_name("Team 1");
         let available = test_players();
 
         let llm_client = LlmClient::Disabled;
@@ -1647,18 +1775,18 @@ mod tests {
 
         // Should receive connection status update
         let update = ui_rx.recv().await.unwrap();
-        assert_eq!(
-            update,
-            UiUpdate::ConnectionStatus(ConnectionStatus::Connected)
+        assert!(
+            matches!(update, UiUpdate::ConnectionStatus(ConnectionStatus::Connected)),
+            "Expected ConnectionStatus(Connected), got {:?}", update
         );
 
         // Send disconnected event
         ws_tx.send(WsEvent::Disconnected).await.unwrap();
 
         let update = ui_rx.recv().await.unwrap();
-        assert_eq!(
-            update,
-            UiUpdate::ConnectionStatus(ConnectionStatus::Disconnected)
+        assert!(
+            matches!(update, UiUpdate::ConnectionStatus(ConnectionStatus::Disconnected)),
+            "Expected ConnectionStatus(Disconnected), got {:?}", update
         );
 
         // Clean up
@@ -1693,7 +1821,10 @@ mod tests {
         llm_tx.send(LlmEvent::Token("Hello ".into())).await.unwrap();
 
         let update = ui_rx.recv().await.unwrap();
-        assert_eq!(update, UiUpdate::AnalysisToken("Hello ".into()));
+        match update {
+            UiUpdate::AnalysisToken(token) => assert_eq!(token, "Hello "),
+            other => panic!("Expected AnalysisToken, got {:?}", other),
+        }
 
         // Clean up
         cmd_tx.send(UserCommand::Quit).await.unwrap();
@@ -1745,7 +1876,21 @@ mod tests {
             .await
             .unwrap();
 
-        // Should receive a NominationUpdate
+        // Should receive a StateSnapshot first (new picks trigger snapshot)
+        let update = ui_rx.recv().await.unwrap();
+        match update {
+            UiUpdate::StateSnapshot(snapshot) => {
+                assert_eq!(snapshot.pick_count, 1);
+                // H_Star should have been removed from available players
+                assert!(!snapshot.available_players.iter().any(|p| p.name == "H_Star"));
+                // Draft log should contain the pick
+                assert_eq!(snapshot.draft_log.len(), 1);
+                assert_eq!(snapshot.draft_log[0].player_name, "H_Star");
+            }
+            other => panic!("Expected StateSnapshot, got {:?}", other),
+        }
+
+        // Then receive the NominationUpdate
         let update = ui_rx.recv().await.unwrap();
         match update {
             UiUpdate::NominationUpdate(info) => {

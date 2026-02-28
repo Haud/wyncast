@@ -62,8 +62,14 @@ pub struct LeagueConfig {
     pub pitching_categories: CategoriesSection,
     pub roster: HashMap<String, usize>,
     pub roster_limits: RosterLimits,
+    /// Static team definitions (optional). Teams are now populated dynamically
+    /// from ESPN's live draft data via the extension.
+    #[serde(default)]
     pub teams: HashMap<String, String>,
-    pub my_team: MyTeam,
+    /// The user's team identifier (optional). When omitted, the user's team
+    /// is identified dynamically from the ESPN extension's `myTeamId` field.
+    #[serde(default)]
+    pub my_team: Option<MyTeam>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -475,8 +481,9 @@ mod tests {
         assert_eq!(config.league.roster.get("RP"), Some(&6));
         assert_eq!(config.league.roster_limits.max_rp, 7);
         assert_eq!(config.league.roster_limits.gs_per_week, 7);
-        assert_eq!(config.league.my_team.team_id, "team_1");
-        assert_eq!(config.league.teams.len(), 10);
+        // Teams and my_team are now optional (populated from ESPN live data)
+        assert!(config.league.teams.is_empty());
+        assert!(config.league.my_team.is_none());
 
         // Strategy assertions
         assert!((config.strategy.hitting_budget_fraction - 0.65).abs() < f64::EPSILON);
@@ -577,12 +584,6 @@ SP = 5
 max_sp = 7
 max_rp = 7
 gs_per_week = 7
-
-[league.teams]
-team_1 = "Team 1"
-
-[league.my_team]
-team_id = "team_1"
 "#;
         fs::write(config_dir.join("league.toml"), league_toml).unwrap();
 
@@ -632,12 +633,6 @@ SP = 5
 max_sp = 7
 max_rp = 7
 gs_per_week = 7
-
-[league.teams]
-team_1 = "Team 1"
-
-[league.my_team]
-team_id = "team_1"
 "#;
         fs::write(config_dir.join("league.toml"), league_toml).unwrap();
 
