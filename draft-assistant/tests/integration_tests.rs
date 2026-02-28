@@ -2251,3 +2251,437 @@ async fn event_loop_same_budgets_no_redundant_snapshot() {
     cmd_tx.send(UserCommand::Quit).await.unwrap();
     let _ = handle.await;
 }
+
+// ===========================================================================
+// Test: Roster sidebar correctness — second pick appears in roster
+// ===========================================================================
+//
+// These tests verify the fix for the bug where the second player won by a
+// team did not appear in the roster sidebar. The root cause was that
+// `compute_state_diff` relied solely on `pick_number` to detect new picks,
+// but ESPN's virtualized pick list can cause pick_number renumbering when
+// the pick counter label updates before new DOM entries appear.
+
+/// After recording two picks for the same team, the roster shows both players.
+#[test]
+fn roster_shows_both_players_after_two_picks_same_team() {
+    let mut state = create_test_app_state_from_fixtures();
+
+    // Pick 1: Team 1 wins Shohei Ohtani (DH)
+    state.process_new_picks(vec![DraftPick {
+        pick_number: 1,
+        team_id: "1".into(),
+        team_name: "Team 1".into(),
+        player_name: "Shohei Ohtani".into(),
+        position: "DH".into(),
+        price: 62,
+        espn_player_id: Some("espn_100".into()),
+        eligible_slots: vec![],
+    }]);
+
+    let snapshot1 = state.build_snapshot();
+    let filled1: Vec<_> = snapshot1
+        .my_roster
+        .iter()
+        .filter(|s| s.player.is_some())
+        .collect();
+    assert_eq!(filled1.len(), 1, "Should have 1 player after first pick");
+    assert_eq!(filled1[0].player.as_ref().unwrap().name, "Shohei Ohtani");
+
+    // Pick 2: Team 1 wins Aaron Judge (OF)
+    state.process_new_picks(vec![DraftPick {
+        pick_number: 2,
+        team_id: "1".into(),
+        team_name: "Team 1".into(),
+        player_name: "Aaron Judge".into(),
+        position: "RF".into(),
+        price: 55,
+        espn_player_id: Some("espn_101".into()),
+        eligible_slots: vec![],
+    }]);
+
+    let snapshot2 = state.build_snapshot();
+    let filled2: Vec<_> = snapshot2
+        .my_roster
+        .iter()
+        .filter(|s| s.player.is_some())
+        .collect();
+    assert_eq!(
+        filled2.len(),
+        2,
+        "Should have 2 players after second pick. Filled: {:?}",
+        filled2
+            .iter()
+            .map(|s| s.player.as_ref().unwrap().name.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    let names: Vec<&str> = filled2
+        .iter()
+        .map(|s| s.player.as_ref().unwrap().name.as_str())
+        .collect();
+    assert!(names.contains(&"Shohei Ohtani"), "Ohtani should be on roster");
+    assert!(names.contains(&"Aaron Judge"), "Judge should be on roster");
+}
+
+/// After recording multiple picks across different teams, my roster shows
+/// only my team's picks and all of them.
+#[test]
+fn roster_shows_all_my_picks_across_interleaved_teams() {
+    let mut state = create_test_app_state_from_fixtures();
+
+    // Interleave picks across teams, with Team 1 (my team) getting 3 players
+    let picks = vec![
+        DraftPick {
+            pick_number: 1,
+            team_id: "1".into(),
+            team_name: "Team 1".into(),
+            player_name: "Shohei Ohtani".into(),
+            position: "DH".into(),
+            price: 62,
+            espn_player_id: Some("espn_100".into()),
+            eligible_slots: vec![],
+        },
+        DraftPick {
+            pick_number: 2,
+            team_id: "2".into(),
+            team_name: "Team 2".into(),
+            player_name: "Aaron Judge".into(),
+            position: "RF".into(),
+            price: 55,
+            espn_player_id: Some("espn_101".into()),
+            eligible_slots: vec![],
+        },
+        DraftPick {
+            pick_number: 3,
+            team_id: "1".into(),
+            team_name: "Team 1".into(),
+            player_name: "Juan Soto".into(),
+            position: "LF".into(),
+            price: 48,
+            espn_player_id: Some("espn_102".into()),
+            eligible_slots: vec![],
+        },
+        DraftPick {
+            pick_number: 4,
+            team_id: "3".into(),
+            team_name: "Team 3".into(),
+            player_name: "Mookie Betts".into(),
+            position: "SS".into(),
+            price: 40,
+            espn_player_id: Some("espn_104".into()),
+            eligible_slots: vec![],
+        },
+        DraftPick {
+            pick_number: 5,
+            team_id: "1".into(),
+            team_name: "Team 1".into(),
+            player_name: "Freddie Freeman".into(),
+            position: "1B".into(),
+            price: 36,
+            espn_player_id: Some("espn_106".into()),
+            eligible_slots: vec![],
+        },
+    ];
+
+    state.process_new_picks(picks);
+
+    let snapshot = state.build_snapshot();
+    let filled: Vec<_> = snapshot
+        .my_roster
+        .iter()
+        .filter(|s| s.player.is_some())
+        .collect();
+
+    assert_eq!(
+        filled.len(),
+        3,
+        "Team 1 should have exactly 3 players. Found: {:?}",
+        filled
+            .iter()
+            .map(|s| s.player.as_ref().unwrap().name.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    let names: Vec<&str> = filled
+        .iter()
+        .map(|s| s.player.as_ref().unwrap().name.as_str())
+        .collect();
+    assert!(names.contains(&"Shohei Ohtani"));
+    assert!(names.contains(&"Juan Soto"));
+    assert!(names.contains(&"Freddie Freeman"));
+    // Other teams' players should NOT be on my roster
+    assert!(!names.contains(&"Aaron Judge"));
+    assert!(!names.contains(&"Mookie Betts"));
+}
+
+/// Simulate the exact ESPN virtualized pick list renumbering scenario that
+/// caused the original bug. When the pick counter label increments before
+/// the new DOM entry appears, existing picks get renumbered and the new
+/// pick's number was already "claimed" by the old pick.
+///
+/// Scenario:
+/// 1. STATE_UPDATE 1: picks=[{#1, "PlayerA", "Team1"}]
+/// 2. STATE_UPDATE 2: picks=[{#2, "PlayerA", "Team1"}]  (A renumbered; pick label says PK 2 but new entry not yet in DOM)
+/// 3. STATE_UPDATE 3: picks=[{#1, "PlayerA", "Team1"}, {#2, "PlayerB", "Team1"}]  (both now visible)
+///
+/// Before the fix, PlayerB was never detected as new because pick_number 2
+/// was already in previous_extension_state from step 2.
+#[test]
+fn pick_renumbering_does_not_drop_new_picks() {
+    use draft_assistant::draft::state::{
+        compute_state_diff, PickPayload,
+        StateUpdatePayload as InternalStatePayload,
+    };
+
+    let mut state = create_test_app_state_from_fixtures();
+
+    // STATE_UPDATE 1: one pick, pick_number=1
+    let payload1 = InternalStatePayload {
+        picks: vec![PickPayload {
+            pick_number: 1,
+            team_id: "1".into(),
+            team_name: "Team 1".into(),
+            player_id: "espn_100".into(),
+            player_name: "Shohei Ohtani".into(),
+            position: "DH".into(),
+            price: 62,
+            eligible_slots: vec![],
+        }],
+        current_nomination: None,
+        teams: vec![],
+        pick_count: Some(1),
+        total_picks: Some(260),
+    };
+
+    let diff1 = compute_state_diff(&None, &payload1);
+    assert_eq!(diff1.new_picks.len(), 1);
+    state.process_new_picks(diff1.new_picks);
+
+    let snapshot1 = state.build_snapshot();
+    let filled1: Vec<_> = snapshot1
+        .my_roster
+        .iter()
+        .filter(|s| s.player.is_some())
+        .collect();
+    assert_eq!(filled1.len(), 1, "After update 1: 1 player on roster");
+
+    // STATE_UPDATE 2: same player renumbered to #2 (pick label advanced but
+    // the new pick entry hasn't appeared in the virtualized list yet)
+    let payload2 = InternalStatePayload {
+        picks: vec![PickPayload {
+            pick_number: 2, // Renumbered!
+            team_id: "1".into(),
+            team_name: "Team 1".into(),
+            player_id: "espn_100".into(),
+            player_name: "Shohei Ohtani".into(),
+            position: "DH".into(),
+            price: 62,
+            eligible_slots: vec![],
+        }],
+        current_nomination: None,
+        teams: vec![],
+        pick_count: Some(2),
+        total_picks: Some(260),
+    };
+
+    let diff2 = compute_state_diff(&Some(payload1), &payload2);
+    // The renumbered pick is detected but record_pick will dedup by identity
+    state.process_new_picks(diff2.new_picks);
+
+    // Roster should still have exactly 1 player (no duplicate)
+    let snapshot2 = state.build_snapshot();
+    let filled2: Vec<_> = snapshot2
+        .my_roster
+        .iter()
+        .filter(|s| s.player.is_some())
+        .collect();
+    assert_eq!(
+        filled2.len(),
+        1,
+        "After update 2 (renumber only): still 1 player"
+    );
+
+    // STATE_UPDATE 3: both entries now visible with correct numbering.
+    // Pick #2 is the REAL new player (Aaron Judge).
+    let payload3 = InternalStatePayload {
+        picks: vec![
+            PickPayload {
+                pick_number: 1,
+                team_id: "1".into(),
+                team_name: "Team 1".into(),
+                player_id: "espn_100".into(),
+                player_name: "Shohei Ohtani".into(),
+                position: "DH".into(),
+                price: 62,
+                eligible_slots: vec![],
+            },
+            PickPayload {
+                pick_number: 2,
+                team_id: "1".into(),
+                team_name: "Team 1".into(),
+                player_id: "espn_101".into(),
+                player_name: "Aaron Judge".into(),
+                position: "RF".into(),
+                price: 55,
+                eligible_slots: vec![],
+            },
+        ],
+        current_nomination: None,
+        teams: vec![],
+        pick_count: Some(2),
+        total_picks: Some(260),
+    };
+
+    let diff3 = compute_state_diff(&Some(payload2), &payload3);
+    // CRITICAL: Aaron Judge must be detected as a new pick even though
+    // pick_number 2 was already in the previous payload (for the renumbered Ohtani)
+    let new_player_names: Vec<&str> = diff3
+        .new_picks
+        .iter()
+        .map(|p| p.player_name.as_str())
+        .collect();
+    assert!(
+        new_player_names.contains(&"Aaron Judge"),
+        "Aaron Judge should be detected as new pick despite pick_number 2 being reused. \
+         New picks detected: {:?}",
+        new_player_names
+    );
+
+    state.process_new_picks(diff3.new_picks);
+
+    // Both players should now be on the roster
+    let snapshot3 = state.build_snapshot();
+    let filled3: Vec<_> = snapshot3
+        .my_roster
+        .iter()
+        .filter(|s| s.player.is_some())
+        .collect();
+    assert_eq!(
+        filled3.len(),
+        2,
+        "After update 3: both players should be on roster. Found: {:?}",
+        filled3
+            .iter()
+            .map(|s| s.player.as_ref().unwrap().name.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    let names: Vec<&str> = filled3
+        .iter()
+        .map(|s| s.player.as_ref().unwrap().name.as_str())
+        .collect();
+    assert!(names.contains(&"Shohei Ohtani"), "Ohtani should be on roster");
+    assert!(names.contains(&"Aaron Judge"), "Judge should be on roster");
+}
+
+/// Verify that `build_snapshot()` returns the correct `my_roster` with all won
+/// players, even when picks are processed incrementally via state diffs.
+#[test]
+fn build_snapshot_my_roster_incremental_picks() {
+    use draft_assistant::draft::state::{
+        compute_state_diff, PickPayload,
+        StateUpdatePayload as InternalStatePayload,
+    };
+
+    let mut state = create_test_app_state_from_fixtures();
+
+    // Simulate 4 incremental state updates, each adding one pick.
+    // Team 1 (my team) gets picks 1 and 3; Teams 2 and 3 get picks 2 and 4.
+    let all_picks = vec![
+        PickPayload {
+            pick_number: 1,
+            team_id: "1".into(),
+            team_name: "Team 1".into(),
+            player_id: "espn_100".into(),
+            player_name: "Shohei Ohtani".into(),
+            position: "DH".into(),
+            price: 62,
+            eligible_slots: vec![],
+        },
+        PickPayload {
+            pick_number: 2,
+            team_id: "2".into(),
+            team_name: "Team 2".into(),
+            player_id: "espn_101".into(),
+            player_name: "Aaron Judge".into(),
+            position: "RF".into(),
+            price: 55,
+            eligible_slots: vec![],
+        },
+        PickPayload {
+            pick_number: 3,
+            team_id: "1".into(),
+            team_name: "Team 1".into(),
+            player_id: "espn_102".into(),
+            player_name: "Juan Soto".into(),
+            position: "LF".into(),
+            price: 48,
+            eligible_slots: vec![],
+        },
+        PickPayload {
+            pick_number: 4,
+            team_id: "3".into(),
+            team_name: "Team 3".into(),
+            player_id: "espn_103".into(),
+            player_name: "Bobby Witt Jr.".into(),
+            position: "SS".into(),
+            price: 42,
+            eligible_slots: vec![],
+        },
+    ];
+
+    let mut previous: Option<InternalStatePayload> = None;
+
+    for i in 0..all_picks.len() {
+        let current = InternalStatePayload {
+            picks: all_picks[..=i].to_vec(),
+            current_nomination: None,
+            teams: vec![],
+            pick_count: Some((i + 1) as u32),
+            total_picks: Some(260),
+        };
+
+        let diff = compute_state_diff(&previous, &current);
+        state.process_new_picks(diff.new_picks);
+        previous = Some(current);
+    }
+
+    // Verify final snapshot
+    let snapshot = state.build_snapshot();
+
+    // My team (Team 1) should have exactly 2 players
+    let filled: Vec<_> = snapshot
+        .my_roster
+        .iter()
+        .filter(|s| s.player.is_some())
+        .collect();
+    assert_eq!(
+        filled.len(),
+        2,
+        "Team 1 should have 2 players. Found: {:?}",
+        filled
+            .iter()
+            .map(|s| s.player.as_ref().unwrap().name.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    let names: Vec<&str> = filled
+        .iter()
+        .map(|s| s.player.as_ref().unwrap().name.as_str())
+        .collect();
+    assert!(names.contains(&"Shohei Ohtani"));
+    assert!(names.contains(&"Juan Soto"));
+    assert!(!names.contains(&"Aaron Judge"), "Judge is on Team 2, not mine");
+    assert!(!names.contains(&"Bobby Witt Jr."), "Witt is on Team 3, not mine");
+
+    // Total pick count should be 4
+    assert_eq!(snapshot.pick_count, 4);
+
+    // Draft log should have all 4 picks
+    assert_eq!(snapshot.draft_log.len(), 4);
+
+    // Budget should reflect my team's spending
+    assert_eq!(snapshot.budget_spent, 62 + 48); // Ohtani + Soto
+    assert_eq!(snapshot.budget_remaining, 260 - 62 - 48);
+}
