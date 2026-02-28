@@ -1131,7 +1131,16 @@ async fn event_loop_processes_state_update_with_picks() {
     );
     ws_tx.send(WsEvent::Message(json)).await.unwrap();
 
-    // Should receive a NominationUpdate
+    // Should receive a StateSnapshot first (new picks trigger snapshot)
+    let update = ui_rx.recv().await.unwrap();
+    match update {
+        UiUpdate::StateSnapshot(snapshot) => {
+            assert!(snapshot.pick_count > 0, "Pick count should be > 0 after processing picks");
+        }
+        other => panic!("Expected StateSnapshot, got {:?}", other),
+    }
+
+    // Then receive the NominationUpdate
     let update = ui_rx.recv().await.unwrap();
     match update {
         UiUpdate::NominationUpdate(info) => {
@@ -1167,18 +1176,18 @@ async fn event_loop_handles_connection_lifecycle() {
         .unwrap();
 
     let update = ui_rx.recv().await.unwrap();
-    assert_eq!(
-        update,
-        UiUpdate::ConnectionStatus(ConnectionStatus::Connected)
+    assert!(
+        matches!(update, UiUpdate::ConnectionStatus(ConnectionStatus::Connected)),
+        "Expected ConnectionStatus(Connected), got {:?}", update
     );
 
     // Send disconnected
     ws_tx.send(WsEvent::Disconnected).await.unwrap();
 
     let update = ui_rx.recv().await.unwrap();
-    assert_eq!(
-        update,
-        UiUpdate::ConnectionStatus(ConnectionStatus::Disconnected)
+    assert!(
+        matches!(update, UiUpdate::ConnectionStatus(ConnectionStatus::Disconnected)),
+        "Expected ConnectionStatus(Disconnected), got {:?}", update
     );
 
     // Quit
@@ -1207,7 +1216,14 @@ async fn event_loop_incremental_state_updates() {
     );
     ws_tx.send(WsEvent::Message(json1)).await.unwrap();
 
-    // Should receive NominationUpdate for Aaron Judge
+    // Should receive StateSnapshot first (new picks trigger snapshot)
+    let update = ui_rx.recv().await.unwrap();
+    assert!(
+        matches!(&update, UiUpdate::StateSnapshot(_)),
+        "Expected StateSnapshot, got {:?}", update
+    );
+
+    // Then receive NominationUpdate for Aaron Judge
     let update = ui_rx.recv().await.unwrap();
     match &update {
         UiUpdate::NominationUpdate(info) => {
@@ -1224,13 +1240,31 @@ async fn event_loop_incremental_state_updates() {
     );
     ws_tx.send(WsEvent::Message(json2)).await.unwrap();
 
-    // Should receive NominationUpdate for Juan Soto (new nomination)
+    // Should receive StateSnapshot first (new pick triggers snapshot)
+    let update2 = ui_rx.recv().await.unwrap();
+    assert!(
+        matches!(&update2, UiUpdate::StateSnapshot(_)),
+        "Expected StateSnapshot, got {:?}", update2
+    );
+
+    // Then NominationCleared (previous nomination resolved) followed by
+    // NominationUpdate for Juan Soto
     let update2 = ui_rx.recv().await.unwrap();
     match &update2 {
+        UiUpdate::NominationCleared => {
+            // Previous nomination was cleared; next should be the new one
+            let update3 = ui_rx.recv().await.unwrap();
+            match &update3 {
+                UiUpdate::NominationUpdate(info) => {
+                    assert_eq!(info.player_name, "Juan Soto");
+                }
+                other => panic!("Expected NominationUpdate for Juan Soto after NominationCleared, got {:?}", other),
+            }
+        }
         UiUpdate::NominationUpdate(info) => {
             assert_eq!(info.player_name, "Juan Soto");
         }
-        other => panic!("Expected NominationUpdate for Juan Soto, got {:?}", other),
+        other => panic!("Expected NominationCleared or NominationUpdate for Juan Soto, got {:?}", other),
     }
 
     // Quit

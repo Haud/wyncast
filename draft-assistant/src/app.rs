@@ -18,8 +18,8 @@ use crate::draft::state::{
 use crate::llm::client::LlmClient;
 use crate::llm::prompt;
 use crate::protocol::{
-    ConnectionStatus, ExtensionMessage, LlmEvent, LlmStatus, NominationInfo, TabId, UiUpdate,
-    UserCommand,
+    AppSnapshot, ConnectionStatus, ExtensionMessage, LlmEvent, LlmStatus, NominationInfo, TabId,
+    TeamSnapshot, UiUpdate, UserCommand,
 };
 use crate::valuation::analysis::{compute_instant_analysis, CategoryNeeds, InstantAnalysis};
 use crate::valuation::auction::InflationTracker;
@@ -185,6 +185,64 @@ impl AppState {
 
         // Update category needs (for now, uniform - real implementation in TUI tasks)
         // Category needs would be recomputed based on the user's roster composition.
+    }
+
+    /// Build an `AppSnapshot` from the current application state.
+    ///
+    /// This captures all recalculated data (available players, scarcity,
+    /// budget, inflation, draft log, roster, team summaries) into a single
+    /// snapshot that the TUI can apply in one shot.
+    pub fn build_snapshot(&self) -> AppSnapshot {
+        let my_team = self.draft_state.my_team();
+        let my_roster = my_team.roster.slots.clone();
+
+        let empty_slots = my_roster.iter().filter(|s| s.player.is_none()).count();
+        let avg_per_slot = if empty_slots > 0 {
+            my_team.budget_remaining as f64 / empty_slots as f64
+        } else {
+            0.0
+        };
+
+        // Max bid: remaining budget minus $1 per empty slot (must reserve $1 each),
+        // plus $1 for the slot being bid on. Ensure non-negative.
+        let max_bid = if empty_slots > 1 {
+            my_team.budget_remaining.saturating_sub((empty_slots as u32) - 1)
+        } else {
+            my_team.budget_remaining
+        };
+
+        let team_snapshots = self
+            .draft_state
+            .teams
+            .iter()
+            .map(|t| {
+                let filled = t.roster.filled_count();
+                let total = t.roster.draftable_count();
+                TeamSnapshot {
+                    name: t.team_name.clone(),
+                    budget_remaining: t.budget_remaining,
+                    slots_filled: filled,
+                    total_slots: total,
+                }
+            })
+            .collect();
+
+        AppSnapshot {
+            pick_count: self.draft_state.pick_count,
+            total_picks: self.draft_state.total_picks,
+            active_tab: None, // Don't override the user's active tab
+            available_players: self.available_players.clone(),
+            positional_scarcity: self.scarcity.clone(),
+            draft_log: self.draft_state.picks.clone(),
+            my_roster,
+            budget_spent: my_team.budget_spent,
+            budget_remaining: my_team.budget_remaining,
+            salary_cap: self.config.league.salary_cap,
+            inflation_rate: self.inflation.inflation_rate,
+            max_bid,
+            avg_per_slot,
+            team_snapshots,
+        }
     }
 
     /// Handle a new or changed nomination.
@@ -538,7 +596,8 @@ async fn handle_state_update(
     let diff = compute_state_diff(&state.previous_extension_state, &internal_payload);
 
     // Process new picks first (updates local budget tracking)
-    if !diff.new_picks.is_empty() {
+    let had_new_picks = !diff.new_picks.is_empty();
+    if had_new_picks {
         info!("Processing {} new picks", diff.new_picks.len());
         state.process_new_picks(diff.new_picks);
     }
@@ -558,6 +617,19 @@ async fn handle_state_update(
         state
             .draft_state
             .reconcile_budgets(&internal_payload.teams);
+    }
+
+    // Send a state snapshot to the TUI so all recalculated data
+    // (available players, scarcity, budget, inflation, draft log,
+    // roster, team summaries) is reflected in the UI.
+    let has_changes = had_new_picks
+        || internal_payload.pick_count.is_some()
+        || !internal_payload.teams.is_empty();
+    if has_changes {
+        let snapshot = state.build_snapshot();
+        let _ = ui_tx
+            .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
+            .await;
     }
 
     // Handle nomination changes
@@ -666,7 +738,7 @@ async fn handle_llm_event(
 async fn handle_user_command(
     state: &mut AppState,
     cmd: UserCommand,
-    _ui_tx: &mpsc::Sender<UiUpdate>,
+    ui_tx: &mpsc::Sender<UiUpdate>,
 ) {
     match cmd {
         UserCommand::SwitchTab(tab) => {
@@ -714,6 +786,12 @@ async fn handle_user_command(
                     eligible_slots: vec![],
                 };
                 state.process_new_picks(vec![pick]);
+
+                // Send updated state to TUI
+                let snapshot = state.build_snapshot();
+                let _ = ui_tx
+                    .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
+                    .await;
             }
         }
         UserCommand::Scroll { .. } => {
@@ -1647,18 +1725,18 @@ mod tests {
 
         // Should receive connection status update
         let update = ui_rx.recv().await.unwrap();
-        assert_eq!(
-            update,
-            UiUpdate::ConnectionStatus(ConnectionStatus::Connected)
+        assert!(
+            matches!(update, UiUpdate::ConnectionStatus(ConnectionStatus::Connected)),
+            "Expected ConnectionStatus(Connected), got {:?}", update
         );
 
         // Send disconnected event
         ws_tx.send(WsEvent::Disconnected).await.unwrap();
 
         let update = ui_rx.recv().await.unwrap();
-        assert_eq!(
-            update,
-            UiUpdate::ConnectionStatus(ConnectionStatus::Disconnected)
+        assert!(
+            matches!(update, UiUpdate::ConnectionStatus(ConnectionStatus::Disconnected)),
+            "Expected ConnectionStatus(Disconnected), got {:?}", update
         );
 
         // Clean up
@@ -1693,7 +1771,10 @@ mod tests {
         llm_tx.send(LlmEvent::Token("Hello ".into())).await.unwrap();
 
         let update = ui_rx.recv().await.unwrap();
-        assert_eq!(update, UiUpdate::AnalysisToken("Hello ".into()));
+        match update {
+            UiUpdate::AnalysisToken(token) => assert_eq!(token, "Hello "),
+            other => panic!("Expected AnalysisToken, got {:?}", other),
+        }
 
         // Clean up
         cmd_tx.send(UserCommand::Quit).await.unwrap();
@@ -1745,7 +1826,21 @@ mod tests {
             .await
             .unwrap();
 
-        // Should receive a NominationUpdate
+        // Should receive a StateSnapshot first (new picks trigger snapshot)
+        let update = ui_rx.recv().await.unwrap();
+        match update {
+            UiUpdate::StateSnapshot(snapshot) => {
+                assert_eq!(snapshot.pick_count, 1);
+                // H_Star should have been removed from available players
+                assert!(!snapshot.available_players.iter().any(|p| p.name == "H_Star"));
+                // Draft log should contain the pick
+                assert_eq!(snapshot.draft_log.len(), 1);
+                assert_eq!(snapshot.draft_log[0].player_name, "H_Star");
+            }
+            other => panic!("Expected StateSnapshot, got {:?}", other),
+        }
+
+        // Then receive the NominationUpdate
         let update = ui_rx.recv().await.unwrap();
         match update {
             UiUpdate::NominationUpdate(info) => {
