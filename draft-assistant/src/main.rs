@@ -95,6 +95,15 @@ async fn main() -> anyhow::Result<()> {
         llm::client::LlmClient::Disabled => info!("LLM client disabled (no API key)"),
     }
 
+    // Load stored ESPN draft ID (if any) so reconnects can detect draft changes.
+    let espn_draft_id = db.get_espn_draft_id().unwrap_or_else(|e| {
+        error!("Failed to load ESPN draft ID: {}", e);
+        None
+    });
+    if let Some(ref eid) = espn_draft_id {
+        info!("Loaded stored ESPN draft ID: {}", eid);
+    }
+
     // Create the application state
     let mut app_state = app::AppState::new(
         config.clone(),
@@ -106,6 +115,7 @@ async fn main() -> anyhow::Result<()> {
         llm_client,
         llm_tx.clone(),
     );
+    app_state.espn_draft_id = espn_draft_id;
 
     // Check for crash recovery
     match app::recover_from_db(&mut app_state) {

@@ -373,6 +373,25 @@ impl Database {
         )
     }
 
+    /// Key used in the draft_state table to store the ESPN-scraped draft
+    /// identifier (league ID or team-name fingerprint from the extension).
+    const ESPN_DRAFT_ID_KEY: &'static str = "espn_draft_id";
+
+    /// Retrieve the stored ESPN draft ID from the key-value store.
+    /// Returns `None` if no ESPN draft ID has been set yet.
+    pub fn get_espn_draft_id(&self) -> Result<Option<String>> {
+        let value = self.load_state(Self::ESPN_DRAFT_ID_KEY)?;
+        Ok(value.and_then(|v| v.as_str().map(|s| s.to_string())))
+    }
+
+    /// Persist an ESPN draft ID to the key-value store.
+    pub fn set_espn_draft_id(&self, espn_draft_id: &str) -> Result<()> {
+        self.save_state(
+            Self::ESPN_DRAFT_ID_KEY,
+            &serde_json::Value::String(espn_draft_id.to_string()),
+        )
+    }
+
     /// Generate a new unique draft ID based on the current UTC timestamp.
     ///
     /// Format: `draft_YYYYMMDD_HHMMSS_SSS` (e.g. `draft_20260228_143022_123`).
@@ -1102,6 +1121,28 @@ mod tests {
         db.record_pick(&sample_pick(1), new_draft).unwrap();
         assert_eq!(db.load_picks(old_draft).unwrap().len(), 10);
         assert_eq!(db.load_picks(new_draft).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn espn_draft_id_persists_via_state_store() {
+        let db = test_db();
+
+        // Initially no ESPN draft ID stored
+        assert!(db.get_espn_draft_id().unwrap().is_none());
+
+        // Store an ESPN draft ID
+        db.set_espn_draft_id("espn_league_12345").unwrap();
+        assert_eq!(
+            db.get_espn_draft_id().unwrap(),
+            Some("espn_league_12345".to_string())
+        );
+
+        // Overwrite with a new ESPN draft ID
+        db.set_espn_draft_id("espn_teams_abcdef12").unwrap();
+        assert_eq!(
+            db.get_espn_draft_id().unwrap(),
+            Some("espn_teams_abcdef12".to_string())
+        );
     }
 
     #[test]

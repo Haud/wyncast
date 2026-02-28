@@ -357,6 +357,7 @@ function scrapeDom() {
     teams: [],
     pickCount: null,
     totalPicks: null,
+    draftId: null,
     source: 'dom_scrape',
   };
 
@@ -383,11 +384,97 @@ function scrapeDom() {
       // Use team name as ID since ESPN DOM doesn't expose numeric team IDs
       state.myTeamId = myTeamName;
     }
+
+    // Extract draft identifier
+    state.draftId = scrapeDraftId();
   } catch (e) {
     error('DOM scraping error:', e);
   }
 
   return state;
+}
+
+// ---------------------------------------------------------------------------
+// Draft identifier extraction
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract a stable draft identifier from the ESPN page.
+ *
+ * Tries multiple strategies in order of reliability:
+ * 1. leagueId from the URL query string (stable per league/season)
+ * 2. data-draft-id or data-league-id attribute on the draft container
+ * 3. Fingerprint from sorted team names (stable for a given league/season)
+ *
+ * Returns a string identifier, or null if none could be determined.
+ */
+function scrapeDraftId() {
+  // Strategy 1: Extract leagueId from the URL (e.g. ?leagueId=12345)
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const leagueId = params.get('leagueId');
+    if (leagueId) {
+      return 'espn_league_' + leagueId;
+    }
+  } catch (e) {
+    // URL parsing failed
+  }
+
+  // Strategy 2: Look for data attributes on the draft container
+  try {
+    const container = document.querySelector(SELECTORS.draftContainer);
+    if (container) {
+      const draftId = container.getAttribute('data-draft-id');
+      if (draftId) {
+        return 'espn_draft_' + draftId;
+      }
+      const leagueId = container.getAttribute('data-league-id');
+      if (leagueId) {
+        return 'espn_league_' + leagueId;
+      }
+    }
+  } catch (e) {
+    // DOM query failed
+  }
+
+  // Strategy 3: Fingerprint from sorted team names
+  // Team names are stable for a given league/season, so sorting and
+  // hashing them produces a consistent identifier.
+  try {
+    const items = document.querySelectorAll(SELECTORS.teamBudgetItems);
+    const names = [];
+    items.forEach((item) => {
+      const name = extractText(item, SELECTORS.teamBudgetName);
+      if (name) {
+        // Strip the leading number prefix (e.g. "1. London Ligers" -> "London Ligers")
+        const cleaned = name.replace(/^\d+\.\s*/, '');
+        if (cleaned) {
+          names.push(cleaned);
+        }
+      }
+    });
+    if (names.length > 0) {
+      names.sort();
+      return 'espn_teams_' + simpleHash(names.join('|'));
+    }
+  } catch (e) {
+    // Team scraping failed
+  }
+
+  return null;
+}
+
+/**
+ * Simple string hash function (djb2) for generating a fingerprint.
+ * Returns a hex string.
+ */
+function simpleHash(str) {
+  let hash = 5381;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) + hash + str.charCodeAt(i)) & 0xffffffff;
+  }
+  // Convert to unsigned 32-bit hex
+  return (hash >>> 0).toString(16);
 }
 
 // ---------------------------------------------------------------------------
@@ -417,7 +504,9 @@ function computeFingerprint(state) {
     '|' +
     (state.pickCount ?? '') +
     '|' +
-    (state.totalPicks ?? '')
+    (state.totalPicks ?? '') +
+    '|' +
+    (state.draftId || '')
   );
 }
 
@@ -443,6 +532,7 @@ function handleStateUpdate(state) {
       teams: state.teams || [],
       pickCount: state.pickCount ?? null,
       totalPicks: state.totalPicks ?? null,
+      draftId: state.draftId || null,
       source: state.source || 'unknown',
     },
   };

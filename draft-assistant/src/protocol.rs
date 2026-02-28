@@ -58,6 +58,11 @@ pub struct StateUpdatePayload {
     /// Total number of picks from the ESPN clock label.
     #[serde(default)]
     pub total_picks: Option<u32>,
+    /// Unique draft identifier scraped from the ESPN page (e.g. league ID
+    /// from the URL, or a team-name fingerprint). Used to detect when a new
+    /// draft has started across reconnects.
+    #[serde(default)]
+    pub draft_id: Option<String>,
     pub source: Option<String>,
 }
 
@@ -352,6 +357,7 @@ mod tests {
                 }],
                 pick_count: None,
                 total_picks: None,
+                draft_id: Some("espn_league_12345".to_string()),
                 source: Some("dom_scraper".to_string()),
             },
         };
@@ -570,6 +576,7 @@ mod tests {
                 teams: vec![],
                 pick_count: None,
                 total_picks: None,
+                draft_id: Some("espn_league_42".to_string()),
                 source: Some("test".to_string()),
             },
         };
@@ -583,10 +590,12 @@ mod tests {
         assert!(json.contains("currentNomination"));
         assert!(json.contains("myTeamId"));
         assert!(json.contains("eligibleSlots"));
+        assert!(json.contains("draftId"));
         // Verify snake_case keys are NOT present
         assert!(!json.contains("pick_number"));
         assert!(!json.contains("player_name"));
         assert!(!json.contains("eligible_slots"));
+        assert!(!json.contains("draft_id"));
     }
 
     // -- AppSnapshot construction --
@@ -656,6 +665,74 @@ mod tests {
                 assert!(payload.picks[0].eligible_slots.is_empty());
                 let nom = payload.current_nomination.unwrap();
                 assert!(nom.eligible_slots.is_empty());
+            }
+            _ => panic!("expected StateUpdate variant"),
+        }
+    }
+
+    // -- draftId backward compatibility --
+
+    #[test]
+    fn draft_id_defaults_to_none_when_omitted() {
+        // JSON without draftId should still deserialize thanks to #[serde(default)]
+        let json = r#"{
+            "type": "STATE_UPDATE",
+            "timestamp": 1700000000,
+            "payload": {
+                "picks": [],
+                "currentNomination": null,
+                "myTeamId": "team_1",
+                "source": "test"
+            }
+        }"#;
+        let msg: ExtensionMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ExtensionMessage::StateUpdate { payload, .. } => {
+                assert!(payload.draft_id.is_none());
+            }
+            _ => panic!("expected StateUpdate variant"),
+        }
+    }
+
+    #[test]
+    fn draft_id_deserialized_from_camel_case() {
+        let json = r#"{
+            "type": "STATE_UPDATE",
+            "timestamp": 1700000000,
+            "payload": {
+                "picks": [],
+                "currentNomination": null,
+                "myTeamId": "team_1",
+                "draftId": "espn_league_12345",
+                "source": "test"
+            }
+        }"#;
+        let msg: ExtensionMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ExtensionMessage::StateUpdate { payload, .. } => {
+                assert_eq!(payload.draft_id, Some("espn_league_12345".to_string()));
+            }
+            _ => panic!("expected StateUpdate variant"),
+        }
+    }
+
+    #[test]
+    fn draft_id_null_deserialized_as_none() {
+        let json = r#"{
+            "type": "STATE_UPDATE",
+            "timestamp": 1700000000,
+            "payload": {
+                "picks": [],
+                "currentNomination": null,
+                "myTeamId": "team_1",
+                "draftId": null,
+                "source": "test"
+            }
+        }"#;
+        let msg: ExtensionMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ExtensionMessage::StateUpdate { payload, .. } => {
+                assert!(payload.draft_id.is_none());
             }
             _ => panic!("expected StateUpdate variant"),
         }

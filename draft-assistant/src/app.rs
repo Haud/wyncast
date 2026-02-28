@@ -76,6 +76,12 @@ pub struct AppState {
     /// Unique identifier for the current draft session. Picks are scoped to
     /// this ID so restarts don't replay picks from a different draft.
     pub draft_id: String,
+    /// Draft identifier scraped from the ESPN page by the extension (e.g.
+    /// league ID from URL or team-name fingerprint). Used to detect when
+    /// the extension is reporting state from a different draft than the one
+    /// stored in `draft_id`. `None` until the first STATE_UPDATE arrives
+    /// with a non-null `draftId`.
+    pub espn_draft_id: Option<String>,
     pub previous_extension_state: Option<StateUpdatePayload>,
     pub current_llm_task: Option<tokio::task::JoinHandle<()>>,
     pub llm_mode: Option<LlmMode>,
@@ -125,6 +131,7 @@ impl AppState {
             scarcity,
             db,
             draft_id,
+            espn_draft_id: None,
             previous_extension_state: None,
             current_llm_task: None,
             llm_mode: None,
@@ -694,43 +701,49 @@ async fn handle_ws_message(
 /// Performs differential state detection, processes new picks,
 /// and handles nomination changes.
 ///
-/// On the first STATE_UPDATE of a session, detects whether a new draft has
-/// started by comparing the extension's pick count against the DB. If the
-/// extension reports fewer picks than the DB has for the current draft_id,
-/// a new draft session is started with a fresh draft_id.
+/// On each STATE_UPDATE, checks whether the extension's `draftId` matches
+/// the stored ESPN draft identifier. If they differ, a new draft session is
+/// started with a fresh internal draft_id. This is resilient across
+/// disconnects because it relies on a stable identifier scraped from the
+/// ESPN page rather than comparing pick counts.
 async fn handle_state_update(
     state: &mut AppState,
     ext_payload: crate::protocol::StateUpdatePayload,
     ui_tx: &mpsc::Sender<UiUpdate>,
 ) {
-    // --- New draft detection ---
-    // On the very first STATE_UPDATE (before we have a previous_extension_state),
-    // check whether the extension's pick list is consistent with our DB state.
-    // If the extension reports fewer picks than the DB has for the current
-    // draft_id, a new draft has started; generate a fresh draft_id. This
-    // handles both the clean-start case (extension at 0, DB at N) and the
-    // mid-draft restart case (extension at 3 in a new draft, DB at 50 from
-    // the old draft).
-    if state.previous_extension_state.is_none() {
-        let extension_pick_count = ext_payload.picks.len();
-        let has_existing_picks = state
-            .db
-            .has_draft_in_progress(&state.draft_id)
-            .unwrap_or(false);
-
-        if has_existing_picks {
-            let db_pick_count = state.db.pick_count(&state.draft_id).unwrap_or(0);
-            if extension_pick_count < db_pick_count {
+    // --- New draft detection via ESPN draft identifier ---
+    // The extension scrapes a stable draft identifier from the ESPN page
+    // (league ID from URL, data attribute, or team-name fingerprint).
+    // When this ID differs from what we have stored, a new draft has started.
+    if let Some(ref ext_draft_id) = ext_payload.draft_id {
+        match &state.espn_draft_id {
+            Some(stored_espn_id) if stored_espn_id != ext_draft_id => {
+                // ESPN draft ID changed -> new draft
                 let new_draft_id = Database::generate_draft_id();
                 info!(
-                    "New draft detected: extension has {} picks but DB has {} for draft_id={}. \
+                    "New draft detected: ESPN draft ID changed from '{}' to '{}'. \
                      Starting new draft session: {}",
-                    extension_pick_count, db_pick_count, state.draft_id, new_draft_id
+                    stored_espn_id, ext_draft_id, new_draft_id
                 );
                 state.draft_id = new_draft_id.clone();
+                state.espn_draft_id = Some(ext_draft_id.clone());
                 if let Err(e) = state.db.set_draft_id(&new_draft_id) {
                     warn!("Failed to persist new draft_id: {}", e);
                 }
+                if let Err(e) = state.db.set_espn_draft_id(ext_draft_id) {
+                    warn!("Failed to persist ESPN draft_id: {}", e);
+                }
+            }
+            None => {
+                // First time receiving an ESPN draft ID -- store it.
+                info!("ESPN draft ID received: {}", ext_draft_id);
+                state.espn_draft_id = Some(ext_draft_id.clone());
+                if let Err(e) = state.db.set_espn_draft_id(ext_draft_id) {
+                    warn!("Failed to persist ESPN draft_id: {}", e);
+                }
+            }
+            _ => {
+                // Same ESPN draft ID, no action needed.
             }
         }
     }
@@ -2385,6 +2398,7 @@ mod tests {
             teams: vec![],
             pick_count: None,
             total_picks: None,
+            draft_id: Some("espn_league_42".into()),
             source: Some("test".into()),
         };
 
@@ -3246,5 +3260,216 @@ mod tests {
             .filter(|s| s.player.is_some())
             .collect();
         assert!(filled.is_empty(), "My roster should be empty");
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: ESPN draft ID detection
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn first_espn_draft_id_is_stored() {
+        let mut state = create_test_app_state();
+        assert!(state.espn_draft_id.is_none());
+
+        let ext_payload = crate::protocol::StateUpdatePayload {
+            picks: vec![],
+            current_nomination: None,
+            my_team_id: None,
+            teams: vec![],
+            pick_count: None,
+            total_picks: None,
+            draft_id: Some("espn_league_12345".into()),
+            source: Some("test".into()),
+        };
+
+        let (ui_tx, _ui_rx) = mpsc::channel(64);
+        handle_state_update(&mut state, ext_payload, &ui_tx).await;
+
+        // ESPN draft ID should now be stored in state
+        assert_eq!(state.espn_draft_id, Some("espn_league_12345".into()));
+        // Internal draft_id should NOT change (same draft)
+        assert_eq!(state.draft_id, state.draft_id); // unchanged
+
+        // Should also be persisted in DB
+        let db_espn_id = state.db.get_espn_draft_id().unwrap();
+        assert_eq!(db_espn_id, Some("espn_league_12345".into()));
+    }
+
+    #[tokio::test]
+    async fn same_espn_draft_id_does_not_start_new_session() {
+        let mut state = create_test_app_state();
+        let original_draft_id = state.draft_id.clone();
+
+        // Set up an existing ESPN draft ID
+        state.espn_draft_id = Some("espn_league_12345".into());
+
+        let ext_payload = crate::protocol::StateUpdatePayload {
+            picks: vec![],
+            current_nomination: None,
+            my_team_id: None,
+            teams: vec![],
+            pick_count: None,
+            total_picks: None,
+            draft_id: Some("espn_league_12345".into()),
+            source: Some("test".into()),
+        };
+
+        let (ui_tx, _ui_rx) = mpsc::channel(64);
+        handle_state_update(&mut state, ext_payload, &ui_tx).await;
+
+        // Draft ID should remain the same
+        assert_eq!(state.draft_id, original_draft_id);
+        assert_eq!(state.espn_draft_id, Some("espn_league_12345".into()));
+    }
+
+    #[tokio::test]
+    async fn different_espn_draft_id_starts_new_session() {
+        let mut state = create_test_app_state();
+        // Use a known fixed draft_id so the generated one will differ
+        let original_draft_id = "test_original_draft_001".to_string();
+        state.draft_id = original_draft_id.clone();
+
+        // Simulate having a stored ESPN draft ID from a previous session
+        state.espn_draft_id = Some("espn_league_12345".into());
+
+        // Extension now reports a different draft ID (different league/season)
+        let ext_payload = crate::protocol::StateUpdatePayload {
+            picks: vec![],
+            current_nomination: None,
+            my_team_id: None,
+            teams: vec![],
+            pick_count: None,
+            total_picks: None,
+            draft_id: Some("espn_league_67890".into()),
+            source: Some("test".into()),
+        };
+
+        let (ui_tx, _ui_rx) = mpsc::channel(64);
+        handle_state_update(&mut state, ext_payload, &ui_tx).await;
+
+        // A new draft session should have been started
+        assert_ne!(state.draft_id, original_draft_id);
+        assert!(state.draft_id.starts_with("draft_"), "New draft ID should be generated: {}", state.draft_id);
+        assert_eq!(state.espn_draft_id, Some("espn_league_67890".into()));
+
+        // New draft ID should be persisted
+        let db_draft_id = state.db.get_draft_id().unwrap();
+        assert_eq!(db_draft_id, Some(state.draft_id.clone()));
+
+        let db_espn_id = state.db.get_espn_draft_id().unwrap();
+        assert_eq!(db_espn_id, Some("espn_league_67890".into()));
+    }
+
+    #[tokio::test]
+    async fn null_espn_draft_id_does_not_trigger_new_session() {
+        let mut state = create_test_app_state();
+        let original_draft_id = state.draft_id.clone();
+
+        // Simulate having a stored ESPN draft ID
+        state.espn_draft_id = Some("espn_league_12345".into());
+
+        // Extension sends no draft ID (e.g., old extension version)
+        let ext_payload = crate::protocol::StateUpdatePayload {
+            picks: vec![],
+            current_nomination: None,
+            my_team_id: None,
+            teams: vec![],
+            pick_count: None,
+            total_picks: None,
+            draft_id: None,
+            source: Some("test".into()),
+        };
+
+        let (ui_tx, _ui_rx) = mpsc::channel(64);
+        handle_state_update(&mut state, ext_payload, &ui_tx).await;
+
+        // Draft ID should remain unchanged
+        assert_eq!(state.draft_id, original_draft_id);
+        assert_eq!(state.espn_draft_id, Some("espn_league_12345".into()));
+    }
+
+    #[tokio::test]
+    async fn espn_draft_id_resilient_across_reconnects() {
+        let mut state = create_test_app_state();
+
+        // First connection: receive ESPN draft ID and process some picks
+        let ext_payload1 = crate::protocol::StateUpdatePayload {
+            picks: vec![crate::protocol::PickData {
+                pick_number: 1,
+                team_id: "1".into(),
+                team_name: "Team 1".into(),
+                player_id: "".into(),
+                player_name: "H_Star".into(),
+                position: "1B".into(),
+                price: 45,
+                eligible_slots: vec![],
+            }],
+            current_nomination: None,
+            my_team_id: Some("Team 1".into()),
+            teams: vec![
+                crate::protocol::TeamBudgetData {
+                    team_id: Some("1".into()),
+                    team_name: "Team 1".into(),
+                    budget: 215,
+                },
+                crate::protocol::TeamBudgetData {
+                    team_id: Some("2".into()),
+                    team_name: "Team 2".into(),
+                    budget: 260,
+                },
+            ],
+            pick_count: Some(1),
+            total_picks: Some(260),
+            draft_id: Some("espn_league_12345".into()),
+            source: Some("test".into()),
+        };
+
+        let (ui_tx, _ui_rx) = mpsc::channel(64);
+        handle_state_update(&mut state, ext_payload1, &ui_tx).await;
+
+        let draft_id_after_first = state.draft_id.clone();
+        assert_eq!(state.espn_draft_id, Some("espn_league_12345".into()));
+
+        // Simulate disconnect and reconnect -- previous_extension_state is
+        // cleared to None (simulating a fresh connection)
+        state.previous_extension_state = None;
+
+        // Second connection: same ESPN draft ID, same picks visible
+        let ext_payload2 = crate::protocol::StateUpdatePayload {
+            picks: vec![crate::protocol::PickData {
+                pick_number: 1,
+                team_id: "1".into(),
+                team_name: "Team 1".into(),
+                player_id: "".into(),
+                player_name: "H_Star".into(),
+                position: "1B".into(),
+                price: 45,
+                eligible_slots: vec![],
+            }],
+            current_nomination: None,
+            my_team_id: Some("Team 1".into()),
+            teams: vec![
+                crate::protocol::TeamBudgetData {
+                    team_id: Some("1".into()),
+                    team_name: "Team 1".into(),
+                    budget: 215,
+                },
+                crate::protocol::TeamBudgetData {
+                    team_id: Some("2".into()),
+                    team_name: "Team 2".into(),
+                    budget: 260,
+                },
+            ],
+            pick_count: Some(1),
+            total_picks: Some(260),
+            draft_id: Some("espn_league_12345".into()),
+            source: Some("test".into()),
+        };
+
+        handle_state_update(&mut state, ext_payload2, &ui_tx).await;
+
+        // Draft ID should NOT change across reconnect with same ESPN ID
+        assert_eq!(state.draft_id, draft_id_after_first);
+        assert_eq!(state.espn_draft_id, Some("espn_league_12345".into()));
     }
 }
