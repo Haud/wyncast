@@ -1878,18 +1878,15 @@ fn draft_log_resilient_to_virtualized_list_renumbering() {
         ..Default::default()
     };
 
-    // compute_state_diff compares by pick_number, so it sees 51/52/53 as "new"
+    // compute_state_diff now uses player identity (player_id), so renumbered
+    // picks with the same player_id are NOT re-emitted. This eliminates the
+    // spurious DB writes and recalculate_all calls from the old behavior.
     let diff2 = compute_state_diff(&Some(payload1), &payload2);
     assert_eq!(
         diff2.new_picks.len(),
-        3,
-        "Diff should report 3 'new' picks (different pick_numbers)"
+        0,
+        "Renumbered picks with same player_id should NOT be re-emitted"
     );
-
-    // But record_pick should deduplicate by player identity
-    for pick in diff2.new_picks {
-        draft_state.record_pick(pick);
-    }
 
     assert_eq!(
         draft_state.picks.len(),
@@ -2486,7 +2483,13 @@ fn pick_renumbering_does_not_drop_new_picks() {
     };
 
     let diff2 = compute_state_diff(&Some(payload1), &payload2);
-    // The renumbered pick is detected but record_pick will dedup by identity
+    // Renumbered pick has the same player_id, so compute_state_diff correctly
+    // recognizes it as already known and does NOT re-emit it.
+    assert_eq!(
+        diff2.new_picks.len(),
+        0,
+        "Renumbered pick with same player_id should not be re-emitted"
+    );
     state.process_new_picks(diff2.new_picks);
 
     // Roster should still have exactly 1 player (no duplicate)
