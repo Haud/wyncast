@@ -337,17 +337,30 @@ impl Database {
         Ok(count as usize)
     }
 
-    /// Delete all draft picks and draft state, resetting the draft to a clean
-    /// slate. Player and projection data are preserved. Uses a proper
-    /// transaction with automatic rollback on error.
-    pub fn clear_draft(&self) -> Result<()> {
+    /// Delete draft picks for a specific `draft_id`. Draft state (stored IDs
+    /// in the `draft_state` table) is preserved so the app still knows which
+    /// draft was active. Player and projection data are also preserved.
+    pub fn clear_draft(&self, draft_id: &str) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "DELETE FROM draft_picks WHERE draft_id = ?1",
+            params![draft_id],
+        )
+        .context("failed to delete draft picks")?;
+        Ok(())
+    }
+
+    /// Delete ALL draft picks across every draft_id **and** all draft state
+    /// (stored IDs), returning the database to a completely clean slate.
+    /// Player and projection data are preserved.
+    pub fn clear_all_drafts(&self) -> Result<()> {
         let mut conn = self.conn();
         let tx = conn.transaction().context("failed to begin transaction")?;
         tx.execute("DELETE FROM draft_picks", [])
             .context("failed to delete draft picks")?;
         tx.execute("DELETE FROM draft_state", [])
             .context("failed to delete draft state")?;
-        tx.commit().context("failed to commit clear_draft")?;
+        tx.commit().context("failed to commit clear_all_drafts")?;
         Ok(())
     }
 
@@ -655,17 +668,22 @@ mod tests {
     }
 
     #[test]
-    fn clear_draft_resets_picks_and_state() {
+    fn clear_draft_resets_picks_for_draft_id() {
         let db = test_db();
 
         db.record_pick(&sample_pick(1), TEST_DRAFT_ID).unwrap();
+        db.record_pick(&sample_pick(2), "other_draft").unwrap();
         db.save_state("budget", &json!(200)).unwrap();
         assert!(db.has_draft_in_progress(TEST_DRAFT_ID).unwrap());
 
-        db.clear_draft().unwrap();
+        db.clear_draft(TEST_DRAFT_ID).unwrap();
 
+        // Picks for the targeted draft_id are gone
         assert!(!db.has_draft_in_progress(TEST_DRAFT_ID).unwrap());
-        assert!(db.load_state("budget").unwrap().is_none());
+        // Picks for other drafts are untouched
+        assert!(db.has_draft_in_progress("other_draft").unwrap());
+        // Draft state is preserved (clear_draft doesn't touch draft_state)
+        assert_eq!(db.load_state("budget").unwrap(), Some(json!(200)));
     }
 
     // ------------------------------------------------------------------
@@ -1208,14 +1226,14 @@ mod tests {
     }
 
     #[test]
-    fn clear_draft_removes_all_drafts() {
+    fn clear_all_drafts_removes_everything() {
         let db = test_db();
 
         db.record_pick(&sample_pick(1), "draft_a").unwrap();
         db.record_pick(&sample_pick(2), "draft_b").unwrap();
         db.set_draft_id("draft_b").unwrap();
 
-        db.clear_draft().unwrap();
+        db.clear_all_drafts().unwrap();
 
         // All picks from all drafts should be gone
         assert!(!db.has_draft_in_progress("draft_a").unwrap());

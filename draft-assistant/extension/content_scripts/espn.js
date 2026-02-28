@@ -412,6 +412,10 @@ function scrapeDraftId() {
     const params = new URLSearchParams(window.location.search);
     const leagueId = params.get('leagueId');
     if (leagueId) {
+      // NOTE: Uses the current calendar year. This means a draft that
+      // hypothetically spans midnight on Dec 31 would produce a different
+      // ID after the year rolls over. In practice this is not an issue
+      // because baseball drafts never cross the year boundary.
       const year = new Date().getFullYear();
       return 'espn_' + leagueId + '_' + year;
     }

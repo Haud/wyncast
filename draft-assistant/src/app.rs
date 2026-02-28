@@ -726,11 +726,22 @@ async fn handle_state_update(
                      Starting new draft session: {}",
                     stored_espn_id, ext_draft_id, new_draft_id
                 );
+                // Persist to DB first -- only reset in-memory state if the
+                // write succeeds so we never diverge from the database.
+                match state.db.set_both_draft_ids(&new_draft_id, ext_draft_id) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        warn!(
+                            "Failed to persist draft IDs, skipping draft reset: {}",
+                            e
+                        );
+                        // Skip the entire reset; keep current in-memory state
+                        // consistent with what the database still holds.
+                        return;
+                    }
+                }
                 state.draft_id = new_draft_id.clone();
                 state.espn_draft_id = Some(ext_draft_id.clone());
-                if let Err(e) = state.db.set_both_draft_ids(&new_draft_id, ext_draft_id) {
-                    warn!("Failed to persist draft IDs: {}", e);
-                }
                 // Reset in-memory draft state for the new draft
                 state.draft_state = DraftState::new(
                     state.config.league.salary_cap,
@@ -743,6 +754,17 @@ async fn handle_state_update(
                     compute_scarcity(&state.available_players, &state.config.league);
                 state.inflation = InflationTracker::new();
                 state.previous_extension_state = None;
+                // Clear LLM state so stale analysis from the previous draft
+                // doesn't bleed into the new session.
+                if let Some(handle) = state.current_llm_task.take() {
+                    handle.abort();
+                }
+                state.llm_mode = None;
+                state.nomination_analysis_text.clear();
+                state.nomination_analysis_status = LlmStatus::Idle;
+                state.nomination_plan_text.clear();
+                state.nomination_plan_status = LlmStatus::Idle;
+                state.category_needs = CategoryNeeds::default();
             }
             None => {
                 // First time receiving an ESPN draft ID -- store it.
