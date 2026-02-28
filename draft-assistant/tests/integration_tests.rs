@@ -1645,3 +1645,269 @@ fn end_to_end_pipeline() {
         );
     }
 }
+
+// ===========================================================================
+// Tests: Draft log deduplication and pick numbering
+// ===========================================================================
+
+/// Recording the same player with different pick_numbers (ESPN renumbering)
+/// must not create duplicate entries in the draft log.
+#[test]
+fn draft_log_no_duplicates_on_espn_renumbering() {
+    let mut draft_state = DraftState::new(260, &roster_config());
+    draft_state.reconcile_budgets(&ten_team_budgets());
+    draft_state.set_my_team_by_name("Team 1");
+
+    // Record the first pick normally
+    draft_state.record_pick(DraftPick {
+        pick_number: 1,
+        team_id: "1".to_string(),
+        team_name: "Team 1".to_string(),
+        player_name: "Mike Trout".to_string(),
+        position: "CF".to_string(),
+        price: 45,
+        espn_player_id: None,
+        eligible_slots: vec![],
+    });
+
+    assert_eq!(draft_state.picks.len(), 1);
+    assert_eq!(draft_state.pick_count, 1);
+
+    // ESPN renumbers the same player with a different pick_number (virtualized
+    // list shift). This should be a complete no-op.
+    draft_state.record_pick(DraftPick {
+        pick_number: 101,
+        team_id: "1".to_string(),
+        team_name: "Team 1".to_string(),
+        player_name: "Mike Trout".to_string(),
+        position: "CF".to_string(),
+        price: 45,
+        espn_player_id: None,
+        eligible_slots: vec![],
+    });
+
+    assert_eq!(
+        draft_state.picks.len(),
+        1,
+        "Draft log should not contain duplicate entries for the same player"
+    );
+    assert_eq!(
+        draft_state.pick_count, 1,
+        "Pick count should not increase for a duplicate player"
+    );
+    assert_eq!(
+        draft_state.picks[0].pick_number, 1,
+        "Original pick number should be preserved"
+    );
+}
+
+/// Same test as above but with ESPN player IDs present.
+#[test]
+fn draft_log_no_duplicates_by_espn_player_id() {
+    let mut draft_state = DraftState::new(260, &roster_config());
+    draft_state.reconcile_budgets(&ten_team_budgets());
+    draft_state.set_my_team_by_name("Team 1");
+
+    draft_state.record_pick(DraftPick {
+        pick_number: 1,
+        team_id: "1".to_string(),
+        team_name: "Team 1".to_string(),
+        player_name: "Mike Trout".to_string(),
+        position: "CF".to_string(),
+        price: 45,
+        espn_player_id: Some("33039".to_string()),
+        eligible_slots: vec![],
+    });
+
+    // Same ESPN player ID, different pick number
+    draft_state.record_pick(DraftPick {
+        pick_number: 55,
+        team_id: "1".to_string(),
+        team_name: "Team 1".to_string(),
+        player_name: "Mike Trout".to_string(),
+        position: "CF".to_string(),
+        price: 45,
+        espn_player_id: Some("33039".to_string()),
+        eligible_slots: vec![],
+    });
+
+    assert_eq!(
+        draft_state.picks.len(),
+        1,
+        "Duplicate ESPN player ID should be rejected"
+    );
+    assert_eq!(draft_state.pick_count, 1);
+}
+
+/// Pick numbering should be sequential starting from 1, and the draft log
+/// in the snapshot should contain exactly the right picks in order.
+#[test]
+fn draft_log_sequential_numbering_and_snapshot_correctness() {
+    let mut state = create_test_app_state_from_fixtures();
+    let events = generate_mock_draft_events();
+
+    // Process the first 3 picks
+    for event in &events[..3] {
+        state.process_new_picks(vec![mock_event_to_pick(event)]);
+    }
+
+    // Verify sequential pick numbers in the draft log
+    assert_eq!(state.draft_state.picks.len(), 3);
+    for (i, pick) in state.draft_state.picks.iter().enumerate() {
+        assert_eq!(
+            pick.pick_number,
+            (i + 1) as u32,
+            "Pick {} should have pick_number {}, got {}",
+            i,
+            i + 1,
+            pick.pick_number
+        );
+    }
+
+    // Build snapshot and verify draft_log matches
+    let snapshot = state.build_snapshot();
+    assert_eq!(
+        snapshot.draft_log.len(),
+        3,
+        "Snapshot draft_log should contain exactly 3 picks"
+    );
+    assert_eq!(snapshot.draft_log[0].player_name, events[0].player_name);
+    assert_eq!(snapshot.draft_log[1].player_name, events[1].player_name);
+    assert_eq!(snapshot.draft_log[2].player_name, events[2].player_name);
+
+    // Pick numbers in snapshot should match
+    for (i, pick) in snapshot.draft_log.iter().enumerate() {
+        assert_eq!(pick.pick_number, (i + 1) as u32);
+    }
+}
+
+/// Simulate the full renumbering scenario: 3 picks arrive, then the same
+/// 3 picks arrive with shifted pick_numbers (as if ESPN's virtualized list
+/// scrolled). The draft log should still contain exactly 3 unique entries.
+#[test]
+fn draft_log_resilient_to_virtualized_list_renumbering() {
+    use draft_assistant::draft::state::{
+        compute_state_diff, PickPayload, StateUpdatePayload,
+    };
+
+    let mut draft_state = DraftState::new(260, &roster_config());
+    draft_state.reconcile_budgets(&ten_team_budgets());
+    draft_state.set_my_team_by_name("Team 1");
+
+    // First state update: 3 picks with numbers 1, 2, 3
+    let payload1 = StateUpdatePayload {
+        picks: vec![
+            PickPayload {
+                pick_number: 1,
+                team_id: "1".to_string(),
+                team_name: "Team 1".to_string(),
+                player_id: "p1".to_string(),
+                player_name: "Player A".to_string(),
+                position: "CF".to_string(),
+                price: 30,
+                eligible_slots: vec![],
+            },
+            PickPayload {
+                pick_number: 2,
+                team_id: "2".to_string(),
+                team_name: "Team 2".to_string(),
+                player_id: "p2".to_string(),
+                player_name: "Player B".to_string(),
+                position: "SP".to_string(),
+                price: 25,
+                eligible_slots: vec![],
+            },
+            PickPayload {
+                pick_number: 3,
+                team_id: "3".to_string(),
+                team_name: "Team 3".to_string(),
+                player_id: "p3".to_string(),
+                player_name: "Player C".to_string(),
+                position: "1B".to_string(),
+                price: 20,
+                eligible_slots: vec![],
+            },
+        ],
+        current_nomination: None,
+        ..Default::default()
+    };
+
+    let diff1 = compute_state_diff(&None, &payload1);
+    assert_eq!(diff1.new_picks.len(), 3);
+    for pick in diff1.new_picks {
+        draft_state.record_pick(pick);
+    }
+    assert_eq!(draft_state.picks.len(), 3);
+
+    // Second state update: ESPN renumbered to 51, 52, 53 (virtualized list shift)
+    // Same players, different pick_numbers.
+    let payload2 = StateUpdatePayload {
+        picks: vec![
+            PickPayload {
+                pick_number: 51,
+                team_id: "1".to_string(),
+                team_name: "Team 1".to_string(),
+                player_id: "p1".to_string(),
+                player_name: "Player A".to_string(),
+                position: "CF".to_string(),
+                price: 30,
+                eligible_slots: vec![],
+            },
+            PickPayload {
+                pick_number: 52,
+                team_id: "2".to_string(),
+                team_name: "Team 2".to_string(),
+                player_id: "p2".to_string(),
+                player_name: "Player B".to_string(),
+                position: "SP".to_string(),
+                price: 25,
+                eligible_slots: vec![],
+            },
+            PickPayload {
+                pick_number: 53,
+                team_id: "3".to_string(),
+                team_name: "Team 3".to_string(),
+                player_id: "p3".to_string(),
+                player_name: "Player C".to_string(),
+                position: "1B".to_string(),
+                price: 20,
+                eligible_slots: vec![],
+            },
+        ],
+        current_nomination: None,
+        ..Default::default()
+    };
+
+    // compute_state_diff compares by pick_number, so it sees 51/52/53 as "new"
+    let diff2 = compute_state_diff(&Some(payload1), &payload2);
+    assert_eq!(
+        diff2.new_picks.len(),
+        3,
+        "Diff should report 3 'new' picks (different pick_numbers)"
+    );
+
+    // But record_pick should deduplicate by player identity
+    for pick in diff2.new_picks {
+        draft_state.record_pick(pick);
+    }
+
+    assert_eq!(
+        draft_state.picks.len(),
+        3,
+        "Draft log should still contain exactly 3 picks after renumbering"
+    );
+    assert_eq!(draft_state.pick_count, 3);
+
+    // Verify the original pick numbers are preserved
+    assert_eq!(draft_state.picks[0].pick_number, 1);
+    assert_eq!(draft_state.picks[1].pick_number, 2);
+    assert_eq!(draft_state.picks[2].pick_number, 3);
+
+    // Verify budgets are correct (no double-counting)
+    let team1 = draft_state.team("1").unwrap();
+    assert_eq!(team1.budget_spent, 30, "Team 1 should have spent $30 once");
+    let team2 = draft_state.team("2").unwrap();
+    assert_eq!(team2.budget_spent, 25, "Team 2 should have spent $25 once");
+    let team3 = draft_state.team("3").unwrap();
+    assert_eq!(team3.budget_spent, 20, "Team 3 should have spent $20 once");
+}

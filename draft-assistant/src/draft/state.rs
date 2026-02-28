@@ -127,6 +127,24 @@ impl DraftState {
             return;
         }
 
+        // Skip if this player was already recorded (deduplication by identity).
+        // ESPN's virtualized pick list can renumber picks, causing the same
+        // player to appear with a different pick_number. Deduplicate by ESPN
+        // player ID when available, falling back to player name.
+        let dominated = match &pick.espn_player_id {
+            Some(id) if !id.is_empty() => self
+                .picks
+                .iter()
+                .any(|p| p.espn_player_id.as_deref() == Some(id.as_str())),
+            _ => self
+                .picks
+                .iter()
+                .any(|p| p.player_name == pick.player_name),
+        };
+        if dominated {
+            return;
+        }
+
         // Look up team by team_id first; fall back to team_name when the ID
         // is empty or doesn't match (DOM scraping uses team names as IDs).
         let team_idx = self
@@ -140,21 +158,15 @@ impl DraftState {
             });
 
         if let Some(team) = team_idx.map(|i| &mut self.teams[i]) {
-            // Only update budget and roster if this player isn't already on
-            // the team's roster. This guards against the same physical pick
-            // being re-processed with a different pick_number (e.g. when
-            // ESPN's virtualized pick list causes renumbering).
-            if !team.roster.has_player(&pick.player_name, pick.espn_player_id.as_deref()) {
-                team.budget_spent += pick.price;
-                team.budget_remaining = team.budget_remaining.saturating_sub(pick.price);
-                team.roster.add_player_with_slots(
-                    &pick.player_name,
-                    &pick.position,
-                    pick.price,
-                    &pick.eligible_slots,
-                    pick.espn_player_id.as_deref(),
-                );
-            }
+            team.budget_spent += pick.price;
+            team.budget_remaining = team.budget_remaining.saturating_sub(pick.price);
+            team.roster.add_player_with_slots(
+                &pick.player_name,
+                &pick.position,
+                pick.price,
+                &pick.eligible_slots,
+                pick.espn_player_id.as_deref(),
+            );
         }
         self.pick_count += 1;
         self.picks.push(pick);
@@ -1136,7 +1148,7 @@ mod tests {
     }
 
     #[test]
-    fn record_pick_dedup_by_player_name_on_roster() {
+    fn record_pick_dedup_by_player_name_different_pick_number() {
         let mut state = create_test_state();
 
         // Record pick #1 for Mike Trout on Team 1
@@ -1155,8 +1167,8 @@ mod tests {
         assert_eq!(team.roster.filled_count(), 1);
 
         // Record same player with DIFFERENT pick_number (simulates ESPN renumbering).
-        // The player is already on Team 1's roster, so the roster and budget
-        // should NOT be updated, but the pick is still stored in the picks list.
+        // The entire call should be a no-op: no new pick in picks list, no budget
+        // or roster changes.
         state.record_pick(DraftPick {
             pick_number: 101, // Different number (renumbered)
             team_id: "1".to_string(),
@@ -1169,25 +1181,57 @@ mod tests {
         });
 
         assert_eq!(
-            state.pick_count, 2,
-            "pick_count should increase (different pick_number)"
+            state.pick_count, 1,
+            "pick_count should not increase (same player)"
         );
         assert_eq!(
             state.picks.len(),
-            2,
-            "picks vec should grow (different pick_number)"
+            1,
+            "picks vec should not grow (same player)"
         );
 
         let team = state.team("1").unwrap();
         assert_eq!(
             team.roster.filled_count(),
             1,
-            "roster should still have 1 player (player already on roster)"
+            "roster should still have 1 player"
         );
         assert_eq!(
             team.budget_spent, 45,
-            "budget_spent should not double (player already on roster)"
+            "budget_spent should not change"
         );
+    }
+
+    #[test]
+    fn record_pick_dedup_by_espn_player_id() {
+        let mut state = create_test_state();
+
+        // Record pick #1 for player with ESPN ID
+        state.record_pick(DraftPick {
+            pick_number: 1,
+            team_id: "1".to_string(),
+            team_name: "Team 1".to_string(),
+            player_name: "Mike Trout".to_string(),
+            position: "CF".to_string(),
+            price: 45,
+            espn_player_id: Some("33039".to_string()),
+            eligible_slots: vec![],
+        });
+
+        // Record same ESPN player ID with different pick_number — should be no-op
+        state.record_pick(DraftPick {
+            pick_number: 101,
+            team_id: "1".to_string(),
+            team_name: "Team 1".to_string(),
+            player_name: "Mike Trout".to_string(),
+            position: "CF".to_string(),
+            price: 45,
+            espn_player_id: Some("33039".to_string()),
+            eligible_slots: vec![],
+        });
+
+        assert_eq!(state.pick_count, 1, "same ESPN ID should dedup");
+        assert_eq!(state.picks.len(), 1);
     }
 
     #[test]
