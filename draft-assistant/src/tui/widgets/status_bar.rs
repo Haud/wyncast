@@ -48,14 +48,15 @@ pub fn connection_indicator(status: ConnectionStatus) -> (&'static str, Color) {
     }
 }
 
-/// Build tab indicator spans: "[1] [2] [3] [4] [5]" with active highlighted.
+/// Build tab indicator spans with descriptive labels and active tab highlighted.
+/// E.g. "[1:Analysis] [2:Plan] [3:Players] [4:Log] [5:Teams]"
 pub fn tab_spans(active: TabId) -> Vec<Span<'static>> {
     let tabs = [
-        (TabId::Analysis, "1"),
-        (TabId::NomPlan, "2"),
-        (TabId::Available, "3"),
-        (TabId::DraftLog, "4"),
-        (TabId::Teams, "5"),
+        (TabId::Analysis, "1:Analysis"),
+        (TabId::NomPlan, "2:Plan"),
+        (TabId::Available, "3:Players"),
+        (TabId::DraftLog, "4:Log"),
+        (TabId::Teams, "5:Teams"),
     ];
 
     let mut spans = Vec::new();
@@ -110,9 +111,9 @@ mod tests {
     #[test]
     fn tab_spans_highlight_active() {
         let spans = tab_spans(TabId::Available);
-        // The 3rd tab (index 4 in spans: [1] " " [2] " " [3] ...)
-        // [3] should be highlighted
-        let tab3 = &spans[4]; // 0=[1], 1=" ", 2=[2], 3=" ", 4=[3]
+        // The 3rd tab (index 4 in spans: [1:Analysis] " " [2:Plan] " " [3:Players] ...)
+        // [3:Players] should be highlighted
+        let tab3 = &spans[4]; // 0=[1:Analysis], 1=" ", 2=[2:Plan], 3=" ", 4=[3:Players]
         assert!(tab3.style.add_modifier.contains(Modifier::BOLD));
     }
 
@@ -123,6 +124,22 @@ mod tests {
         assert_eq!(tab_label(TabId::Available), "Available");
         assert_eq!(tab_label(TabId::DraftLog), "Draft Log");
         assert_eq!(tab_label(TabId::Teams), "Teams");
+    }
+
+    #[test]
+    fn tab_spans_contain_descriptive_labels() {
+        let spans = tab_spans(TabId::Analysis);
+        // Collect only the tab label spans (every other span, starting at 0)
+        let labels: Vec<&str> = spans
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| i % 2 == 0)
+            .map(|(_, s)| s.content.as_ref())
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["[1:Analysis]", "[2:Plan]", "[3:Players]", "[4:Log]", "[5:Teams]"]
+        );
     }
 
     #[test]
