@@ -6,6 +6,7 @@
 
 use crate::config::LeagueConfig;
 use crate::draft::pick::Position;
+use crate::valuation::projections::PitcherType;
 use crate::valuation::zscore::PlayerValuation;
 
 // ---------------------------------------------------------------------------
@@ -100,6 +101,32 @@ const TRACKED_POSITIONS: &[Position] = &[
 ];
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Check whether a player is eligible at a given position.
+///
+/// Primary check: the `positions` list (populated from ESPN eligible_slots
+/// overlay or backfilled by the VOR pipeline). Fallback: `best_position`
+/// (set by VOR computation) and `pitcher_type` (always known for pitchers).
+fn player_eligible_at(p: &PlayerValuation, pos: Position) -> bool {
+    // Primary: explicit positions list
+    if p.positions.contains(&pos) {
+        return true;
+    }
+    // Fallback: best_position assigned by VOR
+    if p.best_position == Some(pos) {
+        return true;
+    }
+    // Fallback: pitcher_type for SP/RP
+    match (pos, p.pitcher_type) {
+        (Position::StartingPitcher, Some(PitcherType::SP)) => true,
+        (Position::ReliefPitcher, Some(PitcherType::RP)) => true,
+        _ => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Core computation
 // ---------------------------------------------------------------------------
 
@@ -120,9 +147,11 @@ pub fn compute_scarcity(
 
     for &pos in TRACKED_POSITIONS {
         // Collect players eligible at this position with positive VOR.
+        // Check positions list first; fall back to best_position and
+        // pitcher_type for players that lack ESPN position overlay data.
         let mut eligible: Vec<f64> = available_players
             .iter()
-            .filter(|p| p.vor > 0.0 && p.positions.contains(&pos))
+            .filter(|p| p.vor > 0.0 && player_eligible_at(p, pos))
             .map(|p| p.vor)
             .collect();
 
@@ -470,5 +499,146 @@ mod tests {
         assert!(approx_eq(ScarcityUrgency::High.premium(), 0.15, 0.001));
         assert!(approx_eq(ScarcityUrgency::Medium.premium(), 0.0, 0.001));
         assert!(approx_eq(ScarcityUrgency::Low.premium(), -0.10, 0.001));
+    }
+
+    #[test]
+    fn player_eligible_at_uses_positions_list() {
+        let player = make_hitter("Multi", 5.0, vec![Position::SecondBase, Position::ShortStop]);
+        assert!(super::player_eligible_at(&player, Position::SecondBase));
+        assert!(super::player_eligible_at(&player, Position::ShortStop));
+        assert!(!super::player_eligible_at(&player, Position::Catcher));
+    }
+
+    #[test]
+    fn player_eligible_at_falls_back_to_best_position() {
+        let mut player = make_hitter("Assigned", 5.0, vec![]);
+        player.best_position = Some(Position::FirstBase);
+        assert!(super::player_eligible_at(&player, Position::FirstBase));
+        assert!(!super::player_eligible_at(&player, Position::Catcher));
+    }
+
+    #[test]
+    fn player_eligible_at_falls_back_to_pitcher_type() {
+        let mut player = make_pitcher("Ace", 5.0, PitcherType::SP);
+        // Clear positions to test fallback path
+        player.positions.clear();
+        player.best_position = None;
+        assert!(super::player_eligible_at(&player, Position::StartingPitcher));
+        assert!(!super::player_eligible_at(&player, Position::ReliefPitcher));
+    }
+
+    /// Integration test: with a full player pool at draft start (produced by
+    /// the VOR pipeline), most positions should show Low or Medium urgency,
+    /// not Critical. This verifies the fix for the bug where empty `positions`
+    /// caused all scarcity gauges to show Critical.
+    #[test]
+    fn full_pool_draft_start_not_all_critical() {
+        let league = test_league_config();
+
+        // Simulate a full draft pool: 15 players per hitter position
+        // and 15 SP + 15 RP, all with positive VOR and best_position set.
+        // This mimics what the VOR pipeline produces at startup.
+        let mut players = Vec::new();
+
+        let hitter_positions = [
+            Position::Catcher,
+            Position::FirstBase,
+            Position::SecondBase,
+            Position::ThirdBase,
+            Position::ShortStop,
+            Position::LeftField,
+            Position::CenterField,
+            Position::RightField,
+        ];
+
+        for &pos in &hitter_positions {
+            for i in 0..15 {
+                let mut p = make_hitter(
+                    &format!("{}_{}", pos.display_str(), i + 1),
+                    15.0 - i as f64,
+                    vec![pos],
+                );
+                p.best_position = Some(pos);
+                players.push(p);
+            }
+        }
+
+        for i in 0..15 {
+            let mut p = make_pitcher(
+                &format!("SP_{}", i + 1),
+                15.0 - i as f64,
+                PitcherType::SP,
+            );
+            p.best_position = Some(Position::StartingPitcher);
+            players.push(p);
+        }
+
+        for i in 0..15 {
+            let mut p = make_pitcher(
+                &format!("RP_{}", i + 1),
+                12.0 - i as f64,
+                PitcherType::RP,
+            );
+            p.best_position = Some(Position::ReliefPitcher);
+            players.push(p);
+        }
+
+        let scarcity = compute_scarcity(&players, &league);
+
+        // No position should be Critical with 15 players per position
+        let critical_count = scarcity
+            .iter()
+            .filter(|e| e.urgency == ScarcityUrgency::Critical)
+            .count();
+        assert_eq!(
+            critical_count, 0,
+            "No positions should be Critical at draft start with a full pool, \
+             but {} are: {:?}",
+            critical_count,
+            scarcity
+                .iter()
+                .filter(|e| e.urgency == ScarcityUrgency::Critical)
+                .map(|e| e.position.display_str())
+                .collect::<Vec<_>>()
+        );
+
+        // All positions should show Low urgency (8+ players above replacement)
+        for entry in &scarcity {
+            assert_eq!(
+                entry.urgency,
+                ScarcityUrgency::Low,
+                "Position {} should be Low urgency with {} players above replacement, got {:?}",
+                entry.position.display_str(),
+                entry.players_above_replacement,
+                entry.urgency
+            );
+        }
+    }
+
+    /// Integration test: players with empty positions but best_position set
+    /// (as produced by the VOR pipeline backfill) still get counted by
+    /// compute_scarcity via the best_position fallback.
+    #[test]
+    fn scarcity_uses_best_position_fallback() {
+        let league = test_league_config();
+
+        // Create players with empty positions but best_position set,
+        // simulating what VOR backfill produces for players without ESPN data.
+        let mut players = Vec::new();
+        for i in 0..10 {
+            let mut p = make_hitter(
+                &format!("SS_{}", i + 1),
+                10.0 - i as f64,
+                vec![], // empty positions
+            );
+            p.best_position = Some(Position::ShortStop);
+            players.push(p);
+        }
+
+        let scarcity = compute_scarcity(&players, &league);
+        let ss_entry = scarcity_for_position(&scarcity, Position::ShortStop).unwrap();
+
+        assert_eq!(ss_entry.players_above_replacement, 10);
+        assert_eq!(ss_entry.urgency, ScarcityUrgency::Low);
     }
 }

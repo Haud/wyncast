@@ -218,7 +218,16 @@ pub fn compute_vor(
         let mut best_vor = f64::NEG_INFINITY;
         let mut best_pos: Option<Position> = None;
 
-        for &pos in &player.positions {
+        // If the player has explicit position data, use it. Otherwise, try
+        // all hitter positions so that players without ESPN position overlay
+        // still get a meaningful positional assignment and VOR.
+        let candidate_positions: &[Position] = if player.positions.is_empty() {
+            HITTER_POSITION_SLOTS
+        } else {
+            &player.positions
+        };
+
+        for &pos in candidate_positions {
             // Skip non-starter positions (Bench, IL, DH, Utility as a "position").
             // Only consider positions that have a replacement level entry.
             if let Some(&repl) = replacement_levels.get(&pos) {
@@ -260,6 +269,21 @@ pub fn apply_vor(players: &mut Vec<PlayerValuation>, league: &LeagueConfig) {
 
     for player in players.iter_mut() {
         compute_vor(player, &replacement_levels);
+    }
+
+    // Backfill positions for players that lack ESPN position data.
+    // After VOR computation, best_position is set for every player.
+    // For players with empty positions (no ESPN overlay yet), populate
+    // positions from best_position so downstream consumers like
+    // compute_scarcity() can find them.
+    for player in players.iter_mut() {
+        if player.positions.is_empty() {
+            if let Some(pos) = player.best_position {
+                if !pos.is_meta_slot() {
+                    player.positions = vec![pos];
+                }
+            }
+        }
     }
 
     // Sort descending by VOR.
@@ -796,17 +820,38 @@ mod tests {
     }
 
     #[test]
-    fn hitter_no_positions_falls_back_to_util() {
+    fn hitter_no_positions_tries_all_hitter_positions() {
         let mut replacement_levels = HashMap::new();
         replacement_levels.insert(Position::Utility, 3.0);
         replacement_levels.insert(Position::Catcher, 5.0);
 
-        // Player with empty positions list.
+        // Player with empty positions list — should try all hitter
+        // positions and pick the one with the highest VOR.
         let mut player = make_hitter_valuation("DH Only", 7.0, vec![]);
 
         compute_vor(&mut player, &replacement_levels);
 
-        // Should fall back to UTIL replacement.
+        // Only Catcher has a replacement level in hitter positions,
+        // so VOR = 7.0 - 5.0 = 2.0 at Catcher.
+        assert_eq!(player.best_position, Some(Position::Catcher));
+        assert!(
+            approx_eq(player.vor, 2.0, 1e-10),
+            "VOR should be 7.0 - 5.0 = 2.0, got {}",
+            player.vor
+        );
+    }
+
+    #[test]
+    fn hitter_no_positions_no_replacement_levels_falls_back_to_util() {
+        let mut replacement_levels = HashMap::new();
+        replacement_levels.insert(Position::Utility, 3.0);
+        // No hitter position replacement levels.
+
+        let mut player = make_hitter_valuation("DH Only", 7.0, vec![]);
+
+        compute_vor(&mut player, &replacement_levels);
+
+        // No hitter positions have replacement levels, so fall back to UTIL.
         assert_eq!(player.best_position, Some(Position::Utility));
         assert!(
             approx_eq(player.vor, 4.0, 1e-10),
