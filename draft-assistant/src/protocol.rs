@@ -129,18 +129,25 @@ pub enum InternalEvent {
 // ---------------------------------------------------------------------------
 
 /// Events produced by the LLM streaming client.
+///
+/// Each event carries a `generation` counter that identifies which LLM task
+/// produced it. The app orchestrator increments the generation each time it
+/// spawns a new LLM task, and discards events whose generation doesn't match
+/// the current one. This prevents stale tokens from a cancelled task being
+/// attributed to a newer analysis.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LlmEvent {
     /// A single token of streamed output.
-    Token(String),
+    Token { text: String, generation: u64 },
     /// The LLM response is complete.
     Complete {
         full_text: String,
         input_tokens: u32,
         output_tokens: u32,
+        generation: u64,
     },
     /// An error occurred during LLM interaction.
-    Error(String),
+    Error { message: String, generation: u64 },
 }
 
 /// Commands sent from the TUI to the app orchestrator.
@@ -170,10 +177,14 @@ pub enum UiUpdate {
     AnalysisToken(String),
     /// Analysis streaming is complete.
     AnalysisComplete,
+    /// An error occurred during LLM analysis.
+    AnalysisError(String),
     /// A new token for the nomination plan panel.
     PlanToken(String),
     /// Nomination plan streaming is complete.
     PlanComplete,
+    /// An error occurred during LLM planning.
+    PlanError(String),
     /// Extension connection status changed.
     ConnectionStatus(ConnectionStatus),
     /// A new nomination is active.

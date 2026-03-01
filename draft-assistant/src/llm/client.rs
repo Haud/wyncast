@@ -44,6 +44,9 @@ impl ClaudeClient {
     /// Send a message to the Claude API and stream the response as `LlmEvent`s
     /// over `tx`.
     ///
+    /// The `generation` counter is threaded through every emitted event so that
+    /// the receiving side can discard stale events from cancelled tasks.
+    ///
     /// The method returns when the stream is complete, an error occurs, or the
     /// receiver is dropped.
     pub async fn stream_message(
@@ -52,10 +55,14 @@ impl ClaudeClient {
         user_content: &str,
         max_tokens: u32,
         tx: mpsc::Sender<LlmEvent>,
+        generation: u64,
     ) -> anyhow::Result<()> {
         if self.api_key.is_empty() {
             let _ = tx
-                .send(LlmEvent::Error("API key not configured".to_string()))
+                .send(LlmEvent::Error {
+                    message: "API key not configured".to_string(),
+                    generation,
+                })
                 .await;
             return Ok(());
         }
@@ -80,7 +87,10 @@ impl ClaudeClient {
             Ok(es) => es,
             Err(e) => {
                 let _ = tx
-                    .send(LlmEvent::Error(format!("Failed to create event source: {e}")))
+                    .send(LlmEvent::Error {
+                        message: format!("Failed to create event source: {e}"),
+                        generation,
+                    })
                     .await;
                 return Ok(());
             }
@@ -110,7 +120,14 @@ impl ClaudeClient {
                         "content_block_delta" => {
                             if let Some(text) = parse_delta_text(data) {
                                 full_text.push_str(&text);
-                                if tx.send(LlmEvent::Token(text)).await.is_err() {
+                                if tx
+                                    .send(LlmEvent::Token {
+                                        text,
+                                        generation,
+                                    })
+                                    .await
+                                    .is_err()
+                                {
                                     // Receiver dropped — abort stream.
                                     es.close();
                                     return Ok(());
@@ -131,6 +148,7 @@ impl ClaudeClient {
                                     full_text,
                                     input_tokens,
                                     output_tokens,
+                                    generation,
                                 })
                                 .await;
                             es.close();
@@ -145,7 +163,12 @@ impl ClaudeClient {
                 Err(err) => {
                     warn!(?err, "SSE stream error");
                     let error_message = extract_error_message(&err);
-                    let _ = tx.send(LlmEvent::Error(error_message)).await;
+                    let _ = tx
+                        .send(LlmEvent::Error {
+                            message: error_message,
+                            generation,
+                        })
+                        .await;
                     es.close();
                     return Ok(());
                 }
@@ -155,9 +178,10 @@ impl ClaudeClient {
         // Stream ended without message_stop (shouldn't normally happen).
         if full_text.is_empty() {
             let _ = tx
-                .send(LlmEvent::Error(
-                    "Stream ended unexpectedly without any content".to_string(),
-                ))
+                .send(LlmEvent::Error {
+                    message: "Stream ended unexpectedly without any content".to_string(),
+                    generation,
+                })
                 .await;
         } else {
             let _ = tx
@@ -165,6 +189,7 @@ impl ClaudeClient {
                     full_text,
                     input_tokens,
                     output_tokens,
+                    generation,
                 })
                 .await;
         }
@@ -208,16 +233,20 @@ impl LlmClient {
         user_content: &str,
         max_tokens: u32,
         tx: mpsc::Sender<LlmEvent>,
+        generation: u64,
     ) -> anyhow::Result<()> {
         match self {
             LlmClient::Active(client) => {
                 client
-                    .stream_message(system, user_content, max_tokens, tx)
+                    .stream_message(system, user_content, max_tokens, tx, generation)
                     .await
             }
             LlmClient::Disabled => {
                 let _ = tx
-                    .send(LlmEvent::Error("LLM not configured".to_string()))
+                    .send(LlmEvent::Error {
+                        message: "LLM not configured".to_string(),
+                        generation,
+                    })
                     .await;
                 Ok(())
             }
@@ -405,12 +434,18 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
 
         client
-            .stream_message("system", "user", 100, tx)
+            .stream_message("system", "user", 100, tx, 1)
             .await
             .expect("should not fail");
 
         let event = rx.recv().await.expect("should receive an event");
-        assert_eq!(event, LlmEvent::Error("LLM not configured".to_string()));
+        assert_eq!(
+            event,
+            LlmEvent::Error {
+                message: "LLM not configured".to_string(),
+                generation: 1,
+            }
+        );
 
         // No more events.
         assert!(rx.try_recv().is_err());
@@ -424,14 +459,17 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
 
         client
-            .stream_message("system", "user", 100, tx)
+            .stream_message("system", "user", 100, tx, 42)
             .await
             .expect("should not fail");
 
         let event = rx.recv().await.expect("should receive an event");
         assert_eq!(
             event,
-            LlmEvent::Error("API key not configured".to_string())
+            LlmEvent::Error {
+                message: "API key not configured".to_string(),
+                generation: 42,
+            }
         );
     }
 
@@ -466,6 +504,7 @@ mod tests {
         // We feed known SSE event data through the parse helpers and verify
         // the LlmEvent sequence that would be produced.
         let (tx, mut rx) = mpsc::channel(32);
+        let gen = 7u64;
 
         // Simulate the event processing in a task.
         let tx2 = tx.clone();
@@ -492,7 +531,12 @@ mod tests {
                 "delta": { "type": "text_delta", "text": "Hello" }
             }"#;
             let text1 = parse_delta_text(delta1).unwrap();
-            let _ = tx2.send(LlmEvent::Token(text1.clone())).await;
+            let _ = tx2
+                .send(LlmEvent::Token {
+                    text: text1.clone(),
+                    generation: gen,
+                })
+                .await;
 
             // 4. content_block_delta — " world"
             let delta2 = r#"{
@@ -501,7 +545,12 @@ mod tests {
                 "delta": { "type": "text_delta", "text": " world" }
             }"#;
             let text2 = parse_delta_text(delta2).unwrap();
-            let _ = tx2.send(LlmEvent::Token(text2.clone())).await;
+            let _ = tx2
+                .send(LlmEvent::Token {
+                    text: text2.clone(),
+                    generation: gen,
+                })
+                .await;
 
             // 5. content_block_stop (ignored)
             // 6. message_delta
@@ -519,6 +568,7 @@ mod tests {
                     full_text,
                     input_tokens,
                     output_tokens,
+                    generation: gen,
                 })
                 .await;
         });
@@ -527,10 +577,22 @@ mod tests {
 
         // Verify sequence of events.
         let e1 = rx.recv().await.unwrap();
-        assert_eq!(e1, LlmEvent::Token("Hello".to_string()));
+        assert_eq!(
+            e1,
+            LlmEvent::Token {
+                text: "Hello".to_string(),
+                generation: gen,
+            }
+        );
 
         let e2 = rx.recv().await.unwrap();
-        assert_eq!(e2, LlmEvent::Token(" world".to_string()));
+        assert_eq!(
+            e2,
+            LlmEvent::Token {
+                text: " world".to_string(),
+                generation: gen,
+            }
+        );
 
         let e3 = rx.recv().await.unwrap();
         assert_eq!(
@@ -539,6 +601,7 @@ mod tests {
                 full_text: "Hello world".to_string(),
                 input_tokens: 25,
                 output_tokens: 10,
+                generation: gen,
             }
         );
 
@@ -638,6 +701,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(32);
 
         // Process SSE events like stream_message does.
+        let gen = 1u64;
         let processor = tokio::spawn(async move {
             let mut full_text = String::new();
             let mut input_tokens: u32 = 0;
@@ -654,7 +718,12 @@ mod tests {
                         "content_block_delta" => {
                             if let Some(text) = parse_delta_text(&msg.data) {
                                 full_text.push_str(&text);
-                                let _ = tx.send(LlmEvent::Token(text)).await;
+                                let _ = tx
+                                    .send(LlmEvent::Token {
+                                        text,
+                                        generation: gen,
+                                    })
+                                    .await;
                             }
                         }
                         "message_delta" => {
@@ -667,6 +736,7 @@ mod tests {
                                     full_text: full_text.clone(),
                                     input_tokens,
                                     output_tokens,
+                                    generation: gen,
                                 })
                                 .await;
                             es.close();
@@ -676,7 +746,10 @@ mod tests {
                     },
                     Err(err) => {
                         let _ = tx
-                            .send(LlmEvent::Error(format!("Stream error: {err}")))
+                            .send(LlmEvent::Error {
+                                message: format!("Stream error: {err}"),
+                                generation: gen,
+                            })
                             .await;
                         es.close();
                         return;
@@ -697,14 +770,27 @@ mod tests {
 
         // Verify events.
         assert_eq!(events.len(), 3, "expected 3 events: 2 tokens + 1 complete");
-        assert_eq!(events[0], LlmEvent::Token("Draft".to_string()));
-        assert_eq!(events[1], LlmEvent::Token(" analysis".to_string()));
+        assert_eq!(
+            events[0],
+            LlmEvent::Token {
+                text: "Draft".to_string(),
+                generation: gen,
+            }
+        );
+        assert_eq!(
+            events[1],
+            LlmEvent::Token {
+                text: " analysis".to_string(),
+                generation: gen,
+            }
+        );
         assert_eq!(
             events[2],
             LlmEvent::Complete {
                 full_text: "Draft analysis".to_string(),
                 input_tokens: 15,
                 output_tokens: 7,
+                generation: gen,
             }
         );
     }
@@ -747,13 +833,19 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(8);
 
+        let gen = 5u64;
         let processor = tokio::spawn(async move {
             while let Some(event) = es.next().await {
                 match event {
                     Ok(_) => {}
                     Err(err) => {
                         let error_message = extract_error_message(&err);
-                        let _ = tx.send(LlmEvent::Error(error_message)).await;
+                        let _ = tx
+                            .send(LlmEvent::Error {
+                                message: error_message,
+                                generation: gen,
+                            })
+                            .await;
                         es.close();
                         return;
                     }
@@ -763,7 +855,8 @@ mod tests {
 
         let event = rx.recv().await.expect("should receive error event");
         match event {
-            LlmEvent::Error(msg) => {
+            LlmEvent::Error { message: msg, generation } => {
+                assert_eq!(generation, gen);
                 assert!(
                     msg.contains("401") || msg.contains("status") || msg.contains("error"),
                     "Error message should mention status code or error: {msg}"
