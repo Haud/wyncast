@@ -145,19 +145,37 @@ struct RawRazzballPitcher {
 /// Parse a POS string like "2B/SS", "OF", "C" into a Vec<Position>.
 ///
 /// - Splits on '/' to support multi-position strings.
-/// - "OF" is expanded to CenterField (generic outfield).
+/// - "OF" is expanded to `[LF, CF, RF]` (all three outfield positions),
+///   consistent with how ESPN's OF slot expands in `positions_from_espn_slot`.
+/// - `DesignatedHitter` is filtered out because this league has no DH roster
+///   slot (only UTIL). DH-only players end up with empty positions and fall
+///   into the VOR "try all positions" path, which is more accurate.
 /// - Unrecognized tokens are silently skipped.
+/// - Duplicates are removed while preserving insertion order.
 /// - Returns an empty Vec if the input is empty.
 fn parse_hitter_positions(pos_str: &str) -> Vec<Position> {
     if pos_str.trim().is_empty() {
         return Vec::new();
     }
-    let mut positions: Vec<Position> = pos_str
-        .split('/')
-        .filter_map(|s| Position::from_str_pos(s.trim()))
-        .filter(|p| !p.is_meta_slot())
-        .collect();
-    positions.dedup();
+    let mut positions: Vec<Position> = Vec::new();
+    for token in pos_str.split('/') {
+        let trimmed = token.trim().to_uppercase();
+        if trimmed == "OF" {
+            // Expand "OF" to all three outfield positions, matching ESPN behavior.
+            for &of_pos in &[Position::LeftField, Position::CenterField, Position::RightField] {
+                if !positions.contains(&of_pos) {
+                    positions.push(of_pos);
+                }
+            }
+        } else if let Some(pos) = Position::from_str_pos(&trimmed) {
+            if !pos.is_meta_slot()
+                && pos != Position::DesignatedHitter
+                && !positions.contains(&pos)
+            {
+                positions.push(pos);
+            }
+        }
+    }
     positions
 }
 
@@ -175,7 +193,7 @@ fn all_finite(values: &[f64]) -> bool {
 // Reader-based loaders (private, enable testing without temp files)
 // ---------------------------------------------------------------------------
 
-/// Load hitter projections from a reader. Public for testing.
+/// Load hitter projections from a reader.
 pub fn load_hitter_projections_from_reader<R: Read>(rdr: R) -> Result<Vec<HitterProjection>, csv::Error> {
     let mut reader = csv::ReaderBuilder::new().flexible(true).from_reader(rdr);
     let mut hitters = Vec::new();
@@ -666,23 +684,33 @@ Aaron Judge,NYY,700,600,180,50,120,130,90,5,0.300";
     }
 
     #[test]
-    fn hitter_csv_of_position_maps_to_center_field() {
+    fn hitter_csv_of_position_expands_to_all_outfield() {
         let csv_data = "\
 Name,Team,POS,PA,AB,H,HR,R,RBI,BB,SB,AVG
 Juan Soto,NYM,OF,700,580,165,35,115,110,110,3,0.284";
 
         let hitters = load_hitter_projections_from_reader(csv_data.as_bytes()).unwrap();
-        assert_eq!(hitters[0].positions, vec![Position::CenterField]);
+        assert_eq!(
+            hitters[0].positions,
+            vec![Position::LeftField, Position::CenterField, Position::RightField]
+        );
     }
 
     #[test]
-    fn hitter_csv_dh_position() {
+    fn hitter_csv_dh_only_produces_empty_positions() {
+        // DH is filtered out because this league has no DH roster slot.
+        // DH-only players get empty positions, falling into the VOR
+        // "try all positions" path for more accurate valuation.
         let csv_data = "\
 Name,Team,POS,PA,AB,H,HR,R,RBI,BB,SB,AVG
 Shohei Ohtani,LAD,DH,660,580,170,45,110,100,70,15,0.293";
 
         let hitters = load_hitter_projections_from_reader(csv_data.as_bytes()).unwrap();
-        assert_eq!(hitters[0].positions, vec![Position::DesignatedHitter]);
+        assert!(
+            hitters[0].positions.is_empty(),
+            "DH-only player should have empty positions, got {:?}",
+            hitters[0].positions
+        );
     }
 
     #[test]
@@ -729,6 +757,46 @@ Shohei Ohtani,LAD,DH,660,580,170,45,110,100,70,15,0.293";
             parse_hitter_positions("SS/XX/3B"),
             vec![Position::ShortStop, Position::ThirdBase]
         );
+    }
+
+    #[test]
+    fn parse_hitter_positions_dedup_non_adjacent() {
+        // dedup must handle non-adjacent duplicates, not just consecutive ones
+        assert_eq!(
+            parse_hitter_positions("SS/3B/SS"),
+            vec![Position::ShortStop, Position::ThirdBase]
+        );
+    }
+
+    #[test]
+    fn parse_hitter_positions_of_expands_to_three() {
+        let positions = parse_hitter_positions("OF");
+        assert_eq!(positions.len(), 3);
+        assert_eq!(
+            positions,
+            vec![Position::LeftField, Position::CenterField, Position::RightField]
+        );
+    }
+
+    #[test]
+    fn parse_hitter_positions_of_with_explicit_outfield_no_dupes() {
+        // "RF/OF" should expand OF but not duplicate RF
+        let positions = parse_hitter_positions("RF/OF");
+        assert_eq!(
+            positions,
+            vec![Position::RightField, Position::LeftField, Position::CenterField]
+        );
+    }
+
+    #[test]
+    fn parse_hitter_positions_dh_filtered_out() {
+        // DH is filtered; a multi-position player with DH keeps other positions
+        assert_eq!(
+            parse_hitter_positions("DH/1B"),
+            vec![Position::FirstBase]
+        );
+        // DH-only produces empty vec
+        assert!(parse_hitter_positions("DH").is_empty());
     }
 
 }

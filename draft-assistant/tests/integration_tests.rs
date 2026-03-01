@@ -2999,9 +2999,16 @@ Shohei Ohtani,LAD,DH,660,580,170,45,110,100,70,15,0.293";
         vec![Position::SecondBase, Position::ShortStop]
     );
 
-    // Juan Soto = OF (generic, maps to CF)
-    assert_eq!(hitters[2].positions, vec![Position::CenterField]);
+    // Juan Soto = OF (expands to all three outfield positions)
+    assert_eq!(
+        hitters[2].positions,
+        vec![Position::LeftField, Position::CenterField, Position::RightField]
+    );
 
-    // Shohei Ohtani = DH
-    assert_eq!(hitters[3].positions, vec![Position::DesignatedHitter]);
+    // Shohei Ohtani = DH (filtered out, no DH roster slot in this league)
+    assert!(
+        hitters[3].positions.is_empty(),
+        "DH-only player should have empty positions, got {:?}",
+        hitters[3].positions
+    );
 }
