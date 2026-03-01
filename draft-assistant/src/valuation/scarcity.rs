@@ -641,4 +641,192 @@ mod tests {
         assert_eq!(ss_entry.players_above_replacement, 10);
         assert_eq!(ss_entry.urgency, ScarcityUrgency::Low);
     }
+
+    // =======================================================================
+    // Integration tests: hitter position scarcity correctness
+    // =======================================================================
+
+    /// Verify that scarcity is computed correctly for every individual hitter
+    /// position when each position has a distinct number of players.
+    #[test]
+    fn scarcity_correct_for_each_hitter_position() {
+        let league = test_league_config();
+
+        let hitter_positions = [
+            (Position::Catcher, 2),      // Critical
+            (Position::FirstBase, 4),     // High
+            (Position::SecondBase, 6),    // Medium
+            (Position::ThirdBase, 8),     // Low
+            (Position::ShortStop, 3),     // High
+            (Position::LeftField, 5),     // Medium
+            (Position::CenterField, 10),  // Low
+            (Position::RightField, 1),    // Critical
+        ];
+
+        let mut players = Vec::new();
+        for &(pos, count) in &hitter_positions {
+            for i in 0..count {
+                players.push(make_hitter(
+                    &format!("{}_{}", pos.display_str(), i + 1),
+                    (count as f64) - i as f64,
+                    vec![pos],
+                ));
+            }
+        }
+
+        let scarcity = compute_scarcity(&players, &league);
+
+        // Verify each position has the right count and urgency.
+        for &(pos, count) in &hitter_positions {
+            let entry = scarcity_for_position(&scarcity, pos)
+                .unwrap_or_else(|| panic!("Missing scarcity entry for {}", pos.display_str()));
+
+            assert_eq!(
+                entry.players_above_replacement, count,
+                "Position {} should have {} players above replacement, got {}",
+                pos.display_str(),
+                count,
+                entry.players_above_replacement,
+            );
+
+            let expected_urgency = ScarcityUrgency::from_count(count);
+            assert_eq!(
+                entry.urgency, expected_urgency,
+                "Position {} with {} players should have {:?} urgency, got {:?}",
+                pos.display_str(),
+                count,
+                expected_urgency,
+                entry.urgency,
+            );
+        }
+    }
+
+    /// As players are drafted (removed from the pool), scarcity should
+    /// increase for the affected position.
+    #[test]
+    fn scarcity_increases_as_players_drafted() {
+        let league = test_league_config();
+
+        // Start with 10 shortstops (Low urgency).
+        let mut players: Vec<PlayerValuation> = (0..10)
+            .map(|i| {
+                make_hitter(
+                    &format!("SS_{}", i + 1),
+                    10.0 - i as f64,
+                    vec![Position::ShortStop],
+                )
+            })
+            .collect();
+
+        // Verify starting urgency.
+        let scarcity = compute_scarcity(&players, &league);
+        let ss = scarcity_for_position(&scarcity, Position::ShortStop).unwrap();
+        assert_eq!(ss.urgency, ScarcityUrgency::Low); // 10 players
+        assert_eq!(ss.players_above_replacement, 10);
+
+        // Draft 3 players (remove the top 3).
+        players.drain(0..3);
+        let scarcity = compute_scarcity(&players, &league);
+        let ss = scarcity_for_position(&scarcity, Position::ShortStop).unwrap();
+        assert_eq!(ss.urgency, ScarcityUrgency::Medium); // 7 players
+        assert_eq!(ss.players_above_replacement, 7);
+
+        // Draft 2 more.
+        players.drain(0..2);
+        let scarcity = compute_scarcity(&players, &league);
+        let ss = scarcity_for_position(&scarcity, Position::ShortStop).unwrap();
+        assert_eq!(ss.urgency, ScarcityUrgency::Medium); // 5 players
+        assert_eq!(ss.players_above_replacement, 5);
+
+        // Draft 2 more.
+        players.drain(0..2);
+        let scarcity = compute_scarcity(&players, &league);
+        let ss = scarcity_for_position(&scarcity, Position::ShortStop).unwrap();
+        assert_eq!(ss.urgency, ScarcityUrgency::High); // 3 players
+        assert_eq!(ss.players_above_replacement, 3);
+
+        // Draft 1 more.
+        players.drain(0..1);
+        let scarcity = compute_scarcity(&players, &league);
+        let ss = scarcity_for_position(&scarcity, Position::ShortStop).unwrap();
+        assert_eq!(ss.urgency, ScarcityUrgency::Critical); // 2 players
+        assert_eq!(ss.players_above_replacement, 2);
+
+        // Draft all remaining.
+        players.clear();
+        let scarcity = compute_scarcity(&players, &league);
+        let ss = scarcity_for_position(&scarcity, Position::ShortStop).unwrap();
+        assert_eq!(ss.urgency, ScarcityUrgency::Critical); // 0 players
+        assert_eq!(ss.players_above_replacement, 0);
+    }
+
+    /// Urgency transitions follow the correct progression:
+    /// Low (8+) -> Medium (5-7) -> High (3-4) -> Critical (0-2)
+    #[test]
+    fn urgency_transitions_correctly() {
+        let league = test_league_config();
+
+        // Walk through each count from 12 down to 0 and verify urgency.
+        for count in (0..=12).rev() {
+            let players: Vec<PlayerValuation> = (0..count)
+                .map(|i| {
+                    make_hitter(
+                        &format!("C_{}", i + 1),
+                        (count as f64) - i as f64,
+                        vec![Position::Catcher],
+                    )
+                })
+                .collect();
+
+            let scarcity = compute_scarcity(&players, &league);
+            let c = scarcity_for_position(&scarcity, Position::Catcher).unwrap();
+
+            let expected = ScarcityUrgency::from_count(count);
+            assert_eq!(
+                c.urgency, expected,
+                "With {} catchers, expected {:?} but got {:?}",
+                count, expected, c.urgency,
+            );
+        }
+    }
+
+    /// DH position is not tracked by scarcity (not in TRACKED_POSITIONS),
+    /// verifying that only real roster positions are included.
+    #[test]
+    fn dh_position_not_tracked() {
+        let league = test_league_config();
+
+        let players = vec![
+            make_hitter("DH_1", 5.0, vec![Position::DesignatedHitter]),
+        ];
+
+        let scarcity = compute_scarcity(&players, &league);
+        assert!(
+            scarcity_for_position(&scarcity, Position::DesignatedHitter).is_none(),
+            "DH should not have a scarcity entry"
+        );
+    }
+
+    /// Multi-position players are counted at all their eligible positions.
+    #[test]
+    fn multi_position_player_counted_at_all_positions() {
+        let league = test_league_config();
+
+        // A 2B/SS player should show up in both 2B and SS scarcity.
+        let players = vec![
+            make_hitter("Multi", 5.0, vec![Position::SecondBase, Position::ShortStop]),
+        ];
+
+        let scarcity = compute_scarcity(&players, &league);
+
+        let sb_entry = scarcity_for_position(&scarcity, Position::SecondBase).unwrap();
+        assert_eq!(sb_entry.players_above_replacement, 1);
+
+        let ss_entry = scarcity_for_position(&scarcity, Position::ShortStop).unwrap();
+        assert_eq!(ss_entry.players_above_replacement, 1);
+
+        // Catcher should still be 0.
+        let c_entry = scarcity_for_position(&scarcity, Position::Catcher).unwrap();
+        assert_eq!(c_entry.players_above_replacement, 0);
+    }
 }

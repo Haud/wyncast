@@ -641,4 +641,222 @@ mod tests {
             assert!(p.total_zscore.is_finite());
         }
     }
+
+    /// Integration test: after recalculate_all, scarcity should reflect the
+    /// remaining player pool with correct per-position distribution.
+    /// This verifies the fix for the bug where empty `positions` on hitters
+    /// caused all hitters to be assigned to Catcher, leaving other positions
+    /// at Critical urgency even with a full draft pool.
+    #[test]
+    fn scarcity_correct_after_recalculate_all() {
+        use crate::valuation::scarcity::{compute_scarcity, scarcity_for_position};
+
+        let league = test_league_config();
+        let strategy = test_strategy_config();
+        let draft_state = create_test_draft_state();
+
+        // Build a pool with hitters at distinct positions and pitchers.
+        let mut players = Vec::new();
+
+        let position_labels = [
+            ("C", Position::Catcher),
+            ("1B", Position::FirstBase),
+            ("2B", Position::SecondBase),
+            ("3B", Position::ThirdBase),
+            ("SS", Position::ShortStop),
+            ("LF", Position::LeftField),
+            ("CF", Position::CenterField),
+            ("RF", Position::RightField),
+        ];
+
+        for (label, pos) in &position_labels {
+            for i in 0..8 {
+                let r = 90 - i * 5;
+                let hr = 35 - i * 3;
+                let rbi = 95 - i * 7;
+                let bb = 60 - i * 4;
+                let sb = 15 - i;
+                let ab = 550 - i * 10;
+                let avg = 0.290 - (i as f64) * 0.010;
+                players.push(make_hitter(
+                    &format!("{}_{}", label, i + 1),
+                    r, hr, rbi, bb, sb, ab, avg,
+                    vec![*pos],
+                ));
+            }
+        }
+
+        // Add pitchers.
+        for i in 0..6 {
+            players.push(make_pitcher(
+                &format!("SP_{}", i + 1),
+                220 - i * 20, 16 - i, 0, 0,
+                190.0 - (i as f64) * 10.0, 3.0 + (i as f64) * 0.2,
+                1.05 + (i as f64) * 0.05,
+                PitcherType::SP,
+            ));
+        }
+        for i in 0..4 {
+            players.push(make_pitcher(
+                &format!("RP_{}", i + 1),
+                80 - i * 10, 2, 35 - i * 5, 10 + i * 3,
+                65.0 - (i as f64) * 5.0, 2.5 + (i as f64) * 0.3,
+                0.95 + (i as f64) * 0.05,
+                PitcherType::RP,
+            ));
+        }
+
+        // Run the full recalculation pipeline.
+        recalculate_all(&mut players, &league, &strategy, &draft_state);
+
+        // Every player should have best_position set.
+        for p in &players {
+            assert!(
+                p.best_position.is_some(),
+                "Player {} should have best_position after recalculate_all",
+                p.name,
+            );
+        }
+
+        // Compute scarcity from the recalculated pool.
+        let scarcity = compute_scarcity(&players, &league);
+
+        // The key assertion: players should be distributed across positions,
+        // not all funneled into a single position. Count positions with at
+        // least one player above replacement.
+        let positions_with_players = position_labels
+            .iter()
+            .filter(|(_, pos)| {
+                scarcity_for_position(&scarcity, *pos)
+                    .map_or(false, |e| e.players_above_replacement > 0)
+            })
+            .count();
+
+        assert!(
+            positions_with_players >= 6,
+            "At least 6 of 8 hitter positions should have players above replacement, \
+             but only {} do. Scarcity: {:?}",
+            positions_with_players,
+            position_labels
+                .iter()
+                .map(|(label, pos)| {
+                    let e = scarcity_for_position(&scarcity, *pos).unwrap();
+                    format!("{}={}", label, e.players_above_replacement)
+                })
+                .collect::<Vec<_>>()
+        );
+
+        // Verify no single position has ALL the players (the original bug).
+        for (label, pos) in &position_labels {
+            let entry = scarcity_for_position(&scarcity, *pos).unwrap();
+            assert!(
+                entry.players_above_replacement <= 20,
+                "Position {} has {} players above replacement, which is suspiciously high \
+                 and suggests all hitters were funneled into one position",
+                label,
+                entry.players_above_replacement,
+            );
+        }
+
+        // Now simulate drafting: remove some Catchers and recalculate.
+        let initial_c = scarcity_for_position(&scarcity, Position::Catcher)
+            .unwrap()
+            .players_above_replacement;
+
+        players.retain(|p| {
+            !(p.name.starts_with("C_") && p.name.ends_with("5")
+                || p.name.starts_with("C_") && p.name.ends_with("6")
+                || p.name.starts_with("C_") && p.name.ends_with("7")
+                || p.name.starts_with("C_") && p.name.ends_with("8"))
+        });
+
+        recalculate_all(&mut players, &league, &strategy, &draft_state);
+        let scarcity = compute_scarcity(&players, &league);
+
+        let final_c = scarcity_for_position(&scarcity, Position::Catcher)
+            .unwrap()
+            .players_above_replacement;
+
+        // After removing catchers, the count should not have increased.
+        assert!(
+            final_c <= initial_c,
+            "Catcher count should not increase after removing catchers: {} -> {}",
+            initial_c,
+            final_c,
+        );
+    }
+
+    /// Regression test: when hitters have empty positions (the initial state
+    /// from projection loading before ESPN overlay), the VOR pipeline should
+    /// still assign diverse best_positions across all hitter slots, not
+    /// funnel everyone into a single position.
+    #[test]
+    fn vor_assigns_diverse_positions_with_empty_positions() {
+        let league = test_league_config();
+        let strategy = test_strategy_config();
+        let draft_state = create_test_draft_state();
+
+        // Create hitters with EMPTY positions to simulate initial projection load.
+        let mut players = Vec::new();
+        for i in 0..20 {
+            let r = 100 - i * 3;
+            let hr = 40 - i * 2;
+            let rbi = 100 - i * 4;
+            let bb = 70 - i * 2;
+            let sb = 20 - i;
+            let ab = 560 - i * 5;
+            let avg = 0.300 - (i as f64) * 0.005;
+            players.push(make_hitter(
+                &format!("Hitter_{}", i + 1),
+                r, hr, rbi, bb, sb, ab, avg,
+                vec![],  // EMPTY positions
+            ));
+        }
+
+        // Add pitchers to complete the pool.
+        for i in 0..10 {
+            players.push(make_pitcher(
+                &format!("SP_{}", i + 1),
+                200 - i * 10, 15, 0, 0,
+                180.0 - (i as f64) * 5.0, 3.0 + (i as f64) * 0.1,
+                1.05 + (i as f64) * 0.03,
+                PitcherType::SP,
+            ));
+        }
+
+        recalculate_all(&mut players, &league, &strategy, &draft_state);
+
+        // After VOR, all hitters should have non-empty positions (backfilled).
+        let hitters: Vec<&PlayerValuation> = players.iter()
+            .filter(|p| !p.is_pitcher)
+            .collect();
+
+        for h in &hitters {
+            assert!(
+                !h.positions.is_empty(),
+                "Hitter {} should have positions backfilled after VOR, but positions is empty",
+                h.name,
+            );
+        }
+
+        // The key regression check: positions should NOT all be the same.
+        // With diverse replacement levels, different hitter positions should
+        // be assigned to different players.
+        use std::collections::HashSet;
+        let assigned_positions: HashSet<Position> = hitters
+            .iter()
+            .filter_map(|h| h.best_position)
+            .collect();
+
+        // With 20 hitters and a 2-team league (2 slots per position),
+        // positions should be diverse. We expect at least some variety.
+        assert!(
+            assigned_positions.len() >= 4,
+            "Expected at least 4 distinct positions with 20 hitters, but only got {} {:?}. \
+             The VOR pipeline should distribute hitters across positions \
+             when they have empty initial positions.",
+            assigned_positions.len(),
+            assigned_positions,
+        );
+    }
 }

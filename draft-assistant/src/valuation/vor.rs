@@ -93,9 +93,15 @@ pub fn determine_replacement_levels(
         let total_starters = slots * num_teams;
 
         // Find all players eligible at this position.
+        // If a hitter has an empty positions list (no ESPN overlay data yet),
+        // treat them as eligible at all hitter positions — matching the
+        // fallback logic in compute_vor().
         let mut eligible: Vec<f64> = players
             .iter()
-            .filter(|p| !p.is_pitcher && p.positions.contains(&pos))
+            .filter(|p| {
+                !p.is_pitcher
+                    && (p.positions.contains(&pos) || p.positions.is_empty())
+            })
             .map(|p| p.total_zscore)
             .collect();
         eligible.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
@@ -263,7 +269,9 @@ pub fn compute_vor(
 ///
 /// 1. Compute positional replacement levels from the current player pool.
 /// 2. Compute VOR for each player (setting `vor` and `best_position`).
-/// 3. Sort players descending by VOR.
+/// 3. Backfill positions for players without ESPN overlay data, distributing
+///    them across hitter positions proportionally to league roster slots.
+/// 4. Sort players descending by VOR.
 pub fn apply_vor(players: &mut Vec<PlayerValuation>, league: &LeagueConfig) {
     let replacement_levels = determine_replacement_levels(players, league);
 
@@ -272,19 +280,18 @@ pub fn apply_vor(players: &mut Vec<PlayerValuation>, league: &LeagueConfig) {
     }
 
     // Backfill positions for players that lack ESPN position data.
-    // After VOR computation, best_position is set for every player.
-    // For players with empty positions (no ESPN overlay yet), populate
-    // positions from best_position so downstream consumers like
-    // compute_scarcity() can find them.
-    for player in players.iter_mut() {
-        if player.positions.is_empty() {
-            if let Some(pos) = player.best_position {
-                if !pos.is_meta_slot() {
-                    player.positions = vec![pos];
-                }
-            }
-        }
-    }
+    //
+    // When hitters have no position data (e.g., initial projection load
+    // before ESPN overlay), compute_vor assigns them all to the same
+    // position (whichever comes first with the highest VOR) because all
+    // position-specific replacement levels are identical. This breaks
+    // downstream scarcity calculations.
+    //
+    // Fix: distribute position-less hitters across positions proportionally
+    // to the league's roster configuration using a greedy slot-filling
+    // approach. Better hitters (higher VOR) are assigned first, filling
+    // positions in proportion to available roster slots.
+    backfill_positions(players, league);
 
     // Sort descending by VOR.
     players.sort_by(|a, b| {
@@ -292,6 +299,97 @@ pub fn apply_vor(players: &mut Vec<PlayerValuation>, league: &LeagueConfig) {
             .partial_cmp(&a.vor)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+}
+
+/// Distribute hitters without positions across hitter positions
+/// proportionally to league roster slot counts.
+///
+/// Hitters that already have positions (ESPN overlay) are left untouched.
+/// Position-less hitters are sorted by VOR (best first) and greedily
+/// assigned to the position with the most remaining capacity. This ensures
+/// downstream scarcity calculations see a realistic distribution of players
+/// across positions rather than all hitters funneled into one slot.
+fn backfill_positions(players: &mut Vec<PlayerValuation>, league: &LeagueConfig) {
+    // Determine how many total slots exist per hitter position across all teams.
+    let num_teams = league.num_teams;
+    let mut position_capacity: HashMap<Position, usize> = HashMap::new();
+    for (key, &count) in &league.roster {
+        if let Some(pos) = Position::from_str_pos(key) {
+            if HITTER_POSITION_SLOTS.contains(&pos) {
+                position_capacity.insert(pos, count * num_teams);
+            }
+        }
+    }
+
+    // Count how many players with known positions (ESPN data) already fill each slot.
+    // Use best_position (set by compute_vor) rather than the first position in the
+    // player's positions list, since best_position reflects where VOR determined
+    // the player provides the most value.
+    let mut position_filled: HashMap<Position, usize> = HashMap::new();
+    for player in players.iter() {
+        if player.is_pitcher || player.positions.is_empty() {
+            continue;
+        }
+        if let Some(pos) = player.best_position {
+            if HITTER_POSITION_SLOTS.contains(&pos) {
+                *position_filled.entry(pos).or_insert(0) += 1;
+            }
+        }
+    }
+
+    // Collect indices of position-less hitters, sorted by VOR descending.
+    let mut unpositioned: Vec<usize> = players
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| !p.is_pitcher && p.positions.is_empty())
+        .map(|(i, _)| i)
+        .collect();
+
+    if unpositioned.is_empty() {
+        return;
+    }
+
+    // Sort by VOR descending (best players first get position priority).
+    unpositioned.sort_by(|&a, &b| {
+        players[b]
+            .vor
+            .partial_cmp(&players[a].vor)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Track how many position-less hitters we've assigned to each position.
+    let mut assigned_counts: HashMap<Position, usize> = HashMap::new();
+
+    for &idx in &unpositioned {
+        // Find the position with the most remaining capacity.
+        // remaining = capacity - filled - assigned
+        // When all slots are filled, fall back to least-assigned position so
+        // that overflow players are distributed evenly rather than skipped.
+        let best_pos = HITTER_POSITION_SLOTS
+            .iter()
+            .copied()
+            .max_by(|a, b| {
+                let remaining_a = {
+                    let cap = position_capacity.get(a).copied().unwrap_or(0);
+                    let filled = position_filled.get(a).copied().unwrap_or(0);
+                    let assigned = assigned_counts.get(a).copied().unwrap_or(0);
+                    (cap as isize) - (filled as isize) - (assigned as isize)
+                };
+                let remaining_b = {
+                    let cap = position_capacity.get(b).copied().unwrap_or(0);
+                    let filled = position_filled.get(b).copied().unwrap_or(0);
+                    let assigned = assigned_counts.get(b).copied().unwrap_or(0);
+                    (cap as isize) - (filled as isize) - (assigned as isize)
+                };
+                remaining_a.cmp(&remaining_b)
+            });
+
+        if let Some(pos) = best_pos {
+            players[idx].best_position = Some(pos);
+            players[idx].positions = vec![pos];
+            *assigned_counts.entry(pos).or_insert(0) += 1;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1024,6 +1122,122 @@ mod tests {
         assert!(
             levels.get(&Position::Catcher).copied().unwrap_or(f64::NEG_INFINITY) <= f64::NEG_INFINITY,
             "C replacement should be NEG_INFINITY for empty pool"
+        );
+    }
+
+    #[test]
+    fn backfill_positions_distributes_across_positions() {
+        // Direct unit test for backfill_positions: create position-less hitters,
+        // call backfill_positions, and verify distribution.
+        let mut league = test_league_config();
+        league.num_teams = 1; // 1 slot per position = 8 total hitter slots
+
+        // Create 8 position-less hitters with pre-set best_position and VOR
+        // (as if compute_vor had already run on them).
+        let mut players: Vec<PlayerValuation> = (0..8)
+            .map(|i| {
+                let mut p = make_hitter_valuation(
+                    &format!("Hitter_{}", i + 1),
+                    10.0 - (i as f64), // 10, 9, 8, ..., 3
+                    vec![],            // no positions (position-less)
+                );
+                p.vor = 10.0 - (i as f64);
+                // best_position set by compute_vor would be the same for all
+                // (since all replacement levels are equal for position-less players),
+                // but backfill_positions should redistribute them.
+                p.best_position = Some(Position::Catcher);
+                p
+            })
+            .collect();
+
+        backfill_positions(&mut players, &league);
+
+        // 1. Players should be distributed across multiple positions.
+        let assigned: std::collections::HashSet<Position> = players
+            .iter()
+            .filter_map(|p| p.best_position)
+            .collect();
+        assert!(
+            assigned.len() >= 4,
+            "Expected at least 4 distinct positions from 8 players, got {} {:?}",
+            assigned.len(),
+            assigned,
+        );
+
+        // 2. No position should get more than its capacity (1 per position with 1 team).
+        let mut pos_counts: HashMap<Position, usize> = HashMap::new();
+        for p in &players {
+            if let Some(pos) = p.best_position {
+                *pos_counts.entry(pos).or_insert(0) += 1;
+            }
+        }
+        for (&pos, &count) in &pos_counts {
+            let cap = league.roster.get(pos.display_str()).copied().unwrap_or(0)
+                * league.num_teams;
+            assert!(
+                count <= cap,
+                "Position {:?} has {} players but capacity is {}",
+                pos,
+                count,
+                cap,
+            );
+        }
+
+        // 3. All 8 players should be assigned (8 slots available, 8 players).
+        let total_assigned = players.iter().filter(|p| !p.positions.is_empty()).count();
+        assert_eq!(
+            total_assigned, 8,
+            "All 8 players should be assigned, but only {} were",
+            total_assigned,
+        );
+    }
+
+    #[test]
+    fn backfill_positions_distributes_overflow_evenly() {
+        // When there are more position-less hitters than total capacity,
+        // ALL players should still get a position assigned (overflow is
+        // distributed evenly). This ensures downstream scarcity calculations
+        // and display always have positional data.
+        let mut league = test_league_config();
+        league.num_teams = 1; // 8 hitter position slots total
+
+        // Create 12 position-less hitters (more than the 8 slots).
+        let mut players: Vec<PlayerValuation> = (0..12)
+            .map(|i| {
+                let mut p = make_hitter_valuation(
+                    &format!("Hitter_{}", i + 1),
+                    12.0 - (i as f64),
+                    vec![],
+                );
+                p.vor = 12.0 - (i as f64);
+                p.best_position = Some(Position::Catcher);
+                p
+            })
+            .collect();
+
+        backfill_positions(&mut players, &league);
+
+        // All 12 should be assigned a position (overflow distributed evenly).
+        let total_assigned = players.iter().filter(|p| !p.positions.is_empty()).count();
+        assert_eq!(
+            total_assigned, 12,
+            "All 12 players should be assigned a position, but only {} were",
+            total_assigned,
+        );
+
+        // Positions should be distributed — no single position should have
+        // all 12 players.
+        use std::collections::HashSet;
+        let assigned_positions: HashSet<Position> = players
+            .iter()
+            .filter_map(|p| p.best_position)
+            .collect();
+        assert!(
+            assigned_positions.len() >= 4,
+            "Expected at least 4 distinct positions with 12 hitters distributed \
+             across 8 position slots, but only got {} {:?}",
+            assigned_positions.len(),
+            assigned_positions,
         );
     }
 
