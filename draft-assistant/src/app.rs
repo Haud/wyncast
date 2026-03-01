@@ -499,8 +499,24 @@ impl AppState {
                     eligible_slots: p.eligible_slots.clone(),
                 })
                 .collect(),
-            current_nomination: payload.current_nomination.as_ref().map(|n| {
-                NominationPayload {
+            current_nomination: payload.current_nomination.as_ref().and_then(|n| {
+                // Filter out premature nominations: during the pre-nomination
+                // phase the nominator is browsing players and the extension may
+                // (despite the JS-side guard) send a nomination with no bid, no
+                // bidder, and no nominator. A real nomination in the "offer"
+                // stage always has at least a current_bid > 0 or a non-empty
+                // nominated_by field (populated from the bid history).
+                let has_bid = n.current_bid > 0;
+                let has_nominator = !n.nominated_by.is_empty();
+                let has_bidder = n.current_bidder.as_ref().is_some_and(|b| !b.is_empty());
+                if !has_bid && !has_nominator && !has_bidder {
+                    warn!(
+                        "Filtering premature nomination for '{}': no bid, no nominator, no bidder",
+                        n.player_name
+                    );
+                    return None;
+                }
+                Some(NominationPayload {
                     player_id: n.player_id.clone(),
                     player_name: n.player_name.clone(),
                     position: n.position.clone(),
@@ -509,7 +525,7 @@ impl AppState {
                     current_bidder: n.current_bidder.clone(),
                     time_remaining: n.time_remaining,
                     eligible_slots: n.eligible_slots.clone(),
-                }
+                })
             }),
             teams: payload
                 .teams
@@ -2454,6 +2470,188 @@ mod tests {
         assert_eq!(nom.player_name, "Player Two");
         assert_eq!(nom.current_bid, 10);
         assert_eq!(nom.current_bidder, Some("Team 3".into()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: Premature nomination filtering
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn premature_nomination_filtered_no_bid_no_bidder_no_nominator() {
+        // A premature nomination has currentBid=0, no currentBidder, and
+        // empty nominatedBy (no bid history). This should be filtered out.
+        let ext_payload = crate::protocol::StateUpdatePayload {
+            picks: vec![],
+            current_nomination: Some(crate::protocol::NominationData {
+                player_id: "".into(),
+                player_name: "Michael King".into(),
+                position: "SP".into(),
+                nominated_by: "".into(),
+                current_bid: 0,
+                current_bidder: None,
+                time_remaining: Some(30),
+                eligible_slots: vec![],
+            }),
+            my_team_id: Some("team_1".into()),
+            teams: vec![],
+            pick_count: None,
+            total_picks: None,
+            draft_id: None,
+            source: Some("test".into()),
+        };
+
+        let internal = AppState::convert_extension_state(&ext_payload);
+        assert!(
+            internal.current_nomination.is_none(),
+            "Premature nomination (no bid, no bidder, no nominator) should be filtered out"
+        );
+    }
+
+    #[test]
+    fn confirmed_nomination_with_bid_passes_through() {
+        // A confirmed nomination has currentBid > 0. This should pass through.
+        let ext_payload = crate::protocol::StateUpdatePayload {
+            picks: vec![],
+            current_nomination: Some(crate::protocol::NominationData {
+                player_id: "".into(),
+                player_name: "Michael King".into(),
+                position: "SP".into(),
+                nominated_by: "Team 3".into(),
+                current_bid: 1,
+                current_bidder: None,
+                time_remaining: Some(30),
+                eligible_slots: vec![],
+            }),
+            my_team_id: Some("team_1".into()),
+            teams: vec![],
+            pick_count: None,
+            total_picks: None,
+            draft_id: None,
+            source: Some("test".into()),
+        };
+
+        let internal = AppState::convert_extension_state(&ext_payload);
+        assert!(
+            internal.current_nomination.is_some(),
+            "Confirmed nomination with bid > 0 should pass through"
+        );
+        assert_eq!(
+            internal.current_nomination.as_ref().unwrap().player_name,
+            "Michael King"
+        );
+    }
+
+    #[test]
+    fn nomination_with_nominator_but_zero_bid_passes_through() {
+        // Edge case: nominatedBy is set but currentBid is 0. This can happen
+        // if the initial nomination bid is $0 (unlikely but defensively valid).
+        // The presence of a nominator (from bid history) means it's confirmed.
+        let ext_payload = crate::protocol::StateUpdatePayload {
+            picks: vec![],
+            current_nomination: Some(crate::protocol::NominationData {
+                player_id: "".into(),
+                player_name: "Michael King".into(),
+                position: "SP".into(),
+                nominated_by: "Team 5".into(),
+                current_bid: 0,
+                current_bidder: None,
+                time_remaining: Some(30),
+                eligible_slots: vec![],
+            }),
+            my_team_id: Some("team_1".into()),
+            teams: vec![],
+            pick_count: None,
+            total_picks: None,
+            draft_id: None,
+            source: Some("test".into()),
+        };
+
+        let internal = AppState::convert_extension_state(&ext_payload);
+        assert!(
+            internal.current_nomination.is_some(),
+            "Nomination with a nominator should pass through even with bid=0"
+        );
+    }
+
+    #[test]
+    fn nomination_with_bidder_but_zero_bid_passes_through() {
+        // Edge case: currentBidder is set but currentBid is 0.
+        // The presence of a bidder means bidding has started.
+        let ext_payload = crate::protocol::StateUpdatePayload {
+            picks: vec![],
+            current_nomination: Some(crate::protocol::NominationData {
+                player_id: "".into(),
+                player_name: "Michael King".into(),
+                position: "SP".into(),
+                nominated_by: "".into(),
+                current_bid: 0,
+                current_bidder: Some("Team 7".into()),
+                time_remaining: Some(30),
+                eligible_slots: vec![],
+            }),
+            my_team_id: Some("team_1".into()),
+            teams: vec![],
+            pick_count: None,
+            total_picks: None,
+            draft_id: None,
+            source: Some("test".into()),
+        };
+
+        let internal = AppState::convert_extension_state(&ext_payload);
+        assert!(
+            internal.current_nomination.is_some(),
+            "Nomination with a current bidder should pass through even with bid=0"
+        );
+    }
+
+    #[test]
+    fn premature_nomination_with_empty_bidder_string_filtered() {
+        // currentBidder is Some("") — effectively empty. Should still be filtered.
+        let ext_payload = crate::protocol::StateUpdatePayload {
+            picks: vec![],
+            current_nomination: Some(crate::protocol::NominationData {
+                player_id: "".into(),
+                player_name: "Michael King".into(),
+                position: "SP".into(),
+                nominated_by: "".into(),
+                current_bid: 0,
+                current_bidder: Some("".into()),
+                time_remaining: Some(30),
+                eligible_slots: vec![],
+            }),
+            my_team_id: Some("team_1".into()),
+            teams: vec![],
+            pick_count: None,
+            total_picks: None,
+            draft_id: None,
+            source: Some("test".into()),
+        };
+
+        let internal = AppState::convert_extension_state(&ext_payload);
+        assert!(
+            internal.current_nomination.is_none(),
+            "Nomination with empty bidder string should be filtered like None"
+        );
+    }
+
+    #[test]
+    fn null_nomination_remains_null() {
+        let ext_payload = crate::protocol::StateUpdatePayload {
+            picks: vec![],
+            current_nomination: None,
+            my_team_id: Some("team_1".into()),
+            teams: vec![],
+            pick_count: None,
+            total_picks: None,
+            draft_id: None,
+            source: Some("test".into()),
+        };
+
+        let internal = AppState::convert_extension_state(&ext_payload);
+        assert!(
+            internal.current_nomination.is_none(),
+            "Null nomination should remain None"
+        );
     }
 
     // -----------------------------------------------------------------------

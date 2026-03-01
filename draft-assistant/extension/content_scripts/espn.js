@@ -29,6 +29,7 @@ const SELECTORS = {
   nominationPlayerName: 'span.playerinfo__playername',
   nominationPlayerPos: 'span.playerinfo__playerpos',
   nominationCurrentOffer: 'div.current-amount',
+  biddingForm: 'div[data-testid="bidding-form"]',
 
   // Bid history within nomination area
   bidHistoryItems: 'ul.bid-history__list > li.bid',
@@ -308,6 +309,16 @@ function scrapePickLog() {
 
 /**
  * Scrape the current nomination from the pick area.
+ *
+ * Only returns a nomination when it is in the active "offer" (bidding) stage.
+ * During the pre-nomination phase the nominator is browsing/selecting a player
+ * and ESPN shows a player card without a bidding form or bid history. Treating
+ * that as an active nomination would trigger premature LLM analysis and UI
+ * updates for a pick that may never happen or may change.
+ *
+ * The bidding form (`data-testid="bidding-form"`) and bid history entries are
+ * only present once the nomination is confirmed and bidding has started. We
+ * require at least one of these signals before reporting a nomination.
  */
 function scrapeCurrentNomination() {
   try {
@@ -320,6 +331,20 @@ function scrapeCurrentNomination() {
     const playerName = extractText(playerSelected, SELECTORS.nominationPlayerName);
     if (!playerName) return null;
 
+    // Query bid history scoped to the pickArea, not the entire document
+    const bidItems = pickArea.querySelectorAll(SELECTORS.bidHistoryItems);
+
+    // Check that the nomination is in the active "offer" stage.
+    // During the pre-nomination phase (nominator browsing/selecting), the
+    // player card is visible but there is no bidding form and no bid history.
+    // We require either a bidding form or bid history entries to confirm the
+    // nomination is real. This prevents premature analysis triggers.
+    const hasBiddingForm = !!pickArea.querySelector(SELECTORS.biddingForm);
+    const hasBidHistory = bidItems.length > 0;
+    if (!hasBiddingForm && !hasBidHistory) {
+      return null;
+    }
+
     let position = extractText(playerSelected, SELECTORS.nominationPlayerPos);
     const offerStr = extractText(playerSelected, SELECTORS.nominationCurrentOffer);
     const currentBid = parseCurrentOffer(offerStr);
@@ -330,8 +355,6 @@ function scrapeCurrentNomination() {
       position = position.split(',')[0].trim();
     }
 
-    // Query bid history scoped to the pickArea, not the entire document
-    const bidItems = pickArea.querySelectorAll(SELECTORS.bidHistoryItems);
     const currentBidder = extractCurrentBidder(bidItems);
     const nominatedBy = extractNominatedBy(bidItems);
 

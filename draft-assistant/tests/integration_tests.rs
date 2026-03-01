@@ -2688,3 +2688,378 @@ fn build_snapshot_my_roster_incremental_picks() {
     assert_eq!(snapshot.budget_spent, 62 + 48); // Ohtani + Soto
     assert_eq!(snapshot.budget_remaining, 260 - 62 - 48);
 }
+
+// ===========================================================================
+// Tests: Premature nomination filtering
+// ===========================================================================
+
+/// Build a state update JSON with a custom nomination where all fields are
+/// specified explicitly (including currentBid and nominatedBy), allowing
+/// construction of premature nominations (bid=0, no nominator/bidder).
+fn build_state_update_json_with_custom_nomination(
+    events: &[MockDraftEvent],
+    up_to_pick: u32,
+    team_budgets: &[(String, u32)],
+    nomination: Option<serde_json::Value>,
+) -> String {
+    let picks: Vec<serde_json::Value> = events
+        .iter()
+        .filter(|e| e.pick_number <= up_to_pick)
+        .map(|e| {
+            serde_json::json!({
+                "pickNumber": e.pick_number,
+                "teamId": e.team_id,
+                "teamName": e.team_name,
+                "playerId": e.espn_player_id,
+                "playerName": e.player_name,
+                "position": e.position,
+                "price": e.price
+            })
+        })
+        .collect();
+
+    let teams: Vec<serde_json::Value> = team_budgets
+        .iter()
+        .map(|(name, budget)| {
+            serde_json::json!({
+                "teamName": name,
+                "budget": budget
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "type": "STATE_UPDATE",
+        "timestamp": 1700000000 + up_to_pick as u64,
+        "payload": {
+            "picks": picks,
+            "currentNomination": nomination.unwrap_or(serde_json::Value::Null),
+            "myTeamId": "Team 1",
+            "teams": teams,
+            "source": "test"
+        }
+    })
+    .to_string()
+}
+
+/// Premature nominations (no bid, no bidder, no nominator) must NOT trigger
+/// a NominationUpdate in the event loop. This tests the Rust-side
+/// defense-in-depth filter in `convert_extension_state`.
+#[tokio::test]
+async fn event_loop_premature_nomination_does_not_trigger_update() {
+    let state = create_test_app_state_from_fixtures();
+
+    let (ws_tx, ws_rx) = mpsc::channel(16);
+    let (_llm_tx, llm_rx) = mpsc::channel(16);
+    let (cmd_tx, cmd_rx) = mpsc::channel(16);
+    let (ui_tx, mut ui_rx) = mpsc::channel(64);
+
+    let handle = tokio::spawn(app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+
+    let events = generate_mock_draft_events();
+    let budgets: Vec<(String, u32)> = (1..=10)
+        .map(|i| (format!("Team {}", i), 260))
+        .collect();
+
+    // Send a state update with a premature nomination: player card is showing
+    // but no bidding has started (bid=0, no nominator, no bidder).
+    let premature_nom = serde_json::json!({
+        "playerId": "",
+        "playerName": "Michael King",
+        "position": "SP",
+        "nominatedBy": "",
+        "currentBid": 0,
+        "currentBidder": null,
+        "timeRemaining": 30
+    });
+    let json = build_state_update_json_with_custom_nomination(
+        &events, 1, &budgets, Some(premature_nom),
+    );
+    ws_tx.send(WsEvent::Message(json)).await.unwrap();
+
+    // We should get a StateSnapshot (because of new picks + team registration)
+    // but NOT a NominationUpdate (premature nomination was filtered).
+    let update1 = ui_rx.recv().await.unwrap();
+    assert!(
+        matches!(&update1, UiUpdate::StateSnapshot(_)),
+        "Expected StateSnapshot, got {:?}", update1
+    );
+
+    // Try to receive another update with a short timeout. We should NOT get
+    // a NominationUpdate.
+    let maybe_update = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        ui_rx.recv(),
+    ).await;
+
+    match maybe_update {
+        Ok(Some(UiUpdate::NominationUpdate(info))) => {
+            panic!(
+                "Premature nomination should not trigger NominationUpdate, but got one for '{}'",
+                info.player_name
+            );
+        }
+        _ => {
+            // Good: no NominationUpdate received (timeout or other update type)
+        }
+    }
+
+    cmd_tx.send(UserCommand::Quit).await.unwrap();
+    let _ = handle.await;
+}
+
+/// Confirmed nominations (with a bid > 0 and a nominator) MUST still trigger
+/// NominationUpdate in the event loop. This verifies the filter does not
+/// suppress legitimate nominations.
+#[tokio::test]
+async fn event_loop_confirmed_nomination_triggers_update() {
+    let state = create_test_app_state_from_fixtures();
+
+    let (ws_tx, ws_rx) = mpsc::channel(16);
+    let (_llm_tx, llm_rx) = mpsc::channel(16);
+    let (cmd_tx, cmd_rx) = mpsc::channel(16);
+    let (ui_tx, mut ui_rx) = mpsc::channel(64);
+
+    let handle = tokio::spawn(app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+
+    let events = generate_mock_draft_events();
+    let budgets: Vec<(String, u32)> = (1..=10)
+        .map(|i| (format!("Team {}", i), 260))
+        .collect();
+
+    // Send a state update with a confirmed nomination (bid > 0, has nominator).
+    let confirmed_nom = serde_json::json!({
+        "playerId": "",
+        "playerName": "Michael King",
+        "position": "SP",
+        "nominatedBy": "Team 3",
+        "currentBid": 2,
+        "currentBidder": "Team 3",
+        "timeRemaining": 25
+    });
+    let json = build_state_update_json_with_custom_nomination(
+        &events, 1, &budgets, Some(confirmed_nom),
+    );
+    ws_tx.send(WsEvent::Message(json)).await.unwrap();
+
+    // Should receive StateSnapshot first
+    let update1 = ui_rx.recv().await.unwrap();
+    assert!(
+        matches!(&update1, UiUpdate::StateSnapshot(_)),
+        "Expected StateSnapshot, got {:?}", update1
+    );
+
+    // Then should receive NominationUpdate for the confirmed nomination
+    let update2 = ui_rx.recv().await.unwrap();
+    match update2 {
+        UiUpdate::NominationUpdate(info) => {
+            assert_eq!(info.player_name, "Michael King");
+            assert_eq!(info.current_bid, 2);
+            assert_eq!(info.current_bidder, Some("Team 3".into()));
+        }
+        other => panic!("Expected NominationUpdate, got {:?}", other),
+    }
+
+    cmd_tx.send(UserCommand::Quit).await.unwrap();
+    let _ = handle.await;
+}
+
+/// Bid updates on confirmed nominations should still produce BidUpdate events.
+/// This verifies the premature-nomination filter doesn't break bid tracking.
+#[tokio::test]
+async fn event_loop_bid_update_on_confirmed_nomination_works() {
+    let state = create_test_app_state_from_fixtures();
+
+    let (ws_tx, ws_rx) = mpsc::channel(16);
+    let (_llm_tx, llm_rx) = mpsc::channel(16);
+    let (cmd_tx, cmd_rx) = mpsc::channel(16);
+    let (ui_tx, mut ui_rx) = mpsc::channel(64);
+
+    let handle = tokio::spawn(app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+
+    let events = generate_mock_draft_events();
+    let budgets: Vec<(String, u32)> = (1..=10)
+        .map(|i| (format!("Team {}", i), 260))
+        .collect();
+
+    // First: send a confirmed nomination
+    let confirmed_nom = serde_json::json!({
+        "playerId": "",
+        "playerName": "Michael King",
+        "position": "SP",
+        "nominatedBy": "Team 3",
+        "currentBid": 1,
+        "currentBidder": "Team 3",
+        "timeRemaining": 30
+    });
+    let json1 = build_state_update_json_with_custom_nomination(
+        &events, 1, &budgets, Some(confirmed_nom),
+    );
+    ws_tx.send(WsEvent::Message(json1)).await.unwrap();
+
+    // Drain snapshot + nomination update from first message
+    let _ = ui_rx.recv().await.unwrap(); // StateSnapshot
+    let _ = ui_rx.recv().await.unwrap(); // NominationUpdate
+
+    // Second: send a bid update (same player, higher bid, different bidder)
+    let bid_update_nom = serde_json::json!({
+        "playerId": "",
+        "playerName": "Michael King",
+        "position": "SP",
+        "nominatedBy": "Team 3",
+        "currentBid": 5,
+        "currentBidder": "Team 7",
+        "timeRemaining": 20
+    });
+    let json2 = build_state_update_json_with_custom_nomination(
+        &events, 1, &budgets, Some(bid_update_nom),
+    );
+    ws_tx.send(WsEvent::Message(json2)).await.unwrap();
+
+    // Should receive a BidUpdate (same player, bid changed)
+    let update = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        ui_rx.recv(),
+    )
+    .await
+    .expect("should receive bid update within timeout")
+    .expect("channel should not be closed");
+
+    match update {
+        UiUpdate::BidUpdate(info) => {
+            assert_eq!(info.player_name, "Michael King");
+            assert_eq!(info.current_bid, 5);
+            assert_eq!(info.current_bidder, Some("Team 7".into()));
+        }
+        other => panic!("Expected BidUpdate, got {:?}", other),
+    }
+
+    cmd_tx.send(UserCommand::Quit).await.unwrap();
+    let _ = handle.await;
+}
+
+/// Nomination clearing should produce NominationCleared event.
+/// This verifies the premature-nomination filter doesn't interfere with
+/// the nomination lifecycle.
+#[tokio::test]
+async fn event_loop_nomination_clearing_works() {
+    let state = create_test_app_state_from_fixtures();
+
+    let (ws_tx, ws_rx) = mpsc::channel(16);
+    let (_llm_tx, llm_rx) = mpsc::channel(16);
+    let (cmd_tx, cmd_rx) = mpsc::channel(16);
+    let (ui_tx, mut ui_rx) = mpsc::channel(64);
+
+    let handle = tokio::spawn(app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+
+    let events = generate_mock_draft_events();
+    let budgets: Vec<(String, u32)> = (1..=10)
+        .map(|i| (format!("Team {}", i), 260))
+        .collect();
+
+    // First: send a confirmed nomination
+    let confirmed_nom = serde_json::json!({
+        "playerId": "",
+        "playerName": "Michael King",
+        "position": "SP",
+        "nominatedBy": "Team 3",
+        "currentBid": 2,
+        "currentBidder": "Team 3",
+        "timeRemaining": 25
+    });
+    let json1 = build_state_update_json_with_custom_nomination(
+        &events, 1, &budgets, Some(confirmed_nom),
+    );
+    ws_tx.send(WsEvent::Message(json1)).await.unwrap();
+
+    // Drain snapshot + nomination update
+    let _ = ui_rx.recv().await.unwrap(); // StateSnapshot
+    let _ = ui_rx.recv().await.unwrap(); // NominationUpdate
+
+    // Second: send update with nomination cleared (pick completed) and
+    // the nominated player now appears in the pick log
+    let json2 = build_state_update_json_with_custom_nomination(
+        &events, 2, &budgets, None,
+    );
+    ws_tx.send(WsEvent::Message(json2)).await.unwrap();
+
+    // Should receive StateSnapshot (new pick) followed by NominationCleared
+    let update1 = ui_rx.recv().await.unwrap();
+    assert!(
+        matches!(&update1, UiUpdate::StateSnapshot(_)),
+        "Expected StateSnapshot after pick completed, got {:?}", update1
+    );
+
+    let update2 = ui_rx.recv().await.unwrap();
+    assert!(
+        matches!(&update2, UiUpdate::NominationCleared),
+        "Expected NominationCleared after nomination removed, got {:?}", update2
+    );
+
+    cmd_tx.send(UserCommand::Quit).await.unwrap();
+    let _ = handle.await;
+}
+
+/// Verify that convert_extension_state filters premature nominations
+/// at the protocol conversion layer (defense-in-depth).
+#[test]
+fn convert_extension_state_filters_premature_nomination() {
+    let ext_payload = StateUpdatePayload {
+        picks: vec![],
+        current_nomination: Some(NominationData {
+            player_id: "".into(),
+            player_name: "Pending Player".into(),
+            position: "OF".into(),
+            nominated_by: "".into(),
+            current_bid: 0,
+            current_bidder: None,
+            time_remaining: Some(30),
+            eligible_slots: vec![],
+        }),
+        my_team_id: Some("team_1".into()),
+        teams: vec![],
+        pick_count: None,
+        total_picks: None,
+        draft_id: None,
+        source: Some("test".into()),
+    };
+
+    let internal = AppState::convert_extension_state(&ext_payload);
+    assert!(
+        internal.current_nomination.is_none(),
+        "Premature nomination should be filtered by convert_extension_state"
+    );
+}
+
+/// Verify that confirmed nominations pass through convert_extension_state.
+#[test]
+fn convert_extension_state_passes_confirmed_nomination() {
+    let ext_payload = StateUpdatePayload {
+        picks: vec![],
+        current_nomination: Some(NominationData {
+            player_id: "espn_42".into(),
+            player_name: "Confirmed Player".into(),
+            position: "1B".into(),
+            nominated_by: "Team 5".into(),
+            current_bid: 3,
+            current_bidder: Some("Team 5".into()),
+            time_remaining: Some(28),
+            eligible_slots: vec![1, 7, 12, 16, 17],
+        }),
+        my_team_id: Some("team_1".into()),
+        teams: vec![],
+        pick_count: None,
+        total_picks: None,
+        draft_id: None,
+        source: Some("test".into()),
+    };
+
+    let internal = AppState::convert_extension_state(&ext_payload);
+    assert!(
+        internal.current_nomination.is_some(),
+        "Confirmed nomination should pass through"
+    );
+    let nom = internal.current_nomination.unwrap();
+    assert_eq!(nom.player_name, "Confirmed Player");
+    assert_eq!(nom.current_bid, 3);
+}
