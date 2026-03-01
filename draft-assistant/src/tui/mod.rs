@@ -126,6 +126,8 @@ pub struct ViewState {
     pub filter_mode: bool,
     /// Position filter for the available players table.
     pub position_filter: Option<Position>,
+    /// Whether the quit confirmation dialog is showing.
+    pub confirm_quit: bool,
     /// Chronological list of completed draft picks.
     pub draft_log: Vec<DraftPick>,
     /// Summary of each team's draft state.
@@ -155,6 +157,7 @@ impl Default for ViewState {
             filter_text: String::new(),
             filter_mode: false,
             position_filter: None,
+            confirm_quit: false,
             draft_log: Vec::new(),
             team_summaries: Vec::new(),
             my_roster: Vec::new(),
@@ -284,6 +287,11 @@ fn render_frame(frame: &mut Frame, state: &ViewState) {
 
     // Help bar
     render_help_bar(frame, &layout);
+
+    // Quit confirmation overlay (rendered last so it's on top)
+    if state.confirm_quit {
+        widgets::quit_confirm::render(frame, frame.area(), state);
+    }
 }
 
 fn render_help_bar(frame: &mut Frame, layout: &AppLayout) {
@@ -419,6 +427,7 @@ mod tests {
         assert!(!state.filter_mode);
         assert!(state.filter_text.is_empty());
         assert!(state.position_filter.is_none());
+        assert!(!state.confirm_quit);
         assert!(state.draft_log.is_empty());
         assert!(state.team_summaries.is_empty());
         assert!(state.my_roster.is_empty());
