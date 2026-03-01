@@ -27,7 +27,7 @@ pub const ESPN_SLOT_BE: u16 = 16;
 pub const ESPN_SLOT_IL: u16 = 17;
 
 /// Baseball positions used for roster slot assignment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Position {
     Catcher,
     FirstBase,

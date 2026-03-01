@@ -320,7 +320,9 @@ impl AppState {
             .find(|p| p.name == nomination.player_name)
         {
             if !nomination.eligible_slots.is_empty() {
-                let positions = playing_positions_from_slots(&nomination.eligible_slots);
+                let mut positions = playing_positions_from_slots(&nomination.eligible_slots);
+                positions.sort();
+                positions.dedup();
                 if !positions.is_empty() {
                     player.positions = positions;
                 }
@@ -1884,7 +1886,7 @@ mod tests {
 
         // Nominate with ESPN eligible_slots that include 1B, 3B, CI, UTIL, BE, IL.
         // After processing, the player should have [FirstBase, ThirdBase]
-        // (CI expands to 1B+3B, meta slots filtered, duplicates from 1B kept).
+        // (CI expands to 1B+3B, meta slots filtered, duplicates deduplicated).
         let nomination = ActiveNomination {
             player_name: "H_Star".into(),
             player_id: "espn_1".into(),
@@ -1923,6 +1925,58 @@ mod tests {
         assert!(
             !after.positions.iter().any(|p| p.is_meta_slot()),
             "Should not contain meta slots (UTIL, BE, IL)"
+        );
+        // CI expands to 1B+3B which duplicates the individual 1B and 3B slots.
+        // After dedup, there should be exactly 2 positions.
+        assert_eq!(
+            after.positions.len(),
+            2,
+            "Positions should be deduplicated: got {:?}",
+            after.positions
+        );
+    }
+
+    #[tokio::test]
+    async fn nomination_meta_slots_only_does_not_change_positions() {
+        use crate::draft::pick::{ESPN_SLOT_BE, ESPN_SLOT_IL, ESPN_SLOT_UTIL};
+
+        let mut state = create_test_app_state();
+
+        // H_Star starts with positions = [FirstBase] from the test helper.
+        let before = state
+            .available_players
+            .iter()
+            .find(|p| p.name == "H_Star")
+            .unwrap();
+        assert_eq!(before.positions, vec![Position::FirstBase]);
+
+        // Nominate with eligible_slots that contain ONLY meta-slots (UTIL, BE, IL).
+        // playing_positions_from_slots returns empty for meta-only lists, and
+        // the `!positions.is_empty()` guard prevents overwriting the player's
+        // positions. The player should keep its original positions.
+        let nomination = ActiveNomination {
+            player_name: "H_Star".into(),
+            player_id: "espn_1".into(),
+            position: "1B".into(),
+            nominated_by: "Team 2".into(),
+            current_bid: 5,
+            current_bidder: None,
+            time_remaining: Some(30),
+            eligible_slots: vec![ESPN_SLOT_UTIL, ESPN_SLOT_BE, ESPN_SLOT_IL],
+        };
+
+        let _analysis = state.handle_nomination(&nomination);
+
+        let after = state
+            .available_players
+            .iter()
+            .find(|p| p.name == "H_Star")
+            .unwrap();
+
+        assert_eq!(
+            after.positions,
+            vec![Position::FirstBase],
+            "Positions should be unchanged when eligible_slots contains only meta-slots"
         );
     }
 
