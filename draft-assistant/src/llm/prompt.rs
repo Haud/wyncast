@@ -388,6 +388,31 @@ fn format_player_profile(
                 whip, z.whip, ranks.5
             ));
         }
+        (
+            PlayerProjectionData::TwoWay {
+                pa, r, hr, rbi, bb, sb, avg,
+                ip, k, w, sv, hd, era, whip, ..
+            },
+            CategoryZScores::TwoWay(tw),
+        ) => {
+            s.push_str(&format!("  TWO-WAY PLAYER\n"));
+            s.push_str(&format!("  --- Hitting (PA: {}) ---\n", pa));
+            s.push_str("  Cat   Proj  Z-Score\n");
+            s.push_str(&format!("  R     {:>4}  {:>+6.2}\n", r, tw.hitting.r));
+            s.push_str(&format!("  HR    {:>4}  {:>+6.2}\n", hr, tw.hitting.hr));
+            s.push_str(&format!("  RBI   {:>4}  {:>+6.2}\n", rbi, tw.hitting.rbi));
+            s.push_str(&format!("  BB    {:>4}  {:>+6.2}\n", bb, tw.hitting.bb));
+            s.push_str(&format!("  SB    {:>4}  {:>+6.2}\n", sb, tw.hitting.sb));
+            s.push_str(&format!("  AVG   {:.3}  {:>+6.2}\n", avg, tw.hitting.avg));
+            s.push_str(&format!("  --- Pitching (IP: {:.0}) ---\n", ip));
+            s.push_str("  Cat   Proj  Z-Score\n");
+            s.push_str(&format!("  K     {:>4}  {:>+6.2}\n", k, tw.pitching.k));
+            s.push_str(&format!("  W     {:>4}  {:>+6.2}\n", w, tw.pitching.w));
+            s.push_str(&format!("  SV    {:>4}  {:>+6.2}\n", sv, tw.pitching.sv));
+            s.push_str(&format!("  HD    {:>4}  {:>+6.2}\n", hd, tw.pitching.hd));
+            s.push_str(&format!("  ERA   {:.2}  {:>+6.2}\n", era, tw.pitching.era));
+            s.push_str(&format!("  WHIP  {:.2}  {:>+6.2}\n", whip, tw.pitching.whip));
+        }
         _ => {
             s.push_str("  (projection/zscore type mismatch)\n");
         }
@@ -408,7 +433,8 @@ fn compute_hitter_ranks(
         .collect();
 
     let pz = match &player.category_zscores {
-        CategoryZScores::Hitter(h) => h,
+        CategoryZScores::Hitter(h) => *h,
+        CategoryZScores::TwoWay(tw) => tw.hitting,
         _ => return (0, 0, 0, 0, 0, 0),
     };
 
@@ -423,36 +449,42 @@ fn compute_hitter_ranks(
     let r_extract = |z: &CategoryZScores| -> Option<f64> {
         match z {
             CategoryZScores::Hitter(h) => Some(h.r),
+            CategoryZScores::TwoWay(tw) => Some(tw.hitting.r),
             _ => None,
         }
     };
     let hr_extract = |z: &CategoryZScores| -> Option<f64> {
         match z {
             CategoryZScores::Hitter(h) => Some(h.hr),
+            CategoryZScores::TwoWay(tw) => Some(tw.hitting.hr),
             _ => None,
         }
     };
     let rbi_extract = |z: &CategoryZScores| -> Option<f64> {
         match z {
             CategoryZScores::Hitter(h) => Some(h.rbi),
+            CategoryZScores::TwoWay(tw) => Some(tw.hitting.rbi),
             _ => None,
         }
     };
     let bb_extract = |z: &CategoryZScores| -> Option<f64> {
         match z {
             CategoryZScores::Hitter(h) => Some(h.bb),
+            CategoryZScores::TwoWay(tw) => Some(tw.hitting.bb),
             _ => None,
         }
     };
     let sb_extract = |z: &CategoryZScores| -> Option<f64> {
         match z {
             CategoryZScores::Hitter(h) => Some(h.sb),
+            CategoryZScores::TwoWay(tw) => Some(tw.hitting.sb),
             _ => None,
         }
     };
     let avg_extract = |z: &CategoryZScores| -> Option<f64> {
         match z {
             CategoryZScores::Hitter(h) => Some(h.avg),
+            CategoryZScores::TwoWay(tw) => Some(tw.hitting.avg),
             _ => None,
         }
     };
@@ -916,6 +948,7 @@ mod tests {
             team: "TST".into(),
             positions: positions.clone(),
             is_pitcher: false,
+            is_two_way: false,
             pitcher_type: None,
             projection: PlayerProjectionData::Hitter {
                 pa: 600, ab: 550, h: 150, hr: 25, r: 80, rbi: 85, bb: 50, sb: 10, avg: 0.273,
@@ -940,6 +973,7 @@ mod tests {
             team: "TST".into(),
             positions: vec![pos],
             is_pitcher: true,
+            is_two_way: false,
             pitcher_type: Some(pt),
             projection: PlayerProjectionData::Pitcher {
                 ip: 180.0, k: 200, w: 14, sv: 0, hd: 0, era: 3.20, whip: 1.10, g: 30, gs: 30,

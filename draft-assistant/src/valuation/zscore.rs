@@ -103,11 +103,21 @@ pub struct PitcherZScores {
     pub total: f64,
 }
 
+/// Per-category z-scores for a two-way player (both hitting and pitching).
+#[derive(Debug, Clone, Copy)]
+pub struct TwoWayZScores {
+    pub hitting: HitterZScores,
+    pub pitching: PitcherZScores,
+    /// Combined total: hitting.total + pitching.total
+    pub total: f64,
+}
+
 /// Enum wrapper for hitter or pitcher z-scores.
 #[derive(Debug, Clone, Copy)]
 pub enum CategoryZScores {
     Hitter(HitterZScores),
     Pitcher(PitcherZScores),
+    TwoWay(TwoWayZScores),
 }
 
 // ---------------------------------------------------------------------------
@@ -165,6 +175,29 @@ pub enum PlayerProjectionData {
         g: u32,
         gs: u32,
     },
+    /// Two-way player with both hitting and pitching projections.
+    TwoWay {
+        // Hitting side
+        pa: u32,
+        ab: u32,
+        h: u32,
+        hr: u32,
+        r: u32,
+        rbi: u32,
+        bb: u32,
+        sb: u32,
+        avg: f64,
+        // Pitching side
+        ip: f64,
+        k: u32,
+        w: u32,
+        sv: u32,
+        hd: u32,
+        era: f64,
+        whip: f64,
+        g: u32,
+        gs: u32,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -181,6 +214,10 @@ pub struct PlayerValuation {
     pub team: String,
     pub positions: Vec<Position>,
     pub is_pitcher: bool,
+    /// Whether this player has both hitting and pitching projections.
+    /// Two-way players have `is_pitcher = false` (they fill a hitter slot)
+    /// but contribute to pitching categories as well.
+    pub is_two_way: bool,
     pub pitcher_type: Option<PitcherType>,
     pub projection: PlayerProjectionData,
     pub total_zscore: f64,
@@ -449,34 +486,124 @@ pub fn compute_initial_zscores(
         projections.hitters.len() + projections.pitchers.len(),
     );
 
+    // Build a set of pitcher names for two-way player detection.
+    let pitcher_name_set: std::collections::HashSet<&str> = projections
+        .pitchers
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect();
+
+    // Track which pitcher names were matched as two-way players so we can
+    // skip their standalone pitcher entry later.
+    let mut two_way_pitcher_names: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+
     for hitter in &projections.hitters {
-        let zscores = compute_hitter_zscores(hitter, &hitter_stats, league_avg_avg, weights);
-        valuations.push(PlayerValuation {
-            name: hitter.name.clone(),
-            team: hitter.team.clone(),
-            positions: Vec::new(), // Populated from ESPN roster data overlay
-            is_pitcher: false,
-            pitcher_type: None,
-            projection: PlayerProjectionData::Hitter {
-                pa: hitter.pa,
-                ab: hitter.ab,
-                h: hitter.h,
-                hr: hitter.hr,
-                r: hitter.r,
-                rbi: hitter.rbi,
-                bb: hitter.bb,
-                sb: hitter.sb,
-                avg: hitter.avg,
-            },
-            total_zscore: zscores.total,
-            category_zscores: CategoryZScores::Hitter(zscores),
-            vor: 0.0,
-            best_position: None,
-            dollar_value: 0.0,
-        });
+        if let Some(matching_pitcher) = pitcher_name_set
+            .contains(hitter.name.as_str())
+            .then(|| {
+                projections
+                    .pitchers
+                    .iter()
+                    .find(|p| p.name == hitter.name)
+            })
+            .flatten()
+        {
+            // Two-way player: compute both hitting and pitching z-scores.
+            let hitting_zscores =
+                compute_hitter_zscores(hitter, &hitter_stats, league_avg_avg, weights);
+            let pitching_zscores = compute_pitcher_zscores(
+                matching_pitcher,
+                &pitcher_stats,
+                league_avg_era,
+                league_avg_whip,
+                weights,
+            );
+            let combined_total = hitting_zscores.total + pitching_zscores.total;
+
+            // Pitcher position for the positions list (they can fill hitter
+            // slots AND contribute pitching stats).
+            let pitcher_pos = match matching_pitcher.pitcher_type {
+                PitcherType::SP => Position::StartingPitcher,
+                PitcherType::RP => Position::ReliefPitcher,
+            };
+
+            two_way_pitcher_names.insert(hitter.name.clone());
+
+            valuations.push(PlayerValuation {
+                name: hitter.name.clone(),
+                team: hitter.team.clone(),
+                positions: vec![pitcher_pos], // ESPN overlay will add hitter positions later
+                is_pitcher: false, // Fills a hitter slot for roster purposes
+                is_two_way: true,
+                pitcher_type: Some(matching_pitcher.pitcher_type),
+                projection: PlayerProjectionData::TwoWay {
+                    pa: hitter.pa,
+                    ab: hitter.ab,
+                    h: hitter.h,
+                    hr: hitter.hr,
+                    r: hitter.r,
+                    rbi: hitter.rbi,
+                    bb: hitter.bb,
+                    sb: hitter.sb,
+                    avg: hitter.avg,
+                    ip: matching_pitcher.ip,
+                    k: matching_pitcher.k,
+                    w: matching_pitcher.w,
+                    sv: matching_pitcher.sv,
+                    hd: matching_pitcher.hd,
+                    era: matching_pitcher.era,
+                    whip: matching_pitcher.whip,
+                    g: matching_pitcher.g,
+                    gs: matching_pitcher.gs,
+                },
+                total_zscore: combined_total,
+                category_zscores: CategoryZScores::TwoWay(TwoWayZScores {
+                    hitting: hitting_zscores,
+                    pitching: pitching_zscores,
+                    total: combined_total,
+                }),
+                vor: 0.0,
+                best_position: None,
+                dollar_value: 0.0,
+            });
+        } else {
+            // Normal hitter (not a two-way player).
+            let zscores =
+                compute_hitter_zscores(hitter, &hitter_stats, league_avg_avg, weights);
+            valuations.push(PlayerValuation {
+                name: hitter.name.clone(),
+                team: hitter.team.clone(),
+                positions: Vec::new(), // Populated from ESPN roster data overlay
+                is_pitcher: false,
+                is_two_way: false,
+                pitcher_type: None,
+                projection: PlayerProjectionData::Hitter {
+                    pa: hitter.pa,
+                    ab: hitter.ab,
+                    h: hitter.h,
+                    hr: hitter.hr,
+                    r: hitter.r,
+                    rbi: hitter.rbi,
+                    bb: hitter.bb,
+                    sb: hitter.sb,
+                    avg: hitter.avg,
+                },
+                total_zscore: zscores.total,
+                category_zscores: CategoryZScores::Hitter(zscores),
+                vor: 0.0,
+                best_position: None,
+                dollar_value: 0.0,
+            });
+        }
     }
 
     for pitcher in &projections.pitchers {
+        // Skip pitchers that were already merged into a two-way player entry.
+        if two_way_pitcher_names.contains(&pitcher.name) {
+            continue;
+        }
+
         let zscores = compute_pitcher_zscores(
             pitcher,
             &pitcher_stats,
@@ -493,6 +620,7 @@ pub fn compute_initial_zscores(
             team: pitcher.team.clone(),
             positions: vec![pos],
             is_pitcher: true,
+            is_two_way: false,
             pitcher_type: Some(pitcher.pitcher_type),
             projection: PlayerProjectionData::Pitcher {
                 ip: pitcher.ip,
@@ -1293,5 +1421,267 @@ mod tests {
             }
             _ => panic!("Expected Pitcher projection"),
         }
+    }
+
+    // ---- Two-way player detection and valuation tests ----
+
+    #[test]
+    fn two_way_player_detected_when_name_matches() {
+        // A player appearing in both hitters and pitchers CSVs should be
+        // detected as a two-way player.
+        let hitters = vec![
+            make_hitter("Shohei Ohtani", 600, 540, 162, 40, 100, 95, 55, 15),
+            make_hitter("Regular Hitter", 550, 500, 140, 25, 80, 75, 45, 10),
+        ];
+
+        let pitchers = vec![
+            PitcherProjection {
+                name: "Shohei Ohtani".into(),
+                team: "LAD".into(),
+                pitcher_type: PitcherType::SP,
+                ip: 160.0,
+                k: 200,
+                w: 14,
+                sv: 0,
+                hd: 0,
+                era: 2.80,
+                whip: 1.00,
+                g: 28,
+                gs: 28,
+            },
+            make_sp("Regular SP", 180.0, 190, 14, 3.30, 1.10),
+        ];
+
+        let projections = AllProjections { hitters, pitchers };
+
+        let mut config = test_config();
+        config.strategy.pool.min_pa = 100;
+        config.strategy.pool.hitter_pool_size = 150;
+        config.strategy.pool.min_ip_sp = 10.0;
+        config.strategy.pool.sp_pool_size = 70;
+
+        let valuations = compute_initial_zscores(&projections, &config);
+
+        // Ohtani should appear exactly once (not as separate hitter + pitcher).
+        let ohtani_count = valuations.iter().filter(|v| v.name == "Shohei Ohtani").count();
+        assert_eq!(ohtani_count, 1, "Two-way player should appear exactly once");
+
+        let ohtani = valuations.iter().find(|v| v.name == "Shohei Ohtani").unwrap();
+        assert!(ohtani.is_two_way, "Ohtani should be marked as two-way");
+        assert!(!ohtani.is_pitcher, "Two-way player fills a hitter slot (is_pitcher = false)");
+        assert_eq!(ohtani.pitcher_type, Some(PitcherType::SP));
+
+        // Should have TwoWay projection data.
+        match &ohtani.projection {
+            PlayerProjectionData::TwoWay { pa, hr, ip, k, .. } => {
+                assert_eq!(*pa, 600);
+                assert_eq!(*hr, 40);
+                assert!(approx_eq(*ip, 160.0, 1e-10));
+                assert_eq!(*k, 200);
+            }
+            other => panic!("Expected TwoWay projection, got {:?}", other),
+        }
+
+        // Should have TwoWay z-scores.
+        match &ohtani.category_zscores {
+            CategoryZScores::TwoWay(tw) => {
+                assert!(tw.hitting.total.is_finite());
+                assert!(tw.pitching.total.is_finite());
+                assert!(approx_eq(tw.total, tw.hitting.total + tw.pitching.total, 1e-10));
+            }
+            other => panic!("Expected TwoWay z-scores, got {:?}", other),
+        }
+
+        // The other players should NOT be two-way.
+        let regular_hitter = valuations.iter().find(|v| v.name == "Regular Hitter").unwrap();
+        assert!(!regular_hitter.is_two_way);
+
+        let regular_sp = valuations.iter().find(|v| v.name == "Regular SP").unwrap();
+        assert!(!regular_sp.is_two_way);
+        assert!(regular_sp.is_pitcher);
+    }
+
+    #[test]
+    fn two_way_player_combined_zscore_higher_than_either_side() {
+        // A genuinely good two-way player's combined z-score should exceed
+        // their hitting-only or pitching-only z-score.
+        let hitters = vec![
+            make_hitter("TwoWay Star", 600, 540, 162, 35, 95, 90, 55, 12),
+            make_hitter("Filler H1", 550, 500, 135, 20, 70, 65, 45, 8),
+            make_hitter("Filler H2", 520, 480, 125, 15, 60, 55, 35, 5),
+        ];
+
+        let pitchers = vec![
+            PitcherProjection {
+                name: "TwoWay Star".into(),
+                team: "TST".into(),
+                pitcher_type: PitcherType::SP,
+                ip: 150.0,
+                k: 180,
+                w: 12,
+                sv: 0,
+                hd: 0,
+                era: 3.00,
+                whip: 1.05,
+                g: 26,
+                gs: 26,
+            },
+            make_sp("Filler SP1", 180.0, 190, 14, 3.30, 1.10),
+            make_sp("Filler SP2", 160.0, 150, 10, 3.80, 1.20),
+        ];
+
+        let projections = AllProjections { hitters, pitchers };
+
+        let mut config = test_config();
+        config.strategy.pool.min_pa = 100;
+        config.strategy.pool.hitter_pool_size = 150;
+        config.strategy.pool.min_ip_sp = 10.0;
+        config.strategy.pool.sp_pool_size = 70;
+
+        let valuations = compute_initial_zscores(&projections, &config);
+        let two_way = valuations.iter().find(|v| v.name == "TwoWay Star").unwrap();
+
+        // Extract hitting and pitching sub-scores.
+        let (hitting_total, pitching_total) = match &two_way.category_zscores {
+            CategoryZScores::TwoWay(tw) => (tw.hitting.total, tw.pitching.total),
+            other => panic!("Expected TwoWay z-scores, got {:?}", other),
+        };
+
+        // Combined should be the sum.
+        assert!(
+            approx_eq(two_way.total_zscore, hitting_total + pitching_total, 1e-10),
+            "Combined z-score ({}) should equal hitting ({}) + pitching ({})",
+            two_way.total_zscore,
+            hitting_total,
+            pitching_total,
+        );
+
+        // For a good two-way player, the combined should exceed either side alone.
+        assert!(
+            two_way.total_zscore > hitting_total,
+            "Combined ({}) should exceed hitting alone ({})",
+            two_way.total_zscore,
+            hitting_total,
+        );
+        assert!(
+            two_way.total_zscore > pitching_total,
+            "Combined ({}) should exceed pitching alone ({})",
+            two_way.total_zscore,
+            pitching_total,
+        );
+    }
+
+    #[test]
+    fn two_way_player_bad_pitching_still_reasonable() {
+        // A player who appears in both CSVs but has terrible pitching stats.
+        // Their combined value might be lower than pure hitting if pitching
+        // z-scores are very negative, but the system should handle it gracefully.
+        let hitters = vec![
+            make_hitter("Bad Pitcher Hitter", 600, 540, 162, 35, 95, 90, 55, 12),
+            make_hitter("Filler H1", 550, 500, 135, 20, 70, 65, 45, 8),
+            make_hitter("Filler H2", 520, 480, 125, 15, 60, 55, 35, 5),
+        ];
+
+        let pitchers = vec![
+            PitcherProjection {
+                name: "Bad Pitcher Hitter".into(),
+                team: "TST".into(),
+                pitcher_type: PitcherType::SP,
+                ip: 20.0, // Very few innings
+                k: 15,
+                w: 1,
+                sv: 0,
+                hd: 0,
+                era: 6.50, // Terrible ERA
+                whip: 1.80, // Terrible WHIP
+                g: 5,
+                gs: 5,
+            },
+            make_sp("Filler SP1", 180.0, 190, 14, 3.30, 1.10),
+            make_sp("Filler SP2", 160.0, 150, 10, 3.80, 1.20),
+        ];
+
+        let projections = AllProjections { hitters, pitchers };
+
+        let mut config = test_config();
+        config.strategy.pool.min_pa = 100;
+        config.strategy.pool.hitter_pool_size = 150;
+        config.strategy.pool.min_ip_sp = 10.0;
+        config.strategy.pool.sp_pool_size = 70;
+
+        let valuations = compute_initial_zscores(&projections, &config);
+        let player = valuations.iter().find(|v| v.name == "Bad Pitcher Hitter").unwrap();
+
+        // Should still be detected as two-way.
+        assert!(player.is_two_way);
+
+        // Z-score should be finite (not NaN or Infinity).
+        assert!(player.total_zscore.is_finite());
+
+        // Pitching z-scores should be negative (bad pitcher).
+        match &player.category_zscores {
+            CategoryZScores::TwoWay(tw) => {
+                assert!(
+                    tw.pitching.total < 0.0,
+                    "Bad pitcher should have negative pitching z-score, got {}",
+                    tw.pitching.total,
+                );
+                // But hitting should be positive (good hitter).
+                assert!(
+                    tw.hitting.total > 0.0,
+                    "Good hitter should have positive hitting z-score, got {}",
+                    tw.hitting.total,
+                );
+            }
+            other => panic!("Expected TwoWay z-scores, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn total_player_count_correct_with_two_way() {
+        // With 3 hitters (1 two-way) and 3 pitchers (1 is the two-way match),
+        // we should get 3 + 2 = 5 total valuations (not 3 + 3 = 6).
+        let hitters = vec![
+            make_hitter("TwoWay Player", 600, 540, 162, 35, 95, 90, 55, 12),
+            make_hitter("Pure Hitter A", 550, 500, 135, 20, 70, 65, 45, 8),
+            make_hitter("Pure Hitter B", 520, 480, 125, 15, 60, 55, 35, 5),
+        ];
+
+        let pitchers = vec![
+            PitcherProjection {
+                name: "TwoWay Player".into(),
+                team: "TST".into(),
+                pitcher_type: PitcherType::SP,
+                ip: 150.0,
+                k: 180,
+                w: 12,
+                sv: 0,
+                hd: 0,
+                era: 3.00,
+                whip: 1.05,
+                g: 26,
+                gs: 26,
+            },
+            make_sp("Pure SP", 180.0, 190, 14, 3.30, 1.10),
+            make_rp("Pure RP", 60.0, 70, 30, 0, 2.50, 0.95, 55),
+        ];
+
+        let projections = AllProjections { hitters, pitchers };
+
+        let mut config = test_config();
+        config.strategy.pool.min_pa = 100;
+        config.strategy.pool.hitter_pool_size = 150;
+        config.strategy.pool.min_ip_sp = 10.0;
+        config.strategy.pool.sp_pool_size = 70;
+        config.strategy.pool.min_g_rp = 10;
+        config.strategy.pool.rp_pool_size = 80;
+
+        let valuations = compute_initial_zscores(&projections, &config);
+        assert_eq!(
+            valuations.len(),
+            5,
+            "3 hitters (1 two-way merged) + 2 pure pitchers = 5 total, got {}",
+            valuations.len()
+        );
     }
 }

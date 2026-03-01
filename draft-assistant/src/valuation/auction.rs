@@ -119,8 +119,31 @@ pub fn compute_auction_values(
 ///
 /// - Players with positive VOR: `value = (VOR * dollars_per_vor) + $1`
 /// - Players with zero or negative VOR: `value = $1` (the floor)
+///
+/// Two-way players use a blended dollars_per_vor: a weighted average of the
+/// hitter and pitcher rates based on the ratio of their hitting vs pitching
+/// z-score contributions. This ensures their combined value draws from both
+/// pools proportionally.
 pub fn player_dollar_value(player: &PlayerValuation, auction: &AuctionValues) -> f64 {
-    let dollars_per_vor = if player.is_pitcher {
+    let dollars_per_vor = if player.is_two_way {
+        // Blend the hitting and pitching rates based on z-score contribution.
+        let (hitting_total, pitching_total) = match &player.category_zscores {
+            crate::valuation::zscore::CategoryZScores::TwoWay(tw) => {
+                // Use absolute values to weight by magnitude of contribution.
+                (tw.hitting.total.abs(), tw.pitching.total.abs())
+            }
+            _ => (1.0, 0.0), // Fallback: treat as pure hitter
+        };
+        let sum = hitting_total + pitching_total;
+        if sum > 1e-9 {
+            let hitting_weight = hitting_total / sum;
+            let pitching_weight = pitching_total / sum;
+            auction.dollars_per_vor_hitter * hitting_weight
+                + auction.dollars_per_vor_pitcher * pitching_weight
+        } else {
+            auction.dollars_per_vor_hitter
+        }
+    } else if player.is_pitcher {
         auction.dollars_per_vor_pitcher
     } else {
         auction.dollars_per_vor_hitter
@@ -393,6 +416,7 @@ mod tests {
             team: "TST".into(),
             positions: vec![Position::FirstBase],
             is_pitcher: false,
+            is_two_way: false,
             pitcher_type: None,
             projection: PlayerProjectionData::Hitter {
                 pa: 600,
@@ -423,6 +447,7 @@ mod tests {
             team: "TST".into(),
             positions: vec![pos],
             is_pitcher: true,
+            is_two_way: false,
             pitcher_type: Some(pitcher_type),
             projection: PlayerProjectionData::Pitcher {
                 ip: 180.0,

@@ -312,6 +312,24 @@ fn compute_category_impact(
             ("ERA".into(), p.era * needs.era),
             ("WHIP".into(), p.whip * needs.whip),
         ],
+        CategoryZScores::TwoWay(tw) => {
+            let h = &tw.hitting;
+            let p = &tw.pitching;
+            vec![
+                ("R".into(), h.r * needs.r),
+                ("HR".into(), h.hr * needs.hr),
+                ("RBI".into(), h.rbi * needs.rbi),
+                ("BB".into(), h.bb * needs.bb),
+                ("SB".into(), h.sb * needs.sb),
+                ("AVG".into(), h.avg * needs.avg),
+                ("K".into(), p.k * needs.k),
+                ("W".into(), p.w * needs.w),
+                ("SV".into(), p.sv * needs.sv),
+                ("HD".into(), p.hd * needs.hd),
+                ("ERA".into(), p.era * needs.era),
+                ("WHIP".into(), p.whip * needs.whip),
+            ]
+        }
     };
 
     // Sort by absolute impact descending.
@@ -473,6 +491,7 @@ mod tests {
             team: "TST".into(),
             positions: positions.clone(),
             is_pitcher: false,
+            is_two_way: false,
             pitcher_type: None,
             projection: PlayerProjectionData::Hitter {
                 pa: 600, ab: 550, h: 150, hr: 25, r: 80, rbi: 85, bb: 50, sb: 10, avg: 0.273,
@@ -497,6 +516,7 @@ mod tests {
             team: "TST".into(),
             positions: vec![pos],
             is_pitcher: true,
+            is_two_way: false,
             pitcher_type: Some(pt),
             projection: PlayerProjectionData::Pitcher {
                 ip: 180.0, k: 200, w: 14, sv: 0, hd: 0, era: 3.20, whip: 1.10, g: 30, gs: 30,

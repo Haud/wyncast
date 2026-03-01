@@ -284,6 +284,7 @@ mod tests {
             team: "TST".into(),
             positions,
             is_pitcher: false,
+            is_two_way: false,
             pitcher_type: None,
             projection: PlayerProjectionData::Hitter {
                 pa: 600, ab: 550, h: 150, hr: 25, r: 80, rbi: 85, bb: 50, sb: 10, avg: 0.273,
@@ -308,6 +309,7 @@ mod tests {
             team: "TST".into(),
             positions: vec![pos],
             is_pitcher: true,
+            is_two_way: false,
             pitcher_type: Some(pitcher_type),
             projection: PlayerProjectionData::Pitcher {
                 ip: 180.0, k: 200, w: 14, sv: 0, hd: 0, era: 3.20, whip: 1.10, g: 30, gs: 30,
