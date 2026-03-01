@@ -388,6 +388,69 @@ fn format_player_profile(
                 whip, z.whip, ranks.5
             ));
         }
+        (
+            PlayerProjectionData::TwoWay {
+                pa, r, hr, rbi, bb, sb, avg,
+                ip, k, w, sv, hd, era, whip, ..
+            },
+            CategoryZScores::TwoWay(tw),
+        ) => {
+            let h_ranks = compute_hitter_ranks(player, available_players);
+            let p_ranks = compute_pitcher_ranks(player, available_players);
+            s.push_str("  TWO-WAY PLAYER\n");
+            s.push_str(&format!("  --- Hitting (PA: {}) ---\n", pa));
+            s.push_str("  Cat   Proj  Z-Score  Rank\n");
+            s.push_str(&format!(
+                "  R     {:>4}  {:>+6.2}   #{}\n",
+                r, tw.hitting.r, h_ranks.0
+            ));
+            s.push_str(&format!(
+                "  HR    {:>4}  {:>+6.2}   #{}\n",
+                hr, tw.hitting.hr, h_ranks.1
+            ));
+            s.push_str(&format!(
+                "  RBI   {:>4}  {:>+6.2}   #{}\n",
+                rbi, tw.hitting.rbi, h_ranks.2
+            ));
+            s.push_str(&format!(
+                "  BB    {:>4}  {:>+6.2}   #{}\n",
+                bb, tw.hitting.bb, h_ranks.3
+            ));
+            s.push_str(&format!(
+                "  SB    {:>4}  {:>+6.2}   #{}\n",
+                sb, tw.hitting.sb, h_ranks.4
+            ));
+            s.push_str(&format!(
+                "  AVG   {:.3}  {:>+6.2}   #{}\n",
+                avg, tw.hitting.avg, h_ranks.5
+            ));
+            s.push_str(&format!("  --- Pitching (IP: {:.0}) ---\n", ip));
+            s.push_str("  Cat   Proj  Z-Score  Rank\n");
+            s.push_str(&format!(
+                "  K     {:>4}  {:>+6.2}   #{}\n",
+                k, tw.pitching.k, p_ranks.0
+            ));
+            s.push_str(&format!(
+                "  W     {:>4}  {:>+6.2}   #{}\n",
+                w, tw.pitching.w, p_ranks.1
+            ));
+            s.push_str(&format!(
+                "  SV    {:>4}  {:>+6.2}   #{}\n",
+                sv, tw.pitching.sv, p_ranks.2
+            ));
+            s.push_str(&format!(
+                "  HD    {:>4}  {:>+6.2}   #{}\n",
+                hd, tw.pitching.hd, p_ranks.3
+            ));
+            s.push_str(&format!(
+                "  ERA   {:.2}  {:>+6.2}   #{}\n",
+                era, tw.pitching.era, p_ranks.4
+            ));
+            s.push_str(&format!(
+                "  WHIP  {:.2}  {:>+6.2}   #{}\n",
+                whip, tw.pitching.whip, p_ranks.5
+            ));
+        }
         _ => {
             s.push_str("  (projection/zscore type mismatch)\n");
         }
@@ -408,7 +471,8 @@ fn compute_hitter_ranks(
         .collect();
 
     let pz = match &player.category_zscores {
-        CategoryZScores::Hitter(h) => h,
+        CategoryZScores::Hitter(h) => *h,
+        CategoryZScores::TwoWay(tw) => tw.hitting,
         _ => return (0, 0, 0, 0, 0, 0),
     };
 
@@ -423,36 +487,42 @@ fn compute_hitter_ranks(
     let r_extract = |z: &CategoryZScores| -> Option<f64> {
         match z {
             CategoryZScores::Hitter(h) => Some(h.r),
+            CategoryZScores::TwoWay(tw) => Some(tw.hitting.r),
             _ => None,
         }
     };
     let hr_extract = |z: &CategoryZScores| -> Option<f64> {
         match z {
             CategoryZScores::Hitter(h) => Some(h.hr),
+            CategoryZScores::TwoWay(tw) => Some(tw.hitting.hr),
             _ => None,
         }
     };
     let rbi_extract = |z: &CategoryZScores| -> Option<f64> {
         match z {
             CategoryZScores::Hitter(h) => Some(h.rbi),
+            CategoryZScores::TwoWay(tw) => Some(tw.hitting.rbi),
             _ => None,
         }
     };
     let bb_extract = |z: &CategoryZScores| -> Option<f64> {
         match z {
             CategoryZScores::Hitter(h) => Some(h.bb),
+            CategoryZScores::TwoWay(tw) => Some(tw.hitting.bb),
             _ => None,
         }
     };
     let sb_extract = |z: &CategoryZScores| -> Option<f64> {
         match z {
             CategoryZScores::Hitter(h) => Some(h.sb),
+            CategoryZScores::TwoWay(tw) => Some(tw.hitting.sb),
             _ => None,
         }
     };
     let avg_extract = |z: &CategoryZScores| -> Option<f64> {
         match z {
             CategoryZScores::Hitter(h) => Some(h.avg),
+            CategoryZScores::TwoWay(tw) => Some(tw.hitting.avg),
             _ => None,
         }
     };
@@ -475,12 +545,13 @@ fn compute_pitcher_ranks(
 ) -> (usize, usize, usize, usize, usize, usize) {
     let pitcher_z: Vec<&CategoryZScores> = available
         .iter()
-        .filter(|p| p.is_pitcher)
+        .filter(|p| p.is_pitcher || p.is_two_way)
         .map(|p| &p.category_zscores)
         .collect();
 
     let pz = match &player.category_zscores {
-        CategoryZScores::Pitcher(p) => p,
+        CategoryZScores::Pitcher(p) => *p,
+        CategoryZScores::TwoWay(tw) => tw.pitching,
         _ => return (0, 0, 0, 0, 0, 0),
     };
 
@@ -495,36 +566,42 @@ fn compute_pitcher_ranks(
     let k_extract = |z: &CategoryZScores| -> Option<f64> {
         match z {
             CategoryZScores::Pitcher(p) => Some(p.k),
+            CategoryZScores::TwoWay(tw) => Some(tw.pitching.k),
             _ => None,
         }
     };
     let w_extract = |z: &CategoryZScores| -> Option<f64> {
         match z {
             CategoryZScores::Pitcher(p) => Some(p.w),
+            CategoryZScores::TwoWay(tw) => Some(tw.pitching.w),
             _ => None,
         }
     };
     let sv_extract = |z: &CategoryZScores| -> Option<f64> {
         match z {
             CategoryZScores::Pitcher(p) => Some(p.sv),
+            CategoryZScores::TwoWay(tw) => Some(tw.pitching.sv),
             _ => None,
         }
     };
     let hd_extract = |z: &CategoryZScores| -> Option<f64> {
         match z {
             CategoryZScores::Pitcher(p) => Some(p.hd),
+            CategoryZScores::TwoWay(tw) => Some(tw.pitching.hd),
             _ => None,
         }
     };
     let era_extract = |z: &CategoryZScores| -> Option<f64> {
         match z {
             CategoryZScores::Pitcher(p) => Some(p.era),
+            CategoryZScores::TwoWay(tw) => Some(tw.pitching.era),
             _ => None,
         }
     };
     let whip_extract = |z: &CategoryZScores| -> Option<f64> {
         match z {
             CategoryZScores::Pitcher(p) => Some(p.whip),
+            CategoryZScores::TwoWay(tw) => Some(tw.pitching.whip),
             _ => None,
         }
     };
@@ -916,6 +993,7 @@ mod tests {
             team: "TST".into(),
             positions: positions.clone(),
             is_pitcher: false,
+            is_two_way: false,
             pitcher_type: None,
             projection: PlayerProjectionData::Hitter {
                 pa: 600, ab: 550, h: 150, hr: 25, r: 80, rbi: 85, bb: 50, sb: 10, avg: 0.273,
@@ -940,6 +1018,7 @@ mod tests {
             team: "TST".into(),
             positions: vec![pos],
             is_pitcher: true,
+            is_two_way: false,
             pitcher_type: Some(pt),
             projection: PlayerProjectionData::Pitcher {
                 ip: 180.0, k: 200, w: 14, sv: 0, hd: 0, era: 3.20, whip: 1.10, g: 30, gs: 30,

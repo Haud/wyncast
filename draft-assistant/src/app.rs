@@ -1311,6 +1311,7 @@ mod tests {
             team: "TST".into(),
             positions,
             is_pitcher: false,
+            is_two_way: false,
             pitcher_type: None,
             projection: PlayerProjectionData::Hitter {
                 pa: ab + bb,
@@ -1359,6 +1360,7 @@ mod tests {
             team: "TST".into(),
             positions: vec![pos],
             is_pitcher: true,
+            is_two_way: false,
             pitcher_type: Some(pitcher_type),
             projection: PlayerProjectionData::Pitcher {
                 ip,

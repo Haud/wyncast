@@ -163,6 +163,7 @@ mod tests {
             team: "TST".to_string(),
             positions,
             is_pitcher: false,
+            is_two_way: false,
             pitcher_type: None,
             projection: PlayerProjectionData::Hitter {
                 pa: 600,

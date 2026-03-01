@@ -11,7 +11,8 @@ use crate::config::{Config, LeagueConfig, StrategyConfig};
 use crate::draft::state::DraftState;
 use projections::AllProjections;
 use zscore::{
-    CategoryZScores, HitterZScores, PitcherZScores, PlayerProjectionData, PlayerValuation,
+    CategoryZScores, HitterZScores, PitcherZScores, TwoWayZScores,
+    PlayerProjectionData, PlayerValuation,
     avg_contribution, compute_pool_stats, compute_zscore, era_contribution,
     whip_contribution,
 };
@@ -74,24 +75,58 @@ pub fn recalculate_all(
 
     let weights = &strategy.weights;
 
-    // ---- 1. Separate into hitter/pitcher pools ----
+    // Helper: extract hitting stats from a projection (Hitter or TwoWay).
+    fn extract_hitting_stats(proj: &PlayerProjectionData) -> Option<(u32, u32, u32, u32, u32, u32, u32, f64)> {
+        match proj {
+            PlayerProjectionData::Hitter { r, hr, rbi, bb, sb, ab, h, avg, .. } =>
+                Some((*r, *hr, *rbi, *bb, *sb, *ab, *h, *avg)),
+            PlayerProjectionData::TwoWay { r, hr, rbi, bb, sb, ab, h, avg, .. } =>
+                Some((*r, *hr, *rbi, *bb, *sb, *ab, *h, *avg)),
+            _ => None,
+        }
+    }
+
+    // Helper: extract pitching stats from a projection (Pitcher or TwoWay).
+    fn extract_pitching_stats(proj: &PlayerProjectionData) -> Option<(u32, u32, u32, u32, f64, f64, f64)> {
+        match proj {
+            PlayerProjectionData::Pitcher { k, w, sv, hd, ip, era, whip, .. } =>
+                Some((*k, *w, *sv, *hd, *ip, *era, *whip)),
+            PlayerProjectionData::TwoWay { k, w, sv, hd, ip, era, whip, .. } =>
+                Some((*k, *w, *sv, *hd, *ip, *era, *whip)),
+            _ => None,
+        }
+    }
+
+    // ---- 1. Separate into hitter/pitcher/two-way pools ----
+    // Hitter indices: pure hitters + two-way players (they have hitting stats).
     let hitter_indices: Vec<usize> = available_players
         .iter()
         .enumerate()
-        .filter(|(_, p)| !p.is_pitcher)
+        .filter(|(_, p)| !p.is_pitcher) // includes two-way (is_pitcher = false)
         .map(|(i, _)| i)
         .collect();
 
+    // Pitcher indices: pure pitchers only.
     let pitcher_indices: Vec<usize> = available_players
         .iter()
         .enumerate()
-        .filter(|(_, p)| p.is_pitcher)
+        .filter(|(_, p)| p.is_pitcher && !p.is_two_way)
+        .map(|(i, _)| i)
+        .collect();
+
+    // Two-way player indices (subset of hitter_indices).
+    let two_way_indices: Vec<usize> = available_players
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.is_two_way)
         .map(|(i, _)| i)
         .collect();
 
     // ---- 2. Recompute hitter pool stats and z-scores ----
+    // Hitter pool stats are computed from all non-pitcher players (including
+    // two-way players' hitting side).
+    let mut hitter_pool_stats_data = None;
     if !hitter_indices.is_empty() {
-        // Extract raw stat vectors for pool stats.
         let mut r_vals = Vec::new();
         let mut hr_vals = Vec::new();
         let mut rbi_vals = Vec::new();
@@ -100,15 +135,15 @@ pub fn recalculate_all(
         let mut ab_vals = Vec::new();
 
         for &i in &hitter_indices {
-            if let PlayerProjectionData::Hitter { r, hr, rbi, bb, sb, ab, .. } =
-                &available_players[i].projection
+            if let Some((r, hr, rbi, bb, sb, ab, _h, _avg)) =
+                extract_hitting_stats(&available_players[i].projection)
             {
-                r_vals.push(*r as f64);
-                hr_vals.push(*hr as f64);
-                rbi_vals.push(*rbi as f64);
-                bb_vals.push(*bb as f64);
-                sb_vals.push(*sb as f64);
-                ab_vals.push(*ab);
+                r_vals.push(r as f64);
+                hr_vals.push(hr as f64);
+                rbi_vals.push(rbi as f64);
+                bb_vals.push(bb as f64);
+                sb_vals.push(sb as f64);
+                ab_vals.push(ab);
             }
         }
 
@@ -116,11 +151,8 @@ pub fn recalculate_all(
         let total_h: f64 = hitter_indices
             .iter()
             .filter_map(|&i| {
-                if let PlayerProjectionData::Hitter { h, .. } = &available_players[i].projection {
-                    Some(*h as f64)
-                } else {
-                    None
-                }
+                extract_hitting_stats(&available_players[i].projection)
+                    .map(|(_, _, _, _, _, _, h, _)| h as f64)
             })
             .sum();
         let total_ab: f64 = ab_vals.iter().map(|ab| *ab as f64).sum();
@@ -134,13 +166,8 @@ pub fn recalculate_all(
         let avg_contrib_vals: Vec<f64> = hitter_indices
             .iter()
             .filter_map(|&i| {
-                if let PlayerProjectionData::Hitter { ab, avg, .. } =
-                    &available_players[i].projection
-                {
-                    Some(avg_contribution(*ab, *avg, league_avg_avg))
-                } else {
-                    None
-                }
+                extract_hitting_stats(&available_players[i].projection)
+                    .map(|(_, _, _, _, _, ab, _, avg)| avg_contribution(ab, avg, league_avg_avg))
             })
             .collect();
 
@@ -151,18 +178,23 @@ pub fn recalculate_all(
         let sb_stats = compute_pool_stats(&sb_vals);
         let avg_stats = compute_pool_stats(&avg_contrib_vals);
 
-        // Recompute z-scores for each hitter.
+        hitter_pool_stats_data = Some((r_stats, hr_stats, rbi_stats, bb_stats, sb_stats, avg_stats, league_avg_avg));
+
+        // Recompute z-scores for each pure hitter (not two-way; those are handled later).
         for &i in &hitter_indices {
-            if let PlayerProjectionData::Hitter { r, hr, rbi, bb, sb, ab, avg, .. } =
-                &available_players[i].projection
+            if available_players[i].is_two_way {
+                continue; // handled after pitcher pool stats are ready
+            }
+            if let Some((r, hr, rbi, bb, sb, ab, _h, avg)) =
+                extract_hitting_stats(&available_players[i].projection)
             {
-                let rz = compute_zscore(*r as f64, &r_stats);
-                let hrz = compute_zscore(*hr as f64, &hr_stats);
-                let rbiz = compute_zscore(*rbi as f64, &rbi_stats);
-                let bbz = compute_zscore(*bb as f64, &bb_stats);
-                let sbz = compute_zscore(*sb as f64, &sb_stats);
+                let rz = compute_zscore(r as f64, &r_stats);
+                let hrz = compute_zscore(hr as f64, &hr_stats);
+                let rbiz = compute_zscore(rbi as f64, &rbi_stats);
+                let bbz = compute_zscore(bb as f64, &bb_stats);
+                let sbz = compute_zscore(sb as f64, &sb_stats);
                 let avgz = compute_zscore(
-                    avg_contribution(*ab, *avg, league_avg_avg),
+                    avg_contribution(ab, avg, league_avg_avg),
                     &avg_stats,
                 );
 
@@ -189,50 +221,48 @@ pub fn recalculate_all(
     }
 
     // ---- 2b. Recompute pitcher pool stats and z-scores ----
-    if !pitcher_indices.is_empty() {
+    // Pitcher pool includes pure pitchers AND the pitching side of two-way players.
+    let all_pitching_indices: Vec<usize> = pitcher_indices
+        .iter()
+        .chain(two_way_indices.iter())
+        .copied()
+        .collect();
+
+    let mut pitcher_pool_stats_data = None;
+    if !all_pitching_indices.is_empty() {
         let mut k_vals = Vec::new();
         let mut w_vals = Vec::new();
         let mut sv_vals = Vec::new();
         let mut hd_vals = Vec::new();
         let mut ip_vals = Vec::new();
 
-        for &i in &pitcher_indices {
-            if let PlayerProjectionData::Pitcher { k, w, sv, hd, ip, .. } =
-                &available_players[i].projection
+        for &i in &all_pitching_indices {
+            if let Some((k, w, sv, hd, ip, _era, _whip)) =
+                extract_pitching_stats(&available_players[i].projection)
             {
-                k_vals.push(*k as f64);
-                w_vals.push(*w as f64);
-                sv_vals.push(*sv as f64);
-                hd_vals.push(*hd as f64);
-                ip_vals.push(*ip);
+                k_vals.push(k as f64);
+                w_vals.push(w as f64);
+                sv_vals.push(sv as f64);
+                hd_vals.push(hd as f64);
+                ip_vals.push(ip);
             }
         }
 
         // League average ERA and WHIP.
         let total_ip: f64 = ip_vals.iter().sum();
         let (league_avg_era, league_avg_whip) = if total_ip > 1e-9 {
-            let total_er: f64 = pitcher_indices
+            let total_er: f64 = all_pitching_indices
                 .iter()
                 .filter_map(|&i| {
-                    if let PlayerProjectionData::Pitcher { ip, era, .. } =
-                        &available_players[i].projection
-                    {
-                        Some(ip * era / 9.0)
-                    } else {
-                        None
-                    }
+                    extract_pitching_stats(&available_players[i].projection)
+                        .map(|(_, _, _, _, ip, era, _)| ip * era / 9.0)
                 })
                 .sum();
-            let total_wh: f64 = pitcher_indices
+            let total_wh: f64 = all_pitching_indices
                 .iter()
                 .filter_map(|&i| {
-                    if let PlayerProjectionData::Pitcher { ip, whip, .. } =
-                        &available_players[i].projection
-                    {
-                        Some(ip * whip)
-                    } else {
-                        None
-                    }
+                    extract_pitching_stats(&available_players[i].projection)
+                        .map(|(_, _, _, _, ip, _, whip)| ip * whip)
                 })
                 .sum();
             (total_er / total_ip * 9.0, total_wh / total_ip)
@@ -241,29 +271,19 @@ pub fn recalculate_all(
         };
 
         // ERA and WHIP contributions.
-        let era_contrib_vals: Vec<f64> = pitcher_indices
+        let era_contrib_vals: Vec<f64> = all_pitching_indices
             .iter()
             .filter_map(|&i| {
-                if let PlayerProjectionData::Pitcher { ip, era, .. } =
-                    &available_players[i].projection
-                {
-                    Some(era_contribution(*ip, *era, league_avg_era))
-                } else {
-                    None
-                }
+                extract_pitching_stats(&available_players[i].projection)
+                    .map(|(_, _, _, _, ip, era, _)| era_contribution(ip, era, league_avg_era))
             })
             .collect();
 
-        let whip_contrib_vals: Vec<f64> = pitcher_indices
+        let whip_contrib_vals: Vec<f64> = all_pitching_indices
             .iter()
             .filter_map(|&i| {
-                if let PlayerProjectionData::Pitcher { ip, whip, .. } =
-                    &available_players[i].projection
-                {
-                    Some(whip_contribution(*ip, *whip, league_avg_whip))
-                } else {
-                    None
-                }
+                extract_pitching_stats(&available_players[i].projection)
+                    .map(|(_, _, _, _, ip, _, whip)| whip_contribution(ip, whip, league_avg_whip))
             })
             .collect();
 
@@ -274,21 +294,23 @@ pub fn recalculate_all(
         let era_stats = compute_pool_stats(&era_contrib_vals);
         let whip_stats = compute_pool_stats(&whip_contrib_vals);
 
-        // Recompute z-scores for each pitcher.
+        pitcher_pool_stats_data = Some((k_stats, w_stats, sv_stats, hd_stats, era_stats, whip_stats, league_avg_era, league_avg_whip));
+
+        // Recompute z-scores for each pure pitcher.
         for &i in &pitcher_indices {
-            if let PlayerProjectionData::Pitcher { k, w, sv, hd, ip, era, whip, .. } =
-                &available_players[i].projection
+            if let Some((k, w, sv, hd, ip, era, whip)) =
+                extract_pitching_stats(&available_players[i].projection)
             {
-                let kz = compute_zscore(*k as f64, &k_stats);
-                let wz = compute_zscore(*w as f64, &w_stats);
-                let svz = compute_zscore(*sv as f64, &sv_stats);
-                let hdz = compute_zscore(*hd as f64, &hd_stats);
+                let kz = compute_zscore(k as f64, &k_stats);
+                let wz = compute_zscore(w as f64, &w_stats);
+                let svz = compute_zscore(sv as f64, &sv_stats);
+                let hdz = compute_zscore(hd as f64, &hd_stats);
                 let eraz = compute_zscore(
-                    era_contribution(*ip, *era, league_avg_era),
+                    era_contribution(ip, era, league_avg_era),
                     &era_stats,
                 );
                 let whipz = compute_zscore(
-                    whip_contribution(*ip, *whip, league_avg_whip),
+                    whip_contribution(ip, whip, league_avg_whip),
                     &whip_stats,
                 );
 
@@ -310,6 +332,74 @@ pub fn recalculate_all(
                         total,
                     });
                 available_players[i].total_zscore = total;
+            }
+        }
+    }
+
+    // ---- 2c. Recompute two-way player z-scores (needs both pool stats) ----
+    if let (Some((r_stats, hr_stats, rbi_stats, bb_stats, sb_stats, avg_stats, league_avg_avg)),
+            Some((k_stats, w_stats, sv_stats, hd_stats, era_stats, whip_stats, league_avg_era, league_avg_whip))) =
+        (&hitter_pool_stats_data, &pitcher_pool_stats_data)
+    {
+        for &i in &two_way_indices {
+            let proj = &available_players[i].projection;
+            if let (Some((r, hr, rbi, bb, sb, ab, _h, avg)),
+                    Some((k, w, sv, hd, ip, era, whip))) =
+                (extract_hitting_stats(proj), extract_pitching_stats(proj))
+            {
+                // Hitting z-scores
+                let rz = compute_zscore(r as f64, r_stats);
+                let hrz = compute_zscore(hr as f64, hr_stats);
+                let rbiz = compute_zscore(rbi as f64, rbi_stats);
+                let bbz = compute_zscore(bb as f64, bb_stats);
+                let sbz = compute_zscore(sb as f64, sb_stats);
+                let avgz = compute_zscore(
+                    avg_contribution(ab, avg, *league_avg_avg),
+                    avg_stats,
+                );
+                let hitting_total = rz * weights.R
+                    + hrz * weights.HR
+                    + rbiz * weights.RBI
+                    + bbz * weights.BB
+                    + sbz * weights.SB
+                    + avgz * weights.AVG;
+                let hitting_zscores = HitterZScores {
+                    r: rz, hr: hrz, rbi: rbiz, bb: bbz, sb: sbz, avg: avgz,
+                    total: hitting_total,
+                };
+
+                // Pitching z-scores
+                let kz = compute_zscore(k as f64, k_stats);
+                let wz = compute_zscore(w as f64, w_stats);
+                let svz = compute_zscore(sv as f64, sv_stats);
+                let hdz = compute_zscore(hd as f64, hd_stats);
+                let eraz = compute_zscore(
+                    era_contribution(ip, era, *league_avg_era),
+                    era_stats,
+                );
+                let whipz = compute_zscore(
+                    whip_contribution(ip, whip, *league_avg_whip),
+                    whip_stats,
+                );
+                let pitching_total = kz * weights.K
+                    + wz * weights.W
+                    + svz * weights.SV
+                    + hdz * weights.HD
+                    + eraz * weights.ERA
+                    + whipz * weights.WHIP;
+                let pitching_zscores = PitcherZScores {
+                    k: kz, w: wz, sv: svz, hd: hdz, era: eraz, whip: whipz,
+                    total: pitching_total,
+                };
+
+                let combined_total = hitting_total + pitching_total;
+                available_players[i].category_zscores =
+                    CategoryZScores::TwoWay(TwoWayZScores {
+                        hitting: hitting_zscores,
+                        pitching: pitching_zscores,
+                        total: combined_total,
+                    });
+                available_players[i].total_zscore = combined_total;
             }
         }
     }
@@ -427,6 +517,7 @@ mod tests {
             team: "TST".into(),
             positions,
             is_pitcher: false,
+            is_two_way: false,
             pitcher_type: None,
             projection: PlayerProjectionData::Hitter {
                 pa: ab + bb,
@@ -464,6 +555,7 @@ mod tests {
             team: "TST".into(),
             positions: vec![pos],
             is_pitcher: true,
+            is_two_way: false,
             pitcher_type: Some(pitcher_type),
             projection: PlayerProjectionData::Pitcher {
                 ip,
@@ -639,6 +731,236 @@ mod tests {
         for p in &players {
             assert!(p.dollar_value >= 1.0);
             assert!(p.total_zscore.is_finite());
+        }
+    }
+
+    // ---- Two-way player tests ----
+
+    fn make_two_way(
+        name: &str,
+        // Hitting stats
+        r: u32, hr: u32, rbi: u32, bb: u32, sb: u32,
+        ab: u32, avg: f64,
+        // Pitching stats
+        k: u32, w: u32, sv: u32, hd: u32,
+        ip: f64, era: f64, whip: f64,
+        pitcher_type: crate::valuation::projections::PitcherType,
+        positions: Vec<Position>,
+    ) -> PlayerValuation {
+        let pos = match pitcher_type {
+            crate::valuation::projections::PitcherType::SP => Position::StartingPitcher,
+            crate::valuation::projections::PitcherType::RP => Position::ReliefPitcher,
+        };
+        let mut all_positions = positions;
+        if !all_positions.contains(&pos) {
+            all_positions.push(pos);
+        }
+        PlayerValuation {
+            name: name.into(),
+            team: "TST".into(),
+            positions: all_positions,
+            is_pitcher: false,
+            is_two_way: true,
+            pitcher_type: Some(pitcher_type),
+            projection: PlayerProjectionData::TwoWay {
+                pa: ab + bb,
+                ab,
+                h: (ab as f64 * avg).round() as u32,
+                hr,
+                r,
+                rbi,
+                bb,
+                sb,
+                avg,
+                ip,
+                k,
+                w,
+                sv,
+                hd,
+                era,
+                whip,
+                g: 30,
+                gs: if pitcher_type == crate::valuation::projections::PitcherType::SP { 30 } else { 0 },
+            },
+            total_zscore: 0.0,
+            category_zscores: CategoryZScores::TwoWay(TwoWayZScores {
+                hitting: HitterZScores {
+                    r: 0.0, hr: 0.0, rbi: 0.0, bb: 0.0, sb: 0.0, avg: 0.0, total: 0.0,
+                },
+                pitching: PitcherZScores {
+                    k: 0.0, w: 0.0, sv: 0.0, hd: 0.0, era: 0.0, whip: 0.0, total: 0.0,
+                },
+                total: 0.0,
+            }),
+            vor: 0.0,
+            best_position: None,
+            dollar_value: 0.0,
+        }
+    }
+
+    #[test]
+    fn recalculate_all_with_two_way_player() {
+        let league = test_league_config();
+        let strategy = test_strategy_config();
+        let draft_state = create_test_draft_state();
+
+        let mut players = vec![
+            // Two-way player: elite hitter + solid pitcher
+            make_two_way(
+                "Ohtani", 100, 40, 100, 60, 15, 550, 0.300,
+                200, 14, 0, 0, 160.0, 2.80, 1.00,
+                PitcherType::SP, vec![Position::Utility],
+            ),
+            // Regular hitters
+            make_hitter("H_Good", 80, 25, 75, 55, 15, 530, 0.280, vec![Position::FirstBase]),
+            make_hitter("H_Mid", 60, 15, 55, 40, 10, 500, 0.265, vec![Position::SecondBase]),
+            make_hitter("H_Low", 45, 8, 40, 30, 5, 480, 0.250, vec![Position::Catcher]),
+            // Regular pitchers
+            make_pitcher("P_Ace", 250, 18, 0, 0, 200.0, 2.80, 1.00, PitcherType::SP),
+            make_pitcher("P_Good", 200, 14, 0, 0, 180.0, 3.20, 1.10, PitcherType::SP),
+            make_pitcher("P_Mid", 150, 10, 0, 0, 160.0, 3.80, 1.20, PitcherType::SP),
+        ];
+
+        recalculate_all(&mut players, &league, &strategy, &draft_state);
+
+        // The two-way player should have a valid dollar value.
+        let ohtani = players.iter().find(|p| p.name == "Ohtani").unwrap();
+        assert!(
+            ohtani.dollar_value >= 1.0,
+            "Two-way player should have value >= $1, got {}",
+            ohtani.dollar_value,
+        );
+        assert!(
+            ohtani.total_zscore.is_finite(),
+            "Two-way player should have finite z-score",
+        );
+
+        // Two-way player should have TwoWay z-scores after recalculation.
+        match &ohtani.category_zscores {
+            CategoryZScores::TwoWay(tw) => {
+                assert!(tw.hitting.total.is_finite());
+                assert!(tw.pitching.total.is_finite());
+            }
+            other => panic!("Expected TwoWay z-scores after recalculate, got {:?}", other),
+        }
+
+        // The two-way player should be valued higher than similar pure hitters
+        // because of the combined hitting + pitching contribution.
+        let h_good = players.iter().find(|p| p.name == "H_Good").unwrap();
+        assert!(
+            ohtani.dollar_value > h_good.dollar_value,
+            "Two-way player (${}) should be valued higher than a good pure hitter (${})",
+            ohtani.dollar_value,
+            h_good.dollar_value,
+        );
+
+        // All players should have valid values and be sorted.
+        for p in &players {
+            assert!(p.dollar_value >= 1.0);
+            assert!(p.total_zscore.is_finite());
+        }
+        for i in 1..players.len() {
+            assert!(
+                players[i - 1].dollar_value >= players[i].dollar_value,
+                "Not sorted: {} (${}) >= {} (${})",
+                players[i - 1].name,
+                players[i - 1].dollar_value,
+                players[i].name,
+                players[i].dollar_value,
+            );
+        }
+    }
+
+    #[test]
+    fn two_way_player_auction_value_reflects_dual_contribution() {
+        // Compare the auction dollar value of a two-way player vs. the sum
+        // of equivalent pure hitter and pure pitcher.
+        let league = test_league_config();
+        let strategy = test_strategy_config();
+        let draft_state = create_test_draft_state();
+
+        // Pool with a two-way player.
+        let mut with_two_way = vec![
+            make_two_way(
+                "TwoWay", 90, 35, 90, 55, 12, 540, 0.290,
+                180, 12, 0, 0, 150.0, 3.00, 1.05,
+                PitcherType::SP, vec![Position::Utility],
+            ),
+            make_hitter("FillerH1", 70, 20, 65, 45, 10, 520, 0.270, vec![Position::FirstBase]),
+            make_hitter("FillerH2", 50, 10, 45, 30, 5, 480, 0.250, vec![Position::Catcher]),
+            make_pitcher("FillerSP1", 200, 15, 0, 0, 190.0, 3.20, 1.10, PitcherType::SP),
+            make_pitcher("FillerSP2", 160, 11, 0, 0, 170.0, 3.60, 1.15, PitcherType::SP),
+        ];
+
+        recalculate_all(&mut with_two_way, &league, &strategy, &draft_state);
+
+        let two_way_value = with_two_way.iter().find(|p| p.name == "TwoWay").unwrap().dollar_value;
+
+        // Equivalent pool with same player split as pure hitter + pure pitcher.
+        let mut without_two_way = vec![
+            make_hitter("SplitH", 90, 35, 90, 55, 12, 540, 0.290, vec![Position::Utility]),
+            make_pitcher("SplitP", 180, 12, 0, 0, 150.0, 3.00, 1.05, PitcherType::SP),
+            make_hitter("FillerH1", 70, 20, 65, 45, 10, 520, 0.270, vec![Position::FirstBase]),
+            make_hitter("FillerH2", 50, 10, 45, 30, 5, 480, 0.250, vec![Position::Catcher]),
+            make_pitcher("FillerSP1", 200, 15, 0, 0, 190.0, 3.20, 1.10, PitcherType::SP),
+            make_pitcher("FillerSP2", 160, 11, 0, 0, 170.0, 3.60, 1.15, PitcherType::SP),
+        ];
+
+        recalculate_all(&mut without_two_way, &league, &strategy, &draft_state);
+
+        let split_hitter_value = without_two_way.iter().find(|p| p.name == "SplitH").unwrap().dollar_value;
+        let split_pitcher_value = without_two_way.iter().find(|p| p.name == "SplitP").unwrap().dollar_value;
+
+        // The two-way player's single-slot value should be substantial.
+        // It won't exactly equal the sum of split values (different pool dynamics),
+        // but it should be meaningfully higher than either split alone.
+        assert!(
+            two_way_value > split_hitter_value,
+            "Two-way value (${:.1}) should exceed split hitter value (${:.1})",
+            two_way_value,
+            split_hitter_value,
+        );
+        assert!(
+            two_way_value > split_pitcher_value,
+            "Two-way value (${:.1}) should exceed split pitcher value (${:.1})",
+            two_way_value,
+            split_pitcher_value,
+        );
+    }
+
+    #[test]
+    fn recalculate_all_two_way_after_pick_removal() {
+        // Verify that removing a two-way player from the pool doesn't
+        // break subsequent recalculations.
+        let league = test_league_config();
+        let strategy = test_strategy_config();
+        let draft_state = create_test_draft_state();
+
+        let mut players = vec![
+            make_two_way(
+                "Ohtani", 100, 40, 100, 60, 15, 550, 0.300,
+                200, 14, 0, 0, 160.0, 2.80, 1.00,
+                PitcherType::SP, vec![Position::Utility],
+            ),
+            make_hitter("H1", 80, 25, 75, 55, 15, 530, 0.280, vec![Position::FirstBase]),
+            make_hitter("H2", 60, 15, 55, 40, 10, 500, 0.265, vec![Position::SecondBase]),
+            make_pitcher("SP1", 250, 18, 0, 0, 200.0, 2.80, 1.00, PitcherType::SP),
+            make_pitcher("SP2", 200, 14, 0, 0, 180.0, 3.20, 1.10, PitcherType::SP),
+        ];
+
+        // First recalculation with two-way player present.
+        recalculate_all(&mut players, &league, &strategy, &draft_state);
+        assert!(players.iter().all(|p| p.dollar_value >= 1.0));
+
+        // Remove the two-way player (drafted).
+        players.retain(|p| p.name != "Ohtani");
+
+        // Second recalculation should succeed without the two-way player.
+        recalculate_all(&mut players, &league, &strategy, &draft_state);
+
+        for p in &players {
+            assert!(p.dollar_value >= 1.0, "{} has value < $1", p.name);
+            assert!(p.total_zscore.is_finite(), "{} has non-finite z-score", p.name);
         }
     }
 }
