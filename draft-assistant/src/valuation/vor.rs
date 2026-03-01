@@ -93,9 +93,15 @@ pub fn determine_replacement_levels(
         let total_starters = slots * num_teams;
 
         // Find all players eligible at this position.
+        // Hitters with empty positions (no ESPN overlay yet) are treated as
+        // eligible at every hitter position, mirroring how compute_vor()
+        // evaluates them at all positions when positions is empty.
         let mut eligible: Vec<f64> = players
             .iter()
-            .filter(|p| !p.is_pitcher && p.positions.contains(&pos))
+            .filter(|p| {
+                !p.is_pitcher
+                    && (p.positions.contains(&pos) || p.positions.is_empty())
+            })
             .map(|p| p.total_zscore)
             .collect();
         eligible.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
