@@ -245,12 +245,22 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
         UiUpdate::AnalysisComplete => {
             state.analysis_status = LlmStatus::Complete;
         }
+        UiUpdate::AnalysisError(msg) => {
+            state.analysis_text.clear();
+            state.analysis_text.push_str(&format!("[Error: {}]", msg));
+            state.analysis_status = LlmStatus::Error;
+        }
         UiUpdate::PlanToken(token) => {
             state.plan_text.push_str(&token);
             state.plan_status = LlmStatus::Streaming;
         }
         UiUpdate::PlanComplete => {
             state.plan_status = LlmStatus::Complete;
+        }
+        UiUpdate::PlanError(msg) => {
+            state.plan_text.clear();
+            state.plan_text.push_str(&format!("[Error: {}]", msg));
+            state.plan_status = LlmStatus::Error;
         }
         UiUpdate::ConnectionStatus(status) => {
             state.connection_status = status;

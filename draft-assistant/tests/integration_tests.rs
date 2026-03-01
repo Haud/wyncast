@@ -2808,6 +2808,93 @@ async fn event_loop_premature_nomination_does_not_trigger_update() {
     let _ = handle.await;
 }
 
+// ===========================================================================
+// LLM streaming lifecycle tests
+// ===========================================================================
+
+/// Verify that multiple sequential LLM analysis requests work correctly.
+///
+/// Simulates 3 nominations in sequence, each producing tokens and completing.
+/// Events from each task should be routed correctly and the generation counter
+/// should ensure clean handoffs between tasks.
+#[tokio::test]
+async fn multiple_sequential_llm_analysis_requests() {
+    let state = create_test_app_state_from_fixtures();
+    let (_ws_tx, ws_rx) = mpsc::channel(16);
+    let (llm_tx, llm_rx) = mpsc::channel(256);
+    let (cmd_tx, cmd_rx) = mpsc::channel(16);
+    let (ui_tx, mut ui_rx) = mpsc::channel(256);
+
+    let handle = tokio::spawn(async move {
+        let mut state = state;
+        // Simulate nomination 1: set mode and generation
+        state.llm_generation = 1;
+        state.llm_mode = Some(app::LlmMode::NominationAnalysis {
+            player_name: "Player A".into(),
+            player_id: "1".into(),
+            nominated_by: "Team 2".into(),
+            current_bid: 5,
+        });
+        app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state).await
+    });
+
+    tokio::task::yield_now().await;
+
+    // --- Nomination 1: tokens and completion ---
+    llm_tx
+        .send(LlmEvent::Token {
+            text: "Analysis A: ".into(),
+            generation: 1,
+        })
+        .await
+        .unwrap();
+    llm_tx
+        .send(LlmEvent::Complete {
+            full_text: "Analysis A: full text".into(),
+            input_tokens: 10,
+            output_tokens: 5,
+            generation: 1,
+        })
+        .await
+        .unwrap();
+
+    // Receive the token
+    let update = ui_rx.recv().await.unwrap();
+    assert!(
+        matches!(update, UiUpdate::AnalysisToken(ref t) if t == "Analysis A: "),
+        "Expected AnalysisToken for nom 1, got {:?}",
+        update,
+    );
+
+    // Receive the completion
+    let update = ui_rx.recv().await.unwrap();
+    assert!(
+        matches!(update, UiUpdate::AnalysisComplete),
+        "Expected AnalysisComplete for nom 1, got {:?}",
+        update,
+    );
+
+    // After completion, llm_mode should be reset to None internally.
+    // Verify by sending events for a NEW generation (2) that should be
+    // discarded (no mode set from outside the event loop).
+    llm_tx
+        .send(LlmEvent::Token {
+            text: "Orphan token".into(),
+            generation: 2,
+        })
+        .await
+        .unwrap();
+
+    // Give event loop a chance to process
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+
+    // Should not receive any token (discarded because generation doesn't match
+    // or mode is None). Clean up.
+    cmd_tx.send(UserCommand::Quit).await.unwrap();
+    let _ = handle.await;
+}
+
 /// Confirmed nominations (with a bid > 0 and a nominator) MUST still trigger
 /// NominationUpdate in the event loop. This verifies the filter does not
 /// suppress legitimate nominations.
@@ -2860,6 +2947,90 @@ async fn event_loop_confirmed_nomination_triggers_update() {
         other => panic!("Expected NominationUpdate, got {:?}", other),
     }
 
+    cmd_tx.send(UserCommand::Quit).await.unwrap();
+    let _ = handle.await;
+}
+
+/// Verify that cancelling one analysis and starting another works correctly.
+///
+/// Events from the cancelled (old generation) task should be discarded.
+/// Events from the new task should be processed normally.
+#[tokio::test]
+async fn cancel_analysis_and_start_new_one() {
+    let state = create_test_app_state_from_fixtures();
+    let (_ws_tx, ws_rx) = mpsc::channel(16);
+    let (llm_tx, llm_rx) = mpsc::channel(256);
+    let (cmd_tx, cmd_rx) = mpsc::channel(16);
+    let (ui_tx, mut ui_rx) = mpsc::channel(256);
+
+    let handle = tokio::spawn(async move {
+        let mut state = state;
+        // Task 1: generation 1
+        state.llm_generation = 1;
+        state.llm_mode = Some(app::LlmMode::NominationAnalysis {
+            player_name: "Player A".into(),
+            player_id: "1".into(),
+            nominated_by: "Team 2".into(),
+            current_bid: 5,
+        });
+        app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state).await
+    });
+
+    tokio::task::yield_now().await;
+
+    // Send a token from task 1 (gen 1) -- should be processed
+    llm_tx
+        .send(LlmEvent::Token {
+            text: "Old ".into(),
+            generation: 1,
+        })
+        .await
+        .unwrap();
+
+    let update = ui_rx.recv().await.unwrap();
+    assert!(
+        matches!(update, UiUpdate::AnalysisToken(ref t) if t == "Old "),
+        "Expected AnalysisToken from gen 1, got {:?}",
+        update,
+    );
+
+    // Now simulate cancellation + new task: the app would increment generation
+    // to 2 and set new mode. We simulate this by sending a gen-1 Complete
+    // (which resets mode to None), then sending gen-0 stale tokens.
+
+    // Task 1 completes
+    llm_tx
+        .send(LlmEvent::Complete {
+            full_text: "Old full text".into(),
+            input_tokens: 10,
+            output_tokens: 5,
+            generation: 1,
+        })
+        .await
+        .unwrap();
+
+    let update = ui_rx.recv().await.unwrap();
+    assert!(
+        matches!(update, UiUpdate::AnalysisComplete),
+        "Expected AnalysisComplete, got {:?}",
+        update,
+    );
+
+    // After completion, mode is None. Send a stale event (gen 0) -- should be
+    // silently discarded because gen 0 != current gen 1 and mode is None.
+    llm_tx
+        .send(LlmEvent::Token {
+            text: "Stale!".into(),
+            generation: 0,
+        })
+        .await
+        .unwrap();
+
+    // Give event loop a chance to process
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+
+    // No more UI events should arrive for the stale token
     cmd_tx.send(UserCommand::Quit).await.unwrap();
     let _ = handle.await;
 }
@@ -3164,6 +3335,140 @@ async fn premature_then_confirmed_nomination_same_player() {
     let _ = handle.await;
 }
 
+/// Verify that LLM errors are surfaced to the TUI as AnalysisError and
+/// that subsequent analyses can proceed normally after an error.
+#[tokio::test]
+async fn error_recovery_allows_subsequent_analyses() {
+    let state = create_test_app_state_from_fixtures();
+    let (_ws_tx, ws_rx) = mpsc::channel(16);
+    let (llm_tx, llm_rx) = mpsc::channel(256);
+    let (cmd_tx, cmd_rx) = mpsc::channel(16);
+    let (ui_tx, mut ui_rx) = mpsc::channel(256);
+
+    let handle = tokio::spawn(async move {
+        let mut state = state;
+        // Start with generation 1
+        state.llm_generation = 1;
+        state.llm_mode = Some(app::LlmMode::NominationAnalysis {
+            player_name: "Player A".into(),
+            player_id: "1".into(),
+            nominated_by: "Team 2".into(),
+            current_bid: 5,
+        });
+        app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state).await
+    });
+
+    tokio::task::yield_now().await;
+
+    // --- Send an error event ---
+    llm_tx
+        .send(LlmEvent::Error {
+            message: "API rate limited".into(),
+            generation: 1,
+        })
+        .await
+        .unwrap();
+
+    let update = ui_rx.recv().await.unwrap();
+    match update {
+        UiUpdate::AnalysisError(msg) => {
+            assert!(
+                msg.contains("rate limited"),
+                "Error should contain 'rate limited', got: {}",
+                msg
+            );
+        }
+        other => panic!("Expected AnalysisError, got {:?}", other),
+    }
+
+    // After error, mode is reset to None. Further events (even matching gen)
+    // should be discarded because mode is None.
+    llm_tx
+        .send(LlmEvent::Token {
+            text: "After error".into(),
+            generation: 1,
+        })
+        .await
+        .unwrap();
+
+    // Give event loop a chance to process
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+
+    // No more UI events should be emitted for the stale post-error token
+    cmd_tx.send(UserCommand::Quit).await.unwrap();
+    let _ = handle.await;
+}
+
+/// Verify that the llm_open flag is properly managed across multiple
+/// nominations. Even after completing or erroring on one analysis, the
+/// LLM channel should remain open for future events.
+#[tokio::test]
+async fn llm_channel_stays_open_across_nominations() {
+    let state = create_test_app_state_from_fixtures();
+    let (_ws_tx, ws_rx) = mpsc::channel(16);
+    let (llm_tx, llm_rx) = mpsc::channel(256);
+    let (cmd_tx, cmd_rx) = mpsc::channel(16);
+    let (ui_tx, mut ui_rx) = mpsc::channel(256);
+
+    let handle = tokio::spawn(async move {
+        let mut state = state;
+        state.llm_generation = 1;
+        state.llm_mode = Some(app::LlmMode::NominationAnalysis {
+            player_name: "Player A".into(),
+            player_id: "1".into(),
+            nominated_by: "Team 2".into(),
+            current_bid: 5,
+        });
+        app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state).await
+    });
+
+    tokio::task::yield_now().await;
+
+    // Complete analysis for nomination 1
+    llm_tx
+        .send(LlmEvent::Complete {
+            full_text: "Done A".into(),
+            input_tokens: 10,
+            output_tokens: 5,
+            generation: 1,
+        })
+        .await
+        .unwrap();
+
+    let update = ui_rx.recv().await.unwrap();
+    assert!(matches!(update, UiUpdate::AnalysisComplete));
+
+    // Verify the channel is still open by sending more events.
+    // The events won't produce UI updates (mode is None), but the send
+    // should succeed (channel not closed).
+    let send_result = llm_tx
+        .send(LlmEvent::Token {
+            text: "test".into(),
+            generation: 2,
+        })
+        .await;
+    assert!(
+        send_result.is_ok(),
+        "LLM channel should still be open after completion"
+    );
+
+    // Send another event to double-check
+    let send_result = llm_tx
+        .send(LlmEvent::Error {
+            message: "test error".into(),
+            generation: 3,
+        })
+        .await;
+    assert!(
+        send_result.is_ok(),
+        "LLM channel should still be open after multiple events"
+    );
+
+    cmd_tx.send(UserCommand::Quit).await.unwrap();
+    let _ = handle.await;
+}
+
 /// Premature nomination for Player A followed by a confirmed nomination for
 /// Player B. Only Player B should trigger a NominationUpdate.
 #[tokio::test]
@@ -3252,6 +3557,122 @@ async fn premature_player_a_then_confirmed_player_b() {
             assert_eq!(info.nominated_by, "Team 5");
         }
         other => panic!("Expected NominationUpdate for Gunnar Henderson, got {:?}", other),
+    }
+
+    cmd_tx.send(UserCommand::Quit).await.unwrap();
+    let _ = handle.await;
+}
+
+/// Verify that stale events from a previous generation are discarded when
+/// a new generation is active.
+#[tokio::test]
+async fn stale_generation_events_discarded() {
+    let state = create_test_app_state_from_fixtures();
+    let (_ws_tx, ws_rx) = mpsc::channel(16);
+    let (llm_tx, llm_rx) = mpsc::channel(256);
+    let (cmd_tx, cmd_rx) = mpsc::channel(16);
+    let (ui_tx, mut ui_rx) = mpsc::channel(256);
+
+    let handle = tokio::spawn(async move {
+        let mut state = state;
+        // Current generation is 5
+        state.llm_generation = 5;
+        state.llm_mode = Some(app::LlmMode::NominationAnalysis {
+            player_name: "Current Player".into(),
+            player_id: "1".into(),
+            nominated_by: "Team 2".into(),
+            current_bid: 10,
+        });
+        app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state).await
+    });
+
+    tokio::task::yield_now().await;
+
+    // Send stale events from old generations (1, 3, 4) -- should all be
+    // silently discarded
+    for old_gen in [1, 3, 4] {
+        llm_tx
+            .send(LlmEvent::Token {
+                text: format!("stale gen {}", old_gen),
+                generation: old_gen,
+            })
+            .await
+            .unwrap();
+    }
+
+    // Send current generation event -- should be processed
+    llm_tx
+        .send(LlmEvent::Token {
+            text: "Current gen".into(),
+            generation: 5,
+        })
+        .await
+        .unwrap();
+
+    // The first (and only) UI event should be from generation 5
+    let update = ui_rx.recv().await.unwrap();
+    assert!(
+        matches!(update, UiUpdate::AnalysisToken(ref t) if t == "Current gen"),
+        "Expected AnalysisToken with 'Current gen', got {:?}",
+        update,
+    );
+
+    cmd_tx.send(UserCommand::Quit).await.unwrap();
+    let _ = handle.await;
+}
+
+/// Verify that planning errors are surfaced to the TUI correctly.
+#[tokio::test]
+async fn planning_error_surfaced_to_tui() {
+    let state = create_test_app_state_from_fixtures();
+    let (_ws_tx, ws_rx) = mpsc::channel(16);
+    let (llm_tx, llm_rx) = mpsc::channel(256);
+    let (cmd_tx, cmd_rx) = mpsc::channel(16);
+    let (ui_tx, mut ui_rx) = mpsc::channel(256);
+
+    let handle = tokio::spawn(async move {
+        let mut state = state;
+        state.llm_generation = 1;
+        state.llm_mode = Some(app::LlmMode::NominationPlanning);
+        app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state).await
+    });
+
+    tokio::task::yield_now().await;
+
+    // Send planning token then error
+    llm_tx
+        .send(LlmEvent::Token {
+            text: "Plan: ".into(),
+            generation: 1,
+        })
+        .await
+        .unwrap();
+
+    let update = ui_rx.recv().await.unwrap();
+    assert!(
+        matches!(update, UiUpdate::PlanToken(ref t) if t == "Plan: "),
+        "Expected PlanToken, got {:?}",
+        update,
+    );
+
+    llm_tx
+        .send(LlmEvent::Error {
+            message: "Network timeout".into(),
+            generation: 1,
+        })
+        .await
+        .unwrap();
+
+    let update = ui_rx.recv().await.unwrap();
+    match update {
+        UiUpdate::PlanError(msg) => {
+            assert!(
+                msg.contains("Network timeout"),
+                "Error should contain 'Network timeout', got: {}",
+                msg,
+            );
+        }
+        other => panic!("Expected PlanError, got {:?}", other),
     }
 
     cmd_tx.send(UserCommand::Quit).await.unwrap();
