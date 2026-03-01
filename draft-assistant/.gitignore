@@ -2,4 +2,3 @@ target/
 config/
 *.db
 *.log
-data/projections/*.csv
