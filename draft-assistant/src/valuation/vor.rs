@@ -1061,4 +1061,161 @@ mod tests {
             c_repl
         );
     }
+
+    #[test]
+    fn replacement_levels_all_empty_positions() {
+        // Regression test for the bug where all hitter scarcity gauges showed
+        // CRITICAL. Before the fix, hitters with `positions: vec![]` (the
+        // pre-ESPN-overlay state) were excluded from every position's
+        // eligibility filter, causing replacement levels to be NEG_INFINITY.
+        //
+        // The fix adds `|| p.positions.is_empty()` so that hitters without
+        // ESPN position data are treated as eligible at every hitter position.
+        let league = test_league_config();
+        // 2-team league: 1 slot per position per team = 2 starters per position.
+
+        // Create 20 hitters, ALL with empty positions (simulating CSV-only
+        // projections before any ESPN overlay).
+        let players: Vec<PlayerValuation> = (0..20)
+            .map(|i| {
+                make_hitter_valuation(
+                    &format!("Hitter_{}", i + 1),
+                    20.0 - (i as f64), // 20, 19, 18, ..., 1
+                    vec![],            // empty positions — the key scenario
+                )
+            })
+            .collect();
+
+        let levels = determine_replacement_levels(&players, &league);
+
+        // Every hitter position should have a finite replacement level
+        // because all 20 hitters are eligible everywhere.
+        for &pos in HITTER_POSITION_SLOTS {
+            let repl = levels.get(&pos).copied().unwrap_or(f64::NEG_INFINITY);
+            assert!(
+                repl.is_finite(),
+                "{:?} replacement level should be finite (not NEG_INFINITY) \
+                 when all hitters have empty positions, got {}",
+                pos, repl
+            );
+        }
+
+        // Verify the overall hitter (UTIL) replacement is also finite.
+        let util_repl = levels[&Position::Utility];
+        assert!(
+            util_repl.is_finite(),
+            "Overall hitter replacement should be finite, got {}",
+            util_repl
+        );
+
+        // Verify concrete values. Each position has 2 starters (1 slot * 2
+        // teams). All 20 hitters are eligible at every position, so the
+        // position-specific replacement at each position = the 3rd best
+        // hitter = index 2 = zscore 18.0.
+        //
+        // Overall hitter starters = (8 dedicated + 1 UTIL) * 2 teams = 18.
+        // The 19th hitter (index 18) = zscore 2.0.
+        //
+        // Effective replacement = max(position_specific=18.0, overall=2.0) = 18.0.
+        for &pos in HITTER_POSITION_SLOTS {
+            let repl = levels[&pos];
+            assert!(
+                approx_eq(repl, 18.0, 0.01),
+                "{:?} replacement should be 18.0 (position-specific dominates \
+                 because all hitters are eligible everywhere), got {}",
+                pos, repl
+            );
+        }
+    }
+
+    #[test]
+    fn replacement_levels_mixed_empty_and_positioned_hitters() {
+        // Tests a mixed pool: some hitters have explicit positions, some have
+        // empty positions. The empty-position hitters should be counted as
+        // eligible at every hitter position, contributing to (but not
+        // distorting) the replacement level calculation.
+        let mut league = test_league_config();
+        league.num_teams = 2; // 2 starters per position
+
+        let mut players = Vec::new();
+
+        // 3 catchers with explicit positions.
+        for i in 0..3 {
+            players.push(make_hitter_valuation(
+                &format!("C_{}", i + 1),
+                10.0 - (i as f64) * 2.0, // 10, 8, 6
+                vec![Position::Catcher],
+            ));
+        }
+
+        // 5 hitters with empty positions (no ESPN overlay yet).
+        // These should be eligible at ALL hitter positions.
+        for i in 0..5 {
+            players.push(make_hitter_valuation(
+                &format!("Unknown_{}", i + 1),
+                9.0 - (i as f64), // 9, 8, 7, 6, 5
+                vec![],
+            ));
+        }
+
+        // Fill other positions with mediocre players so overall replacement
+        // doesn't dominate at Catcher.
+        for pos in &[
+            Position::FirstBase,
+            Position::SecondBase,
+            Position::ThirdBase,
+            Position::ShortStop,
+            Position::LeftField,
+            Position::CenterField,
+            Position::RightField,
+        ] {
+            for i in 0..5 {
+                players.push(make_hitter_valuation(
+                    &format!("{}_{}", pos.display_str(), i + 1),
+                    4.0 - (i as f64) * 0.5, // 4.0, 3.5, 3.0, 2.5, 2.0
+                    vec![*pos],
+                ));
+            }
+        }
+
+        let levels = determine_replacement_levels(&players, &league);
+
+        // Catcher: 2 starters needed (1 slot * 2 teams).
+        // Eligible players = 3 explicit catchers (10, 8, 6) + 5 empty-
+        // position hitters (9, 8, 7, 6, 5) = 8 eligible players.
+        // Sorted: 10, 9, 8, 8, 7, 6, 6, 5
+        // Position-specific replacement = index 2 = 8.0.
+        //
+        // Overall hitter starters = (8+1) * 2 = 18.
+        // Total hitters = 3 + 5 + 7*5 = 43.
+        // Sorted descending, index 18 will be somewhere around the mediocre
+        // players. The important check: replacement is finite and the
+        // empty-position hitters are being counted.
+        let c_repl = levels[&Position::Catcher];
+        assert!(
+            c_repl.is_finite(),
+            "Catcher replacement should be finite in mixed pool, got {}",
+            c_repl
+        );
+
+        // The position-specific replacement for C should be at least 8.0
+        // (the 3rd-best eligible player), since empty-position hitters
+        // contribute to the eligible pool.
+        assert!(
+            c_repl >= 8.0 - 0.01,
+            "Catcher replacement should be >= 8.0 (empty-position hitters \
+             contribute to eligibility), got {}",
+            c_repl
+        );
+
+        // All hitter positions should have finite replacement levels.
+        for &pos in HITTER_POSITION_SLOTS {
+            let repl = levels.get(&pos).copied().unwrap_or(f64::NEG_INFINITY);
+            assert!(
+                repl.is_finite(),
+                "{:?} replacement should be finite in mixed pool, got {}",
+                pos, repl
+            );
+        }
+    }
 }
