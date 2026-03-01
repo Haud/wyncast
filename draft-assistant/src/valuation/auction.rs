@@ -121,16 +121,17 @@ pub fn compute_auction_values(
 /// - Players with zero or negative VOR: `value = $1` (the floor)
 ///
 /// Two-way players use a blended dollars_per_vor: a weighted average of the
-/// hitter and pitcher rates based on the ratio of their hitting vs pitching
-/// z-score contributions. This ensures their combined value draws from both
-/// pools proportionally.
+/// hitter and pitcher rates based on the ratio of their positive hitting vs
+/// pitching z-score contributions. Only positive totals are considered so that
+/// a negative side does not pull the blended rate toward that pool.
 pub fn player_dollar_value(player: &PlayerValuation, auction: &AuctionValues) -> f64 {
     let dollars_per_vor = if player.is_two_way {
         // Blend the hitting and pitching rates based on z-score contribution.
         let (hitting_total, pitching_total) = match &player.category_zscores {
             crate::valuation::zscore::CategoryZScores::TwoWay(tw) => {
-                // Use absolute values to weight by magnitude of contribution.
-                (tw.hitting.total.abs(), tw.pitching.total.abs())
+                // Weight by positive z-score contribution only. Negative sides
+                // should not pull the blended rate toward that pool.
+                (tw.hitting.total.max(0.0), tw.pitching.total.max(0.0))
             }
             _ => (1.0, 0.0), // Fallback: treat as pure hitter
         };
