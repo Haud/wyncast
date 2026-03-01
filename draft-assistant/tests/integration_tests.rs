@@ -3063,3 +3063,197 @@ fn convert_extension_state_passes_confirmed_nomination() {
     assert_eq!(nom.player_name, "Confirmed Player");
     assert_eq!(nom.current_bid, 3);
 }
+
+/// Premature nomination followed by a confirmed nomination for the SAME player.
+/// The premature update (bid=0, empty nominated_by, no bidder) must NOT produce a
+/// NominationUpdate, while the subsequent confirmed update (bid=1, nominated_by set)
+/// for the same player MUST produce a NominationUpdate.
+#[tokio::test]
+async fn premature_then_confirmed_nomination_same_player() {
+    let state = create_test_app_state_from_fixtures();
+
+    let (ws_tx, ws_rx) = mpsc::channel(16);
+    let (_llm_tx, llm_rx) = mpsc::channel(16);
+    let (cmd_tx, cmd_rx) = mpsc::channel(16);
+    let (ui_tx, mut ui_rx) = mpsc::channel(64);
+
+    let handle = tokio::spawn(app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+
+    let events = generate_mock_draft_events();
+    let budgets: Vec<(String, u32)> = (1..=10)
+        .map(|i| (format!("Team {}", i), 260))
+        .collect();
+
+    // Step 1: Send a premature nomination for Michael King.
+    // This mimics the nominator browsing: player card is visible but bidding
+    // has not started (bid=0, empty nominated_by, no current_bidder).
+    let premature_nom = serde_json::json!({
+        "playerId": "",
+        "playerName": "Michael King",
+        "position": "SP",
+        "nominatedBy": "",
+        "currentBid": 0,
+        "currentBidder": null,
+        "timeRemaining": 30
+    });
+    let json1 = build_state_update_json_with_custom_nomination(
+        &events, 1, &budgets, Some(premature_nom),
+    );
+    ws_tx.send(WsEvent::Message(json1)).await.unwrap();
+
+    // We expect a StateSnapshot (new picks + team registration) but NOT a
+    // NominationUpdate since the nomination is premature.
+    let update1 = ui_rx.recv().await.unwrap();
+    assert!(
+        matches!(&update1, UiUpdate::StateSnapshot(_)),
+        "Expected StateSnapshot from premature update, got {:?}", update1
+    );
+
+    // Short timeout: no NominationUpdate should arrive.
+    let maybe_nom = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        ui_rx.recv(),
+    ).await;
+    match maybe_nom {
+        Ok(Some(UiUpdate::NominationUpdate(info))) => {
+            panic!(
+                "Premature nomination should not trigger NominationUpdate, but got one for '{}'",
+                info.player_name
+            );
+        }
+        _ => {
+            // Good: no NominationUpdate for the premature phase
+        }
+    }
+
+    // Step 2: Send a confirmed nomination for the SAME player (Michael King).
+    // Now bidding has started: bid=1, nominated_by is set.
+    let confirmed_nom = serde_json::json!({
+        "playerId": "",
+        "playerName": "Michael King",
+        "position": "SP",
+        "nominatedBy": "Team 3",
+        "currentBid": 1,
+        "currentBidder": "Team 3",
+        "timeRemaining": 25
+    });
+    let json2 = build_state_update_json_with_custom_nomination(
+        &events, 1, &budgets, Some(confirmed_nom),
+    );
+    ws_tx.send(WsEvent::Message(json2)).await.unwrap();
+
+    // Now we MUST receive a NominationUpdate for Michael King.
+    let update2 = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        ui_rx.recv(),
+    )
+    .await
+    .expect("should receive NominationUpdate within timeout")
+    .expect("channel should not be closed");
+
+    match update2 {
+        UiUpdate::NominationUpdate(info) => {
+            assert_eq!(info.player_name, "Michael King");
+            assert_eq!(info.current_bid, 1);
+            assert_eq!(info.nominated_by, "Team 3");
+        }
+        other => panic!("Expected NominationUpdate for confirmed Michael King, got {:?}", other),
+    }
+
+    cmd_tx.send(UserCommand::Quit).await.unwrap();
+    let _ = handle.await;
+}
+
+/// Premature nomination for Player A followed by a confirmed nomination for
+/// Player B. Only Player B should trigger a NominationUpdate.
+#[tokio::test]
+async fn premature_player_a_then_confirmed_player_b() {
+    let state = create_test_app_state_from_fixtures();
+
+    let (ws_tx, ws_rx) = mpsc::channel(16);
+    let (_llm_tx, llm_rx) = mpsc::channel(16);
+    let (cmd_tx, cmd_rx) = mpsc::channel(16);
+    let (ui_tx, mut ui_rx) = mpsc::channel(64);
+
+    let handle = tokio::spawn(app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+
+    let events = generate_mock_draft_events();
+    let budgets: Vec<(String, u32)> = (1..=10)
+        .map(|i| (format!("Team {}", i), 260))
+        .collect();
+
+    // Step 1: Send a premature nomination for Player A (Michael King).
+    let premature_nom_a = serde_json::json!({
+        "playerId": "",
+        "playerName": "Michael King",
+        "position": "SP",
+        "nominatedBy": "",
+        "currentBid": 0,
+        "currentBidder": null,
+        "timeRemaining": 30
+    });
+    let json1 = build_state_update_json_with_custom_nomination(
+        &events, 1, &budgets, Some(premature_nom_a),
+    );
+    ws_tx.send(WsEvent::Message(json1)).await.unwrap();
+
+    // Drain StateSnapshot; verify no NominationUpdate arrives.
+    let update1 = ui_rx.recv().await.unwrap();
+    assert!(
+        matches!(&update1, UiUpdate::StateSnapshot(_)),
+        "Expected StateSnapshot from premature update, got {:?}", update1
+    );
+
+    let maybe_nom_a = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        ui_rx.recv(),
+    ).await;
+    match maybe_nom_a {
+        Ok(Some(UiUpdate::NominationUpdate(info))) => {
+            panic!(
+                "Premature nomination for Player A should not trigger NominationUpdate, got '{}'",
+                info.player_name
+            );
+        }
+        _ => {
+            // Good: no NominationUpdate for premature Player A
+        }
+    }
+
+    // Step 2: Send a confirmed nomination for Player B (Gunnar Henderson).
+    let confirmed_nom_b = serde_json::json!({
+        "playerId": "",
+        "playerName": "Gunnar Henderson",
+        "position": "SS",
+        "nominatedBy": "Team 5",
+        "currentBid": 3,
+        "currentBidder": "Team 5",
+        "timeRemaining": 28
+    });
+    let json2 = build_state_update_json_with_custom_nomination(
+        &events, 1, &budgets, Some(confirmed_nom_b),
+    );
+    ws_tx.send(WsEvent::Message(json2)).await.unwrap();
+
+    // Should receive a NominationUpdate for Player B (Gunnar Henderson), NOT Player A.
+    let update2 = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        ui_rx.recv(),
+    )
+    .await
+    .expect("should receive NominationUpdate within timeout")
+    .expect("channel should not be closed");
+
+    match update2 {
+        UiUpdate::NominationUpdate(info) => {
+            assert_eq!(info.player_name, "Gunnar Henderson",
+                "NominationUpdate should be for Player B, not Player A");
+            assert_eq!(info.current_bid, 3);
+            assert_eq!(info.nominated_by, "Team 5");
+        }
+        other => panic!("Expected NominationUpdate for Gunnar Henderson, got {:?}", other),
+    }
+
+    cmd_tx.send(UserCommand::Quit).await.unwrap();
+    let _ = handle.await;
+}

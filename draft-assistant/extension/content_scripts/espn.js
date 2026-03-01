@@ -342,6 +342,7 @@ function scrapeCurrentNomination() {
     const hasBiddingForm = !!pickArea.querySelector(SELECTORS.biddingForm);
     const hasBidHistory = bidItems.length > 0;
     if (!hasBiddingForm && !hasBidHistory) {
+      console.debug(LOG_PREFIX, 'Skipping premature nomination for:', playerName);
       return null;
     }
 
