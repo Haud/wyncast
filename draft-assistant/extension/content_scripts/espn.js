@@ -41,6 +41,14 @@ const SELECTORS = {
 
   // My team identification via pick train
   myTeamContent: 'div.content.auction-pick-component--own',
+
+  // Draft board grid (for scraping ESPN-assigned roster slots)
+  draftBoardGrid: 'div.draftBoardGrid',
+  draftBoardHeaders: 'div.draft-board-grid-header-cell > span',
+  draftBoardCompletedPick: 'div.draft-board-grid-pick-cell.completedPick',
+  draftBoardRosterSlot: 'div.rosterSlot',
+  draftBoardPlayerFirstName: 'span.playerFirstName',
+  draftBoardPlayerLastName: 'span.playerLastName',
 };
 
 // Timing constants
@@ -250,6 +258,68 @@ function identifyMyTeam() {
 }
 
 /**
+ * Scrape ESPN-assigned roster slot positions from the draft board grid.
+ *
+ * The draft board is a CSS grid where each column is a team and each row
+ * is a roster slot. Completed pick cells contain the roster slot label
+ * (e.g. "UTIL", "BE", "SS"), the player's first/last name, and the price.
+ *
+ * Returns a Map keyed by "playerLastName|column" -> rosterSlot string.
+ * We use last name + column index because:
+ *   - Last names are displayed prominently and reliably scraped
+ *   - Column index maps to a team (same order as draft board headers)
+ *   - This combination is unique enough to match against pick log entries
+ *
+ * Also returns the team names in column order for mapping.
+ */
+function scrapeDraftBoardSlots() {
+  const slotMap = new Map();
+  const teamNames = [];
+
+  try {
+    // Extract team names from the draft board header cells
+    const headers = document.querySelectorAll(SELECTORS.draftBoardHeaders);
+    headers.forEach((h) => {
+      teamNames.push(h.textContent.trim());
+    });
+
+    if (teamNames.length === 0) {
+      return { slotMap, teamNames };
+    }
+
+    // Extract roster slot assignments from completed pick cells
+    const completedCells = document.querySelectorAll(SELECTORS.draftBoardCompletedPick);
+    completedCells.forEach((cell) => {
+      const rosterSlotEl = cell.querySelector(SELECTORS.draftBoardRosterSlot);
+      const lastNameEl = cell.querySelector(SELECTORS.draftBoardPlayerLastName);
+      if (!rosterSlotEl || !lastNameEl) return;
+
+      const rosterSlot = rosterSlotEl.textContent.trim();
+      const lastName = lastNameEl.textContent.trim();
+      if (!rosterSlot || !lastName) return;
+
+      // Extract the column from the grid-area CSS style.
+      // Format: "grid-area: row / col;" e.g. "grid-area: 5 / 1;"
+      const style = cell.getAttribute('style') || '';
+      const gridMatch = style.match(/grid-area:\s*\d+\s*\/\s*(\d+)/);
+      if (!gridMatch) return;
+
+      const colIdx = parseInt(gridMatch[1], 10) - 1; // 1-indexed to 0-indexed
+      if (colIdx < 0 || colIdx >= teamNames.length) return;
+
+      const teamName = teamNames[colIdx];
+      // Key: "lastName|teamName" for matching against pick log entries
+      const key = lastName.toLowerCase() + '|' + teamName.toLowerCase();
+      slotMap.set(key, rosterSlot);
+    });
+  } catch (e) {
+    error('Error scraping draft board slots:', e);
+  }
+
+  return { slotMap, teamNames };
+}
+
+/**
  * Scrape completed picks from the draft log (right column).
  * Pick log entries are in reverse chronological order (most recent first).
  * Returns picks in chronological order (oldest first) with pick numbers.
@@ -276,6 +346,10 @@ function scrapePickLog() {
       ? Math.max(pickLabel.current - 1, entriesArray.length)
       : entriesArray.length;
 
+    // Scrape the draft board grid for ESPN-assigned roster slot positions.
+    // This map lets us enrich each pick with the slot ESPN placed the player in.
+    const { slotMap } = scrapeDraftBoardSlots();
+
     entriesArray.forEach((entry, idx) => {
       const playerName = extractText(entry, SELECTORS.pickLogPlayerName);
       let position = extractText(entry, SELECTORS.pickLogPlayerPos);
@@ -288,6 +362,18 @@ function scrapePickLog() {
 
       if (playerName) {
         const { price, teamName } = parsePickInfo(pickInfoStr);
+
+        // Look up ESPN-assigned roster slot from the draft board grid.
+        // The pick log shows "First Last" as the player name. Extract the
+        // last name (last whitespace-delimited token) for the lookup key.
+        let rosterSlot = null;
+        if (slotMap.size > 0 && teamName) {
+          const nameParts = playerName.trim().split(/\s+/);
+          const lastName = nameParts[nameParts.length - 1];
+          const key = lastName.toLowerCase() + '|' + teamName.toLowerCase();
+          rosterSlot = slotMap.get(key) || null;
+        }
+
         picks.push({
           pickNumber: completedPicks - entriesArray.length + idx + 1,
           teamId: teamName,
@@ -297,6 +383,7 @@ function scrapePickLog() {
           position: position,
           price: price,
           eligibleSlots: [],
+          rosterSlot: rosterSlot,
         });
       }
     });

@@ -296,6 +296,7 @@ fn mock_event_to_pick(event: &MockDraftEvent) -> DraftPick {
         price: event.price,
         espn_player_id: Some(event.espn_player_id.clone()),
         eligible_slots: vec![],
+        roster_slot: None,
     }
 }
 
@@ -1424,6 +1425,7 @@ fn inflation_increases_with_overpay() {
         price: 80, // Very high overpay
         espn_player_id: Some("espn_100".into()),
         eligible_slots: vec![],
+        roster_slot: None,
     };
 
     state.process_new_picks(vec![pick]);
@@ -1457,6 +1459,7 @@ fn database_round_trip_with_all_fields() {
         price: 55,
         espn_player_id: Some("espn_101".into()),
         eligible_slots: vec![],
+        roster_slot: None,
     };
 
     db.record_pick(&pick, &draft_id).unwrap();
@@ -1487,6 +1490,7 @@ fn database_idempotent_pick_recording() {
         price: 55,
         espn_player_id: None,
         eligible_slots: vec![],
+        roster_slot: None,
     };
 
     // Record the same pick twice (INSERT OR IGNORE)
@@ -1668,6 +1672,7 @@ fn draft_log_no_duplicates_on_espn_renumbering() {
         price: 45,
         espn_player_id: None,
         eligible_slots: vec![],
+        roster_slot: None,
     });
 
     assert_eq!(draft_state.picks.len(), 1);
@@ -1684,6 +1689,7 @@ fn draft_log_no_duplicates_on_espn_renumbering() {
         price: 45,
         espn_player_id: None,
         eligible_slots: vec![],
+        roster_slot: None,
     });
 
     assert_eq!(
@@ -1717,6 +1723,7 @@ fn draft_log_no_duplicates_by_espn_player_id() {
         price: 45,
         espn_player_id: Some("33039".to_string()),
         eligible_slots: vec![],
+        roster_slot: None,
     });
 
     // Same ESPN player ID, different pick number
@@ -1729,6 +1736,7 @@ fn draft_log_no_duplicates_by_espn_player_id() {
         price: 45,
         espn_player_id: Some("33039".to_string()),
         eligible_slots: vec![],
+        roster_slot: None,
     });
 
     assert_eq!(
@@ -1806,6 +1814,7 @@ fn draft_log_resilient_to_virtualized_list_renumbering() {
                 position: "CF".to_string(),
                 price: 30,
                 eligible_slots: vec![],
+                roster_slot: None,
             },
             PickPayload {
                 pick_number: 2,
@@ -1816,6 +1825,7 @@ fn draft_log_resilient_to_virtualized_list_renumbering() {
                 position: "SP".to_string(),
                 price: 25,
                 eligible_slots: vec![],
+                roster_slot: None,
             },
             PickPayload {
                 pick_number: 3,
@@ -1826,6 +1836,7 @@ fn draft_log_resilient_to_virtualized_list_renumbering() {
                 position: "1B".to_string(),
                 price: 20,
                 eligible_slots: vec![],
+                roster_slot: None,
             },
         ],
         current_nomination: None,
@@ -1852,6 +1863,7 @@ fn draft_log_resilient_to_virtualized_list_renumbering() {
                 position: "CF".to_string(),
                 price: 30,
                 eligible_slots: vec![],
+                roster_slot: None,
             },
             PickPayload {
                 pick_number: 52,
@@ -1862,6 +1874,7 @@ fn draft_log_resilient_to_virtualized_list_renumbering() {
                 position: "SP".to_string(),
                 price: 25,
                 eligible_slots: vec![],
+                roster_slot: None,
             },
             PickPayload {
                 pick_number: 53,
@@ -1872,6 +1885,7 @@ fn draft_log_resilient_to_virtualized_list_renumbering() {
                 position: "1B".to_string(),
                 price: 20,
                 eligible_slots: vec![],
+                roster_slot: None,
             },
         ],
         current_nomination: None,
@@ -2274,6 +2288,7 @@ fn roster_shows_both_players_after_two_picks_same_team() {
         price: 62,
         espn_player_id: Some("espn_100".into()),
         eligible_slots: vec![],
+        roster_slot: None,
     }]);
 
     let snapshot1 = state.build_snapshot();
@@ -2295,6 +2310,7 @@ fn roster_shows_both_players_after_two_picks_same_team() {
         price: 55,
         espn_player_id: Some("espn_101".into()),
         eligible_slots: vec![],
+        roster_slot: None,
     }]);
 
     let snapshot2 = state.build_snapshot();
@@ -2338,6 +2354,7 @@ fn roster_shows_all_my_picks_across_interleaved_teams() {
             price: 62,
             espn_player_id: Some("espn_100".into()),
             eligible_slots: vec![],
+            roster_slot: None,
         },
         DraftPick {
             pick_number: 2,
@@ -2348,6 +2365,7 @@ fn roster_shows_all_my_picks_across_interleaved_teams() {
             price: 55,
             espn_player_id: Some("espn_101".into()),
             eligible_slots: vec![],
+            roster_slot: None,
         },
         DraftPick {
             pick_number: 3,
@@ -2358,6 +2376,7 @@ fn roster_shows_all_my_picks_across_interleaved_teams() {
             price: 48,
             espn_player_id: Some("espn_102".into()),
             eligible_slots: vec![],
+            roster_slot: None,
         },
         DraftPick {
             pick_number: 4,
@@ -2368,6 +2387,7 @@ fn roster_shows_all_my_picks_across_interleaved_teams() {
             price: 40,
             espn_player_id: Some("espn_104".into()),
             eligible_slots: vec![],
+            roster_slot: None,
         },
         DraftPick {
             pick_number: 5,
@@ -2378,6 +2398,7 @@ fn roster_shows_all_my_picks_across_interleaved_teams() {
             price: 36,
             espn_player_id: Some("espn_106".into()),
             eligible_slots: vec![],
+            roster_slot: None,
         },
     ];
 
@@ -2444,6 +2465,7 @@ fn pick_renumbering_does_not_drop_new_picks() {
             position: "DH".into(),
             price: 62,
             eligible_slots: vec![],
+            roster_slot: None,
         }],
         current_nomination: None,
         teams: vec![],
@@ -2475,6 +2497,7 @@ fn pick_renumbering_does_not_drop_new_picks() {
             position: "DH".into(),
             price: 62,
             eligible_slots: vec![],
+            roster_slot: None,
         }],
         current_nomination: None,
         teams: vec![],
@@ -2518,6 +2541,7 @@ fn pick_renumbering_does_not_drop_new_picks() {
                 position: "DH".into(),
                 price: 62,
                 eligible_slots: vec![],
+                roster_slot: None,
             },
             PickPayload {
                 pick_number: 2,
@@ -2528,6 +2552,7 @@ fn pick_renumbering_does_not_drop_new_picks() {
                 position: "RF".into(),
                 price: 55,
                 eligible_slots: vec![],
+                roster_slot: None,
             },
         ],
         current_nomination: None,
@@ -2601,6 +2626,7 @@ fn build_snapshot_my_roster_incremental_picks() {
             position: "DH".into(),
             price: 62,
             eligible_slots: vec![],
+            roster_slot: None,
         },
         PickPayload {
             pick_number: 2,
@@ -2611,6 +2637,7 @@ fn build_snapshot_my_roster_incremental_picks() {
             position: "RF".into(),
             price: 55,
             eligible_slots: vec![],
+            roster_slot: None,
         },
         PickPayload {
             pick_number: 3,
@@ -2621,6 +2648,7 @@ fn build_snapshot_my_roster_incremental_picks() {
             position: "LF".into(),
             price: 48,
             eligible_slots: vec![],
+            roster_slot: None,
         },
         PickPayload {
             pick_number: 4,
@@ -2631,6 +2659,7 @@ fn build_snapshot_my_roster_incremental_picks() {
             position: "SS".into(),
             price: 42,
             eligible_slots: vec![],
+            roster_slot: None,
         },
     ];
 

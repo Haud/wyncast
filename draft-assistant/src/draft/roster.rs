@@ -227,6 +227,53 @@ impl Roster {
         false
     }
 
+    /// Add a player directly to a specific roster slot position.
+    ///
+    /// This bypasses all algorithmic slot assignment logic and places the
+    /// player into the exact slot specified by ESPN's roster assignment.
+    /// Used when the extension scrapes the ESPN-assigned roster slot from
+    /// the draft board grid.
+    ///
+    /// Returns `true` if the player was successfully placed, `false` if
+    /// no empty slot exists for that position or the position string is
+    /// invalid.
+    pub fn add_player_to_slot(
+        &mut self,
+        name: &str,
+        position_str: &str,
+        price: u32,
+        eligible_slots: &[u16],
+        espn_player_id: Option<&str>,
+        target_slot: &str,
+    ) -> bool {
+        let target_pos = match Position::from_str_pos(target_slot) {
+            Some(p) => p,
+            None => return false,
+        };
+
+        let display_pos = Position::from_str_pos(position_str).unwrap_or(target_pos);
+
+        let player = RosteredPlayer {
+            name: name.to_string(),
+            price,
+            position: display_pos,
+            eligible_slots: eligible_slots.to_vec(),
+            espn_player_id: espn_player_id.map(|s| s.to_string()),
+        };
+
+        // Find an empty slot matching the target position
+        if let Some(slot) = self
+            .slots
+            .iter_mut()
+            .find(|s| s.position == target_pos && s.player.is_none())
+        {
+            slot.player = Some(player);
+            return true;
+        }
+
+        false
+    }
+
     /// Whether there is an empty slot for any of the given ESPN eligible slots.
     ///
     /// Checks eligible position slots, UTIL (if hitter), and bench.
@@ -798,5 +845,87 @@ mod tests {
             .collect();
         assert_eq!(bench_players.len(), 1);
         assert_eq!(bench_players[0].player.as_ref().unwrap().name, "Mystery Pitcher");
+    }
+
+    // -- Direct slot assignment (add_player_to_slot) tests --
+
+    #[test]
+    fn add_player_to_slot_exact_position() {
+        let mut roster = Roster::new(&test_roster_config());
+        // Place a 1B-eligible player directly into the UTIL slot (ESPN's assignment)
+        assert!(roster.add_player_to_slot(
+            "Bryce Harper", "1B", 23, &[1, 12, 16, 17], None, "UTIL"
+        ));
+        let util = roster.slots.iter().find(|s| s.position == Position::Utility).unwrap();
+        assert!(util.player.is_some());
+        assert_eq!(util.player.as_ref().unwrap().name, "Bryce Harper");
+        // 1B slot should remain empty
+        let slot_1b = roster.slots.iter().find(|s| s.position == Position::FirstBase).unwrap();
+        assert!(slot_1b.player.is_none());
+    }
+
+    #[test]
+    fn add_player_to_slot_bench() {
+        let mut roster = Roster::new(&test_roster_config());
+        // ESPN assigned a CF player to bench
+        assert!(roster.add_player_to_slot(
+            "Extra Outfielder", "CF", 20, &[9, 12, 16, 17], None, "BE"
+        ));
+        let bench_players: Vec<_> = roster.slots.iter()
+            .filter(|s| s.position == Position::Bench && s.player.is_some())
+            .collect();
+        assert_eq!(bench_players.len(), 1);
+        assert_eq!(bench_players[0].player.as_ref().unwrap().name, "Extra Outfielder");
+        // CF and UTIL should remain empty
+        assert!(roster.has_empty_slot(Position::CenterField));
+        assert!(roster.has_empty_slot(Position::Utility));
+    }
+
+    #[test]
+    fn add_player_to_slot_invalid_slot_returns_false() {
+        let mut roster = Roster::new(&test_roster_config());
+        assert!(!roster.add_player_to_slot(
+            "Player", "SS", 10, &[], None, "INVALID"
+        ));
+    }
+
+    #[test]
+    fn add_player_to_slot_full_slot_returns_false() {
+        let mut roster = Roster::new(&test_roster_config());
+        // Fill the only C slot
+        roster.add_player("Catcher 1", "C", 10, None);
+        // Trying to place into C again should fail
+        assert!(!roster.add_player_to_slot(
+            "Catcher 2", "C", 8, &[0, 12, 16, 17], None, "C"
+        ));
+    }
+
+    #[test]
+    fn add_player_to_slot_preserves_display_position() {
+        let mut roster = Roster::new(&test_roster_config());
+        // Mookie Betts (SS-eligible) placed in RF slot by ESPN
+        assert!(roster.add_player_to_slot(
+            "Mookie Betts", "SS", 22, &[4, 2, 10, 12, 16, 17], None, "RF"
+        ));
+        let rf = roster.slots.iter()
+            .find(|s| s.position == Position::RightField && s.player.is_some())
+            .unwrap();
+        let player = rf.player.as_ref().unwrap();
+        assert_eq!(player.name, "Mookie Betts");
+        // Display position should be SS (from the position_str), not RF
+        assert_eq!(player.position, Position::ShortStop);
+    }
+
+    #[test]
+    fn add_player_to_slot_multiple_same_type_slots() {
+        let mut roster = Roster::new(&test_roster_config());
+        // Fill first RP slot
+        roster.add_player_to_slot("RP 1", "RP", 7, &[15, 16, 17], None, "RP");
+        // Second RP should go to next empty RP slot
+        assert!(roster.add_player_to_slot("RP 2", "RP", 3, &[15, 16, 17], None, "RP"));
+        let rp_filled: Vec<_> = roster.slots.iter()
+            .filter(|s| s.position == Position::ReliefPitcher && s.player.is_some())
+            .collect();
+        assert_eq!(rp_filled.len(), 2);
     }
 }

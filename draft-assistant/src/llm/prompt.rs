@@ -1104,6 +1104,7 @@ mod tests {
             price: 50,
             espn_player_id: None,
             eligible_slots: vec![],
+            roster_slot: None,
         });
 
         let inflation = InflationTracker::new();
@@ -1148,6 +1149,7 @@ mod tests {
             price: 25,
             espn_player_id: None,
             eligible_slots: vec![],
+            roster_slot: None,
         });
 
         // Draft an SP (different position)
@@ -1160,6 +1162,7 @@ mod tests {
             price: 40,
             espn_player_id: None,
             eligible_slots: vec![],
+            roster_slot: None,
         });
 
         let player = make_hitter("My 1B", 6.0, vec![Position::FirstBase], 22.0);
@@ -1186,6 +1189,7 @@ mod tests {
                 price: 20 + i,
                 espn_player_id: None,
                 eligible_slots: vec![],
+                roster_slot: None,
             });
         }
 

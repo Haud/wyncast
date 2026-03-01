@@ -81,6 +81,13 @@ impl Database {
         // SQLite doesn't support altering primary keys in place.
         Self::migrate_draft_picks_add_draft_id(&conn)?;
 
+        // Migration: add roster_slot column if it doesn't exist.
+        // Must run AFTER migrate_draft_picks_add_draft_id because that
+        // migration rebuilds the table (dropping columns added before it).
+        conn.execute_batch(
+            "ALTER TABLE draft_picks ADD COLUMN roster_slot TEXT;"
+        ).ok(); // Silently ignore if column already exists
+
         // Index on draft_id for efficient filtering. The composite PK is ordered
         // (pick_number, draft_id) so queries filtering by draft_id alone cannot
         // use it efficiently.
@@ -165,8 +172,8 @@ impl Database {
             .context("failed to serialize eligible_slots")?;
         conn.execute(
             "INSERT OR IGNORE INTO draft_picks
-                (pick_number, team_id, team_name, espn_player_id, player_name, position, price, eligible_slots, draft_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                (pick_number, team_id, team_name, espn_player_id, player_name, position, price, eligible_slots, draft_id, roster_slot)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 pick.pick_number,
                 pick.team_id,
@@ -177,6 +184,7 @@ impl Database {
                 pick.price,
                 eligible_slots_json,
                 draft_id,
+                pick.roster_slot,
             ],
         )
         .context("failed to record draft pick")?;
@@ -191,7 +199,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT pick_number, team_id, team_name, player_name, position, price, espn_player_id, eligible_slots
+                "SELECT pick_number, team_id, team_name, player_name, position, price, espn_player_id, eligible_slots, roster_slot
                  FROM draft_picks WHERE draft_id = ?1 ORDER BY pick_number",
             )
             .context("failed to prepare load_picks query")?;
@@ -211,6 +219,7 @@ impl Database {
                     price: row.get(5)?,
                     espn_player_id: row.get(6)?,
                     eligible_slots,
+                    roster_slot: row.get(8)?,
                 })
             })
             .context("failed to query draft picks")?
@@ -511,6 +520,7 @@ mod tests {
             price: 25,
             espn_player_id: None,
             eligible_slots: vec![],
+            roster_slot: None,
         }
     }
 
@@ -559,6 +569,7 @@ mod tests {
             price: 40,
             espn_player_id: Some("espn_2".to_string()),
             eligible_slots: vec![],
+            roster_slot: None,
         };
 
         db.record_pick(&pick1, TEST_DRAFT_ID).unwrap();
@@ -602,6 +613,21 @@ mod tests {
         let picks = db.load_picks(TEST_DRAFT_ID).unwrap();
         assert_eq!(picks[0].espn_player_id, Some("12345".to_string()));
         assert_eq!(picks[1].espn_player_id, None);
+    }
+
+    #[test]
+    fn record_pick_stores_roster_slot() {
+        let db = test_db();
+        let pick_with_slot = DraftPick {
+            roster_slot: Some("UTIL".to_string()),
+            ..sample_pick(1)
+        };
+        db.record_pick(&pick_with_slot, TEST_DRAFT_ID).unwrap();
+        db.record_pick(&sample_pick(2), TEST_DRAFT_ID).unwrap();
+
+        let picks = db.load_picks(TEST_DRAFT_ID).unwrap();
+        assert_eq!(picks[0].roster_slot, Some("UTIL".to_string()));
+        assert_eq!(picks[1].roster_slot, None);
     }
 
     #[test]
@@ -1073,6 +1099,7 @@ mod tests {
             price: 35,
             espn_player_id: Some("espn_99".to_string()),
             eligible_slots: vec![9, 5, 12, 16, 17],
+            roster_slot: None,
         };
         db.record_pick(&new_pick, TEST_DRAFT_ID).unwrap();
 

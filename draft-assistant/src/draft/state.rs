@@ -172,13 +172,32 @@ impl DraftState {
         if let Some(team) = team_idx.map(|i| &mut self.teams[i]) {
             team.budget_spent += pick.price;
             team.budget_remaining = team.budget_remaining.saturating_sub(pick.price);
-            team.roster.add_player_with_slots(
-                &pick.player_name,
-                &pick.position,
-                pick.price,
-                &pick.eligible_slots,
-                pick.espn_player_id.as_deref(),
-            );
+
+            // Use ESPN's roster slot assignment when available; fall back to
+            // local algorithmic placement when it's not provided.
+            let placed = if let Some(ref slot) = pick.roster_slot {
+                team.roster.add_player_to_slot(
+                    &pick.player_name,
+                    &pick.position,
+                    pick.price,
+                    &pick.eligible_slots,
+                    pick.espn_player_id.as_deref(),
+                    slot,
+                )
+            } else {
+                false
+            };
+
+            if !placed {
+                // Fallback: use multi-position or single-position logic
+                team.roster.add_player_with_slots(
+                    &pick.player_name,
+                    &pick.position,
+                    pick.price,
+                    &pick.eligible_slots,
+                    pick.espn_player_id.as_deref(),
+                );
+            }
         }
         self.pick_count += 1;
         self.picks.push(pick);
@@ -373,6 +392,9 @@ pub struct PickPayload {
     pub price: u32,
     #[serde(default)]
     pub eligible_slots: Vec<u16>,
+    /// The roster slot ESPN assigned this player to (e.g. "UTIL", "BE").
+    #[serde(default)]
+    pub roster_slot: Option<String>,
 }
 
 /// A nomination as received from the extension.
@@ -469,6 +491,7 @@ pub fn compute_state_diff(
                 price: pick_payload.price,
                 espn_player_id: Some(pick_payload.player_id.clone()),
                 eligible_slots: pick_payload.eligible_slots.clone(),
+                roster_slot: pick_payload.roster_slot.clone(),
             });
         }
     }
@@ -535,6 +558,7 @@ fn nomination_from_payload(payload: &NominationPayload) -> ActiveNomination {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::pick::Position;
 
     fn test_roster_config() -> HashMap<String, usize> {
         let mut config = HashMap::new();
@@ -629,6 +653,7 @@ mod tests {
             price: 45,
             espn_player_id: None,
             eligible_slots: vec![],
+            roster_slot: None,
         };
         state.record_pick(pick);
 
@@ -651,6 +676,7 @@ mod tests {
             price: 45,
             espn_player_id: None,
             eligible_slots: vec![],
+            roster_slot: None,
         };
         state.record_pick(pick);
 
@@ -671,6 +697,7 @@ mod tests {
             price: 45,
             espn_player_id: None,
             eligible_slots: vec![],
+            roster_slot: None,
         });
         state.record_pick(DraftPick {
             pick_number: 2,
@@ -681,6 +708,7 @@ mod tests {
             price: 50,
             espn_player_id: None,
             eligible_slots: vec![],
+            roster_slot: None,
         });
         state.record_pick(DraftPick {
             pick_number: 3,
@@ -691,6 +719,7 @@ mod tests {
             price: 35,
             espn_player_id: None,
             eligible_slots: vec![],
+            roster_slot: None,
         });
 
         assert_eq!(state.pick_count, 3);
@@ -718,6 +747,7 @@ mod tests {
             price: 30,
             espn_player_id: None,
             eligible_slots: vec![],
+            roster_slot: None,
         });
         state.record_pick(DraftPick {
             pick_number: 2,
@@ -728,6 +758,7 @@ mod tests {
             price: 25,
             espn_player_id: None,
             eligible_slots: vec![],
+            roster_slot: None,
         });
         assert_eq!(state.total_spent(), 55);
     }
@@ -754,6 +785,7 @@ mod tests {
                 price: 45,
                 espn_player_id: None,
                 eligible_slots: vec![],
+                roster_slot: None,
             },
             DraftPick {
                 pick_number: 2,
@@ -764,6 +796,7 @@ mod tests {
                 price: 50,
                 espn_player_id: None,
                 eligible_slots: vec![],
+                roster_slot: None,
             },
             DraftPick {
                 pick_number: 3,
@@ -774,6 +807,7 @@ mod tests {
                 price: 35,
                 espn_player_id: None,
                 eligible_slots: vec![],
+                roster_slot: None,
             },
         ];
 
@@ -809,6 +843,7 @@ mod tests {
             price: 20,
             espn_player_id: None,
             eligible_slots: vec![],
+            roster_slot: None,
         });
         assert_eq!(state.pick_count, 1);
 
@@ -822,6 +857,7 @@ mod tests {
             price: 30,
             espn_player_id: None,
             eligible_slots: vec![],
+            roster_slot: None,
         }];
         state.restore_from_picks(new_picks);
 
@@ -853,6 +889,7 @@ mod tests {
             position: pos.to_string(),
             price,
             eligible_slots: vec![],
+            roster_slot: None,
         }
     }
 
@@ -1059,6 +1096,7 @@ mod tests {
             price: 45,
             espn_player_id: None,
             eligible_slots: vec![],
+            roster_slot: None,
         });
         state.record_pick(DraftPick {
             pick_number: 2,
@@ -1069,6 +1107,7 @@ mod tests {
             price: 50,
             espn_player_id: None,
             eligible_slots: vec![],
+            roster_slot: None,
         });
 
         // Verify local tracking state before reconciliation
@@ -1118,6 +1157,7 @@ mod tests {
             price: 45,
             espn_player_id: None,
             eligible_slots: vec![],
+            roster_slot: None,
         });
 
         // Reconcile with ESPN data that includes a non-existent team
@@ -1191,6 +1231,7 @@ mod tests {
             price: 45,
             espn_player_id: None,
             eligible_slots: vec![],
+            roster_slot: None,
         };
 
         state.record_pick(pick.clone());
@@ -1232,6 +1273,7 @@ mod tests {
             price: 45,
             espn_player_id: None,
             eligible_slots: vec![],
+            roster_slot: None,
         });
 
         let team = state.team("1").unwrap();
@@ -1249,6 +1291,7 @@ mod tests {
             price: 45,
             espn_player_id: None,
             eligible_slots: vec![],
+            roster_slot: None,
         });
 
         assert_eq!(
@@ -1287,6 +1330,7 @@ mod tests {
             price: 45,
             espn_player_id: Some("33039".to_string()),
             eligible_slots: vec![],
+            roster_slot: None,
         });
 
         // Record same ESPN player ID with different pick_number — should be no-op
@@ -1299,6 +1343,7 @@ mod tests {
             price: 45,
             espn_player_id: Some("33039".to_string()),
             eligible_slots: vec![],
+            roster_slot: None,
         });
 
         assert_eq!(state.pick_count, 1, "same ESPN ID should dedup");
@@ -1319,6 +1364,7 @@ mod tests {
             price: 45,
             espn_player_id: Some("33039".to_string()),
             eligible_slots: vec![],
+            roster_slot: None,
         });
 
         assert_eq!(state.pick_count, 1);
@@ -1335,6 +1381,7 @@ mod tests {
             price: 45,
             espn_player_id: Some("33039".to_string()), // Same ESPN ID
             eligible_slots: vec![],
+            roster_slot: None,
         });
 
         assert_eq!(
@@ -1363,6 +1410,7 @@ mod tests {
             price: 45,
             espn_player_id: None,
             eligible_slots: vec![],
+            roster_slot: None,
         });
 
         assert_eq!(
@@ -1386,6 +1434,7 @@ mod tests {
             price: 45,
             espn_player_id: Some("33039".to_string()),
             eligible_slots: vec![],
+            roster_slot: None,
         });
 
         assert_eq!(
@@ -1408,6 +1457,7 @@ mod tests {
             price: 45,
             espn_player_id: None,
             eligible_slots: vec![],
+            roster_slot: None,
         });
         state.record_pick(DraftPick {
             pick_number: 2,
@@ -1418,6 +1468,7 @@ mod tests {
             price: 35,
             espn_player_id: None,
             eligible_slots: vec![],
+            roster_slot: None,
         });
 
         assert_eq!(state.pick_count, 2);
@@ -1461,6 +1512,7 @@ mod tests {
                 price: 62,
                 espn_player_id: None,
                 eligible_slots: vec![],
+                roster_slot: None,
             },
             DraftPick {
                 pick_number: 2,
@@ -1471,6 +1523,7 @@ mod tests {
                 price: 55,
                 espn_player_id: None,
                 eligible_slots: vec![],
+                roster_slot: None,
             },
         ];
         state.restore_from_picks(recovery_picks);
@@ -1487,6 +1540,7 @@ mod tests {
             price: 62,
             espn_player_id: None,
             eligible_slots: vec![],
+            roster_slot: None,
         });
         state.record_pick(DraftPick {
             pick_number: 2,
@@ -1497,6 +1551,7 @@ mod tests {
             price: 55,
             espn_player_id: None,
             eligible_slots: vec![],
+            roster_slot: None,
         });
         // Also a new pick
         state.record_pick(DraftPick {
@@ -1508,6 +1563,7 @@ mod tests {
             price: 40,
             espn_player_id: None,
             eligible_slots: vec![],
+            roster_slot: None,
         });
 
         // Picks 1 and 2 should be deduped (already in self.picks from recovery)
@@ -1548,5 +1604,164 @@ mod tests {
         let team_beta = state.team("2").unwrap();
         assert_eq!(team_beta.roster.filled_count(), 1);
         assert!(team_beta.roster.has_player("Aaron Judge", None));
+    }
+
+    // -- ESPN roster slot source-of-truth tests --
+
+    #[test]
+    fn record_pick_uses_espn_roster_slot_when_provided() {
+        let mut state = create_test_state();
+        // Bryce Harper: 1B-eligible, but ESPN placed him in UTIL
+        state.record_pick(DraftPick {
+            pick_number: 1,
+            team_id: "1".to_string(),
+            team_name: "Team 1".to_string(),
+            player_name: "Bryce Harper".to_string(),
+            position: "1B".to_string(),
+            price: 23,
+            espn_player_id: None,
+            eligible_slots: vec![1, 12, 16, 17],
+            roster_slot: Some("UTIL".to_string()),
+        });
+
+        let team = state.team("1").unwrap();
+        // Player should be in UTIL slot, NOT 1B
+        let util_slot = team.roster.slots.iter()
+            .find(|s| s.position == Position::Utility)
+            .unwrap();
+        assert!(util_slot.player.is_some());
+        assert_eq!(util_slot.player.as_ref().unwrap().name, "Bryce Harper");
+
+        // 1B should still be empty
+        let slot_1b = team.roster.slots.iter()
+            .find(|s| s.position == Position::FirstBase)
+            .unwrap();
+        assert!(slot_1b.player.is_none());
+    }
+
+    #[test]
+    fn record_pick_falls_back_to_local_logic_when_no_roster_slot() {
+        let mut state = create_test_state();
+        // No roster_slot provided -- should use add_player_with_slots
+        state.record_pick(DraftPick {
+            pick_number: 1,
+            team_id: "1".to_string(),
+            team_name: "Team 1".to_string(),
+            player_name: "Mookie Betts".to_string(),
+            position: "SS".to_string(),
+            price: 22,
+            espn_player_id: None,
+            eligible_slots: vec![4, 2, 10, 12, 16, 17],
+            roster_slot: None,
+        });
+
+        let team = state.team("1").unwrap();
+        // Local logic should place at SS (first eligible)
+        let ss_slot = team.roster.slots.iter()
+            .find(|s| s.position == Position::ShortStop)
+            .unwrap();
+        assert!(ss_slot.player.is_some());
+        assert_eq!(ss_slot.player.as_ref().unwrap().name, "Mookie Betts");
+    }
+
+    #[test]
+    fn record_pick_espn_slot_bench_skips_position_slots() {
+        let mut state = create_test_state();
+        // ESPN assigned a CF-eligible player to bench directly
+        state.record_pick(DraftPick {
+            pick_number: 1,
+            team_id: "1".to_string(),
+            team_name: "Team 1".to_string(),
+            player_name: "Extra Outfielder".to_string(),
+            position: "CF".to_string(),
+            price: 20,
+            espn_player_id: None,
+            eligible_slots: vec![9, 5, 12, 16, 17],
+            roster_slot: Some("BE".to_string()),
+        });
+
+        let team = state.team("1").unwrap();
+        // Player should be on bench, NOT in CF or UTIL
+        let bench_filled: Vec<_> = team.roster.slots.iter()
+            .filter(|s| s.position == Position::Bench && s.player.is_some())
+            .collect();
+        assert_eq!(bench_filled.len(), 1);
+        assert_eq!(bench_filled[0].player.as_ref().unwrap().name, "Extra Outfielder");
+
+        assert!(team.roster.has_empty_slot(Position::CenterField));
+        assert!(team.roster.has_empty_slot(Position::Utility));
+    }
+
+    #[test]
+    fn record_pick_espn_slot_falls_back_when_slot_full() {
+        let mut state = create_test_state();
+        // Fill the 1B slot first
+        state.record_pick(DraftPick {
+            pick_number: 1,
+            team_id: "1".to_string(),
+            team_name: "Team 1".to_string(),
+            player_name: "Player A".to_string(),
+            position: "1B".to_string(),
+            price: 10,
+            espn_player_id: None,
+            eligible_slots: vec![],
+            roster_slot: Some("1B".to_string()),
+        });
+
+        // Now try to place another player into 1B (already full) via ESPN slot
+        // The ESPN slot should fail, and the fallback should use local logic
+        state.record_pick(DraftPick {
+            pick_number: 2,
+            team_id: "1".to_string(),
+            team_name: "Team 1".to_string(),
+            player_name: "Player B".to_string(),
+            position: "1B".to_string(),
+            price: 8,
+            espn_player_id: None,
+            eligible_slots: vec![1, 12, 16, 17],
+            roster_slot: Some("1B".to_string()),
+        });
+
+        let team = state.team("1").unwrap();
+        // Player B should have been placed via fallback (UTIL or bench)
+        assert!(team.roster.has_player("Player B", None));
+        assert_eq!(team.roster.filled_count(), 2);
+    }
+
+    #[test]
+    fn record_pick_roster_slot_threads_through_diff() {
+        let mut state = create_test_state();
+
+        // Simulate a state update payload with roster_slot
+        let payload = StateUpdatePayload {
+            picks: vec![PickPayload {
+                pick_number: 1,
+                team_id: "1".to_string(),
+                team_name: "Team 1".to_string(),
+                player_id: "p_harper".to_string(),
+                player_name: "Bryce Harper".to_string(),
+                position: "1B".to_string(),
+                price: 23,
+                eligible_slots: vec![1, 12, 16, 17],
+                roster_slot: Some("UTIL".to_string()),
+            }],
+            current_nomination: None,
+            teams: vec![],
+            pick_count: None,
+            total_picks: None,
+        };
+
+        let diff = compute_state_diff(&None, &payload);
+        assert_eq!(diff.new_picks.len(), 1);
+        assert_eq!(diff.new_picks[0].roster_slot, Some("UTIL".to_string()));
+
+        // Record the pick and verify ESPN slot was used
+        state.record_pick(diff.new_picks[0].clone());
+        let team = state.team("1").unwrap();
+        let util_slot = team.roster.slots.iter()
+            .find(|s| s.position == Position::Utility)
+            .unwrap();
+        assert!(util_slot.player.is_some());
+        assert_eq!(util_slot.player.as_ref().unwrap().name, "Bryce Harper");
     }
 }

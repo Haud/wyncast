@@ -1025,6 +1025,7 @@ mod tests {
             price: 50,
             espn_player_id: None,
             eligible_slots: vec![],
+            roster_slot: None,
         });
 
         // Available pool: remaining players with known dollar values

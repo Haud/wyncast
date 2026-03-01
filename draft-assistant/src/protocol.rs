@@ -78,6 +78,11 @@ pub struct PickData {
     pub price: u32,
     #[serde(default)]
     pub eligible_slots: Vec<u16>,
+    /// The roster slot ESPN assigned this player to (e.g. "UTIL", "BE", "SS").
+    /// Scraped from the ESPN draft board grid. When present, the backend uses
+    /// this directly instead of computing slot assignment locally.
+    #[serde(default)]
+    pub roster_slot: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -338,6 +343,7 @@ mod tests {
                     position: "DH".to_string(),
                     price: 62,
                     eligible_slots: vec![11, 12, 16, 17],
+                    roster_slot: None,
                 }],
                 current_nomination: Some(NominationData {
                     player_id: "67890".to_string(),
@@ -570,6 +576,7 @@ mod tests {
                     position: "C".to_string(),
                     price: 10,
                     eligible_slots: vec![],
+                    roster_slot: None,
                 }],
                 current_nomination: None,
                 my_team_id: Some("team_5".to_string()),
@@ -749,9 +756,157 @@ mod tests {
             position: "SS".into(),
             price: 40,
             eligible_slots: vec![4, 2, 5, 8, 9, 10, 11, 12, 16, 17],
+            roster_slot: None,
         };
         let json = serde_json::to_string(&pick_data).unwrap();
         let parsed: PickData = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.eligible_slots, vec![4, 2, 5, 8, 9, 10, 11, 12, 16, 17]);
+    }
+
+    // -- roster_slot serialization tests --
+
+    #[test]
+    fn roster_slot_defaults_to_none_when_omitted() {
+        // JSON without rosterSlot should deserialize to None
+        let json = r#"{
+            "type": "STATE_UPDATE",
+            "timestamp": 1700000000,
+            "payload": {
+                "picks": [
+                    {
+                        "pickNumber": 1,
+                        "teamId": "team_1",
+                        "teamName": "Team 1",
+                        "playerId": "p1",
+                        "playerName": "Player One",
+                        "position": "SP",
+                        "price": 30
+                    }
+                ],
+                "currentNomination": null,
+                "myTeamId": "team_1",
+                "source": "test"
+            }
+        }"#;
+        let msg: ExtensionMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ExtensionMessage::StateUpdate { payload, .. } => {
+                assert!(payload.picks[0].roster_slot.is_none());
+            }
+            _ => panic!("expected StateUpdate variant"),
+        }
+    }
+
+    #[test]
+    fn roster_slot_deserialized_from_camel_case() {
+        let json = r#"{
+            "type": "STATE_UPDATE",
+            "timestamp": 1700000000,
+            "payload": {
+                "picks": [
+                    {
+                        "pickNumber": 1,
+                        "teamId": "team_1",
+                        "teamName": "Team 1",
+                        "playerId": "p1",
+                        "playerName": "Bryce Harper",
+                        "position": "1B",
+                        "price": 23,
+                        "rosterSlot": "UTIL"
+                    }
+                ],
+                "currentNomination": null,
+                "myTeamId": "team_1",
+                "source": "test"
+            }
+        }"#;
+        let msg: ExtensionMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ExtensionMessage::StateUpdate { payload, .. } => {
+                assert_eq!(payload.picks[0].roster_slot, Some("UTIL".to_string()));
+            }
+            _ => panic!("expected StateUpdate variant"),
+        }
+    }
+
+    #[test]
+    fn roster_slot_null_deserialized_as_none() {
+        let json = r#"{
+            "type": "STATE_UPDATE",
+            "timestamp": 1700000000,
+            "payload": {
+                "picks": [
+                    {
+                        "pickNumber": 1,
+                        "teamId": "team_1",
+                        "teamName": "Team 1",
+                        "playerId": "p1",
+                        "playerName": "Player One",
+                        "position": "SP",
+                        "price": 30,
+                        "rosterSlot": null
+                    }
+                ],
+                "currentNomination": null,
+                "myTeamId": "team_1",
+                "source": "test"
+            }
+        }"#;
+        let msg: ExtensionMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ExtensionMessage::StateUpdate { payload, .. } => {
+                assert!(payload.picks[0].roster_slot.is_none());
+            }
+            _ => panic!("expected StateUpdate variant"),
+        }
+    }
+
+    #[test]
+    fn roster_slot_round_trip_with_value() {
+        let pick_data = PickData {
+            pick_number: 1,
+            team_id: "team_1".into(),
+            team_name: "Team 1".into(),
+            player_id: "p1".into(),
+            player_name: "Bryce Harper".into(),
+            position: "1B".into(),
+            price: 23,
+            eligible_slots: vec![1, 12, 16, 17],
+            roster_slot: Some("UTIL".into()),
+        };
+        let json = serde_json::to_string(&pick_data).unwrap();
+        assert!(json.contains("\"rosterSlot\":\"UTIL\""));
+        let parsed: PickData = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.roster_slot, Some("UTIL".to_string()));
+    }
+
+    #[test]
+    fn serialized_json_includes_roster_slot_camel_case() {
+        let msg = ExtensionMessage::StateUpdate {
+            timestamp: 100,
+            payload: StateUpdatePayload {
+                picks: vec![PickData {
+                    pick_number: 1,
+                    team_id: "team_1".to_string(),
+                    team_name: "Test".to_string(),
+                    player_id: "p1".to_string(),
+                    player_name: "Player".to_string(),
+                    position: "C".to_string(),
+                    price: 10,
+                    eligible_slots: vec![],
+                    roster_slot: Some("BE".to_string()),
+                }],
+                current_nomination: None,
+                my_team_id: None,
+                teams: vec![],
+                pick_count: None,
+                total_picks: None,
+                draft_id: None,
+                source: None,
+            },
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("rosterSlot"));
+        assert!(!json.contains("roster_slot"));
     }
 }

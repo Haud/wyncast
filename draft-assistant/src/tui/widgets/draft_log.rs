@@ -112,6 +112,7 @@ mod tests {
             price: 45,
             espn_player_id: None,
             eligible_slots: vec![],
+            roster_slot: None,
         };
         assert_eq!(
             format_pick(&pick),
@@ -182,6 +183,7 @@ mod tests {
                 price: 30,
                 espn_player_id: None,
                 eligible_slots: vec![],
+                roster_slot: None,
             },
             DraftPick {
                 pick_number: 2,
@@ -192,6 +194,7 @@ mod tests {
                 price: 15,
                 espn_player_id: None,
                 eligible_slots: vec![],
+                roster_slot: None,
             },
         ];
         terminal

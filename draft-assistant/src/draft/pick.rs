@@ -231,6 +231,11 @@ pub struct DraftPick {
     /// Empty if not available (manual entry, old data).
     #[serde(default)]
     pub eligible_slots: Vec<u16>,
+    /// The roster slot ESPN assigned this player to (e.g. "UTIL", "BE", "SS").
+    /// When present, this is used directly instead of running local slot
+    /// assignment logic, so the app matches ESPN's placement exactly.
+    #[serde(default)]
+    pub roster_slot: Option<String>,
 }
 
 #[cfg(test)]
@@ -347,12 +352,14 @@ mod tests {
             price: 45,
             espn_player_id: Some("12345".to_string()),
             eligible_slots: vec![],
+            roster_slot: None,
         };
         assert_eq!(pick.pick_number, 1);
         assert_eq!(pick.price, 45);
         assert_eq!(pick.position, "OF");
         assert_eq!(pick.espn_player_id, Some("12345".to_string()));
         assert!(pick.eligible_slots.is_empty());
+        assert!(pick.roster_slot.is_none());
     }
 
     // -- ESPN slot ID mapping tests --
