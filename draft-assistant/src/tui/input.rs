@@ -44,11 +44,16 @@ pub fn handle_key(
         return None;
     }
 
-    // Ctrl+C always quits regardless of mode
+    // Ctrl+C always quits immediately regardless of mode (escape hatch)
     if key_event.modifiers.contains(KeyModifiers::CONTROL)
         && key_event.code == KeyCode::Char('c')
     {
         return Some(UserCommand::Quit);
+    }
+
+    // Quit confirmation mode: only y/q confirm, n/Esc cancel, everything else blocked
+    if view_state.confirm_quit {
+        return handle_confirm_quit(key_event, view_state);
     }
 
     // Filter mode: capture printable characters and special keys
@@ -121,10 +126,33 @@ pub fn handle_key(
         KeyCode::Char('r') => Some(UserCommand::RefreshAnalysis),
         KeyCode::Char('n') => Some(UserCommand::RefreshPlan),
 
-        // Quit
-        KeyCode::Char('q') => Some(UserCommand::Quit),
+        // Quit: enter confirmation mode instead of quitting immediately
+        KeyCode::Char('q') => {
+            view_state.confirm_quit = true;
+            None
+        }
 
         _ => None,
+    }
+}
+
+/// Handle key events while in quit confirmation mode.
+///
+/// In quit confirmation mode:
+/// - `y` or `q` confirms quit (sends UserCommand::Quit)
+/// - `n` or `Esc` cancels (returns to normal mode)
+/// - All other keys are blocked (no-op)
+fn handle_confirm_quit(
+    key_event: KeyEvent,
+    view_state: &mut ViewState,
+) -> Option<UserCommand> {
+    match key_event.code {
+        KeyCode::Char('y') | KeyCode::Char('q') => Some(UserCommand::Quit),
+        KeyCode::Char('n') | KeyCode::Esc => {
+            view_state.confirm_quit = false;
+            None
+        }
+        _ => None, // Block all other input
     }
 }
 
@@ -500,16 +528,89 @@ mod tests {
         assert_eq!(result, Some(UserCommand::RefreshPlan));
     }
 
+    // -- Quit confirmation --
+
     #[test]
-    fn q_returns_quit() {
+    fn q_enters_confirm_quit_mode() {
         let mut state = ViewState::default();
+        let result = handle_key(key(KeyCode::Char('q')), &mut state);
+        assert!(result.is_none(), "q should not send Quit immediately");
+        assert!(state.confirm_quit, "q should enter confirm_quit mode");
+    }
+
+    #[test]
+    fn confirm_quit_y_sends_quit() {
+        let mut state = ViewState::default();
+        state.confirm_quit = true;
+        let result = handle_key(key(KeyCode::Char('y')), &mut state);
+        assert_eq!(result, Some(UserCommand::Quit));
+    }
+
+    #[test]
+    fn confirm_quit_q_sends_quit() {
+        let mut state = ViewState::default();
+        state.confirm_quit = true;
         let result = handle_key(key(KeyCode::Char('q')), &mut state);
         assert_eq!(result, Some(UserCommand::Quit));
     }
 
     #[test]
-    fn ctrl_c_returns_quit() {
+    fn confirm_quit_n_cancels() {
         let mut state = ViewState::default();
+        state.confirm_quit = true;
+        let result = handle_key(key(KeyCode::Char('n')), &mut state);
+        assert!(result.is_none());
+        assert!(!state.confirm_quit, "n should cancel confirm_quit mode");
+    }
+
+    #[test]
+    fn confirm_quit_esc_cancels() {
+        let mut state = ViewState::default();
+        state.confirm_quit = true;
+        let result = handle_key(key(KeyCode::Esc), &mut state);
+        assert!(result.is_none());
+        assert!(!state.confirm_quit, "Esc should cancel confirm_quit mode");
+    }
+
+    #[test]
+    fn confirm_quit_blocks_other_keys() {
+        let mut state = ViewState::default();
+        state.confirm_quit = true;
+        state.active_tab = TabId::Analysis;
+
+        // Tab switching should be blocked
+        let result = handle_key(key(KeyCode::Char('3')), &mut state);
+        assert!(result.is_none());
+        assert_eq!(state.active_tab, TabId::Analysis, "Tab switch should be blocked");
+        assert!(state.confirm_quit, "confirm_quit should remain active");
+
+        // Scrolling should be blocked
+        let result = handle_key(key(KeyCode::Down), &mut state);
+        assert!(result.is_none());
+        assert!(state.scroll_offset.get("analysis").is_none(), "Scroll should be blocked");
+
+        // r should be blocked
+        let result = handle_key(key(KeyCode::Char('r')), &mut state);
+        assert!(result.is_none());
+
+        // Arbitrary keys should be blocked
+        let result = handle_key(key(KeyCode::Char('x')), &mut state);
+        assert!(result.is_none());
+        assert!(state.confirm_quit, "confirm_quit should remain active");
+    }
+
+    #[test]
+    fn ctrl_c_quits_immediately_no_confirmation() {
+        let mut state = ViewState::default();
+        let result = handle_key(ctrl_key(KeyCode::Char('c')), &mut state);
+        assert_eq!(result, Some(UserCommand::Quit));
+        assert!(!state.confirm_quit, "Ctrl+C should not enter confirm_quit mode");
+    }
+
+    #[test]
+    fn ctrl_c_quits_even_during_confirmation() {
+        let mut state = ViewState::default();
+        state.confirm_quit = true;
         let result = handle_key(ctrl_key(KeyCode::Char('c')), &mut state);
         assert_eq!(result, Some(UserCommand::Quit));
     }
