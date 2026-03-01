@@ -4,6 +4,7 @@
 // column (SP/RP) and an HLD column containing real holds data.
 
 use crate::config::{Config, DataPaths};
+use crate::draft::pick::Position;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::Path;
@@ -22,12 +23,14 @@ pub enum PitcherType {
 
 /// Projected season stats for a hitter.
 ///
-/// Note: position eligibility is intentionally excluded from projections.
-/// It will be sourced from ESPN roster data via a separate overlay.
+/// Position eligibility comes from the POS column in the projection CSV.
+/// Multi-position players use slash-separated positions (e.g. "2B/SS").
+/// During a live draft, ESPN eligible_slots data can augment/override these.
 #[derive(Debug, Clone)]
 pub struct HitterProjection {
     pub name: String,
     pub team: String,
+    pub positions: Vec<Position>,
     pub pa: u32,
     pub ab: u32,
     pub h: u32,
@@ -89,12 +92,17 @@ pub enum ProjectionError {
 /// Razzball hitter CSV row. All counting stats are f64 because Razzball uses
 /// fractional projections (e.g. 120.6 HR). Extra columns are silently ignored
 /// via `csv::ReaderBuilder::flexible(true)`.
+///
+/// The POS column is optional for backward compatibility. When present, it
+/// contains slash-separated position strings (e.g. "2B/SS", "OF", "C").
 #[derive(Debug, Deserialize)]
 #[allow(dead_code, non_snake_case)]
 struct RawRazzballHitter {
     Name: String,
     #[serde(default)]
     Team: String,
+    #[serde(default)]
+    POS: String,
     PA: f64,
     AB: f64,
     H: f64,
@@ -134,6 +142,25 @@ struct RawRazzballPitcher {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Parse a POS string like "2B/SS", "OF", "C" into a Vec<Position>.
+///
+/// - Splits on '/' to support multi-position strings.
+/// - "OF" is expanded to CenterField (generic outfield).
+/// - Unrecognized tokens are silently skipped.
+/// - Returns an empty Vec if the input is empty.
+fn parse_hitter_positions(pos_str: &str) -> Vec<Position> {
+    if pos_str.trim().is_empty() {
+        return Vec::new();
+    }
+    let mut positions: Vec<Position> = pos_str
+        .split('/')
+        .filter_map(|s| Position::from_str_pos(s.trim()))
+        .filter(|p| !p.is_meta_slot())
+        .collect();
+    positions.dedup();
+    positions
+}
+
 /// Returns true if all given f64 values are finite and non-negative.
 fn all_valid_counts(values: &[f64]) -> bool {
     values.iter().all(|v| v.is_finite() && *v >= 0.0)
@@ -148,7 +175,8 @@ fn all_finite(values: &[f64]) -> bool {
 // Reader-based loaders (private, enable testing without temp files)
 // ---------------------------------------------------------------------------
 
-fn load_hitters_from_reader<R: Read>(rdr: R) -> Result<Vec<HitterProjection>, csv::Error> {
+/// Load hitter projections from a reader. Public for testing.
+pub fn load_hitter_projections_from_reader<R: Read>(rdr: R) -> Result<Vec<HitterProjection>, csv::Error> {
     let mut reader = csv::ReaderBuilder::new().flexible(true).from_reader(rdr);
     let mut hitters = Vec::new();
     for result in reader.deserialize::<RawRazzballHitter>() {
@@ -162,9 +190,11 @@ fn load_hitters_from_reader<R: Read>(rdr: R) -> Result<Vec<HitterProjection>, cs
                     warn!("skipping hitter '{}': non-finite AVG value", raw.Name.trim());
                     continue;
                 }
+                let positions = parse_hitter_positions(&raw.POS);
                 hitters.push(HitterProjection {
                     name: raw.Name.trim().to_string(),
                     team: raw.Team.trim().to_string(),
+                    positions,
                     pa: raw.PA.round() as u32,
                     ab: raw.AB.round() as u32,
                     h: raw.H.round() as u32,
@@ -240,7 +270,7 @@ pub fn load_hitter_projections(path: &Path) -> Result<Vec<HitterProjection>, Pro
         path: path.display().to_string(),
         source: e,
     })?;
-    load_hitters_from_reader(file).map_err(|e| ProjectionError::Csv {
+    load_hitter_projections_from_reader(file).map_err(|e| ProjectionError::Csv {
         path: path.display().to_string(),
         source: e,
     })
@@ -303,7 +333,7 @@ Name,Team,PA,AB,H,HR,R,RBI,BB,SB,AVG
 Aaron Judge,NYY,700,600,180,50,120,130,90,5,0.300
 Mookie Betts,LAD,680,590,170,30,110,95,80,15,0.288";
 
-        let hitters = load_hitters_from_reader(csv_data.as_bytes()).unwrap();
+        let hitters = load_hitter_projections_from_reader(csv_data.as_bytes()).unwrap();
         assert_eq!(hitters.len(), 2);
 
         assert_eq!(hitters[0].name, "Aaron Judge");
@@ -331,7 +361,7 @@ Mookie Betts,LAD,680,590,170,30,110,95,80,15,0.288";
 Name,Team,PA,AB,H,HR,R,RBI,BB,SB,AVG
 Aaron Judge,NYY,699.6,600.4,180.3,50.7,120.1,130.9,89.5,5.2,0.300";
 
-        let hitters = load_hitters_from_reader(csv_data.as_bytes()).unwrap();
+        let hitters = load_hitter_projections_from_reader(csv_data.as_bytes()).unwrap();
         assert_eq!(hitters[0].pa, 700);
         assert_eq!(hitters[0].ab, 600);
         assert_eq!(hitters[0].h, 180);
@@ -350,7 +380,7 @@ Aaron Judge,NYY,699.6,600.4,180.3,50.7,120.1,130.9,89.5,5.2,0.300";
 Name,Team,PA,AB,H,HR,R,RBI,BB,SB,AVG,OBP,SLG,OPS
 Aaron Judge,NYY,700,600,180,50,120,130,90,5,0.300,0.420,0.650,1.070";
 
-        let hitters = load_hitters_from_reader(csv_data.as_bytes()).unwrap();
+        let hitters = load_hitter_projections_from_reader(csv_data.as_bytes()).unwrap();
         assert_eq!(hitters.len(), 1);
         assert_eq!(hitters[0].name, "Aaron Judge");
         assert_eq!(hitters[0].hr, 50);
@@ -489,7 +519,7 @@ Gerrit Cole,NYY,SP,32,32,200.0,16,0,0,2.80,1.05,250";
 Name,Team,PA,AB,H,HR,R,RBI,BB,SB,BA
 Aaron Judge,NYY,700,600,180,50,120,130,90,5,0.300";
 
-        let hitters = load_hitters_from_reader(csv_data.as_bytes()).unwrap();
+        let hitters = load_hitter_projections_from_reader(csv_data.as_bytes()).unwrap();
         assert_eq!(hitters.len(), 1);
         assert!((hitters[0].avg - 0.300).abs() < f64::EPSILON);
     }
@@ -504,7 +534,7 @@ Valid Player,NYY,600,500,150,30,90,80,70,10,0.300
 Bad Row,NYY,not_a_number,500,150,30,90,80,70,10,0.300
 Another Valid,BOS,550,480,140,25,80,75,60,5,0.292";
 
-        let hitters = load_hitters_from_reader(csv_data.as_bytes()).unwrap();
+        let hitters = load_hitter_projections_from_reader(csv_data.as_bytes()).unwrap();
         assert_eq!(hitters.len(), 2);
         assert_eq!(hitters[0].name, "Valid Player");
         assert_eq!(hitters[1].name, "Another Valid");
@@ -517,7 +547,7 @@ Another Valid,BOS,550,480,140,25,80,75,60,5,0.292";
         let csv_data = "\
 Name,Team,PA,AB,H,HR,R,RBI,BB,SB,AVG";
 
-        let hitters = load_hitters_from_reader(csv_data.as_bytes()).unwrap();
+        let hitters = load_hitter_projections_from_reader(csv_data.as_bytes()).unwrap();
         assert!(hitters.is_empty());
     }
 
@@ -529,7 +559,7 @@ Name,Team,PA,AB,H,HR,R,RBI,BB,SB,AVG";
 Name,Team,PA,AB,H,HR,R,RBI,BB,SB,AVG
   Aaron Judge  , NYY ,700,600,180,50,120,130,90,5,0.300";
 
-        let hitters = load_hitters_from_reader(csv_data.as_bytes()).unwrap();
+        let hitters = load_hitter_projections_from_reader(csv_data.as_bytes()).unwrap();
         assert_eq!(hitters[0].name, "Aaron Judge");
         assert_eq!(hitters[0].team, "NYY");
     }
@@ -554,7 +584,7 @@ Name,Team,PA,AB,H,HR,R,RBI,BB,SB,AVG
 Valid Player,NYY,600,500,150,30,90,80,70,10,0.300
 NaN Player,NYY,600,500,150,30,90,80,70,10,NaN";
 
-        let hitters = load_hitters_from_reader(csv_data.as_bytes()).unwrap();
+        let hitters = load_hitter_projections_from_reader(csv_data.as_bytes()).unwrap();
         assert_eq!(hitters.len(), 1);
         assert_eq!(hitters[0].name, "Valid Player");
     }
@@ -578,7 +608,7 @@ Name,Team,PA,AB,H,HR,R,RBI,BB,SB,AVG
 Valid Player,NYY,600,500,150,30,90,80,70,10,0.300
 Negative HR,NYY,600,500,150,-5,90,80,70,10,0.300";
 
-        let hitters = load_hitters_from_reader(csv_data.as_bytes()).unwrap();
+        let hitters = load_hitter_projections_from_reader(csv_data.as_bytes()).unwrap();
         assert_eq!(hitters.len(), 1);
         assert_eq!(hitters[0].name, "Valid Player");
     }
@@ -604,6 +634,101 @@ Gerrit Cole,NYY,SP,32,32,200.0,16,0,2.80,1.05,250";
         let pitchers = load_pitchers_from_reader(csv_data.as_bytes()).unwrap();
         assert_eq!(pitchers.len(), 1);
         assert_eq!(pitchers[0].hd, 0);
+    }
+
+    // -- POS column parsing for hitters --
+
+    #[test]
+    fn hitter_csv_with_pos_column() {
+        let csv_data = "\
+Name,Team,POS,PA,AB,H,HR,R,RBI,BB,SB,AVG
+Aaron Judge,NYY,RF,700,600,180,50,120,130,90,5,0.300
+Mookie Betts,LAD,2B/SS,680,590,170,30,110,95,80,15,0.288";
+
+        let hitters = load_hitter_projections_from_reader(csv_data.as_bytes()).unwrap();
+        assert_eq!(hitters.len(), 2);
+        assert_eq!(hitters[0].positions, vec![Position::RightField]);
+        assert_eq!(
+            hitters[1].positions,
+            vec![Position::SecondBase, Position::ShortStop]
+        );
+    }
+
+    #[test]
+    fn hitter_csv_without_pos_column_positions_empty() {
+        let csv_data = "\
+Name,Team,PA,AB,H,HR,R,RBI,BB,SB,AVG
+Aaron Judge,NYY,700,600,180,50,120,130,90,5,0.300";
+
+        let hitters = load_hitter_projections_from_reader(csv_data.as_bytes()).unwrap();
+        assert_eq!(hitters.len(), 1);
+        assert!(hitters[0].positions.is_empty());
+    }
+
+    #[test]
+    fn hitter_csv_of_position_maps_to_center_field() {
+        let csv_data = "\
+Name,Team,POS,PA,AB,H,HR,R,RBI,BB,SB,AVG
+Juan Soto,NYM,OF,700,580,165,35,115,110,110,3,0.284";
+
+        let hitters = load_hitter_projections_from_reader(csv_data.as_bytes()).unwrap();
+        assert_eq!(hitters[0].positions, vec![Position::CenterField]);
+    }
+
+    #[test]
+    fn hitter_csv_dh_position() {
+        let csv_data = "\
+Name,Team,POS,PA,AB,H,HR,R,RBI,BB,SB,AVG
+Shohei Ohtani,LAD,DH,660,580,170,45,110,100,70,15,0.293";
+
+        let hitters = load_hitter_projections_from_reader(csv_data.as_bytes()).unwrap();
+        assert_eq!(hitters[0].positions, vec![Position::DesignatedHitter]);
+    }
+
+    #[test]
+    fn parse_hitter_positions_empty_string() {
+        assert!(parse_hitter_positions("").is_empty());
+        assert!(parse_hitter_positions("   ").is_empty());
+    }
+
+    #[test]
+    fn parse_hitter_positions_single() {
+        assert_eq!(parse_hitter_positions("C"), vec![Position::Catcher]);
+        assert_eq!(parse_hitter_positions("SS"), vec![Position::ShortStop]);
+        assert_eq!(parse_hitter_positions("1B"), vec![Position::FirstBase]);
+    }
+
+    #[test]
+    fn parse_hitter_positions_multi() {
+        assert_eq!(
+            parse_hitter_positions("2B/SS"),
+            vec![Position::SecondBase, Position::ShortStop]
+        );
+        assert_eq!(
+            parse_hitter_positions("SS/3B"),
+            vec![Position::ShortStop, Position::ThirdBase]
+        );
+    }
+
+    #[test]
+    fn parse_hitter_positions_skips_meta_slots() {
+        // UTIL, BE, IL should be filtered out
+        assert_eq!(
+            parse_hitter_positions("SS/UTIL"),
+            vec![Position::ShortStop]
+        );
+        assert_eq!(
+            parse_hitter_positions("BE"),
+            Vec::<Position>::new()
+        );
+    }
+
+    #[test]
+    fn parse_hitter_positions_skips_unknown() {
+        assert_eq!(
+            parse_hitter_positions("SS/XX/3B"),
+            vec![Position::ShortStop, Position::ThirdBase]
+        );
     }
 
 }

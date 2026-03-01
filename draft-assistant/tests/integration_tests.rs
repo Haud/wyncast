@@ -1518,7 +1518,7 @@ fn fixture_toml_files_are_valid() {
 fn fixture_csv_files_have_correct_headers() {
     let hitters = std::fs::read_to_string(format!("{}/sample_hitters.csv", FIXTURES)).unwrap();
     assert!(
-        hitters.starts_with("Name,Team,PA,AB,H,HR,R,RBI,BB,SB,AVG"),
+        hitters.starts_with("Name,Team,POS,PA,AB,H,HR,R,RBI,BB,SB,AVG"),
         "Hitters CSV should have correct headers"
     );
 
@@ -2687,4 +2687,321 @@ fn build_snapshot_my_roster_incremental_picks() {
     // Budget should reflect my team's spending
     assert_eq!(snapshot.budget_spent, 62 + 48); // Ohtani + Soto
     assert_eq!(snapshot.budget_remaining, 260 - 62 - 48);
+}
+
+// ===========================================================================
+// Tests: Position data flows correctly from CSV through valuation pipeline
+// (regression tests for the "all players default to Catcher" bug)
+// ===========================================================================
+
+/// Verify that hitter projection CSV positions are parsed correctly.
+#[test]
+fn hitter_projections_have_correct_positions() {
+    let config = inline_config();
+    let projections = load_fixture_projections(&config);
+
+    // Aaron Judge should be RF
+    let judge = projections.hitters.iter().find(|h| h.name == "Aaron Judge").unwrap();
+    assert!(
+        judge.positions.contains(&Position::RightField),
+        "Aaron Judge should have RF position, got {:?}",
+        judge.positions
+    );
+
+    // William Contreras should be C
+    let contreras = projections.hitters.iter().find(|h| h.name == "William Contreras").unwrap();
+    assert!(
+        contreras.positions.contains(&Position::Catcher),
+        "William Contreras should have C position, got {:?}",
+        contreras.positions
+    );
+
+    // Freddie Freeman should be 1B
+    let freeman = projections.hitters.iter().find(|h| h.name == "Freddie Freeman").unwrap();
+    assert!(
+        freeman.positions.contains(&Position::FirstBase),
+        "Freddie Freeman should have 1B position, got {:?}",
+        freeman.positions
+    );
+}
+
+/// Verify that multi-position hitters get all their positions from CSV.
+#[test]
+fn multi_position_hitters_get_all_positions() {
+    let config = inline_config();
+    let projections = load_fixture_projections(&config);
+
+    // Mookie Betts should be 2B/SS
+    let betts = projections.hitters.iter().find(|h| h.name == "Mookie Betts").unwrap();
+    assert!(
+        betts.positions.contains(&Position::SecondBase),
+        "Mookie Betts should have 2B, got {:?}",
+        betts.positions
+    );
+    assert!(
+        betts.positions.contains(&Position::ShortStop),
+        "Mookie Betts should have SS, got {:?}",
+        betts.positions
+    );
+    assert_eq!(
+        betts.positions.len(),
+        2,
+        "Mookie Betts should have exactly 2 positions, got {:?}",
+        betts.positions
+    );
+
+    // Bobby Witt Jr. should be SS/3B
+    let witt = projections.hitters.iter().find(|h| h.name == "Bobby Witt Jr.").unwrap();
+    assert!(
+        witt.positions.contains(&Position::ShortStop),
+        "Bobby Witt Jr. should have SS, got {:?}",
+        witt.positions
+    );
+    assert!(
+        witt.positions.contains(&Position::ThirdBase),
+        "Bobby Witt Jr. should have 3B, got {:?}",
+        witt.positions
+    );
+
+    // Gunnar Henderson should be 3B/SS
+    let henderson = projections.hitters.iter().find(|h| h.name == "Gunnar Henderson").unwrap();
+    assert!(
+        henderson.positions.contains(&Position::ThirdBase),
+        "Gunnar Henderson should have 3B, got {:?}",
+        henderson.positions
+    );
+    assert!(
+        henderson.positions.contains(&Position::ShortStop),
+        "Gunnar Henderson should have SS, got {:?}",
+        henderson.positions
+    );
+}
+
+/// Verify that the valuation pipeline respects positions from CSV,
+/// and NOT all players get assigned Catcher.
+#[test]
+fn valuation_pipeline_respects_csv_positions() {
+    let config = inline_config();
+    let players = load_fixture_players(&config);
+
+    // Count how many players have Catcher as their only position
+    let catcher_only_count = players
+        .iter()
+        .filter(|p| !p.is_pitcher && p.positions == vec![Position::Catcher])
+        .count();
+
+    // We only have 2 catchers in the fixture CSV (William Contreras, Adley Rutschman)
+    assert!(
+        catcher_only_count <= 2,
+        "At most 2 players should be Catcher-only, but {} are. \
+         This indicates positions are not being parsed from CSV correctly.",
+        catcher_only_count
+    );
+
+    // Aaron Judge should NOT be Catcher
+    let judge = players.iter().find(|p| p.name == "Aaron Judge").unwrap();
+    assert!(
+        !judge.positions.contains(&Position::Catcher),
+        "Aaron Judge should NOT be Catcher, got positions {:?}",
+        judge.positions
+    );
+    assert!(
+        judge.positions.contains(&Position::RightField),
+        "Aaron Judge should have RF, got positions {:?}",
+        judge.positions
+    );
+
+    // Trea Turner should be SS
+    let turner = players.iter().find(|p| p.name == "Trea Turner").unwrap();
+    assert!(
+        turner.positions.contains(&Position::ShortStop),
+        "Trea Turner should have SS, got positions {:?}",
+        turner.positions
+    );
+}
+
+/// Verify that VOR and scarcity calculations use correct positions.
+/// With positions properly assigned, different positions should have
+/// different scarcity levels.
+#[test]
+fn vor_scarcity_uses_correct_positions() {
+    let config = inline_config();
+    let players = load_fixture_players(&config);
+
+    // Compute scarcity
+    let scarcity = draft_assistant::valuation::scarcity::compute_scarcity(
+        &players,
+        &config.league,
+    );
+
+    // With correct positions, catchers (only 2 in fixture) should be
+    // scarcer than positions with more players (e.g. SS has 5+ players)
+    let c_entry = scarcity.iter().find(|e| e.position == Position::Catcher);
+    let ss_entry = scarcity.iter().find(|e| e.position == Position::ShortStop);
+
+    if let (Some(c), Some(ss)) = (c_entry, ss_entry) {
+        assert!(
+            c.players_above_replacement <= ss.players_above_replacement,
+            "Catcher should have fewer players above replacement ({}) than SS ({})",
+            c.players_above_replacement,
+            ss.players_above_replacement
+        );
+    }
+
+    // Not every position should show Critical urgency (the old bug symptom)
+    let non_critical_count = scarcity
+        .iter()
+        .filter(|e| e.urgency != draft_assistant::valuation::scarcity::ScarcityUrgency::Critical)
+        .count();
+    assert!(
+        non_critical_count > 0,
+        "At least some positions should NOT be Critical urgency. \
+         All Critical means positions are still not being used correctly."
+    );
+}
+
+/// Verify that best_position assignment is diverse (not all Catcher).
+#[test]
+fn best_position_assignment_is_diverse() {
+    let config = inline_config();
+    let players = load_fixture_players(&config);
+
+    // Collect best_position assignments for hitters
+    let hitter_best_positions: Vec<Position> = players
+        .iter()
+        .filter(|p| !p.is_pitcher)
+        .filter_map(|p| p.best_position)
+        .collect();
+
+    assert!(!hitter_best_positions.is_empty(), "Hitters should have best_position set");
+
+    // Count distinct positions assigned
+    let mut unique_positions: Vec<Position> = hitter_best_positions.clone();
+    unique_positions.sort_by_key(|p| p.sort_order());
+    unique_positions.dedup();
+
+    assert!(
+        unique_positions.len() >= 3,
+        "At least 3 different positions should be assigned as best_position, \
+         but only {} were: {:?}. This may indicate all players defaulting to one position.",
+        unique_positions.len(),
+        unique_positions.iter().map(|p| p.display_str()).collect::<Vec<_>>()
+    );
+
+    // Specifically, Catcher should NOT be the dominant position
+    let catcher_count = hitter_best_positions
+        .iter()
+        .filter(|p| **p == Position::Catcher)
+        .count();
+    let total = hitter_best_positions.len();
+    assert!(
+        catcher_count < total / 2,
+        "Catcher should not be the majority best_position ({}/{} = {:.0}%)",
+        catcher_count,
+        total,
+        catcher_count as f64 / total as f64 * 100.0
+    );
+}
+
+/// Verify that ESPN eligible_slots override CSV positions in draft picks.
+#[test]
+fn espn_eligible_slots_override_csv_positions_in_picks() {
+    let config = inline_config();
+    let mut draft_state = DraftState::new(260, &roster_config());
+    draft_state.reconcile_budgets(&ten_team_budgets());
+    draft_state.set_my_team_by_name("Team 1");
+
+    // Simulate a pick with ESPN eligible_slots that include SS, 2B, OF
+    let pick = DraftPick {
+        pick_number: 1,
+        team_id: "1".to_string(),
+        team_name: "Team 1".to_string(),
+        player_name: "Mookie Betts".to_string(),
+        position: "SS".to_string(),
+        price: 40,
+        espn_player_id: Some("12345".to_string()),
+        eligible_slots: vec![4, 2, 5, 8, 9, 10, 12, 16, 17], // SS, 2B, OF, LF, CF, RF, UTIL, BE, IL
+    };
+
+    draft_state.record_pick(pick);
+
+    // The player should be placed on the roster using eligible_slots
+    let team = &draft_state.teams[0];
+    let mookie = team.roster.slots.iter().find(|s| {
+        s.player.as_ref().map_or(false, |p| p.name == "Mookie Betts")
+    });
+    assert!(
+        mookie.is_some(),
+        "Mookie Betts should be on Team 1's roster"
+    );
+
+    // Should be placed at SS (first eligible non-meta slot)
+    let mookie_slot = mookie.unwrap();
+    assert_eq!(
+        mookie_slot.position,
+        Position::ShortStop,
+        "Mookie Betts should be placed in the SS slot"
+    );
+}
+
+/// Verify backward compatibility: hitter CSV without POS column still works.
+#[test]
+fn hitter_csv_without_pos_column_still_loads() {
+    // CSV without POS column (old format)
+    let csv_data = "\
+Name,Team,PA,AB,H,HR,R,RBI,BB,SB,AVG
+Aaron Judge,NYY,700,600,180,52,120,130,90,5,0.300
+Mookie Betts,LAD,680,590,170,30,110,95,80,15,0.288";
+
+    let hitters: Vec<draft_assistant::valuation::projections::HitterProjection> =
+        draft_assistant::valuation::projections::load_hitter_projections_from_reader(
+            csv_data.as_bytes(),
+        )
+        .unwrap();
+
+    assert_eq!(hitters.len(), 2);
+    assert_eq!(hitters[0].name, "Aaron Judge");
+    // Without POS column, positions should be empty
+    assert!(
+        hitters[0].positions.is_empty(),
+        "Positions should be empty without POS column"
+    );
+    assert!(
+        hitters[1].positions.is_empty(),
+        "Positions should be empty without POS column"
+    );
+}
+
+/// Verify that hitter CSV with POS column correctly parses positions.
+#[test]
+fn hitter_csv_with_pos_column_parses_positions() {
+    let csv_data = "\
+Name,Team,POS,PA,AB,H,HR,R,RBI,BB,SB,AVG
+Aaron Judge,NYY,RF,700,600,180,52,120,130,90,5,0.300
+Mookie Betts,LAD,2B/SS,680,590,170,30,110,95,80,15,0.288
+Juan Soto,NYM,OF,700,580,165,35,115,110,110,3,0.284
+Shohei Ohtani,LAD,DH,660,580,170,45,110,100,70,15,0.293";
+
+    let hitters: Vec<draft_assistant::valuation::projections::HitterProjection> =
+        draft_assistant::valuation::projections::load_hitter_projections_from_reader(
+            csv_data.as_bytes(),
+        )
+        .unwrap();
+
+    assert_eq!(hitters.len(), 4);
+
+    // Aaron Judge = RF
+    assert_eq!(hitters[0].positions, vec![Position::RightField]);
+
+    // Mookie Betts = 2B/SS
+    assert_eq!(
+        hitters[1].positions,
+        vec![Position::SecondBase, Position::ShortStop]
+    );
+
+    // Juan Soto = OF (generic, maps to CF)
+    assert_eq!(hitters[2].positions, vec![Position::CenterField]);
+
+    // Shohei Ohtani = DH
+    assert_eq!(hitters[3].positions, vec![Position::DesignatedHitter]);
 }

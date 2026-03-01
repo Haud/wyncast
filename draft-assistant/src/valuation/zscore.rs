@@ -454,7 +454,7 @@ pub fn compute_initial_zscores(
         valuations.push(PlayerValuation {
             name: hitter.name.clone(),
             team: hitter.team.clone(),
-            positions: Vec::new(), // Populated from ESPN roster data overlay
+            positions: hitter.positions.clone(),
             is_pitcher: false,
             pitcher_type: None,
             projection: PlayerProjectionData::Hitter {
@@ -627,6 +627,7 @@ mod tests {
         HitterProjection {
             name: name.into(),
             team: "TST".into(),
+            positions: vec![],
             pa,
             ab,
             h,
@@ -1036,6 +1037,7 @@ mod tests {
             .map(|i| HitterProjection {
                 name: format!("Clone{}", i),
                 team: "TST".into(),
+                positions: vec![],
                 pa: 600,
                 ab: 540,
                 h: 150,
