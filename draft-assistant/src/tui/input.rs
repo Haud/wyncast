@@ -147,8 +147,10 @@ fn handle_confirm_quit(
     view_state: &mut ViewState,
 ) -> Option<UserCommand> {
     match key_event.code {
-        KeyCode::Char('y') | KeyCode::Char('q') => Some(UserCommand::Quit),
-        KeyCode::Char('n') | KeyCode::Esc => {
+        KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Char('q') | KeyCode::Char('Q') => {
+            Some(UserCommand::Quit)
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
             view_state.confirm_quit = false;
             None
         }
@@ -613,6 +615,56 @@ mod tests {
         state.confirm_quit = true;
         let result = handle_key(ctrl_key(KeyCode::Char('c')), &mut state);
         assert_eq!(result, Some(UserCommand::Quit));
+    }
+
+    #[test]
+    fn confirm_quit_uppercase_y_sends_quit() {
+        let mut state = ViewState::default();
+        state.confirm_quit = true;
+        let result = handle_key(key(KeyCode::Char('Y')), &mut state);
+        assert_eq!(result, Some(UserCommand::Quit));
+    }
+
+    #[test]
+    fn confirm_quit_uppercase_q_sends_quit() {
+        let mut state = ViewState::default();
+        state.confirm_quit = true;
+        let result = handle_key(key(KeyCode::Char('Q')), &mut state);
+        assert_eq!(result, Some(UserCommand::Quit));
+    }
+
+    #[test]
+    fn confirm_quit_uppercase_n_cancels() {
+        let mut state = ViewState::default();
+        state.confirm_quit = true;
+        let result = handle_key(key(KeyCode::Char('N')), &mut state);
+        assert!(result.is_none());
+        assert!(!state.confirm_quit, "N should cancel confirm_quit mode");
+    }
+
+    #[test]
+    fn q_in_filter_mode_appends_to_filter_text() {
+        let mut state = ViewState::default();
+        state.filter_mode = true;
+        state.filter_text = "test".to_string();
+        let result = handle_key(key(KeyCode::Char('q')), &mut state);
+        assert!(result.is_none(), "q in filter mode should not produce a command");
+        assert_eq!(state.filter_text, "testq", "q should be appended to filter text");
+        assert!(!state.confirm_quit, "q in filter mode should not set confirm_quit");
+    }
+
+    #[test]
+    fn double_q_workflow_quits() {
+        let mut state = ViewState::default();
+
+        // First q: enters confirmation mode
+        let result = handle_key(key(KeyCode::Char('q')), &mut state);
+        assert!(result.is_none(), "First q should not send Quit");
+        assert!(state.confirm_quit, "First q should enter confirm_quit mode");
+
+        // Second q: confirms quit
+        let result = handle_key(key(KeyCode::Char('q')), &mut state);
+        assert_eq!(result, Some(UserCommand::Quit), "Second q should confirm quit");
     }
 
     // -- Esc in normal mode --

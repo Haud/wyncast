@@ -290,12 +290,12 @@ fn render_frame(frame: &mut Frame, state: &ViewState) {
 
     // Quit confirmation overlay (rendered last so it's on top)
     if state.confirm_quit {
-        widgets::quit_confirm::render(frame, frame.area());
+        widgets::quit_confirm::render(frame, frame.area(), state);
     }
 }
 
 fn render_help_bar(frame: &mut Frame, layout: &AppLayout) {
-    let text = " q:Quit | 1-5:Tabs | /:Filter | p:Pos | r:Refresh | n:Plan";
+    let text = " q:Quit | 1-5:Tabs | /:Filter | r:Refresh | ?:Help";
     let paragraph = Paragraph::new(Line::from(vec![
         Span::styled(
             text,

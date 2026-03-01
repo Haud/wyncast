@@ -9,12 +9,14 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
+use crate::tui::ViewState;
+
 /// Width and height of the confirmation dialog.
 const DIALOG_WIDTH: u16 = 28;
 const DIALOG_HEIGHT: u16 = 5;
 
 /// Render the quit confirmation overlay centered on the screen.
-pub fn render(frame: &mut Frame, area: Rect) {
+pub fn render(frame: &mut Frame, area: Rect, _state: &ViewState) {
     let dialog_area = centered_rect(DIALOG_WIDTH, DIALOG_HEIGHT, area);
 
     // Clear the area behind the dialog so it renders cleanly on top
@@ -106,10 +108,19 @@ mod tests {
 
     #[test]
     fn render_does_not_panic() {
+        let state = crate::tui::ViewState::default();
         let backend = ratatui::backend::TestBackend::new(80, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| render(frame, frame.area()))
+            .draw(|frame| render(frame, frame.area(), &state))
             .unwrap();
+    }
+
+    #[test]
+    fn centered_rect_handles_zero_area() {
+        let area = Rect::new(0, 0, 0, 0);
+        let result = centered_rect(DIALOG_WIDTH, DIALOG_HEIGHT, area);
+        assert_eq!(result.width, 0);
+        assert_eq!(result.height, 0);
     }
 }
