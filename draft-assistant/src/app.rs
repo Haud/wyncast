@@ -13,6 +13,7 @@ use tracing::{debug, info, warn};
 
 use crate::config::Config;
 use crate::db::Database;
+use crate::draft::pick::{playing_positions_from_slots, Position};
 use crate::draft::state::{
     compute_state_diff, ActiveNomination, DraftState, NominationPayload, PickPayload,
     ReconcileResult, StateUpdatePayload, TeamBudgetPayload,
@@ -307,7 +308,32 @@ impl AppState {
             }
         };
 
-        // Find the nominated player in our available pool
+        // Find the nominated player in our available pool and update their
+        // positions from the nomination's ESPN eligible_slots. The initial
+        // valuation pipeline lacks ESPN position data, so hitter positions are
+        // backfilled from VOR's best_position (which defaults to Catcher when
+        // all replacement levels are equal). Here we correct that with the real
+        // ESPN data carried by the nomination.
+        if let Some(player) = self
+            .available_players
+            .iter_mut()
+            .find(|p| p.name == nomination.player_name)
+        {
+            if !nomination.eligible_slots.is_empty() {
+                let positions = playing_positions_from_slots(&nomination.eligible_slots);
+                if !positions.is_empty() {
+                    player.positions = positions;
+                }
+            } else if !nomination.position.is_empty() {
+                // Fallback: parse the position string from the nomination
+                if let Some(pos) = Position::from_str_pos(&nomination.position) {
+                    if !pos.is_meta_slot() {
+                        player.positions = vec![pos];
+                    }
+                }
+            }
+        }
+
         let player = self
             .available_players
             .iter()
@@ -1833,6 +1859,113 @@ mod tests {
 
         // Should return None since the player is not in our pool
         assert!(analysis.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: Position correction from ESPN eligible_slots
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn nomination_updates_player_positions_from_eligible_slots() {
+        use crate::draft::pick::{
+            ESPN_SLOT_1B, ESPN_SLOT_3B, ESPN_SLOT_BE, ESPN_SLOT_CI, ESPN_SLOT_IL, ESPN_SLOT_UTIL,
+        };
+
+        let mut state = create_test_app_state();
+
+        // H_Star starts with positions = [FirstBase] from the test helper.
+        // Verify that before nomination, the player has the initial position.
+        let before = state
+            .available_players
+            .iter()
+            .find(|p| p.name == "H_Star")
+            .unwrap();
+        assert_eq!(before.positions, vec![Position::FirstBase]);
+
+        // Nominate with ESPN eligible_slots that include 1B, 3B, CI, UTIL, BE, IL.
+        // After processing, the player should have [FirstBase, ThirdBase]
+        // (CI expands to 1B+3B, meta slots filtered, duplicates from 1B kept).
+        let nomination = ActiveNomination {
+            player_name: "H_Star".into(),
+            player_id: "espn_1".into(),
+            position: "1B".into(),
+            nominated_by: "Team 2".into(),
+            current_bid: 5,
+            current_bidder: None,
+            time_remaining: Some(30),
+            eligible_slots: vec![
+                ESPN_SLOT_1B,
+                ESPN_SLOT_3B,
+                ESPN_SLOT_CI,
+                ESPN_SLOT_UTIL,
+                ESPN_SLOT_BE,
+                ESPN_SLOT_IL,
+            ],
+        };
+
+        let _analysis = state.handle_nomination(&nomination);
+
+        // The player's positions in available_players should now reflect ESPN data.
+        let after = state
+            .available_players
+            .iter()
+            .find(|p| p.name == "H_Star")
+            .unwrap();
+
+        assert!(
+            after.positions.contains(&Position::FirstBase),
+            "Should contain FirstBase from ESPN slots"
+        );
+        assert!(
+            after.positions.contains(&Position::ThirdBase),
+            "Should contain ThirdBase from ESPN slots"
+        );
+        assert!(
+            !after.positions.iter().any(|p| p.is_meta_slot()),
+            "Should not contain meta slots (UTIL, BE, IL)"
+        );
+    }
+
+    #[tokio::test]
+    async fn nomination_falls_back_to_position_string_when_no_eligible_slots() {
+        let mut state = create_test_app_state();
+
+        // H_Good starts with positions = [SecondBase] from the test helper.
+        // Change it to Catcher to simulate the VOR backfill bug.
+        if let Some(player) = state
+            .available_players
+            .iter_mut()
+            .find(|p| p.name == "H_Good")
+        {
+            player.positions = vec![Position::Catcher];
+        }
+
+        // Nominate with position="2B" but no eligible_slots.
+        // The fallback should parse the position string and correct it.
+        let nomination = ActiveNomination {
+            player_name: "H_Good".into(),
+            player_id: "espn_2".into(),
+            position: "2B".into(),
+            nominated_by: "Team 2".into(),
+            current_bid: 3,
+            current_bidder: None,
+            time_remaining: Some(30),
+            eligible_slots: vec![],
+        };
+
+        let _analysis = state.handle_nomination(&nomination);
+
+        let after = state
+            .available_players
+            .iter()
+            .find(|p| p.name == "H_Good")
+            .unwrap();
+
+        assert_eq!(
+            after.positions,
+            vec![Position::SecondBase],
+            "Position should be corrected from Catcher to SecondBase via position string fallback"
+        );
     }
 
     // -----------------------------------------------------------------------
