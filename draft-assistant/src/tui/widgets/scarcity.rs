@@ -3,7 +3,7 @@
 // One row per position with visual gauge/bar.
 // Color: Red=Critical, Yellow=High, Blue=Medium, Green=Low
 // Mark nominated player's position.
-// Scrollable with [ and ] keys (sidebar scroll).
+// Scrollable via Tab-focus and arrow keys.
 
 use ratatui::layout::{Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};

@@ -3,7 +3,7 @@
 // Position slots with filled/empty status.
 // "C: [empty]" or "1B: Pete Alonso ($28)"
 // Highlight positions matching nominated player.
-// Scrollable with [ and ] keys (sidebar scroll).
+// Scrollable via Tab-focus and arrow keys.
 
 use ratatui::layout::{Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};

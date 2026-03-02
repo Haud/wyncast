@@ -316,6 +316,7 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
             state.instant_analysis = None;
             state.analysis_text.clear();
             state.analysis_status = LlmStatus::Idle;
+            state.focused_panel = None;
         }
         UiUpdate::AnalysisToken(token) => {
             state.analysis_text.push_str(&token);
