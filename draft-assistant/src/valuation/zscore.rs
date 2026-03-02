@@ -532,9 +532,18 @@ pub fn compute_initial_zscores(
             // Live ESPN eligible_slots will override these at runtime.
             let mut two_way_positions = vec![pitcher_pos];
             if !hitter.espn_position.is_empty() {
-                if let Some(pos) = Position::from_str_pos(&hitter.espn_position) {
-                    if !pos.is_meta_slot() && pos != pitcher_pos {
-                        two_way_positions.push(pos);
+                for token in hitter.espn_position.split('/') {
+                    let t = token.trim();
+                    if t.eq_ignore_ascii_case("OF") {
+                        for of_pos in [Position::LeftField, Position::CenterField, Position::RightField] {
+                            if !of_pos.is_meta_slot() && !two_way_positions.contains(&of_pos) {
+                                two_way_positions.push(of_pos);
+                            }
+                        }
+                    } else if let Some(pos) = Position::from_str_pos(t) {
+                        if !pos.is_meta_slot() && !two_way_positions.contains(&pos) {
+                            two_way_positions.push(pos);
+                        }
                     }
                 }
             }
@@ -585,11 +594,23 @@ pub fn compute_initial_zscores(
 
             // Parse position from CSV projection data as a fallback;
             // may be overridden by live ESPN eligible_slots during draft.
-            let positions = if !hitter.espn_position.is_empty() {
-                Position::from_str_pos(&hitter.espn_position)
-                    .filter(|p| !p.is_meta_slot())
-                    .map(|p| vec![p])
-                    .unwrap_or_default()
+            let positions: Vec<Position> = if !hitter.espn_position.is_empty() {
+                let mut pos: Vec<Position> = Vec::new();
+                for token in hitter.espn_position.split('/') {
+                    let t = token.trim();
+                    if t.eq_ignore_ascii_case("OF") {
+                        pos.push(Position::LeftField);
+                        pos.push(Position::CenterField);
+                        pos.push(Position::RightField);
+                    } else if let Some(p) = Position::from_str_pos(t) {
+                        if !p.is_meta_slot() {
+                            pos.push(p);
+                        }
+                    }
+                }
+                pos.sort();
+                pos.dedup();
+                pos
             } else {
                 Vec::new()
             };
@@ -1740,7 +1761,7 @@ mod tests {
     }
 
     #[test]
-    fn hitter_with_of_position_maps_to_center_field() {
+    fn hitter_with_of_position_expands_to_all_outfield() {
         let mut hitter = make_hitter("Juan Soto", 700, 600, 180, 40, 110, 100, 120, 5);
         hitter.espn_position = "OF".to_string();
 
@@ -1757,8 +1778,11 @@ mod tests {
         let valuations = compute_initial_zscores(&projections, &config);
 
         let soto = valuations.iter().find(|v| v.name == "Juan Soto").unwrap();
-        // "OF" maps to CenterField via Position::from_str_pos
-        assert_eq!(soto.positions, vec![Position::CenterField]);
+        // "OF" expands to LF, CF, RF to match ESPN slot behavior
+        assert!(soto.positions.contains(&Position::LeftField));
+        assert!(soto.positions.contains(&Position::CenterField));
+        assert!(soto.positions.contains(&Position::RightField));
+        assert_eq!(soto.positions.len(), 3);
     }
 
     #[test]
@@ -1803,5 +1827,75 @@ mod tests {
         let util_player = valuations.iter().find(|v| v.name == "Test UTIL").unwrap();
         // UTIL is a meta slot, so positions should be empty (filtered out)
         assert!(util_player.positions.is_empty());
+    }
+
+    #[test]
+    fn hitter_with_multi_position_string() {
+        let mut hitter = make_hitter("Wander Franco", 600, 540, 160, 20, 80, 70, 50, 15);
+        hitter.espn_position = "1B/3B".to_string();
+
+        let hitters = vec![hitter];
+        let pitchers = vec![make_sp("SP1", 180.0, 190, 14, 3.30, 1.10)];
+        let projections = AllProjections { hitters, pitchers };
+
+        let mut config = test_config();
+        config.strategy.pool.min_pa = 100;
+        config.strategy.pool.hitter_pool_size = 200;
+        config.strategy.pool.min_ip_sp = 10.0;
+        config.strategy.pool.sp_pool_size = 200;
+
+        let valuations = compute_initial_zscores(&projections, &config);
+
+        let player = valuations.iter().find(|v| v.name == "Wander Franco").unwrap();
+        assert!(player.positions.contains(&Position::FirstBase));
+        assert!(player.positions.contains(&Position::ThirdBase));
+        assert_eq!(player.positions.len(), 2);
+    }
+
+    #[test]
+    fn hitter_with_multi_position_and_dh() {
+        let mut hitter = make_hitter("Yordan Alvarez", 650, 580, 170, 35, 95, 100, 60, 2);
+        hitter.espn_position = "LF/DH".to_string();
+
+        let hitters = vec![hitter];
+        let pitchers = vec![make_sp("SP1", 180.0, 190, 14, 3.30, 1.10)];
+        let projections = AllProjections { hitters, pitchers };
+
+        let mut config = test_config();
+        config.strategy.pool.min_pa = 100;
+        config.strategy.pool.hitter_pool_size = 200;
+        config.strategy.pool.min_ip_sp = 10.0;
+        config.strategy.pool.sp_pool_size = 200;
+
+        let valuations = compute_initial_zscores(&projections, &config);
+
+        let player = valuations.iter().find(|v| v.name == "Yordan Alvarez").unwrap();
+        assert!(player.positions.contains(&Position::LeftField));
+        assert!(player.positions.contains(&Position::DesignatedHitter));
+        assert_eq!(player.positions.len(), 2);
+    }
+
+    #[test]
+    fn hitter_with_multi_outfield_positions_deduplicates() {
+        let mut hitter = make_hitter("Mike Trout", 600, 540, 160, 35, 100, 90, 70, 8);
+        hitter.espn_position = "LF/CF/RF".to_string();
+
+        let hitters = vec![hitter];
+        let pitchers = vec![make_sp("SP1", 180.0, 190, 14, 3.30, 1.10)];
+        let projections = AllProjections { hitters, pitchers };
+
+        let mut config = test_config();
+        config.strategy.pool.min_pa = 100;
+        config.strategy.pool.hitter_pool_size = 200;
+        config.strategy.pool.min_ip_sp = 10.0;
+        config.strategy.pool.sp_pool_size = 200;
+
+        let valuations = compute_initial_zscores(&projections, &config);
+
+        let player = valuations.iter().find(|v| v.name == "Mike Trout").unwrap();
+        assert!(player.positions.contains(&Position::LeftField));
+        assert!(player.positions.contains(&Position::CenterField));
+        assert!(player.positions.contains(&Position::RightField));
+        assert_eq!(player.positions.len(), 3);
     }
 }
