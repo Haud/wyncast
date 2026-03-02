@@ -496,6 +496,14 @@ pub fn compute_state_diff(
         }
     }
 
+    // Defensive sort: ensure new picks are processed in chronological order
+    // regardless of the order ESPN reports them. ESPN's pick log can be
+    // windowed/virtualized, meaning the extension may receive only a subset
+    // of picks with pick_number values computed relative to that window.
+    // Processing in pick_number order ensures record_pick assigns canonical
+    // sequential numbers correctly.
+    diff.new_picks.sort_unstable_by_key(|p| p.pick_number);
+
     // Compare nominations
     let prev_nom = previous.as_ref().and_then(|p| p.current_nomination.as_ref());
     let curr_nom = current.current_nomination.as_ref();
@@ -1034,6 +1042,33 @@ mod tests {
         assert_eq!(diff.new_nomination.as_ref().unwrap().player_name, "Player C");
         assert!(!diff.nomination_cleared);
         assert!(!diff.bid_updated);
+    }
+
+    #[test]
+    fn diff_historical_picks_sorted_chronologically() {
+        // Simulates the restore/reconnect scenario where the extension delivers
+        // historical picks in reverse chronological order (newest first).
+        // The diff should re-sort them by pick_number so record_pick assigns
+        // sequential numbers in the correct order (Judge gets #1, not #4).
+        let current = StateUpdatePayload {
+            picks: vec![
+                make_pick_payload(4, "team_4", "Player D", "CF", 10),
+                make_pick_payload(3, "team_3", "Player C", "1B", 15),
+                make_pick_payload(2, "team_2", "Player B", "RF", 30),
+                make_pick_payload(1, "team_1", "Judge", "OF", 55),
+            ],
+            current_nomination: None,
+            ..Default::default()
+        };
+
+        let diff = compute_state_diff(&None, &current);
+        assert_eq!(diff.new_picks.len(), 4);
+        // After sorting by pick_number, Judge (pick #1) must come first
+        assert_eq!(diff.new_picks[0].player_name, "Judge");
+        assert_eq!(diff.new_picks[0].pick_number, 1);
+        assert_eq!(diff.new_picks[1].player_name, "Player B");
+        assert_eq!(diff.new_picks[2].player_name, "Player C");
+        assert_eq!(diff.new_picks[3].player_name, "Player D");
     }
 
     #[test]
