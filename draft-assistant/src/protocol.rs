@@ -235,7 +235,6 @@ pub enum LlmStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabId {
     Analysis,
-    NomPlan,
     Available,
     DraftLog,
     Teams,

@@ -69,18 +69,14 @@ pub fn handle_key(
             None
         }
         KeyCode::Char('2') => {
-            view_state.active_tab = TabId::NomPlan;
-            None
-        }
-        KeyCode::Char('3') => {
             view_state.active_tab = TabId::Available;
             None
         }
-        KeyCode::Char('4') => {
+        KeyCode::Char('3') => {
             view_state.active_tab = TabId::DraftLog;
             None
         }
-        KeyCode::Char('5') => {
+        KeyCode::Char('4') => {
             view_state.active_tab = TabId::Teams;
             None
         }
@@ -229,7 +225,6 @@ fn cycle_position_filter(view_state: &mut ViewState) {
 fn active_widget_key(view_state: &ViewState) -> &'static str {
     match view_state.active_tab {
         TabId::Analysis => "analysis",
-        TabId::NomPlan => "nom_plan",
         TabId::Available => "available",
         TabId::DraftLog => "draft_log",
         TabId::Teams => "teams",
@@ -308,33 +303,25 @@ mod tests {
     }
 
     #[test]
-    fn tab_2_switches_to_nom_plan() {
+    fn tab_2_switches_to_available() {
         let mut state = ViewState::default();
         let result = handle_key(key(KeyCode::Char('2')), &mut state);
-        assert!(result.is_none());
-        assert_eq!(state.active_tab, TabId::NomPlan);
-    }
-
-    #[test]
-    fn tab_3_switches_to_available() {
-        let mut state = ViewState::default();
-        let result = handle_key(key(KeyCode::Char('3')), &mut state);
         assert!(result.is_none());
         assert_eq!(state.active_tab, TabId::Available);
     }
 
     #[test]
-    fn tab_4_switches_to_draft_log() {
+    fn tab_3_switches_to_draft_log() {
         let mut state = ViewState::default();
-        let result = handle_key(key(KeyCode::Char('4')), &mut state);
+        let result = handle_key(key(KeyCode::Char('3')), &mut state);
         assert!(result.is_none());
         assert_eq!(state.active_tab, TabId::DraftLog);
     }
 
     #[test]
-    fn tab_5_switches_to_teams() {
+    fn tab_4_switches_to_teams() {
         let mut state = ViewState::default();
-        let result = handle_key(key(KeyCode::Char('5')), &mut state);
+        let result = handle_key(key(KeyCode::Char('4')), &mut state);
         assert!(result.is_none());
         assert_eq!(state.active_tab, TabId::Teams);
     }
@@ -410,6 +397,8 @@ mod tests {
         assert_eq!(state.scroll_offset.get("available"), Some(&2));
         // Analysis tab should not have a scroll offset
         assert_eq!(state.scroll_offset.get("analysis"), None);
+        // Nomination plan is no longer a tab key
+        assert_eq!(state.scroll_offset.get("nom_plan"), None);
     }
 
     #[test]
@@ -436,7 +425,7 @@ mod tests {
 
     #[test]
     fn slash_does_not_enter_filter_mode_on_other_tabs() {
-        for tab in [TabId::Analysis, TabId::NomPlan, TabId::DraftLog, TabId::Teams] {
+        for tab in [TabId::Analysis, TabId::DraftLog, TabId::Teams] {
             let mut state = ViewState::default();
             state.active_tab = tab;
             let result = handle_key(key(KeyCode::Char('/')), &mut state);

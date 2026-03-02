@@ -49,14 +49,13 @@ pub fn connection_indicator(status: ConnectionStatus) -> (&'static str, Color) {
 }
 
 /// Build tab indicator spans with descriptive labels and active tab highlighted.
-/// E.g. "[1:Analysis] [2:Plan] [3:Players] [4:Log] [5:Teams]"
+/// E.g. "[1:Analysis] [2:Players] [3:Log] [4:Teams]"
 pub fn tab_spans(active: TabId) -> Vec<Span<'static>> {
     let tabs = [
         (TabId::Analysis, "1:Analysis"),
-        (TabId::NomPlan, "2:Plan"),
-        (TabId::Available, "3:Players"),
-        (TabId::DraftLog, "4:Log"),
-        (TabId::Teams, "5:Teams"),
+        (TabId::Available, "2:Players"),
+        (TabId::DraftLog, "3:Log"),
+        (TabId::Teams, "4:Teams"),
     ];
 
     let mut spans = Vec::new();
@@ -79,7 +78,6 @@ pub fn tab_spans(active: TabId) -> Vec<Span<'static>> {
 pub fn tab_label(tab: TabId) -> &'static str {
     match tab {
         TabId::Analysis => "Analysis",
-        TabId::NomPlan => "Nom Plan",
         TabId::Available => "Available",
         TabId::DraftLog => "Draft Log",
         TabId::Teams => "Teams",
@@ -111,16 +109,15 @@ mod tests {
     #[test]
     fn tab_spans_highlight_active() {
         let spans = tab_spans(TabId::Available);
-        // The 3rd tab (index 4 in spans: [1:Analysis] " " [2:Plan] " " [3:Players] ...)
-        // [3:Players] should be highlighted
-        let tab3 = &spans[4]; // 0=[1:Analysis], 1=" ", 2=[2:Plan], 3=" ", 4=[3:Players]
-        assert!(tab3.style.add_modifier.contains(Modifier::BOLD));
+        // The 2nd tab (index 2 in spans: [1:Analysis] " " [2:Players] ...)
+        // [2:Players] should be highlighted
+        let tab2 = &spans[2]; // 0=[1:Analysis], 1=" ", 2=[2:Players]
+        assert!(tab2.style.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
     fn tab_label_values() {
         assert_eq!(tab_label(TabId::Analysis), "Analysis");
-        assert_eq!(tab_label(TabId::NomPlan), "Nom Plan");
         assert_eq!(tab_label(TabId::Available), "Available");
         assert_eq!(tab_label(TabId::DraftLog), "Draft Log");
         assert_eq!(tab_label(TabId::Teams), "Teams");
@@ -138,7 +135,7 @@ mod tests {
             .collect();
         assert_eq!(
             labels,
-            vec!["[1:Analysis]", "[2:Plan]", "[3:Players]", "[4:Log]", "[5:Teams]"]
+            vec!["[1:Analysis]", "[2:Players]", "[3:Log]", "[4:Teams]"]
         );
     }
 
