@@ -535,6 +535,55 @@ function computeFingerprint(state) {
 }
 
 /**
+ * Build a state payload object from the current scraped state.
+ */
+function buildStatePayload(state) {
+  return {
+    picks: state.picks || [],
+    currentNomination: state.currentNomination || null,
+    myTeamId: state.myTeamId || null,
+    teams: state.teams || [],
+    pickCount: state.pickCount ?? null,
+    totalPicks: state.totalPicks ?? null,
+    draftId: state.draftId || null,
+    source: state.source || 'unknown',
+  };
+}
+
+/**
+ * Send a full state snapshot to the background script with type FULL_STATE_SYNC.
+ *
+ * Called on initial connect or reconnect so the backend can reset its in-memory
+ * draft state and rebuild it from scratch. Unlike STATE_UPDATE (which carries
+ * incremental diffs), FULL_STATE_SYNC always includes the complete current pick
+ * history and team budgets visible on the page.
+ */
+function sendFullStateSync() {
+  const state = scrapeDom();
+  if (!state) return;
+
+  log('Sending FULL_STATE_SYNC with', (state.picks || []).length, 'picks');
+
+  const message = {
+    source: 'wyndham-draft-sync',
+    type: 'FULL_STATE_SYNC',
+    timestamp: Date.now(),
+    payload: buildStatePayload(state),
+  };
+
+  try {
+    browser.runtime.sendMessage(message).catch((err) => {
+      warn('Failed to send FULL_STATE_SYNC to background:', err.message || err);
+    });
+  } catch (e) {
+    warn('runtime.sendMessage not available:', e.message || e);
+  }
+
+  // Update fingerprint so the next STATE_UPDATE doesn't re-send the same data
+  lastFingerprint = computeFingerprint(state);
+}
+
+/**
  * Process an extracted state update and forward to the background script.
  */
 function handleStateUpdate(state) {
@@ -549,16 +598,7 @@ function handleStateUpdate(state) {
     source: 'wyndham-draft-sync',
     type: 'STATE_UPDATE',
     timestamp: Date.now(),
-    payload: {
-      picks: state.picks || [],
-      currentNomination: state.currentNomination || null,
-      myTeamId: state.myTeamId || null,
-      teams: state.teams || [],
-      pickCount: state.pickCount ?? null,
-      totalPicks: state.totalPicks ?? null,
-      draftId: state.draftId || null,
-      source: state.source || 'unknown',
-    },
+    payload: buildStatePayload(state),
   };
 
   // Send to background script via browser.runtime.sendMessage
@@ -671,6 +711,25 @@ function startPeriodicPolling() {
     requestStateExtraction();
   }, FALLBACK_POLL_INTERVAL_MS);
 }
+
+// ---------------------------------------------------------------------------
+// Message listener: respond to requests from the background script
+// ---------------------------------------------------------------------------
+
+/**
+ * Listen for messages from the background script.
+ * Handles REQUEST_FULL_STATE_SYNC: sent by the background after a WebSocket
+ * reconnect to trigger an immediate FULL_STATE_SYNC from the content script.
+ */
+browser.runtime.onMessage.addListener((message) => {
+  if (!message || message.source !== 'wyndham-draft-sync-bg') {
+    return;
+  }
+  if (message.type === 'REQUEST_FULL_STATE_SYNC') {
+    log('Received REQUEST_FULL_STATE_SYNC from background');
+    sendFullStateSync();
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Initialization

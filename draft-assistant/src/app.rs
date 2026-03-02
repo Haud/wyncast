@@ -741,10 +741,65 @@ async fn handle_ws_message(
         ExtensionMessage::StateUpdate { timestamp: _, payload } => {
             handle_state_update(state, payload, ui_tx).await;
         }
+        ExtensionMessage::FullStateSync { timestamp: _, payload } => {
+            handle_full_state_sync(state, payload, ui_tx).await;
+        }
         ExtensionMessage::ExtensionHeartbeat { .. } => {
             // Heartbeats are logged at trace level, no action needed
         }
     }
+}
+
+/// Handle a full state sync from the extension (on connect or reconnect).
+///
+/// Resets the in-memory draft state (picks, rosters, budgets) and rebuilds it
+/// entirely from the snapshot payload. After the reset, delegates to
+/// `handle_state_update` with `previous_extension_state` cleared so that
+/// `compute_state_diff` treats every pick in the snapshot as new (applied
+/// against an empty baseline). This prevents corrupted state that would
+/// result from applying incremental diffs against a blank slate when resuming
+/// a mid-draft session.
+async fn handle_full_state_sync(
+    state: &mut AppState,
+    ext_payload: crate::protocol::StateUpdatePayload,
+    ui_tx: &mpsc::Sender<UiUpdate>,
+) {
+    info!(
+        "Received FULL_STATE_SYNC with {} picks — resetting draft state",
+        ext_payload.picks.len()
+    );
+
+    // Reset in-memory draft state so the snapshot is applied from scratch.
+    // Preserve salary_cap and roster_config (stored inside DraftState).
+    state.draft_state = DraftState::new(
+        state.config.league.salary_cap,
+        &state.config.league.roster,
+    );
+
+    // Clear the previous extension state so that compute_state_diff in
+    // handle_state_update treats all picks in the snapshot as new.
+    state.previous_extension_state = None;
+
+    // Reset valuation pool and derived state so they're rebuilt cleanly
+    // after all snapshot picks are applied.
+    state.available_players =
+        valuation::compute_initial(&state.all_projections, &state.config)
+            .unwrap_or_default();
+    state.scarcity = compute_scarcity(&state.available_players, &state.config.league);
+    state.inflation = InflationTracker::new();
+
+    // Clear any in-flight LLM task — its context is stale.
+    state.cancel_llm_task();
+    state.llm_mode = None;
+    state.nomination_analysis_text.clear();
+    state.nomination_analysis_status = LlmStatus::Idle;
+    state.nomination_plan_text.clear();
+    state.nomination_plan_status = LlmStatus::Idle;
+
+    // Now process the snapshot as a regular state update.  Because
+    // previous_extension_state is None, compute_state_diff will emit all
+    // picks as new, rebuilding the draft log, rosters, and budgets cleanly.
+    handle_state_update(state, ext_payload, ui_tx).await;
 }
 
 /// Handle a state update from the extension.

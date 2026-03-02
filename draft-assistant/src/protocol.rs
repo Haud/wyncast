@@ -27,6 +27,19 @@ pub enum ExtensionMessage {
         payload: StateUpdatePayload,
     },
 
+    /// Full state snapshot sent on initial connect or reconnect.
+    ///
+    /// When the extension connects (or reconnects) to an in-progress draft,
+    /// it sends this message with the complete current draft state (all picks,
+    /// rosters, budgets) before resuming incremental diffs. The backend resets
+    /// its in-memory draft state and rebuilds from this snapshot, preventing
+    /// corrupted state that would result from applying diffs against a blank slate.
+    #[serde(rename = "FULL_STATE_SYNC")]
+    FullStateSync {
+        timestamp: u64,
+        payload: StateUpdatePayload,
+    },
+
     /// Keep-alive heartbeat from the extension.
     #[serde(rename = "EXTENSION_HEARTBEAT")]
     ExtensionHeartbeat { payload: HeartbeatPayload },
@@ -766,5 +779,123 @@ mod tests {
         let json = serde_json::to_string(&pick_data).unwrap();
         let parsed: PickData = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.eligible_slots, vec![4, 2, 5, 8, 9, 10, 11, 12, 16, 17]);
+    }
+
+    // -- FULL_STATE_SYNC variant --
+
+    #[test]
+    fn round_trip_full_state_sync() {
+        let msg = ExtensionMessage::FullStateSync {
+            timestamp: 1700000100,
+            payload: StateUpdatePayload {
+                picks: vec![
+                    PickData {
+                        pick_number: 1,
+                        team_id: "team_1".to_string(),
+                        team_name: "Vorticists".to_string(),
+                        player_id: "11111".to_string(),
+                        player_name: "Mike Trout".to_string(),
+                        position: "CF".to_string(),
+                        price: 50,
+                        eligible_slots: vec![],
+                    },
+                    PickData {
+                        pick_number: 2,
+                        team_id: "team_2".to_string(),
+                        team_name: "Sluggers".to_string(),
+                        player_id: "22222".to_string(),
+                        player_name: "Shohei Ohtani".to_string(),
+                        position: "SP".to_string(),
+                        price: 65,
+                        eligible_slots: vec![11, 12, 16, 17],
+                    },
+                ],
+                current_nomination: None,
+                my_team_id: Some("team_1".to_string()),
+                teams: vec![
+                    TeamBudgetData {
+                        team_id: Some("1".to_string()),
+                        team_name: "Vorticists".to_string(),
+                        budget: 210,
+                    },
+                    TeamBudgetData {
+                        team_id: Some("2".to_string()),
+                        team_name: "Sluggers".to_string(),
+                        budget: 195,
+                    },
+                ],
+                pick_count: Some(2),
+                total_picks: Some(260),
+                draft_id: Some("espn_12345_2026".to_string()),
+                source: Some("dom_scrape".to_string()),
+            },
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: ExtensionMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(msg, parsed);
+        // Verify the type field is serialized as FULL_STATE_SYNC
+        assert!(json.contains("\"FULL_STATE_SYNC\""));
+    }
+
+    #[test]
+    fn deserialize_full_state_sync_camel_case() {
+        let json = r#"{
+            "type": "FULL_STATE_SYNC",
+            "timestamp": 1700000200,
+            "payload": {
+                "picks": [
+                    {
+                        "pickNumber": 1,
+                        "teamId": "team_3",
+                        "teamName": "Vorticists",
+                        "playerId": "99999",
+                        "playerName": "Aaron Judge",
+                        "position": "OF",
+                        "price": 55
+                    }
+                ],
+                "currentNomination": null,
+                "myTeamId": "team_3",
+                "teams": [],
+                "pickCount": 1,
+                "totalPicks": 260,
+                "draftId": "espn_42_2026",
+                "source": "dom_scrape"
+            }
+        }"#;
+        let msg: ExtensionMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ExtensionMessage::FullStateSync { timestamp, payload } => {
+                assert_eq!(timestamp, 1700000200);
+                assert_eq!(payload.picks.len(), 1);
+                assert_eq!(payload.picks[0].player_name, "Aaron Judge");
+                assert_eq!(payload.picks[0].price, 55);
+                assert_eq!(payload.my_team_id, Some("team_3".to_string()));
+                assert_eq!(payload.pick_count, Some(1));
+                assert_eq!(payload.draft_id, Some("espn_42_2026".to_string()));
+            }
+            _ => panic!("expected FullStateSync variant"),
+        }
+    }
+
+    #[test]
+    fn full_state_sync_is_distinct_from_state_update() {
+        // Ensure FULL_STATE_SYNC and STATE_UPDATE do not deserialize interchangeably
+        let full_sync_json = r#"{
+            "type": "FULL_STATE_SYNC",
+            "timestamp": 123,
+            "payload": { "picks": [], "myTeamId": null, "source": "test" }
+        }"#;
+        let state_update_json = r#"{
+            "type": "STATE_UPDATE",
+            "timestamp": 123,
+            "payload": { "picks": [], "myTeamId": null, "source": "test" }
+        }"#;
+
+        let full_sync: ExtensionMessage = serde_json::from_str(full_sync_json).unwrap();
+        let state_update: ExtensionMessage = serde_json::from_str(state_update_json).unwrap();
+
+        assert!(matches!(full_sync, ExtensionMessage::FullStateSync { .. }));
+        assert!(matches!(state_update, ExtensionMessage::StateUpdate { .. }));
     }
 }
