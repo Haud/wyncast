@@ -195,6 +195,8 @@ pub enum UiUpdate {
     AnalysisComplete(String),
     /// An error occurred during LLM analysis.
     AnalysisError(String),
+    /// A new nomination plan stream is starting; clears any previous plan text.
+    PlanStarted,
     /// A new token for the nomination plan panel.
     PlanToken(String),
     /// Nomination plan streaming is complete.

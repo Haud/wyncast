@@ -251,6 +251,10 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
             state.analysis_text.push_str(&format!("[Error: {}]", msg));
             state.analysis_status = LlmStatus::Error;
         }
+        UiUpdate::PlanStarted => {
+            state.plan_text.clear();
+            state.plan_status = LlmStatus::Streaming;
+        }
         UiUpdate::PlanToken(token) => {
             state.plan_text.push_str(&token);
             state.plan_status = LlmStatus::Streaming;
@@ -668,6 +672,36 @@ mod tests {
         assert_eq!(state.analysis_status, LlmStatus::Complete);
         // AnalysisComplete carries the final text, which may include a truncation note
         assert_eq!(state.analysis_text, "Full analysis text.");
+    }
+
+    #[test]
+    fn apply_ui_update_plan_started_clears_previous_text() {
+        let mut state = ViewState::default();
+        // Simulate old plan text from a previous invocation
+        state.plan_text = "Old plan from last pick cycle.".to_string();
+        state.plan_status = LlmStatus::Complete;
+
+        apply_ui_update(&mut state, UiUpdate::PlanStarted);
+
+        // PlanStarted must clear plan_text so new tokens don't append to stale content
+        assert!(state.plan_text.is_empty(), "plan_text should be cleared on PlanStarted");
+        assert_eq!(state.plan_status, LlmStatus::Streaming);
+    }
+
+    #[test]
+    fn apply_ui_update_plan_started_then_tokens_replace_not_append() {
+        let mut state = ViewState::default();
+        state.plan_text = "Stale plan text.".to_string();
+        state.plan_status = LlmStatus::Complete;
+
+        // A new planning cycle begins
+        apply_ui_update(&mut state, UiUpdate::PlanStarted);
+        apply_ui_update(&mut state, UiUpdate::PlanToken("New plan: ".to_string()));
+        apply_ui_update(&mut state, UiUpdate::PlanToken("nominate X".to_string()));
+
+        // Result must be only the new tokens, not stale text + new tokens
+        assert_eq!(state.plan_text, "New plan: nominate X");
+        assert_eq!(state.plan_status, LlmStatus::Streaming);
     }
 
     #[test]
