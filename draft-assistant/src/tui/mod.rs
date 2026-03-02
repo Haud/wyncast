@@ -512,14 +512,13 @@ pub fn compute_keybinds(state: &ViewState) -> Vec<KeybindHint> {
         hints.push(KeybindHint::new("p", "Pos"));
     }
 
-    // Focus/scroll hints depend on whether a panel is currently focused
+    // Focus cycling and resync are always available in normal mode
+    hints.push(KeybindHint::new("Tab", "Focus"));
+    hints.push(KeybindHint::new("r", "Resync"));
+
+    // Scroll hint only appears when a panel is focused (scroll is routed there)
     if state.focused_panel.is_some() {
-        hints.push(KeybindHint::new("Tab", "Focus"));
-        hints.push(KeybindHint::new("r", "Resync"));
         hints.push(KeybindHint::new("↑↓/j/k/PgUp/PgDn", "Scroll"));
-    } else {
-        hints.push(KeybindHint::new("Tab", "Focus"));
-        hints.push(KeybindHint::new("r", "Resync"));
     }
 
     // Active filter reminder: shown as a trailing hint when the Available tab
@@ -542,12 +541,11 @@ pub fn compute_keybinds(state: &ViewState) -> Vec<KeybindHint> {
 ///
 /// Delegates each zone to its dedicated widget module.
 ///
-/// Note: keybind hints are computed here (from a shared reference to
-/// `state`) and passed directly to the help bar renderer, keeping the
-/// render path free of mutable borrows.
+/// Note: active keybind hints are read from `state.active_keybinds`, which is
+/// pre-synced by the run loop before each draw call. This avoids recomputing
+/// keybinds inside the render path.
 fn render_frame(frame: &mut Frame, state: &ViewState) {
     let layout = build_layout(frame.area());
-    let keybinds = compute_keybinds(state);
 
     widgets::status_bar::render(frame, layout.status_bar, state);
     widgets::nomination_banner::render(frame, layout.nomination_banner, state);
@@ -572,8 +570,8 @@ fn render_frame(frame: &mut Frame, state: &ViewState) {
     widgets::budget::render(frame, layout.budget, state, budget_focused);
     widgets::nomination_plan::render(frame, layout.nomination_plan, state, nom_plan_focused);
 
-    // Help bar: dumb renderer of the precomputed keybind hints
-    render_help_bar(frame, &layout, state, &keybinds);
+    // Help bar: dumb renderer of the pre-synced active keybind hints
+    render_help_bar(frame, &layout, state, &state.active_keybinds);
 
     // Position filter modal overlay
     if state.position_filter_modal.open {
