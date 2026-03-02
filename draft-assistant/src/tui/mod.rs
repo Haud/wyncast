@@ -454,14 +454,14 @@ fn render_frame(frame: &mut Frame, state: &ViewState) {
     // Help bar
     render_help_bar(frame, &layout, state);
 
-    // Quit confirmation overlay (rendered last so it's on top)
-    if state.confirm_quit {
-        widgets::quit_confirm::render(frame, frame.area(), state);
-    }
-
-    // Position filter modal overlay (rendered after quit dialog so quit takes priority)
+    // Position filter modal overlay
     if state.position_filter_modal.open {
         widgets::position_filter_modal::render(frame, frame.area(), state);
+    }
+
+    // Quit confirm dialog rendered last so it appears on top of everything
+    if state.confirm_quit {
+        widgets::quit_confirm::render(frame, frame.area(), state);
     }
 }
 
