@@ -254,7 +254,8 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
             state.plan_text.push_str(&token);
             state.plan_status = LlmStatus::Streaming;
         }
-        UiUpdate::PlanComplete => {
+        UiUpdate::PlanComplete(final_text) => {
+            state.plan_text = final_text;
             state.plan_status = LlmStatus::Complete;
         }
         UiUpdate::PlanError(msg) => {
@@ -675,8 +676,14 @@ mod tests {
     fn apply_ui_update_plan_complete() {
         let mut state = ViewState::default();
         state.plan_status = LlmStatus::Streaming;
-        apply_ui_update(&mut state, UiUpdate::PlanComplete);
+        state.plan_text = "partial token".to_string();
+        apply_ui_update(
+            &mut state,
+            UiUpdate::PlanComplete("Full plan text.".to_string()),
+        );
         assert_eq!(state.plan_status, LlmStatus::Complete);
+        // PlanComplete carries the final text, which may include a truncation note
+        assert_eq!(state.plan_text, "Full plan text.");
     }
 
     #[test]

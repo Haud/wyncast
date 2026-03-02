@@ -184,7 +184,8 @@ pub enum UiUpdate {
     /// A new token for the nomination plan panel.
     PlanToken(String),
     /// Nomination plan streaming is complete.
-    PlanComplete,
+    /// Carries the full final plan text (may include a truncation note).
+    PlanComplete(String),
     /// An error occurred during LLM planning.
     PlanError(String),
     /// Extension connection status changed.

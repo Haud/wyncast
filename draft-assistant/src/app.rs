@@ -1068,10 +1068,10 @@ async fn handle_llm_event(
             } else {
                 full_text
             };
-            state.nomination_plan_text = text;
+            state.nomination_plan_text = text.clone();
             state.nomination_plan_status = LlmStatus::Complete;
             state.llm_mode = None;
-            let _ = ui_tx.send(UiUpdate::PlanComplete).await;
+            let _ = ui_tx.send(UiUpdate::PlanComplete(text)).await;
         }
         (Some(LlmMode::NominationPlanning), LlmEvent::Error { message, .. }) => {
             warn!("LLM planning error: {}", message);
