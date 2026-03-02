@@ -787,6 +787,7 @@ async fn handle_full_state_sync(
             .unwrap_or_default();
     state.scarcity = compute_scarcity(&state.available_players, &state.config.league);
     state.inflation = InflationTracker::new();
+    state.category_needs = CategoryNeeds::default();
 
     // Clear any in-flight LLM task — its context is stale.
     state.cancel_llm_task();
