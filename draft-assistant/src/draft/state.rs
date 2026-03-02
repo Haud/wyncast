@@ -181,6 +181,12 @@ impl DraftState {
             );
         }
         self.pick_count += 1;
+        // Assign the canonical pick number from the internal counter.
+        // The extension's pick_number can be unreliable due to ESPN's
+        // virtualized pick list, which only renders a window of recent
+        // picks and can renumber entries as the window shifts.
+        let mut pick = pick;
+        pick.pick_number = self.pick_count as u32;
         self.picks.push(pick);
     }
 
@@ -283,9 +289,18 @@ impl DraftState {
         self.current_nomination = None;
 
         if self.teams.is_empty() {
-            // Teams not registered yet — store picks for deferred replay
+            // Teams not registered yet — store picks for deferred replay.
+            // Assign sequential pick numbers now so the draft log renders
+            // correctly even before replay_pending_picks() renumbers them.
             self.pick_count = picks.len();
-            self.picks = picks;
+            self.picks = picks
+                .into_iter()
+                .enumerate()
+                .map(|(i, mut p)| {
+                    p.pick_number = (i + 1) as u32;
+                    p
+                })
+                .collect();
             return;
         }
 
