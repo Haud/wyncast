@@ -25,8 +25,8 @@ rp_pool_size = 80
 
 [llm]
 model = "claude-sonnet-4-5-20250929"
-analysis_max_tokens = 400
-planning_max_tokens = 600
+analysis_max_tokens = 2048
+planning_max_tokens = 2048
 analysis_trigger = "nomination"
 prefire_planning = true
 

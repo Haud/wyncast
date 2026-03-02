@@ -99,6 +99,7 @@ impl ClaudeClient {
         let mut full_text = String::new();
         let mut input_tokens: u32 = 0;
         let mut output_tokens: u32 = 0;
+        let mut stop_reason: Option<String> = None;
 
         while let Some(event) = es.next().await {
             match event {
@@ -139,15 +140,17 @@ impl ClaudeClient {
                                 Some(n) => output_tokens = n,
                                 None => warn!("failed to parse output_tokens from message_delta"),
                             }
-                            debug!(output_tokens, "message_delta");
+                            stop_reason = parse_stop_reason(data);
+                            debug!(output_tokens, ?stop_reason, "message_delta");
                         }
                         "message_stop" => {
-                            debug!("message_stop — streaming complete");
+                            debug!(?stop_reason, "message_stop — streaming complete");
                             let _ = tx
                                 .send(LlmEvent::Complete {
                                     full_text,
                                     input_tokens,
                                     output_tokens,
+                                    stop_reason,
                                     generation,
                                 })
                                 .await;
@@ -189,6 +192,7 @@ impl ClaudeClient {
                     full_text,
                     input_tokens,
                     output_tokens,
+                    stop_reason,
                     generation,
                 })
                 .await;
@@ -292,6 +296,17 @@ pub(crate) fn parse_output_tokens(data: &str) -> Option<u32> {
         .map(|n| n as u32)
 }
 
+/// Extract `delta.stop_reason` from a `message_delta` event's JSON.
+///
+/// Expected shape: `{ "type": "message_delta", "delta": { "stop_reason": "end_turn" }, ... }`
+pub(crate) fn parse_stop_reason(data: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(data).ok()?;
+    v.get("delta")?
+        .get("stop_reason")?
+        .as_str()
+        .map(|s| s.to_string())
+}
+
 /// Extract a human-readable error message from an SSE error.
 fn extract_error_message(err: &reqwest_eventsource::Error) -> String {
     match err {
@@ -392,6 +407,49 @@ mod tests {
     #[test]
     fn parse_message_delta_invalid_json() {
         assert_eq!(parse_output_tokens("nope"), None);
+    }
+
+    // -- stop_reason parsing tests --
+
+    #[test]
+    fn parse_stop_reason_end_turn() {
+        let data = r#"{
+            "type": "message_delta",
+            "delta": { "stop_reason": "end_turn", "stop_sequence": null },
+            "usage": { "output_tokens": 128 }
+        }"#;
+        assert_eq!(parse_stop_reason(data), Some("end_turn".to_string()));
+    }
+
+    #[test]
+    fn parse_stop_reason_max_tokens() {
+        let data = r#"{
+            "type": "message_delta",
+            "delta": { "stop_reason": "max_tokens", "stop_sequence": null },
+            "usage": { "output_tokens": 400 }
+        }"#;
+        assert_eq!(parse_stop_reason(data), Some("max_tokens".to_string()));
+    }
+
+    #[test]
+    fn parse_stop_reason_missing_delta() {
+        let data = r#"{ "type": "message_delta", "usage": { "output_tokens": 10 } }"#;
+        assert_eq!(parse_stop_reason(data), None);
+    }
+
+    #[test]
+    fn parse_stop_reason_null_value() {
+        let data = r#"{
+            "type": "message_delta",
+            "delta": { "stop_reason": null },
+            "usage": { "output_tokens": 10 }
+        }"#;
+        assert_eq!(parse_stop_reason(data), None);
+    }
+
+    #[test]
+    fn parse_stop_reason_invalid_json() {
+        assert_eq!(parse_stop_reason("nope"), None);
     }
 
     // -- Token counting with various values --
@@ -563,11 +621,13 @@ mod tests {
 
             // 7. message_stop
             let full_text = format!("{}{}", text1, text2);
+            let stop_reason = parse_stop_reason(msg_delta).map(|s| s.to_string());
             let _ = tx2
                 .send(LlmEvent::Complete {
                     full_text,
                     input_tokens,
                     output_tokens,
+                    stop_reason,
                     generation: gen,
                 })
                 .await;
@@ -601,6 +661,7 @@ mod tests {
                 full_text: "Hello world".to_string(),
                 input_tokens: 25,
                 output_tokens: 10,
+                stop_reason: Some("end_turn".to_string()),
                 generation: gen,
             }
         );
@@ -706,6 +767,7 @@ mod tests {
             let mut full_text = String::new();
             let mut input_tokens: u32 = 0;
             let mut output_tokens: u32 = 0;
+            let mut stop_reason: Option<String> = None;
 
             while let Some(event) = es.next().await {
                 match event {
@@ -729,6 +791,7 @@ mod tests {
                         "message_delta" => {
                             output_tokens =
                                 parse_output_tokens(&msg.data).unwrap_or(output_tokens);
+                            stop_reason = parse_stop_reason(&msg.data);
                         }
                         "message_stop" => {
                             let _ = tx
@@ -736,6 +799,7 @@ mod tests {
                                     full_text: full_text.clone(),
                                     input_tokens,
                                     output_tokens,
+                                    stop_reason: stop_reason.clone(),
                                     generation: gen,
                                 })
                                 .await;
@@ -790,6 +854,7 @@ mod tests {
                 full_text: "Draft analysis".to_string(),
                 input_tokens: 15,
                 output_tokens: 7,
+                stop_reason: Some("end_turn".to_string()),
                 generation: gen,
             }
         );
@@ -923,8 +988,8 @@ mod tests {
                 },
                 llm: LlmConfig {
                     model: "claude-sonnet-4-5-20250929".to_string(),
-                    analysis_max_tokens: 400,
-                    planning_max_tokens: 600,
+                    analysis_max_tokens: 2048,
+                    planning_max_tokens: 2048,
                     analysis_trigger: "nomination".to_string(),
                     prefire_planning: true,
                 },

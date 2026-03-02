@@ -185,6 +185,6 @@ fn strategy_toml_has_correct_settings() {
         llm.get("model").unwrap().as_str().unwrap(),
         "claude-sonnet-4-5-20250929"
     );
-    assert_eq!(llm.get("analysis_max_tokens").unwrap().as_integer().unwrap(), 400);
-    assert_eq!(llm.get("planning_max_tokens").unwrap().as_integer().unwrap(), 600);
+    assert_eq!(llm.get("analysis_max_tokens").unwrap().as_integer().unwrap(), 2048);
+    assert_eq!(llm.get("planning_max_tokens").unwrap().as_integer().unwrap(), 2048);
 }

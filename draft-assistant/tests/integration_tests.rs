@@ -123,8 +123,8 @@ fn inline_config() -> Config {
         },
         llm: LlmConfig {
             model: "test".into(),
-            analysis_max_tokens: 400,
-            planning_max_tokens: 600,
+            analysis_max_tokens: 2048,
+            planning_max_tokens: 2048,
             analysis_trigger: "nomination".into(),
             prefire_planning: true,
         },
@@ -2853,6 +2853,7 @@ async fn multiple_sequential_llm_analysis_requests() {
             full_text: "Analysis A: full text".into(),
             input_tokens: 10,
             output_tokens: 5,
+            stop_reason: Some("end_turn".into()),
             generation: 1,
         })
         .await
@@ -3004,6 +3005,7 @@ async fn cancel_analysis_and_start_new_one() {
             full_text: "Old full text".into(),
             input_tokens: 10,
             output_tokens: 5,
+            stop_reason: Some("end_turn".into()),
             generation: 1,
         })
         .await
@@ -3431,6 +3433,7 @@ async fn llm_channel_stays_open_across_nominations() {
             full_text: "Done A".into(),
             input_tokens: 10,
             output_tokens: 5,
+            stop_reason: Some("end_turn".into()),
             generation: 1,
         })
         .await

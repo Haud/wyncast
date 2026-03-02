@@ -1033,8 +1033,13 @@ async fn handle_llm_event(
             state.nomination_analysis_status = LlmStatus::Streaming;
             let _ = ui_tx.send(UiUpdate::AnalysisToken(text)).await;
         }
-        (Some(LlmMode::NominationAnalysis { .. }), LlmEvent::Complete { full_text, .. }) => {
-            state.nomination_analysis_text = full_text;
+        (Some(LlmMode::NominationAnalysis { .. }), LlmEvent::Complete { full_text, stop_reason, .. }) => {
+            let text = if stop_reason.as_deref() == Some("max_tokens") {
+                format!("{full_text}\n\n[Response truncated due to token limit]")
+            } else {
+                full_text
+            };
+            state.nomination_analysis_text = text;
             state.nomination_analysis_status = LlmStatus::Complete;
             state.llm_mode = None;
             let _ = ui_tx.send(UiUpdate::AnalysisComplete).await;
@@ -1050,8 +1055,13 @@ async fn handle_llm_event(
             state.nomination_plan_status = LlmStatus::Streaming;
             let _ = ui_tx.send(UiUpdate::PlanToken(text)).await;
         }
-        (Some(LlmMode::NominationPlanning), LlmEvent::Complete { full_text, .. }) => {
-            state.nomination_plan_text = full_text;
+        (Some(LlmMode::NominationPlanning), LlmEvent::Complete { full_text, stop_reason, .. }) => {
+            let text = if stop_reason.as_deref() == Some("max_tokens") {
+                format!("{full_text}\n\n[Response truncated due to token limit]")
+            } else {
+                full_text
+            };
+            state.nomination_plan_text = text;
             state.nomination_plan_status = LlmStatus::Complete;
             state.llm_mode = None;
             let _ = ui_tx.send(UiUpdate::PlanComplete).await;
@@ -1291,8 +1301,8 @@ mod tests {
             },
             llm: LlmConfig {
                 model: "test".into(),
-                analysis_max_tokens: 400,
-                planning_max_tokens: 600,
+                analysis_max_tokens: 2048,
+                planning_max_tokens: 2048,
                 analysis_trigger: "nomination".into(),
                 prefire_planning: true,
             },

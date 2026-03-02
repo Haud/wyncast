@@ -31,9 +31,9 @@ rp_pool_size = 80      # Number of RP in the valuation pool
 model = "claude-sonnet-4-5-20250929"
 
 # Nomination analysis: fires on every new nomination to analyze the current player
-analysis_max_tokens = 400
+analysis_max_tokens = 2048
 # Nomination planning: fires when your nomination turn approaches
-planning_max_tokens = 600
+planning_max_tokens = 2048
 
 # When to trigger nomination analysis:
 #   "nomination" — analyze every player nominated
