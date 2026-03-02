@@ -10,8 +10,8 @@
 // | Main Panel (65%)         | Sidebar (35%)          |
 // |                          | +- Roster (30%) ------+|
 // |                          | +- Scarcity (25%) ----+|
-// |                          | +- Budget (15%) ------+|
-// |                          | +- Nom Plan (30%) ----+|
+// |                          | +- Budget (20%) ------+|
+// |                          | +- Nom Plan (25%) ----+|
 // +-------------------------+------------------------+
 // | Help Bar (1 row)                                  |
 // +--------------------------------------------------+
@@ -73,14 +73,14 @@ pub fn build_layout(area: Rect) -> AppLayout {
     let main_panel = horizontal[0];
     let sidebar = horizontal[1];
 
-    // Sidebar vertical: roster (30%) | scarcity (25%) | budget (15%) | nomination_plan (30%)
+    // Sidebar vertical: roster (30%) | scarcity (25%) | budget (20%) | nomination_plan (25%)
     let sidebar_sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Percentage(30),
             Constraint::Percentage(25),
-            Constraint::Percentage(15),
-            Constraint::Percentage(30),
+            Constraint::Percentage(20),
+            Constraint::Percentage(25),
         ])
         .split(sidebar);
 
