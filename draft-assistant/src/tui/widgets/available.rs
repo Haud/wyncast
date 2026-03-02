@@ -7,7 +7,7 @@
 
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Row, Table};
 use ratatui::Frame;
 
@@ -82,13 +82,32 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
 
     let _scroll_offset = state.scroll_offset.get("available").copied().unwrap_or(0);
 
+    // When filter mode is active, highlight the border in cyan and show a
+    // "[FILTER MODE]" label so the user has clear feedback that keystrokes
+    // are being routed to the filter input rather than the navigation layer.
+    let block = if state.filter_mode {
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan))
+            .title(title)
+            .title_bottom(
+                Line::from(vec![Span::styled(
+                    " [FILTER MODE] ",
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )])
+            )
+    } else {
+        Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+    };
+
     let table = Table::new(rows, widths)
         .header(header)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title),
-        )
+        .block(block)
         .row_highlight_style(Style::default().bg(Color::DarkGray))
         .highlight_symbol(">> ");
 
