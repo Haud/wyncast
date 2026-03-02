@@ -307,8 +307,6 @@ fn render_frame(frame: &mut Frame, state: &ViewState) {
 }
 
 fn render_help_bar(frame: &mut Frame, layout: &AppLayout, state: &ViewState) {
-    use crate::protocol::TabId;
-
     let mut spans = vec![Span::styled(
         " q:Quit | 1-5:Tabs | ",
         Style::default().fg(Color::Gray),
