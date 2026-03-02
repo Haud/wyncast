@@ -14,17 +14,14 @@ use ratatui::Frame;
 use crate::draft::pick::Position;
 use crate::draft::roster::RosterSlot;
 use crate::tui::ViewState;
+use super::focused_border_style;
 
 /// Render the roster sidebar into the given area.
 ///
-/// When `focused` is true, the border is highlighted to indicate the sidebar
-/// has keyboard focus for scroll routing.
+/// When `focused` is true, the border is highlighted in cyan to indicate this
+/// panel has keyboard focus for scroll routing.
 pub fn render(frame: &mut Frame, area: Rect, state: &ViewState, focused: bool) {
-    let focus_border = if focused {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default()
-    };
+    let border = focused_border_style(focused, Style::default());
 
     if state.my_roster.is_empty() {
         let paragraph = Paragraph::new("  No roster data.")
@@ -32,7 +29,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState, focused: bool) {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(focus_border)
+                    .border_style(border)
                     .title("My Roster"),
             );
         frame.render_widget(paragraph, area);
@@ -45,7 +42,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState, focused: bool) {
         .as_ref()
         .and_then(|n| Position::from_str_pos(&n.position));
 
-    let scroll_offset = state.scroll_offset.get("sidebar").copied().unwrap_or(0);
+    let scroll_offset = state.scroll_offset.get("roster").copied().unwrap_or(0);
 
     // Visible row count: subtract 2 for borders
     let visible_rows = (area.height as usize).saturating_sub(2);
@@ -73,7 +70,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState, focused: bool) {
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(focus_border)
+            .border_style(border)
             .title(title),
     );
     frame.render_widget(list, area);

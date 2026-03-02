@@ -12,6 +12,7 @@ use ratatui::Frame;
 
 use crate::protocol::LlmStatus;
 use crate::tui::ViewState;
+use super::focused_border_style;
 
 /// Render the LLM analysis panel into the given area.
 ///
@@ -36,11 +37,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState, focused: bool) {
         offset as u16
     };
 
-    let effective_border = if focused {
-        Style::default().fg(Color::Cyan)
-    } else {
-        border_style(state.analysis_status)
-    };
+    let effective_border = focused_border_style(focused, border_style(state.analysis_status));
 
     let paragraph = Paragraph::new(content)
         .block(

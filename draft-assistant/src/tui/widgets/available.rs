@@ -14,6 +14,7 @@ use ratatui::Frame;
 use crate::draft::pick::Position;
 use crate::tui::ViewState;
 use crate::valuation::zscore::PlayerValuation;
+use super::focused_border_style;
 
 /// Render the available players table into the given area.
 ///
@@ -106,7 +107,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState, focused: bool) {
     let block = if state.filter_mode {
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
+            .border_style(focused_border_style(true, Style::default()))
             .title(title)
             .title_bottom(
                 Line::from(vec![Span::styled(
@@ -117,14 +118,10 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState, focused: bool) {
                         .add_modifier(Modifier::BOLD),
                 )])
             )
-    } else if focused {
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
-            .title(title)
     } else {
         Block::default()
             .borders(Borders::ALL)
+            .border_style(focused_border_style(focused, Style::default()))
             .title(title)
     };
 

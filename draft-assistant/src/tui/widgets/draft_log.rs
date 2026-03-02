@@ -15,17 +15,14 @@ use ratatui::Frame;
 use crate::draft::pick::DraftPick;
 use crate::tui::ViewState;
 use crate::valuation::zscore::PlayerValuation;
+use super::focused_border_style;
 
 /// Render the draft log into the given area.
 ///
 /// When `focused` is true, the border is highlighted to indicate this panel
 /// has keyboard focus for scroll routing.
 pub fn render(frame: &mut Frame, area: Rect, state: &ViewState, focused: bool) {
-    let focus_border = if focused {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default()
-    };
+    let focus_border = focused_border_style(focused, Style::default());
 
     if state.draft_log.is_empty() {
         let paragraph = Paragraph::new("  No picks yet.")

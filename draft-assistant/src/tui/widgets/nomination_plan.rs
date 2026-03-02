@@ -11,11 +11,12 @@ use ratatui::Frame;
 
 use crate::protocol::LlmStatus;
 use crate::tui::ViewState;
+use super::focused_border_style;
 
 /// Render the nomination plan panel into the given area.
 ///
-/// When `focused` is true, the border is highlighted to indicate the sidebar
-/// has keyboard focus for scroll routing.
+/// When `focused` is true, the border is highlighted in cyan to indicate this
+/// panel has keyboard focus for scroll routing.
 pub fn render(frame: &mut Frame, area: Rect, state: &ViewState, focused: bool) {
     let title_line = build_title(state.plan_status);
 
@@ -31,15 +32,11 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState, focused: bool) {
     let scroll = if state.plan_status == LlmStatus::Streaming && line_count > inner_height {
         (line_count - inner_height) as u16
     } else {
-        let offset = state.scroll_offset.get("sidebar").copied().unwrap_or(0);
+        let offset = state.scroll_offset.get("nom_plan").copied().unwrap_or(0);
         offset as u16
     };
 
-    let effective_border = if focused {
-        Style::default().fg(Color::Cyan)
-    } else {
-        border_style(state.plan_status)
-    };
+    let effective_border = focused_border_style(focused, border_style(state.plan_status));
 
     let paragraph = Paragraph::new(content)
         .block(

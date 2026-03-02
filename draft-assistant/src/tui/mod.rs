@@ -40,30 +40,61 @@ use layout::{build_layout, AppLayout};
 /// compatible default). When `Some(panel)`, scroll events are dispatched
 /// exclusively to the focused panel. Tab cycles through the panels; Esc
 /// clears focus back to `None`.
+///
+/// The cycle order follows left-to-right, then top-to-bottom within columns:
+/// `None -> MainPanel -> Roster -> Scarcity -> Budget -> NominationPlan -> None`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusPanel {
     /// The active tab's content area (left side).
     MainPanel,
-    /// The sidebar (roster/scarcity/budget/nomination plan on the right).
-    Sidebar,
+    /// Sidebar: My Roster panel.
+    Roster,
+    /// Sidebar: Positional Scarcity panel.
+    Scarcity,
+    /// Sidebar: Budget panel.
+    Budget,
+    /// Sidebar: Nomination Plan panel.
+    NominationPlan,
 }
 
 impl FocusPanel {
-    /// Advance focus forward: None -> MainPanel -> Sidebar -> None.
+    /// Ordered list of panels for cycling.
+    const CYCLE: &[FocusPanel] = &[
+        FocusPanel::MainPanel,
+        FocusPanel::Roster,
+        FocusPanel::Scarcity,
+        FocusPanel::Budget,
+        FocusPanel::NominationPlan,
+    ];
+
+    /// Advance focus forward:
+    /// None -> MainPanel -> Roster -> Scarcity -> Budget -> NominationPlan -> None
     pub fn next(current: Option<FocusPanel>) -> Option<FocusPanel> {
         match current {
-            None => Some(FocusPanel::MainPanel),
-            Some(FocusPanel::MainPanel) => Some(FocusPanel::Sidebar),
-            Some(FocusPanel::Sidebar) => None,
+            None => Some(Self::CYCLE[0]),
+            Some(panel) => {
+                let idx = Self::CYCLE.iter().position(|&p| p == panel);
+                match idx {
+                    Some(i) if i + 1 < Self::CYCLE.len() => Some(Self::CYCLE[i + 1]),
+                    _ => None,
+                }
+            }
         }
     }
 
-    /// Advance focus backward: None -> Sidebar -> MainPanel -> None.
+    /// Advance focus backward:
+    /// None -> NominationPlan -> Budget -> Scarcity -> Roster -> MainPanel -> None
     pub fn prev(current: Option<FocusPanel>) -> Option<FocusPanel> {
         match current {
-            None => Some(FocusPanel::Sidebar),
-            Some(FocusPanel::Sidebar) => Some(FocusPanel::MainPanel),
-            Some(FocusPanel::MainPanel) => None,
+            None => Some(*Self::CYCLE.last().unwrap()),
+            Some(panel) => {
+                let idx = Self::CYCLE.iter().position(|&p| p == panel);
+                match idx {
+                    Some(0) => None,
+                    Some(i) => Some(Self::CYCLE[i - 1]),
+                    None => None,
+                }
+            }
         }
     }
 }
@@ -336,7 +367,10 @@ fn render_frame(frame: &mut Frame, state: &ViewState) {
     widgets::nomination_banner::render(frame, layout.nomination_banner, state);
 
     let main_focused = state.focused_panel == Some(FocusPanel::MainPanel);
-    let sidebar_focused = state.focused_panel == Some(FocusPanel::Sidebar);
+    let roster_focused = state.focused_panel == Some(FocusPanel::Roster);
+    let scarcity_focused = state.focused_panel == Some(FocusPanel::Scarcity);
+    let budget_focused = state.focused_panel == Some(FocusPanel::Budget);
+    let nom_plan_focused = state.focused_panel == Some(FocusPanel::NominationPlan);
 
     // Main panel: tab-dependent content
     match state.active_tab {
@@ -346,11 +380,11 @@ fn render_frame(frame: &mut Frame, state: &ViewState) {
         TabId::Teams => widgets::teams::render(frame, layout.main_panel, state, main_focused),
     }
 
-    // Sidebar widgets
-    widgets::roster::render(frame, layout.roster, state, sidebar_focused);
-    widgets::scarcity::render(frame, layout.scarcity, state, sidebar_focused);
-    widgets::budget::render(frame, layout.budget, state, sidebar_focused);
-    widgets::nomination_plan::render(frame, layout.nomination_plan, state, sidebar_focused);
+    // Sidebar widgets (each with individual focus)
+    widgets::roster::render(frame, layout.roster, state, roster_focused);
+    widgets::scarcity::render(frame, layout.scarcity, state, scarcity_focused);
+    widgets::budget::render(frame, layout.budget, state, budget_focused);
+    widgets::nomination_plan::render(frame, layout.nomination_plan, state, nom_plan_focused);
 
     // Help bar
     render_help_bar(frame, &layout, state);
@@ -408,7 +442,7 @@ fn render_help_bar(frame: &mut Frame, layout: &AppLayout, state: &ViewState) {
     }
 
     spans.push(Span::styled(
-        "Tab:Focus | r:Refresh | n:Plan | ↑↓/j/k/PgUp/PgDn:Scroll | [/]:Sidebar",
+        "Tab:Focus | r:Refresh | n:Plan | ↑↓/j/k/PgUp/PgDn:Scroll",
         Style::default().fg(Color::Gray),
     ));
 
@@ -534,14 +568,20 @@ mod tests {
     #[test]
     fn focus_next_cycles_forward() {
         assert_eq!(FocusPanel::next(None), Some(FocusPanel::MainPanel));
-        assert_eq!(FocusPanel::next(Some(FocusPanel::MainPanel)), Some(FocusPanel::Sidebar));
-        assert_eq!(FocusPanel::next(Some(FocusPanel::Sidebar)), None);
+        assert_eq!(FocusPanel::next(Some(FocusPanel::MainPanel)), Some(FocusPanel::Roster));
+        assert_eq!(FocusPanel::next(Some(FocusPanel::Roster)), Some(FocusPanel::Scarcity));
+        assert_eq!(FocusPanel::next(Some(FocusPanel::Scarcity)), Some(FocusPanel::Budget));
+        assert_eq!(FocusPanel::next(Some(FocusPanel::Budget)), Some(FocusPanel::NominationPlan));
+        assert_eq!(FocusPanel::next(Some(FocusPanel::NominationPlan)), None);
     }
 
     #[test]
     fn focus_prev_cycles_backward() {
-        assert_eq!(FocusPanel::prev(None), Some(FocusPanel::Sidebar));
-        assert_eq!(FocusPanel::prev(Some(FocusPanel::Sidebar)), Some(FocusPanel::MainPanel));
+        assert_eq!(FocusPanel::prev(None), Some(FocusPanel::NominationPlan));
+        assert_eq!(FocusPanel::prev(Some(FocusPanel::NominationPlan)), Some(FocusPanel::Budget));
+        assert_eq!(FocusPanel::prev(Some(FocusPanel::Budget)), Some(FocusPanel::Scarcity));
+        assert_eq!(FocusPanel::prev(Some(FocusPanel::Scarcity)), Some(FocusPanel::Roster));
+        assert_eq!(FocusPanel::prev(Some(FocusPanel::Roster)), Some(FocusPanel::MainPanel));
         assert_eq!(FocusPanel::prev(Some(FocusPanel::MainPanel)), None);
     }
 

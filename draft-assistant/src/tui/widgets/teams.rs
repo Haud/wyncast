@@ -8,6 +8,7 @@ use ratatui::widgets::{Block, Borders, Cell, Row, Scrollbar, ScrollbarOrientatio
 use ratatui::Frame;
 
 use crate::tui::ViewState;
+use super::focused_border_style;
 
 /// Render the teams overview into the given area.
 ///
@@ -65,11 +66,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState, focused: bool) {
         ratatui::layout::Constraint::Length(10),
     ];
 
-    let focus_border = if focused {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default()
-    };
+    let focus_border = focused_border_style(focused, Style::default());
 
     let table = Table::new(rows, widths).header(header).block(
         Block::default()
