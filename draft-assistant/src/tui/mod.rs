@@ -514,10 +514,17 @@ fn render_help_bar(frame: &mut Frame, layout: &AppLayout, state: &ViewState) {
         ));
     }
 
-    spans.push(Span::styled(
-        "Tab:Focus | r:Resync | ↑↓/j/k/PgUp/PgDn:Scroll",
-        Style::default().fg(Color::Gray),
-    ));
+    if state.focused_panel.is_some() {
+        spans.push(Span::styled(
+            "Tab:Focus | r:Resync | ↑↓/j/k/PgUp/PgDn:Scroll",
+            Style::default().fg(Color::Gray),
+        ));
+    } else {
+        spans.push(Span::styled(
+            "Tab:Focus | r:Resync",
+            Style::default().fg(Color::Gray),
+        ));
+    }
 
     // Show active filter text as a reminder on the Available tab
     // when filter has content (visual cue that results are filtered)
