@@ -776,8 +776,8 @@ mod tests {
                 },
                 llm: LlmConfig {
                     model: "test".into(),
-                    analysis_max_tokens: 400,
-                    planning_max_tokens: 600,
+                    analysis_max_tokens: 2048,
+                    planning_max_tokens: 2048,
                     analysis_trigger: "nomination".into(),
                     prefire_planning: true,
                 },

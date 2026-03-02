@@ -144,6 +144,8 @@ pub enum LlmEvent {
         full_text: String,
         input_tokens: u32,
         output_tokens: u32,
+        /// The stop reason from the API (e.g. "end_turn" or "max_tokens").
+        stop_reason: Option<String>,
         generation: u64,
     },
     /// An error occurred during LLM interaction.

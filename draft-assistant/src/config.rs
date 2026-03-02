@@ -493,8 +493,8 @@ mod tests {
         assert_eq!(config.strategy.pool.sp_pool_size, 70);
         assert_eq!(config.strategy.pool.rp_pool_size, 80);
         assert_eq!(config.strategy.llm.model, "claude-sonnet-4-5-20250929");
-        assert_eq!(config.strategy.llm.analysis_max_tokens, 400);
-        assert_eq!(config.strategy.llm.planning_max_tokens, 600);
+        assert_eq!(config.strategy.llm.analysis_max_tokens, 2048);
+        assert_eq!(config.strategy.llm.planning_max_tokens, 2048);
         assert_eq!(config.strategy.llm.analysis_trigger, "nomination");
         assert!(config.strategy.llm.prefire_planning);
 
