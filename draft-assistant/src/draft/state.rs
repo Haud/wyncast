@@ -496,12 +496,13 @@ pub fn compute_state_diff(
         }
     }
 
-    // Sort new picks by ESPN pick_number ascending so they are processed in
-    // chronological order regardless of the iteration order of current.picks.
-    // This is critical during restore/reconnect when the extension delivers the
-    // full historical pick list in reverse chronological order (newest first),
-    // which would otherwise cause record_pick to assign numbers backwards.
-    diff.new_picks.sort_by_key(|p| p.pick_number);
+    // Defensive sort: ensure new picks are processed in chronological order
+    // regardless of the order ESPN reports them. ESPN's pick log can be
+    // windowed/virtualized, meaning the extension may receive only a subset
+    // of picks with pick_number values computed relative to that window.
+    // Processing in pick_number order ensures record_pick assigns canonical
+    // sequential numbers correctly.
+    diff.new_picks.sort_unstable_by_key(|p| p.pick_number);
 
     // Compare nominations
     let prev_nom = previous.as_ref().and_then(|p| p.current_nomination.as_ref());
