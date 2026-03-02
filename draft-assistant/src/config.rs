@@ -37,7 +37,6 @@ pub struct Config {
     pub strategy: StrategyConfig,
     pub credentials: CredentialsConfig,
     pub ws_port: u16,
-    pub db_path: String,
     pub data_paths: DataPaths,
 }
 
@@ -101,7 +100,6 @@ struct StrategyFile {
     pool: PoolConfig,
     llm: LlmConfig,
     websocket: WebsocketSection,
-    database: DatabaseSection,
     data_paths: DataPaths,
 }
 
@@ -113,11 +111,6 @@ struct BudgetSection {
 #[derive(Debug, Clone, Deserialize)]
 struct WebsocketSection {
     port: u16,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct DatabaseSection {
-    path: String,
 }
 
 /// The public strategy config assembled from the strategy.toml sections.
@@ -222,7 +215,6 @@ pub(crate) fn load_config_from(base_dir: &Path) -> Result<Config, ConfigError> {
     };
 
     let ws_port = strategy_file.websocket.port;
-    let db_path = strategy_file.database.path;
     let data_paths = strategy_file.data_paths;
 
     // --- credentials.toml (optional) ---
@@ -242,7 +234,6 @@ pub(crate) fn load_config_from(base_dir: &Path) -> Result<Config, ConfigError> {
         strategy,
         credentials,
         ws_port,
-        db_path,
         data_paths,
     };
 
@@ -350,15 +341,16 @@ pub fn load_config() -> Result<Config, ConfigError> {
     load_config_from(&data_dir)
 }
 
-/// Locate the `defaults/` directory bundled with the application.
+/// Locate the directory that contains the `defaults/` folder bundled with the application.
 ///
 /// Search order:
 /// 1. Alongside the running binary (for installed/release builds)
 /// 2. Current working directory (for `cargo run` during development)
 ///
-/// Returns `Ok(path)` if a `defaults/` directory is found at one of the above
-/// locations, or `Ok(PathBuf::new())` (empty path) if neither location has one
-/// (in which case `ensure_config_files` will be a no-op as long as config/ exists).
+/// Always returns `Ok(path)`: either the binary's directory (if a `defaults/` subfolder
+/// exists there) or the current working directory as a fallback. If neither location
+/// actually contains a `defaults/` folder, `ensure_config_files_from_source` handles it
+/// gracefully (no-op when `config/` already exists in the destination).
 fn find_defaults_dir() -> Result<PathBuf, ConfigError> {
     // Check next to the binary first.
     if let Ok(exe) = std::env::current_exe() {
@@ -620,7 +612,8 @@ mod tests {
 
         // Infrastructure assertions
         assert_eq!(config.ws_port, 9001);
-        assert_eq!(config.db_path, "draft-assistant.db");
+        // Database path is now always resolved via app_dirs::db_path() and is
+        // not stored in Config — no assertion needed here.
         assert_eq!(config.data_paths.hitters, "data/projections/hitters.csv");
     }
 

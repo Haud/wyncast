@@ -998,7 +998,6 @@ mod tests {
                 anthropic_api_key: api_key,
             },
             ws_port: 9001,
-            db_path: "test.db".to_string(),
             data_paths: DataPaths {
                 hitters: "data/hitters.csv".to_string(),
                 pitchers: "data/pitchers.csv".to_string(),
