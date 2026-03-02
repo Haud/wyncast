@@ -212,7 +212,7 @@ pub fn build_nomination_planning_prompt(
     prompt.push_str(&format!(
         "## NOMINATION PLANNING\n\
          Pick #{} | My budget: ${} | Inflation rate: {:.2}x | {} open slots\n\n",
-        draft_state.pick_count + 1,
+        draft_state.picks.len() + 1,
         my_budget,
         inflation.inflation_rate,
         my_roster.empty_slots(),

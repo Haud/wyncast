@@ -1197,7 +1197,7 @@ async fn handle_user_command(
             if team_idx < state.draft_state.teams.len() {
                 let team = &state.draft_state.teams[team_idx];
                 let pick = crate::draft::pick::DraftPick {
-                    pick_number: (state.draft_state.pick_count + 1) as u32,
+                    pick_number: 0, // overwritten by record_pick
                     team_id: team.team_id.clone(),
                     team_name: team.team_name.clone(),
                     player_name,

@@ -181,12 +181,20 @@ impl DraftState {
             );
         }
         self.pick_count += 1;
-        // Assign the canonical pick number from the internal counter.
-        // The extension's pick_number can be unreliable due to ESPN's
-        // virtualized pick list, which only renders a window of recent
-        // picks and can renumber entries as the window shifts.
+        // Assign the canonical pick number based on the current length of
+        // self.picks (before pushing), which gives a stable 1-based sequential
+        // number regardless of what pick_count holds.
+        //
+        // We deliberately avoid using self.pick_count here because
+        // pick_count can be overridden by the ESPN clock label value (e.g.
+        // "PK 2 OF 260" → pick_count = 2 after the first pick completes),
+        // which would cause the next record_pick call to assign pick_number 3,
+        // skipping 2. Using picks.len() ensures numbering is always derived
+        // from how many picks are actually stored, giving correct 1-based
+        // sequential numbers starting at 1 both on initial draft flow and
+        // after mid-session rejoins.
         let mut pick = pick;
-        pick.pick_number = self.pick_count as u32;
+        pick.pick_number = self.picks.len() as u32 + 1;
         self.picks.push(pick);
     }
 
@@ -855,6 +863,118 @@ mod tests {
         assert_eq!(team1.budget_remaining, 260);
         let team2 = state.team("2").unwrap();
         assert_eq!(team2.budget_spent, 30);
+    }
+
+    // --- Pick numbering tests ---
+
+    #[test]
+    fn pick_numbers_start_at_one() {
+        // Bug: pick numbers were starting at 2 because pick_count was being
+        // overridden by the ESPN clock label value (e.g. "PK 2 OF 260"
+        // → pick_count = 2 after the first pick), causing the second
+        // record_pick call to produce pick_number = 3 instead of 2.
+        //
+        // Fix: pick_number is now derived from picks.len() before pushing,
+        // which is independent of pick_count.
+        let mut state = create_test_state();
+
+        state.record_pick(DraftPick {
+            pick_number: 0, // incoming pick_number is ignored; canonical one is assigned
+            team_id: "1".to_string(),
+            team_name: "Team 1".to_string(),
+            player_name: "Mike Trout".to_string(),
+            position: "CF".to_string(),
+            price: 45,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        });
+        assert_eq!(state.picks[0].pick_number, 1, "first pick should be #1");
+
+        // Simulate ESPN clock override: "PK 2 OF 260" → pick_count = 2
+        state.pick_count = 2;
+
+        state.record_pick(DraftPick {
+            pick_number: 0,
+            team_id: "2".to_string(),
+            team_name: "Team 2".to_string(),
+            player_name: "Shohei Ohtani".to_string(),
+            position: "SP".to_string(),
+            price: 50,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        });
+        assert_eq!(state.picks[1].pick_number, 2, "second pick should be #2 (not #3)");
+
+        // Simulate ESPN clock override: "PK 3 OF 260" → pick_count = 3
+        state.pick_count = 3;
+
+        state.record_pick(DraftPick {
+            pick_number: 0,
+            team_id: "1".to_string(),
+            team_name: "Team 1".to_string(),
+            player_name: "Mookie Betts".to_string(),
+            position: "RF".to_string(),
+            price: 35,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        });
+        assert_eq!(state.picks[2].pick_number, 3, "third pick should be #3 (not #4)");
+    }
+
+    #[test]
+    fn pick_numbers_sequential_after_rejoin_with_history() {
+        // Bug: when rejoining a mid-draft session, historical picks were numbered
+        // incorrectly and new picks skipped numbers. The ESPN clock label would
+        // set pick_count to e.g. 51 (the nomination-in-progress number) after
+        // replaying 50 historical picks, causing the 51st pick to get number 52.
+        //
+        // Fix: pick_number is derived from picks.len(), not pick_count.
+        let mut state = create_test_state();
+
+        // Replay 3 historical picks (simulates rejoining mid-draft)
+        for i in 0..3u32 {
+            state.record_pick(DraftPick {
+                pick_number: 0, // ignored
+                team_id: format!("{}", (i % 10) + 1),
+                team_name: format!("Team {}", (i % 10) + 1),
+                player_name: format!("Historical Player {}", i + 1),
+                position: "SP".to_string(),
+                price: 20 + i,
+                espn_player_id: Some(format!("espn_{}", i + 1)),
+                eligible_slots: vec![],
+            });
+        }
+
+        // Verify historical picks are numbered 1-3
+        for i in 0..3usize {
+            assert_eq!(
+                state.picks[i].pick_number,
+                (i + 1) as u32,
+                "historical pick {} should be #{}",
+                i + 1,
+                i + 1
+            );
+        }
+
+        // Simulate ESPN clock override: "PK 4 OF 260" → pick_count = 4
+        state.pick_count = 4;
+
+        // New live pick arrives
+        state.record_pick(DraftPick {
+            pick_number: 0, // ignored
+            team_id: "4".to_string(),
+            team_name: "Team 4".to_string(),
+            player_name: "New Live Pick".to_string(),
+            position: "CF".to_string(),
+            price: 30,
+            espn_player_id: Some("espn_new".to_string()),
+            eligible_slots: vec![],
+        });
+
+        assert_eq!(
+            state.picks[3].pick_number, 4,
+            "first new live pick should be #4 (not #5)"
+        );
     }
 
     // --- State Diff Tests ---
