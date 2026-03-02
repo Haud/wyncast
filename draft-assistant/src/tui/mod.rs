@@ -242,7 +242,8 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
             state.analysis_text.push_str(&token);
             state.analysis_status = LlmStatus::Streaming;
         }
-        UiUpdate::AnalysisComplete => {
+        UiUpdate::AnalysisComplete(final_text) => {
+            state.analysis_text = final_text;
             state.analysis_status = LlmStatus::Complete;
         }
         UiUpdate::AnalysisError(msg) => {
@@ -659,8 +660,14 @@ mod tests {
     fn apply_ui_update_analysis_complete() {
         let mut state = ViewState::default();
         state.analysis_status = LlmStatus::Streaming;
-        apply_ui_update(&mut state, UiUpdate::AnalysisComplete);
+        state.analysis_text = "partial token".to_string();
+        apply_ui_update(
+            &mut state,
+            UiUpdate::AnalysisComplete("Full analysis text.".to_string()),
+        );
         assert_eq!(state.analysis_status, LlmStatus::Complete);
+        // AnalysisComplete carries the final text, which may include a truncation note
+        assert_eq!(state.analysis_text, "Full analysis text.");
     }
 
     #[test]

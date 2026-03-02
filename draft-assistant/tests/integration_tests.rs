@@ -2870,7 +2870,7 @@ async fn multiple_sequential_llm_analysis_requests() {
     // Receive the completion
     let update = ui_rx.recv().await.unwrap();
     assert!(
-        matches!(update, UiUpdate::AnalysisComplete),
+        matches!(update, UiUpdate::AnalysisComplete(_)),
         "Expected AnalysisComplete for nom 1, got {:?}",
         update,
     );
@@ -3013,7 +3013,7 @@ async fn cancel_analysis_and_start_new_one() {
 
     let update = ui_rx.recv().await.unwrap();
     assert!(
-        matches!(update, UiUpdate::AnalysisComplete),
+        matches!(update, UiUpdate::AnalysisComplete(_)),
         "Expected AnalysisComplete, got {:?}",
         update,
     );
@@ -3440,7 +3440,7 @@ async fn llm_channel_stays_open_across_nominations() {
         .unwrap();
 
     let update = ui_rx.recv().await.unwrap();
-    assert!(matches!(update, UiUpdate::AnalysisComplete));
+    assert!(matches!(update, UiUpdate::AnalysisComplete(_)));
 
     // Verify the channel is still open by sending more events.
     // The events won't produce UI updates (mode is None), but the send
