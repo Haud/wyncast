@@ -31,6 +31,75 @@ use crate::valuation::zscore::PlayerValuation;
 use layout::{build_layout, AppLayout};
 
 // ---------------------------------------------------------------------------
+// FocusPanel
+// ---------------------------------------------------------------------------
+
+/// Identifies which panel currently has keyboard focus for scroll routing.
+///
+/// When `None`, scroll events go to the active tab's main panel (backward
+/// compatible default). When `Some(panel)`, scroll events are dispatched
+/// exclusively to the focused panel. Tab cycles through the panels; Esc
+/// clears focus back to `None`.
+///
+/// The cycle order follows left-to-right, then top-to-bottom within columns:
+/// `None -> MainPanel -> Roster -> Scarcity -> Budget -> NominationPlan -> None`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusPanel {
+    /// The active tab's content area (left side).
+    MainPanel,
+    /// Sidebar: My Roster panel.
+    Roster,
+    /// Sidebar: Positional Scarcity panel.
+    Scarcity,
+    /// Sidebar: Budget panel.
+    Budget,
+    /// Sidebar: Nomination Plan panel.
+    NominationPlan,
+}
+
+impl FocusPanel {
+    /// Ordered list of panels for cycling.
+    const CYCLE: &[FocusPanel] = &[
+        FocusPanel::MainPanel,
+        FocusPanel::Roster,
+        FocusPanel::Scarcity,
+        FocusPanel::Budget,
+        FocusPanel::NominationPlan,
+    ];
+
+    /// Advance focus forward:
+    /// None -> MainPanel -> Roster -> Scarcity -> Budget -> NominationPlan -> None
+    pub fn next(current: Option<FocusPanel>) -> Option<FocusPanel> {
+        match current {
+            None => Some(Self::CYCLE[0]),
+            Some(panel) => {
+                let idx = Self::CYCLE.iter().position(|&p| p == panel);
+                match idx {
+                    Some(i) if i + 1 < Self::CYCLE.len() => Some(Self::CYCLE[i + 1]),
+                    _ => None,
+                }
+            }
+        }
+    }
+
+    /// Advance focus backward:
+    /// None -> NominationPlan -> Budget -> Scarcity -> Roster -> MainPanel -> None
+    pub fn prev(current: Option<FocusPanel>) -> Option<FocusPanel> {
+        match current {
+            None => Some(*Self::CYCLE.last().unwrap()),
+            Some(panel) => {
+                let idx = Self::CYCLE.iter().position(|&p| p == panel);
+                match idx {
+                    Some(0) => None,
+                    Some(i) => Some(Self::CYCLE[i - 1]),
+                    None => None,
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // BudgetStatus
 // ---------------------------------------------------------------------------
 
@@ -134,6 +203,9 @@ pub struct ViewState {
     pub team_summaries: Vec<TeamSummary>,
     /// User's roster slots (position + optional player).
     pub my_roster: Vec<RosterSlot>,
+    /// Which panel currently has keyboard focus for scroll routing.
+    /// `None` means no panel is focused (scroll goes to active tab by default).
+    pub focused_panel: Option<FocusPanel>,
 }
 
 impl Default for ViewState {
@@ -161,6 +233,7 @@ impl Default for ViewState {
             draft_log: Vec::new(),
             team_summaries: Vec::new(),
             my_roster: Vec::new(),
+            focused_panel: None,
         }
     }
 }
@@ -227,6 +300,8 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
             state.analysis_text.clear();
             state.analysis_status = LlmStatus::Idle;
             state.instant_analysis = None;
+            // Clear focused panel to avoid a stale cyan border on the new nomination
+            state.focused_panel = None;
             // Reset main panel scroll offsets so the new nomination context is visible from the top.
             // This ensures the nominated player highlight in the Available tab is not scrolled off screen.
             state.scroll_offset.insert("available".to_string(), 0);
@@ -241,6 +316,7 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
             state.instant_analysis = None;
             state.analysis_text.clear();
             state.analysis_status = LlmStatus::Idle;
+            state.focused_panel = None;
         }
         UiUpdate::AnalysisToken(token) => {
             state.analysis_text.push_str(&token);
@@ -291,19 +367,25 @@ fn render_frame(frame: &mut Frame, state: &ViewState) {
     widgets::status_bar::render(frame, layout.status_bar, state);
     widgets::nomination_banner::render(frame, layout.nomination_banner, state);
 
+    let main_focused = state.focused_panel == Some(FocusPanel::MainPanel);
+    let roster_focused = state.focused_panel == Some(FocusPanel::Roster);
+    let scarcity_focused = state.focused_panel == Some(FocusPanel::Scarcity);
+    let budget_focused = state.focused_panel == Some(FocusPanel::Budget);
+    let nom_plan_focused = state.focused_panel == Some(FocusPanel::NominationPlan);
+
     // Main panel: tab-dependent content
     match state.active_tab {
-        TabId::Analysis => widgets::llm_analysis::render(frame, layout.main_panel, state),
-        TabId::Available => widgets::available::render(frame, layout.main_panel, state),
-        TabId::DraftLog => widgets::draft_log::render(frame, layout.main_panel, state),
-        TabId::Teams => widgets::teams::render(frame, layout.main_panel, state),
+        TabId::Analysis => widgets::llm_analysis::render(frame, layout.main_panel, state, main_focused),
+        TabId::Available => widgets::available::render(frame, layout.main_panel, state, main_focused),
+        TabId::DraftLog => widgets::draft_log::render(frame, layout.main_panel, state, main_focused),
+        TabId::Teams => widgets::teams::render(frame, layout.main_panel, state, main_focused),
     }
 
-    // Sidebar widgets
-    widgets::roster::render(frame, layout.roster, state);
-    widgets::scarcity::render(frame, layout.scarcity, state);
-    widgets::budget::render(frame, layout.budget, state);
-    widgets::nomination_plan::render(frame, layout.nomination_plan, state);
+    // Sidebar widgets (each with individual focus)
+    widgets::roster::render(frame, layout.roster, state, roster_focused);
+    widgets::scarcity::render(frame, layout.scarcity, state, scarcity_focused);
+    widgets::budget::render(frame, layout.budget, state, budget_focused);
+    widgets::nomination_plan::render(frame, layout.nomination_plan, state, nom_plan_focused);
 
     // Help bar
     render_help_bar(frame, &layout, state);
@@ -361,7 +443,7 @@ fn render_help_bar(frame: &mut Frame, layout: &AppLayout, state: &ViewState) {
     }
 
     spans.push(Span::styled(
-        "r:Refresh | n:Plan | ↑↓/j/k/PgUp/PgDn:Scroll | [/]:Sidebar",
+        "Tab:Focus | r:Refresh | n:Plan | ↑↓/j/k/PgUp/PgDn:Scroll",
         Style::default().fg(Color::Gray),
     ));
 
@@ -482,6 +564,36 @@ mod tests {
     use super::*;
     use crate::protocol::TeamSnapshot;
 
+    // -- FocusPanel cycling --
+
+    #[test]
+    fn focus_next_cycles_forward() {
+        assert_eq!(FocusPanel::next(None), Some(FocusPanel::MainPanel));
+        assert_eq!(FocusPanel::next(Some(FocusPanel::MainPanel)), Some(FocusPanel::Roster));
+        assert_eq!(FocusPanel::next(Some(FocusPanel::Roster)), Some(FocusPanel::Scarcity));
+        assert_eq!(FocusPanel::next(Some(FocusPanel::Scarcity)), Some(FocusPanel::Budget));
+        assert_eq!(FocusPanel::next(Some(FocusPanel::Budget)), Some(FocusPanel::NominationPlan));
+        assert_eq!(FocusPanel::next(Some(FocusPanel::NominationPlan)), None);
+    }
+
+    #[test]
+    fn focus_prev_cycles_backward() {
+        assert_eq!(FocusPanel::prev(None), Some(FocusPanel::NominationPlan));
+        assert_eq!(FocusPanel::prev(Some(FocusPanel::NominationPlan)), Some(FocusPanel::Budget));
+        assert_eq!(FocusPanel::prev(Some(FocusPanel::Budget)), Some(FocusPanel::Scarcity));
+        assert_eq!(FocusPanel::prev(Some(FocusPanel::Scarcity)), Some(FocusPanel::Roster));
+        assert_eq!(FocusPanel::prev(Some(FocusPanel::Roster)), Some(FocusPanel::MainPanel));
+        assert_eq!(FocusPanel::prev(Some(FocusPanel::MainPanel)), None);
+    }
+
+    #[test]
+    fn focus_next_then_prev_is_identity() {
+        // Starting from None, next then prev should return to None
+        let step1 = FocusPanel::next(None);
+        let step2 = FocusPanel::prev(step1);
+        assert_eq!(step2, None);
+    }
+
     #[test]
     fn view_state_default_is_sensible() {
         let state = ViewState::default();
@@ -505,6 +617,7 @@ mod tests {
         assert!(state.draft_log.is_empty());
         assert!(state.team_summaries.is_empty());
         assert!(state.my_roster.is_empty());
+        assert!(state.focused_panel.is_none());
     }
 
     #[test]

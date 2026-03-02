@@ -14,9 +14,13 @@ use ratatui::Frame;
 use crate::draft::pick::Position;
 use crate::tui::ViewState;
 use crate::valuation::zscore::PlayerValuation;
+use super::focused_border_style;
 
 /// Render the available players table into the given area.
-pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
+///
+/// When `focused` is true, the border is highlighted to indicate this panel
+/// has keyboard focus for scroll routing.
+pub fn render(frame: &mut Frame, area: Rect, state: &ViewState, focused: bool) {
     let filtered = filter_players(
         &state.available_players,
         state.position_filter.as_ref(),
@@ -96,13 +100,14 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
         ratatui::layout::Constraint::Length(7),
     ];
 
+    // Border style priority: filter mode > focus > default.
     // When filter mode is active, highlight the border in cyan and show a
     // "[FILTER MODE]" label so the user has clear feedback that keystrokes
     // are being routed to the filter input rather than the navigation layer.
     let block = if state.filter_mode {
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
+            .border_style(focused_border_style(true, Style::default()))
             .title(title)
             .title_bottom(
                 Line::from(vec![Span::styled(
@@ -116,6 +121,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
     } else {
         Block::default()
             .borders(Borders::ALL)
+            .border_style(focused_border_style(focused, Style::default()))
             .title(title)
     };
 
@@ -313,7 +319,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let state = ViewState::default();
         terminal
-            .draw(|frame| render(frame, frame.area(), &state))
+            .draw(|frame| render(frame, frame.area(), &state, false))
             .unwrap();
     }
 
@@ -327,7 +333,17 @@ mod tests {
             make_test_player("Player B", vec![Position::FirstBase], 15.0),
         ];
         terminal
-            .draw(|frame| render(frame, frame.area(), &state))
+            .draw(|frame| render(frame, frame.area(), &state, false))
+            .unwrap();
+    }
+
+    #[test]
+    fn render_does_not_panic_when_focused() {
+        let backend = ratatui::backend::TestBackend::new(100, 30);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let state = ViewState::default();
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state, true))
             .unwrap();
     }
 }

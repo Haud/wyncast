@@ -8,7 +8,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::draft::pick::Position;
 use crate::protocol::{TabFeature, TabId, UserCommand};
-use super::ViewState;
+use super::{FocusPanel, ViewState};
 
 /// The ordered list of positions for cycling with the `p` key.
 ///
@@ -81,31 +81,35 @@ pub fn handle_key(
             None
         }
 
-        // Scrolling (main panel)
+        // Scrolling: routes to focused panel (or main panel if no focus)
         KeyCode::Up | KeyCode::Char('k') => {
-            scroll_up(view_state, 1);
+            dispatch_scroll_up(view_state, 1);
             None
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            scroll_down(view_state, 1);
+            dispatch_scroll_down(view_state, 1);
             None
         }
         KeyCode::PageUp => {
-            scroll_up(view_state, page_size());
+            dispatch_scroll_up(view_state, page_size());
             None
         }
         KeyCode::PageDown => {
-            scroll_down(view_state, page_size());
+            dispatch_scroll_down(view_state, page_size());
             None
         }
 
-        // Sidebar scrolling
-        KeyCode::Char('[') => {
-            sidebar_scroll_up(view_state, 1);
+        // Panel focus cycling
+        KeyCode::Tab => {
+            if key_event.modifiers.contains(KeyModifiers::SHIFT) {
+                view_state.focused_panel = FocusPanel::prev(view_state.focused_panel);
+            } else {
+                view_state.focused_panel = FocusPanel::next(view_state.focused_panel);
+            }
             None
         }
-        KeyCode::Char(']') => {
-            sidebar_scroll_down(view_state, 1);
+        KeyCode::BackTab => {
+            view_state.focused_panel = FocusPanel::prev(view_state.focused_panel);
             None
         }
 
@@ -117,8 +121,9 @@ pub fn handle_key(
             None
         }
 
-        // Escape: clear filter text if any, otherwise no-op
+        // Escape: clear focus, filter text, and position filter
         KeyCode::Esc => {
+            view_state.focused_panel = None;
             view_state.filter_text.clear();
             view_state.position_filter = None;
             None
@@ -233,29 +238,36 @@ fn active_widget_key(view_state: &ViewState) -> &'static str {
     }
 }
 
-/// Scroll up by the given number of lines.
-fn scroll_up(view_state: &mut ViewState, lines: usize) {
-    let key = active_widget_key(view_state);
+/// Return the scroll key for the currently focused panel.
+///
+/// Each focusable panel has its own scroll offset key:
+/// - `MainPanel` -> the active tab widget key (analysis/available/draft_log/teams)
+/// - `Roster` -> "roster"
+/// - `Scarcity` -> "scarcity"
+/// - `Budget` -> "budget"
+/// - `NominationPlan` -> "nom_plan"
+/// - `None` -> the active tab widget key (backward compatible default)
+fn focused_scroll_key(view_state: &ViewState) -> &'static str {
+    match view_state.focused_panel {
+        Some(FocusPanel::Roster) => "roster",
+        Some(FocusPanel::Scarcity) => "scarcity",
+        Some(FocusPanel::Budget) => "budget",
+        Some(FocusPanel::NominationPlan) => "nom_plan",
+        Some(FocusPanel::MainPanel) | None => active_widget_key(view_state),
+    }
+}
+
+/// Dispatch a scroll-up event to the appropriate panel based on focus state.
+fn dispatch_scroll_up(view_state: &mut ViewState, lines: usize) {
+    let key = focused_scroll_key(view_state);
     let offset = view_state.scroll_offset.entry(key.to_string()).or_insert(0);
     *offset = offset.saturating_sub(lines);
 }
 
-/// Scroll down by the given number of lines.
-fn scroll_down(view_state: &mut ViewState, lines: usize) {
-    let key = active_widget_key(view_state);
+/// Dispatch a scroll-down event to the appropriate panel based on focus state.
+fn dispatch_scroll_down(view_state: &mut ViewState, lines: usize) {
+    let key = focused_scroll_key(view_state);
     let offset = view_state.scroll_offset.entry(key.to_string()).or_insert(0);
-    *offset = offset.saturating_add(lines);
-}
-
-/// Scroll the sidebar up by the given number of lines.
-fn sidebar_scroll_up(view_state: &mut ViewState, lines: usize) {
-    let offset = view_state.scroll_offset.entry("sidebar".to_string()).or_insert(0);
-    *offset = offset.saturating_sub(lines);
-}
-
-/// Scroll the sidebar down by the given number of lines.
-fn sidebar_scroll_down(view_state: &mut ViewState, lines: usize) {
-    let offset = view_state.scroll_offset.entry("sidebar".to_string()).or_insert(0);
     *offset = offset.saturating_add(lines);
 }
 
@@ -271,6 +283,7 @@ fn page_size() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::FocusPanel;
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
     /// Helper to create a KeyEvent with no modifiers.
@@ -402,6 +415,187 @@ mod tests {
         // Nomination plan is no longer a tab key
         assert_eq!(state.scroll_offset.get("nom_plan"), None);
     }
+
+    // -- Panel focus --
+
+    #[test]
+    fn tab_cycles_focus_forward() {
+        let mut state = ViewState::default();
+        assert!(state.focused_panel.is_none());
+
+        handle_key(key(KeyCode::Tab), &mut state);
+        assert_eq!(state.focused_panel, Some(FocusPanel::MainPanel));
+
+        handle_key(key(KeyCode::Tab), &mut state);
+        assert_eq!(state.focused_panel, Some(FocusPanel::Roster));
+
+        handle_key(key(KeyCode::Tab), &mut state);
+        assert_eq!(state.focused_panel, Some(FocusPanel::Scarcity));
+
+        handle_key(key(KeyCode::Tab), &mut state);
+        assert_eq!(state.focused_panel, Some(FocusPanel::Budget));
+
+        handle_key(key(KeyCode::Tab), &mut state);
+        assert_eq!(state.focused_panel, Some(FocusPanel::NominationPlan));
+
+        handle_key(key(KeyCode::Tab), &mut state);
+        assert!(state.focused_panel.is_none());
+    }
+
+    #[test]
+    fn backtab_cycles_focus_backward() {
+        let mut state = ViewState::default();
+        assert!(state.focused_panel.is_none());
+
+        handle_key(key(KeyCode::BackTab), &mut state);
+        assert_eq!(state.focused_panel, Some(FocusPanel::NominationPlan));
+
+        handle_key(key(KeyCode::BackTab), &mut state);
+        assert_eq!(state.focused_panel, Some(FocusPanel::Budget));
+
+        handle_key(key(KeyCode::BackTab), &mut state);
+        assert_eq!(state.focused_panel, Some(FocusPanel::Scarcity));
+
+        handle_key(key(KeyCode::BackTab), &mut state);
+        assert_eq!(state.focused_panel, Some(FocusPanel::Roster));
+
+        handle_key(key(KeyCode::BackTab), &mut state);
+        assert_eq!(state.focused_panel, Some(FocusPanel::MainPanel));
+
+        handle_key(key(KeyCode::BackTab), &mut state);
+        assert!(state.focused_panel.is_none());
+    }
+
+    #[test]
+    fn shift_tab_cycles_focus_backward() {
+        let mut state = ViewState::default();
+        assert!(state.focused_panel.is_none());
+
+        let shift_tab = KeyEvent {
+            code: KeyCode::Tab,
+            modifiers: KeyModifiers::SHIFT,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+
+        handle_key(shift_tab, &mut state);
+        assert_eq!(state.focused_panel, Some(FocusPanel::NominationPlan));
+
+        handle_key(shift_tab, &mut state);
+        assert_eq!(state.focused_panel, Some(FocusPanel::Budget));
+
+        handle_key(shift_tab, &mut state);
+        assert_eq!(state.focused_panel, Some(FocusPanel::Scarcity));
+
+        handle_key(shift_tab, &mut state);
+        assert_eq!(state.focused_panel, Some(FocusPanel::Roster));
+
+        handle_key(shift_tab, &mut state);
+        assert_eq!(state.focused_panel, Some(FocusPanel::MainPanel));
+
+        handle_key(shift_tab, &mut state);
+        assert!(state.focused_panel.is_none());
+    }
+
+    #[test]
+    fn esc_clears_focus() {
+        let mut state = ViewState::default();
+        state.focused_panel = Some(FocusPanel::MainPanel);
+
+        handle_key(key(KeyCode::Esc), &mut state);
+        assert!(state.focused_panel.is_none());
+    }
+
+    #[test]
+    fn scroll_routes_to_roster_when_focused() {
+        let mut state = ViewState::default();
+        state.focused_panel = Some(FocusPanel::Roster);
+
+        handle_key(key(KeyCode::Down), &mut state);
+        handle_key(key(KeyCode::Down), &mut state);
+
+        assert_eq!(state.scroll_offset.get("roster"), Some(&2));
+        // Main panel scroll should not be affected
+        assert!(state.scroll_offset.get("analysis").is_none());
+    }
+
+    #[test]
+    fn scroll_routes_to_scarcity_when_focused() {
+        let mut state = ViewState::default();
+        state.focused_panel = Some(FocusPanel::Scarcity);
+
+        handle_key(key(KeyCode::Down), &mut state);
+
+        assert_eq!(state.scroll_offset.get("scarcity"), Some(&1));
+        assert!(state.scroll_offset.get("analysis").is_none());
+    }
+
+    #[test]
+    fn scroll_routes_to_budget_when_focused() {
+        let mut state = ViewState::default();
+        state.focused_panel = Some(FocusPanel::Budget);
+
+        handle_key(key(KeyCode::Down), &mut state);
+
+        assert_eq!(state.scroll_offset.get("budget"), Some(&1));
+        assert!(state.scroll_offset.get("analysis").is_none());
+    }
+
+    #[test]
+    fn scroll_routes_to_nom_plan_when_focused() {
+        let mut state = ViewState::default();
+        state.focused_panel = Some(FocusPanel::NominationPlan);
+
+        handle_key(key(KeyCode::Down), &mut state);
+
+        assert_eq!(state.scroll_offset.get("nom_plan"), Some(&1));
+        assert!(state.scroll_offset.get("analysis").is_none());
+    }
+
+    #[test]
+    fn scroll_routes_to_main_when_focused() {
+        let mut state = ViewState::default();
+        state.focused_panel = Some(FocusPanel::MainPanel);
+
+        handle_key(key(KeyCode::Down), &mut state);
+
+        assert_eq!(state.scroll_offset.get("analysis"), Some(&1));
+        assert!(state.scroll_offset.get("sidebar").is_none());
+    }
+
+    #[test]
+    fn scroll_routes_to_main_when_no_focus() {
+        let mut state = ViewState::default();
+        assert!(state.focused_panel.is_none());
+
+        handle_key(key(KeyCode::Down), &mut state);
+
+        assert_eq!(state.scroll_offset.get("analysis"), Some(&1));
+        assert!(state.scroll_offset.get("sidebar").is_none());
+    }
+
+    #[test]
+    fn page_scroll_routes_to_roster_when_focused() {
+        let mut state = ViewState::default();
+        state.focused_panel = Some(FocusPanel::Roster);
+
+        handle_key(key(KeyCode::PageDown), &mut state);
+
+        assert_eq!(state.scroll_offset.get("roster"), Some(&20));
+        assert!(state.scroll_offset.get("analysis").is_none());
+    }
+
+    #[test]
+    fn tab_does_not_affect_other_state() {
+        let mut state = ViewState::default();
+        state.active_tab = TabId::Available;
+
+        handle_key(key(KeyCode::Tab), &mut state);
+
+        assert_eq!(state.active_tab, TabId::Available, "Tab should not switch tabs");
+        assert!(!state.filter_mode, "Tab should not enter filter mode");
+    }
+
 
     // -- Filter mode --
 
@@ -719,14 +913,16 @@ mod tests {
     // -- Esc in normal mode --
 
     #[test]
-    fn esc_clears_filter_text_and_position() {
+    fn esc_clears_filter_text_position_and_focus() {
         let mut state = ViewState::default();
         state.filter_text = "test".to_string();
         state.position_filter = Some(Position::Catcher);
+        state.focused_panel = Some(FocusPanel::Roster);
         let result = handle_key(key(KeyCode::Esc), &mut state);
         assert!(result.is_none());
         assert!(state.filter_text.is_empty());
         assert!(state.position_filter.is_none());
+        assert!(state.focused_panel.is_none());
     }
 
     // -- Unknown keys --
@@ -770,43 +966,24 @@ mod tests {
         );
     }
 
-    // -- Sidebar scrolling --
+    // -- Individual panel scroll independence --
 
     #[test]
-    fn bracket_right_scrolls_sidebar_down() {
+    fn each_panel_scrolls_independently() {
         let mut state = ViewState::default();
-        let result = handle_key(key(KeyCode::Char(']')), &mut state);
-        assert!(result.is_none());
-        assert_eq!(state.scroll_offset.get("sidebar"), Some(&1));
-    }
 
-    #[test]
-    fn bracket_left_scrolls_sidebar_up() {
-        let mut state = ViewState::default();
-        state.scroll_offset.insert("sidebar".to_string(), 5);
-        let result = handle_key(key(KeyCode::Char('[')), &mut state);
-        assert!(result.is_none());
-        assert_eq!(state.scroll_offset.get("sidebar"), Some(&4));
-    }
-
-    #[test]
-    fn sidebar_scroll_up_does_not_underflow() {
-        let mut state = ViewState::default();
-        // sidebar offset is 0 (default)
-        let result = handle_key(key(KeyCode::Char('[')), &mut state);
-        assert!(result.is_none());
-        assert_eq!(state.scroll_offset.get("sidebar"), Some(&0));
-    }
-
-    #[test]
-    fn sidebar_scroll_independent_of_main_scroll() {
-        let mut state = ViewState::default();
         // Scroll main panel down
         handle_key(key(KeyCode::Down), &mut state);
-        // Scroll sidebar down
-        handle_key(key(KeyCode::Char(']')), &mut state);
-        // Both should have independent offsets
         assert_eq!(state.scroll_offset.get("analysis"), Some(&1));
-        assert_eq!(state.scroll_offset.get("sidebar"), Some(&1));
+
+        // Switch focus to roster and scroll
+        state.focused_panel = Some(FocusPanel::Roster);
+        handle_key(key(KeyCode::Down), &mut state);
+        assert_eq!(state.scroll_offset.get("roster"), Some(&1));
+
+        // Main panel scroll should be untouched
+        assert_eq!(state.scroll_offset.get("analysis"), Some(&1));
+        // Other panels should be untouched
+        assert!(state.scroll_offset.get("scarcity").is_none());
     }
 }

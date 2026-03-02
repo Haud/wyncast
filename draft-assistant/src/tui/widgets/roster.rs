@@ -3,7 +3,7 @@
 // Position slots with filled/empty status.
 // "C: [empty]" or "1B: Pete Alonso ($28)"
 // Highlight positions matching nominated player.
-// Scrollable with [ and ] keys (sidebar scroll).
+// Scrollable via Tab-focus and arrow keys.
 
 use ratatui::layout::{Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -14,15 +14,22 @@ use ratatui::Frame;
 use crate::draft::pick::Position;
 use crate::draft::roster::RosterSlot;
 use crate::tui::ViewState;
+use super::focused_border_style;
 
 /// Render the roster sidebar into the given area.
-pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
+///
+/// When `focused` is true, the border is highlighted in cyan to indicate this
+/// panel has keyboard focus for scroll routing.
+pub fn render(frame: &mut Frame, area: Rect, state: &ViewState, focused: bool) {
+    let border = focused_border_style(focused, Style::default());
+
     if state.my_roster.is_empty() {
         let paragraph = Paragraph::new("  No roster data.")
             .style(Style::default().fg(Color::DarkGray))
             .block(
                 Block::default()
                     .borders(Borders::ALL)
+                    .border_style(border)
                     .title("My Roster"),
             );
         frame.render_widget(paragraph, area);
@@ -35,7 +42,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
         .as_ref()
         .and_then(|n| Position::from_str_pos(&n.position));
 
-    let scroll_offset = state.scroll_offset.get("sidebar").copied().unwrap_or(0);
+    let scroll_offset = state.scroll_offset.get("roster").copied().unwrap_or(0);
 
     // Visible row count: subtract 2 for borders
     let visible_rows = (area.height as usize).saturating_sub(2);
@@ -63,6 +70,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
+            .border_style(border)
             .title(title),
     );
     frame.render_widget(list, area);
@@ -172,7 +180,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let state = ViewState::default();
         terminal
-            .draw(|frame| render(frame, frame.area(), &state))
+            .draw(|frame| render(frame, frame.area(), &state, false))
             .unwrap();
     }
 
@@ -202,7 +210,17 @@ mod tests {
             },
         ];
         terminal
-            .draw(|frame| render(frame, frame.area(), &state))
+            .draw(|frame| render(frame, frame.area(), &state, false))
+            .unwrap();
+    }
+
+    #[test]
+    fn render_does_not_panic_when_focused() {
+        let backend = ratatui::backend::TestBackend::new(40, 15);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let state = ViewState::default();
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state, true))
             .unwrap();
     }
 }

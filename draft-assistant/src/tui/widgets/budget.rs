@@ -11,21 +11,28 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
 use crate::tui::{BudgetStatus, ViewState};
+use super::focused_border_style;
 
 /// Render the budget display into the given area.
-pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
+///
+/// When `focused` is true, the border is highlighted in cyan to indicate this
+/// panel has keyboard focus for scroll routing.
+pub fn render(frame: &mut Frame, area: Rect, state: &ViewState, focused: bool) {
     let lines = build_budget_lines(&state.budget);
 
-    let scroll_offset = state.scroll_offset.get("sidebar").copied().unwrap_or(0);
+    let scroll_offset = state.scroll_offset.get("budget").copied().unwrap_or(0);
     let total_lines = lines.len();
     let visible_rows = (area.height as usize).saturating_sub(2);
     let max_offset = total_lines.saturating_sub(visible_rows);
     let scroll = (scroll_offset.min(max_offset)) as u16;
 
+    let border = focused_border_style(focused, Style::default());
+
     let paragraph = Paragraph::new(lines)
         .block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_style(border)
                 .title("Budget"),
         )
         .scroll((scroll, 0));
@@ -158,7 +165,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let state = ViewState::default();
         terminal
-            .draw(|frame| render(frame, frame.area(), &state))
+            .draw(|frame| render(frame, frame.area(), &state, false))
             .unwrap();
     }
 
@@ -176,7 +183,17 @@ mod tests {
             avg_per_slot: 10.8,
         };
         terminal
-            .draw(|frame| render(frame, frame.area(), &state))
+            .draw(|frame| render(frame, frame.area(), &state, false))
+            .unwrap();
+    }
+
+    #[test]
+    fn render_does_not_panic_when_focused() {
+        let backend = ratatui::backend::TestBackend::new(40, 10);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let state = ViewState::default();
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state, true))
             .unwrap();
     }
 }

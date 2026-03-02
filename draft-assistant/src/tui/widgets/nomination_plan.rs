@@ -11,9 +11,13 @@ use ratatui::Frame;
 
 use crate::protocol::LlmStatus;
 use crate::tui::ViewState;
+use super::focused_border_style;
 
 /// Render the nomination plan panel into the given area.
-pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
+///
+/// When `focused` is true, the border is highlighted in cyan to indicate this
+/// panel has keyboard focus for scroll routing.
+pub fn render(frame: &mut Frame, area: Rect, state: &ViewState, focused: bool) {
     let title_line = build_title(state.plan_status);
 
     let content = if state.plan_text.is_empty() {
@@ -32,12 +36,14 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
         offset as u16
     };
 
+    let effective_border = focused_border_style(focused, border_style(state.plan_status));
+
     let paragraph = Paragraph::new(content)
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .title(title_line)
-                .border_style(border_style(state.plan_status)),
+                .border_style(effective_border),
         )
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
@@ -130,7 +136,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let state = ViewState::default();
         terminal
-            .draw(|frame| render(frame, frame.area(), &state))
+            .draw(|frame| render(frame, frame.area(), &state, false))
             .unwrap();
     }
 
@@ -142,7 +148,7 @@ mod tests {
         state.plan_text = "Nominate Player X at $15.\nAlternative: Player Y at $12.".to_string();
         state.plan_status = LlmStatus::Complete;
         terminal
-            .draw(|frame| render(frame, frame.area(), &state))
+            .draw(|frame| render(frame, frame.area(), &state, false))
             .unwrap();
     }
 
@@ -155,7 +161,17 @@ mod tests {
         state.plan_text = (0..50).map(|i| format!("Line {}", i)).collect::<Vec<_>>().join("\n");
         state.plan_status = LlmStatus::Streaming;
         terminal
-            .draw(|frame| render(frame, frame.area(), &state))
+            .draw(|frame| render(frame, frame.area(), &state, false))
+            .unwrap();
+    }
+
+    #[test]
+    fn render_does_not_panic_when_focused() {
+        let backend = ratatui::backend::TestBackend::new(80, 20);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let state = ViewState::default();
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state, true))
             .unwrap();
     }
 }

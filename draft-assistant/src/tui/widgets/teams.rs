@@ -8,9 +8,13 @@ use ratatui::widgets::{Block, Borders, Cell, Row, Scrollbar, ScrollbarOrientatio
 use ratatui::Frame;
 
 use crate::tui::ViewState;
+use super::focused_border_style;
 
 /// Render the teams overview into the given area.
-pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
+///
+/// When `focused` is true, the border is highlighted to indicate this panel
+/// has keyboard focus for scroll routing.
+pub fn render(frame: &mut Frame, area: Rect, state: &ViewState, focused: bool) {
     let scroll_offset = state.scroll_offset.get("teams").copied().unwrap_or(0);
 
     // Visible row count: subtract 2 (borders) + 1 (header)
@@ -62,9 +66,12 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
         ratatui::layout::Constraint::Length(10),
     ];
 
+    let focus_border = focused_border_style(focused, Style::default());
+
     let table = Table::new(rows, widths).header(header).block(
         Block::default()
             .borders(Borders::ALL)
+            .border_style(focus_border)
             .title("Teams"),
     );
     frame.render_widget(table, area);
@@ -110,7 +117,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let state = ViewState::default();
         terminal
-            .draw(|frame| render(frame, frame.area(), &state))
+            .draw(|frame| render(frame, frame.area(), &state, false))
             .unwrap();
     }
 
@@ -134,7 +141,17 @@ mod tests {
             },
         ];
         terminal
-            .draw(|frame| render(frame, frame.area(), &state))
+            .draw(|frame| render(frame, frame.area(), &state, false))
+            .unwrap();
+    }
+
+    #[test]
+    fn render_does_not_panic_when_focused() {
+        let backend = ratatui::backend::TestBackend::new(80, 20);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let state = ViewState::default();
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state, true))
             .unwrap();
     }
 }

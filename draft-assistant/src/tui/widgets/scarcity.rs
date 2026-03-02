@@ -3,7 +3,7 @@
 // One row per position with visual gauge/bar.
 // Color: Red=Critical, Yellow=High, Blue=Medium, Green=Low
 // Mark nominated player's position.
-// Scrollable with [ and ] keys (sidebar scroll).
+// Scrollable via Tab-focus and arrow keys.
 
 use ratatui::layout::{Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -14,15 +14,22 @@ use ratatui::Frame;
 use crate::draft::pick::Position;
 use crate::valuation::scarcity::{ScarcityEntry, ScarcityUrgency};
 use crate::tui::ViewState;
+use super::focused_border_style;
 
 /// Render the scarcity gauges into the given area.
-pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
+///
+/// When `focused` is true, the border is highlighted in cyan to indicate this
+/// panel has keyboard focus for scroll routing.
+pub fn render(frame: &mut Frame, area: Rect, state: &ViewState, focused: bool) {
+    let border = focused_border_style(focused, Style::default());
+
     if state.positional_scarcity.is_empty() {
         let paragraph = Paragraph::new("  No scarcity data.")
             .style(Style::default().fg(Color::DarkGray))
             .block(
                 Block::default()
                     .borders(Borders::ALL)
+                    .border_style(border)
                     .title("Scarcity"),
             );
         frame.render_widget(paragraph, area);
@@ -35,7 +42,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
         .as_ref()
         .and_then(|n| Position::from_str_pos(&n.position));
 
-    let scroll_offset = state.scroll_offset.get("sidebar").copied().unwrap_or(0);
+    let scroll_offset = state.scroll_offset.get("scarcity").copied().unwrap_or(0);
 
     // Visible row count: subtract 2 for borders
     let visible_rows = (area.height as usize).saturating_sub(2);
@@ -59,6 +66,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
+            .border_style(border)
             .title("Scarcity"),
     );
     frame.render_widget(list, area);
@@ -189,7 +197,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let state = ViewState::default();
         terminal
-            .draw(|frame| render(frame, frame.area(), &state))
+            .draw(|frame| render(frame, frame.area(), &state, false))
             .unwrap();
     }
 
@@ -217,7 +225,17 @@ mod tests {
             },
         ];
         terminal
-            .draw(|frame| render(frame, frame.area(), &state))
+            .draw(|frame| render(frame, frame.area(), &state, false))
+            .unwrap();
+    }
+
+    #[test]
+    fn render_does_not_panic_when_focused() {
+        let backend = ratatui::backend::TestBackend::new(40, 15);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let state = ViewState::default();
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state, true))
             .unwrap();
     }
 }
