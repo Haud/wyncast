@@ -1172,12 +1172,6 @@ async fn handle_user_command(
             state.active_tab = tab;
             info!("Switched to tab: {:?}", tab);
         }
-        UserCommand::RefreshAnalysis => {
-            if let Some(nom) = state.draft_state.current_nomination.clone() {
-                info!("Refreshing analysis for {}", nom.player_name);
-                state.trigger_nomination_analysis(&nom);
-            }
-        }
         UserCommand::RefreshPlan => {
             info!("Refreshing nomination plan");
             if state.trigger_nomination_planning() {
