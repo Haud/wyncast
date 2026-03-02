@@ -66,18 +66,22 @@ pub fn handle_key(
         // Tab switching
         KeyCode::Char('1') => {
             view_state.active_tab = TabId::Analysis;
+            view_state.focused_panel = None;
             None
         }
         KeyCode::Char('2') => {
             view_state.active_tab = TabId::Available;
+            view_state.focused_panel = None;
             None
         }
         KeyCode::Char('3') => {
             view_state.active_tab = TabId::DraftLog;
+            view_state.focused_panel = None;
             None
         }
         KeyCode::Char('4') => {
             view_state.active_tab = TabId::Teams;
+            view_state.focused_panel = None;
             None
         }
 
@@ -595,6 +599,47 @@ mod tests {
         assert!(!state.filter_mode, "Tab should not enter filter mode");
     }
 
+    #[test]
+    fn tab_switch_clears_focused_panel() {
+        // Pressing 1-4 to switch tabs should always clear focused_panel
+        for (key_char, expected_tab) in [
+            ('1', TabId::Analysis),
+            ('2', TabId::Available),
+            ('3', TabId::DraftLog),
+            ('4', TabId::Teams),
+        ] {
+            let mut state = ViewState::default();
+            state.focused_panel = Some(FocusPanel::MainPanel);
+            handle_key(key(KeyCode::Char(key_char)), &mut state);
+            assert_eq!(state.active_tab, expected_tab, "Key '{}' should switch to {:?}", key_char, expected_tab);
+            assert!(
+                state.focused_panel.is_none(),
+                "Key '{}': focused_panel should be None after tab switch, got {:?}",
+                key_char,
+                state.focused_panel
+            );
+        }
+    }
+
+    #[test]
+    fn tab_switch_clears_sidebar_focused_panel() {
+        // Switching tabs clears sidebar panel focus too (not just MainPanel)
+        for focused in [
+            FocusPanel::Roster,
+            FocusPanel::Scarcity,
+            FocusPanel::Budget,
+            FocusPanel::NominationPlan,
+        ] {
+            let mut state = ViewState::default();
+            state.focused_panel = Some(focused);
+            handle_key(key(KeyCode::Char('2')), &mut state);
+            assert!(
+                state.focused_panel.is_none(),
+                "focused_panel {:?} should be cleared after tab switch",
+                focused
+            );
+        }
+    }
 
     // -- Filter mode --
 

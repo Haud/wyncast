@@ -248,6 +248,9 @@ impl ViewState {
         self.pick_number = snapshot.pick_count;
         self.total_picks = snapshot.total_picks;
         if let Some(tab) = snapshot.active_tab {
+            if self.active_tab != tab {
+                self.focused_panel = None;
+            }
             self.active_tab = tab;
         }
 
