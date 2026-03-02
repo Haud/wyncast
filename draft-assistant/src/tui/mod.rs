@@ -31,6 +31,44 @@ use crate::valuation::zscore::PlayerValuation;
 use layout::{build_layout, AppLayout};
 
 // ---------------------------------------------------------------------------
+// FocusPanel
+// ---------------------------------------------------------------------------
+
+/// Identifies which panel currently has keyboard focus for scroll routing.
+///
+/// When `None`, scroll events go to the active tab's main panel (backward
+/// compatible default). When `Some(panel)`, scroll events are dispatched
+/// exclusively to the focused panel. Tab cycles through the panels; Esc
+/// clears focus back to `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusPanel {
+    /// The active tab's content area (left side).
+    MainPanel,
+    /// The sidebar (roster/scarcity/budget/nomination plan on the right).
+    Sidebar,
+}
+
+impl FocusPanel {
+    /// Advance focus forward: None -> MainPanel -> Sidebar -> None.
+    pub fn next(current: Option<FocusPanel>) -> Option<FocusPanel> {
+        match current {
+            None => Some(FocusPanel::MainPanel),
+            Some(FocusPanel::MainPanel) => Some(FocusPanel::Sidebar),
+            Some(FocusPanel::Sidebar) => None,
+        }
+    }
+
+    /// Advance focus backward: None -> Sidebar -> MainPanel -> None.
+    pub fn prev(current: Option<FocusPanel>) -> Option<FocusPanel> {
+        match current {
+            None => Some(FocusPanel::Sidebar),
+            Some(FocusPanel::Sidebar) => Some(FocusPanel::MainPanel),
+            Some(FocusPanel::MainPanel) => None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // BudgetStatus
 // ---------------------------------------------------------------------------
 
@@ -134,6 +172,9 @@ pub struct ViewState {
     pub team_summaries: Vec<TeamSummary>,
     /// User's roster slots (position + optional player).
     pub my_roster: Vec<RosterSlot>,
+    /// Which panel currently has keyboard focus for scroll routing.
+    /// `None` means no panel is focused (scroll goes to active tab by default).
+    pub focused_panel: Option<FocusPanel>,
 }
 
 impl Default for ViewState {
@@ -161,6 +202,7 @@ impl Default for ViewState {
             draft_log: Vec::new(),
             team_summaries: Vec::new(),
             my_roster: Vec::new(),
+            focused_panel: None,
         }
     }
 }
@@ -291,19 +333,22 @@ fn render_frame(frame: &mut Frame, state: &ViewState) {
     widgets::status_bar::render(frame, layout.status_bar, state);
     widgets::nomination_banner::render(frame, layout.nomination_banner, state);
 
+    let main_focused = state.focused_panel == Some(FocusPanel::MainPanel);
+    let sidebar_focused = state.focused_panel == Some(FocusPanel::Sidebar);
+
     // Main panel: tab-dependent content
     match state.active_tab {
-        TabId::Analysis => widgets::llm_analysis::render(frame, layout.main_panel, state),
-        TabId::Available => widgets::available::render(frame, layout.main_panel, state),
-        TabId::DraftLog => widgets::draft_log::render(frame, layout.main_panel, state),
-        TabId::Teams => widgets::teams::render(frame, layout.main_panel, state),
+        TabId::Analysis => widgets::llm_analysis::render(frame, layout.main_panel, state, main_focused),
+        TabId::Available => widgets::available::render(frame, layout.main_panel, state, main_focused),
+        TabId::DraftLog => widgets::draft_log::render(frame, layout.main_panel, state, main_focused),
+        TabId::Teams => widgets::teams::render(frame, layout.main_panel, state, main_focused),
     }
 
     // Sidebar widgets
-    widgets::roster::render(frame, layout.roster, state);
-    widgets::scarcity::render(frame, layout.scarcity, state);
-    widgets::budget::render(frame, layout.budget, state);
-    widgets::nomination_plan::render(frame, layout.nomination_plan, state);
+    widgets::roster::render(frame, layout.roster, state, sidebar_focused);
+    widgets::scarcity::render(frame, layout.scarcity, state, sidebar_focused);
+    widgets::budget::render(frame, layout.budget, state, sidebar_focused);
+    widgets::nomination_plan::render(frame, layout.nomination_plan, state, sidebar_focused);
 
     // Help bar
     render_help_bar(frame, &layout, state);
@@ -361,7 +406,7 @@ fn render_help_bar(frame: &mut Frame, layout: &AppLayout, state: &ViewState) {
     }
 
     spans.push(Span::styled(
-        "r:Refresh | n:Plan | ↑↓/j/k/PgUp/PgDn:Scroll | [/]:Sidebar",
+        "Tab:Focus | r:Refresh | n:Plan | ↑↓/j/k/PgUp/PgDn:Scroll",
         Style::default().fg(Color::Gray),
     ));
 
@@ -482,6 +527,30 @@ mod tests {
     use super::*;
     use crate::protocol::TeamSnapshot;
 
+    // -- FocusPanel cycling --
+
+    #[test]
+    fn focus_next_cycles_forward() {
+        assert_eq!(FocusPanel::next(None), Some(FocusPanel::MainPanel));
+        assert_eq!(FocusPanel::next(Some(FocusPanel::MainPanel)), Some(FocusPanel::Sidebar));
+        assert_eq!(FocusPanel::next(Some(FocusPanel::Sidebar)), None);
+    }
+
+    #[test]
+    fn focus_prev_cycles_backward() {
+        assert_eq!(FocusPanel::prev(None), Some(FocusPanel::Sidebar));
+        assert_eq!(FocusPanel::prev(Some(FocusPanel::Sidebar)), Some(FocusPanel::MainPanel));
+        assert_eq!(FocusPanel::prev(Some(FocusPanel::MainPanel)), None);
+    }
+
+    #[test]
+    fn focus_next_then_prev_is_identity() {
+        // Starting from None, next then prev should return to None
+        let step1 = FocusPanel::next(None);
+        let step2 = FocusPanel::prev(step1);
+        assert_eq!(step2, None);
+    }
+
     #[test]
     fn view_state_default_is_sensible() {
         let state = ViewState::default();
@@ -505,6 +574,7 @@ mod tests {
         assert!(state.draft_log.is_empty());
         assert!(state.team_summaries.is_empty());
         assert!(state.my_roster.is_empty());
+        assert!(state.focused_panel.is_none());
     }
 
     #[test]

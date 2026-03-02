@@ -16,13 +16,23 @@ use crate::draft::roster::RosterSlot;
 use crate::tui::ViewState;
 
 /// Render the roster sidebar into the given area.
-pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
+///
+/// When `focused` is true, the border is highlighted to indicate the sidebar
+/// has keyboard focus for scroll routing.
+pub fn render(frame: &mut Frame, area: Rect, state: &ViewState, focused: bool) {
+    let focus_border = if focused {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default()
+    };
+
     if state.my_roster.is_empty() {
         let paragraph = Paragraph::new("  No roster data.")
             .style(Style::default().fg(Color::DarkGray))
             .block(
                 Block::default()
                     .borders(Borders::ALL)
+                    .border_style(focus_border)
                     .title("My Roster"),
             );
         frame.render_widget(paragraph, area);
@@ -63,6 +73,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
+            .border_style(focus_border)
             .title(title),
     );
     frame.render_widget(list, area);
@@ -172,7 +183,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let state = ViewState::default();
         terminal
-            .draw(|frame| render(frame, frame.area(), &state))
+            .draw(|frame| render(frame, frame.area(), &state, false))
             .unwrap();
     }
 
@@ -202,7 +213,17 @@ mod tests {
             },
         ];
         terminal
-            .draw(|frame| render(frame, frame.area(), &state))
+            .draw(|frame| render(frame, frame.area(), &state, false))
+            .unwrap();
+    }
+
+    #[test]
+    fn render_does_not_panic_when_focused() {
+        let backend = ratatui::backend::TestBackend::new(40, 15);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let state = ViewState::default();
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state, true))
             .unwrap();
     }
 }
