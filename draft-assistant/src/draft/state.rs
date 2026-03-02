@@ -1411,6 +1411,52 @@ mod tests {
     }
 
     #[test]
+    fn record_pick_assigns_sequential_pick_numbers() {
+        let mut state = create_test_state();
+
+        // Simulate ESPN sending all picks with pick_number=1 (the known bug)
+        state.record_pick(DraftPick {
+            pick_number: 1,
+            team_id: "1".to_string(),
+            team_name: "Team 1".to_string(),
+            player_name: "Mike Trout".to_string(),
+            position: "CF".to_string(),
+            price: 45,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        });
+        state.record_pick(DraftPick {
+            pick_number: 1,
+            team_id: "2".to_string(),
+            team_name: "Team 2".to_string(),
+            player_name: "Shohei Ohtani".to_string(),
+            position: "SP".to_string(),
+            price: 50,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        });
+        state.record_pick(DraftPick {
+            pick_number: 1,
+            team_id: "3".to_string(),
+            team_name: "Team 3".to_string(),
+            player_name: "Aaron Judge".to_string(),
+            position: "RF".to_string(),
+            price: 40,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        });
+
+        assert_eq!(state.picks.len(), 3);
+        assert_eq!(state.pick_count, 3);
+
+        // Verify canonical pick numbers are sequential 1, 2, 3
+        // regardless of ESPN sending all as pick_number=1
+        assert_eq!(state.picks[0].pick_number, 1);
+        assert_eq!(state.picks[1].pick_number, 2);
+        assert_eq!(state.picks[2].pick_number, 3);
+    }
+
+    #[test]
     fn record_pick_different_players_same_team_not_deduped() {
         let mut state = create_test_state();
 
