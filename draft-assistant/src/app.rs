@@ -110,6 +110,12 @@ pub struct AppState {
     /// Sender for LLM events; spawned tasks use a clone of this sender
     /// to stream tokens back to the main event loop.
     pub llm_tx: mpsc::Sender<LlmEvent>,
+    /// Sender for outbound WebSocket messages to the extension.
+    /// Used to send `REQUEST_KEYFRAME` messages.
+    pub ws_outbound_tx: Option<mpsc::Sender<String>>,
+    /// Timestamp of the last keyframe (FULL_STATE_SYNC) received from the
+    /// extension. Useful for debugging state sync issues.
+    pub last_keyframe_time: Option<Instant>,
 }
 
 impl AppState {
@@ -154,6 +160,8 @@ impl AppState {
             category_needs: CategoryNeeds::default(),
             llm_client: Arc::new(llm_client),
             llm_tx,
+            ws_outbound_tx: None,
+            last_keyframe_time: None,
         }
     }
 
@@ -779,6 +787,9 @@ async fn handle_full_state_sync(
         ext_payload.picks.len()
     );
 
+    // Track keyframe timestamp for debugging
+    state.last_keyframe_time = Some(Instant::now());
+
     // Reset in-memory draft state so the snapshot is applied from scratch.
     // Preserve salary_cap and roster_config (stored inside DraftState).
     state.draft_state = DraftState::new(
@@ -1177,6 +1188,19 @@ async fn handle_user_command(
             info!("Refreshing nomination plan");
             if state.trigger_nomination_planning() {
                 let _ = ui_tx.send(UiUpdate::PlanStarted).await;
+            }
+        }
+        UserCommand::RequestKeyframe => {
+            info!("Manual keyframe refresh requested");
+            if let Some(ref ws_tx) = state.ws_outbound_tx {
+                let request = serde_json::json!({
+                    "type": "REQUEST_KEYFRAME"
+                });
+                if let Err(e) = ws_tx.send(request.to_string()).await {
+                    warn!("Failed to send REQUEST_KEYFRAME: {}", e);
+                }
+            } else {
+                warn!("Cannot request keyframe: no outbound WebSocket channel");
             }
         }
         UserCommand::ManualPick {

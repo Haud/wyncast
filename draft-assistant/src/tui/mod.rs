@@ -443,7 +443,7 @@ fn render_help_bar(frame: &mut Frame, layout: &AppLayout, state: &ViewState) {
     }
 
     spans.push(Span::styled(
-        "Tab:Focus | r:Refresh | n:Plan | ↑↓/j/k/PgUp/PgDn:Scroll",
+        "Tab:Focus | r:Refresh | n:Plan | R:Keyframe | ↑↓/j/k/PgUp/PgDn:Scroll",
         Style::default().fg(Color::Gray),
     ));
 

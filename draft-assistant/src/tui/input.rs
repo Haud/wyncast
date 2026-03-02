@@ -141,6 +141,9 @@ pub fn handle_key(
         KeyCode::Char('r') => Some(UserCommand::RefreshAnalysis),
         KeyCode::Char('n') => Some(UserCommand::RefreshPlan),
 
+        // Manual keyframe refresh: request a FULL_STATE_SYNC from the extension
+        KeyCode::Char('R') => Some(UserCommand::RequestKeyframe),
+
         // Quit: enter confirmation mode instead of quitting immediately
         KeyCode::Char('q') => {
             view_state.confirm_quit = true;
@@ -771,6 +774,13 @@ mod tests {
         let mut state = ViewState::default();
         let result = handle_key(key(KeyCode::Char('n')), &mut state);
         assert_eq!(result, Some(UserCommand::RefreshPlan));
+    }
+
+    #[test]
+    fn shift_r_returns_request_keyframe() {
+        let mut state = ViewState::default();
+        let result = handle_key(key(KeyCode::Char('R')), &mut state);
+        assert_eq!(result, Some(UserCommand::RequestKeyframe));
     }
 
     // -- Quit confirmation --

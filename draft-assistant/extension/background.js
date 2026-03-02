@@ -187,9 +187,16 @@ function connect() {
   };
 
   ws.onmessage = (event) => {
-    // The backend might send messages to the extension in the future.
-    // For now, just log them.
     log('Received from backend:', event.data);
+    try {
+      const msg = JSON.parse(event.data);
+      if (msg.type === 'REQUEST_KEYFRAME') {
+        log('Backend requested keyframe — forwarding to content script');
+        requestFullStateSyncFromContentScript();
+      }
+    } catch (e) {
+      warn('Failed to parse backend message:', e.message || e);
+    }
   };
 }
 
