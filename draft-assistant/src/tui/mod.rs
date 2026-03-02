@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use crossterm::event::{Event, EventStream};
 use futures_util::StreamExt;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -315,6 +315,38 @@ fn render_frame(frame: &mut Frame, state: &ViewState) {
 }
 
 fn render_help_bar(frame: &mut Frame, layout: &AppLayout, state: &ViewState) {
+    // When filter mode is active, show a dedicated filter input bar
+    if state.filter_mode {
+        let spans = vec![
+            Span::styled(
+                " FILTER ",
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" ", Style::default()),
+            Span::styled(
+                &state.filter_text,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "▎",
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::styled(
+                "  (Enter:apply | Esc:cancel)",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ];
+        let paragraph = Paragraph::new(Line::from(spans))
+            .style(Style::default().bg(Color::Black));
+        frame.render_widget(paragraph, layout.help_bar);
+        return;
+    }
+
     let mut spans = vec![Span::styled(
         " q:Quit | 1-4:Tabs | ",
         Style::default().fg(Color::Gray),
@@ -332,6 +364,16 @@ fn render_help_bar(frame: &mut Frame, layout: &AppLayout, state: &ViewState) {
         "r:Refresh | n:Plan | ↑↓/j/k/PgUp/PgDn:Scroll | [/]:Sidebar",
         Style::default().fg(Color::Gray),
     ));
+
+    // Show active filter text as a reminder on the Available tab
+    // when filter has content (visual cue that results are filtered)
+    if !state.filter_text.is_empty() && state.active_tab == TabId::Available {
+        let filter_reminder = format!("  filter:\"{}\"", state.filter_text);
+        spans.push(Span::styled(
+            filter_reminder,
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
 
     let paragraph = Paragraph::new(Line::from(spans))
         .style(Style::default().bg(Color::Black));
