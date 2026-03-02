@@ -168,7 +168,6 @@ pub enum LlmEvent {
 /// Commands sent from the TUI to the app orchestrator.
 #[derive(Debug, Clone, PartialEq)]
 pub enum UserCommand {
-    RefreshPlan,
     /// Request a full keyframe (FULL_STATE_SYNC) from the extension.
     /// Sends a `REQUEST_KEYFRAME` message over the WebSocket so the
     /// extension responds with a complete state snapshot.

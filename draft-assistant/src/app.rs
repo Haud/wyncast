@@ -1172,12 +1172,6 @@ async fn handle_user_command(
             state.active_tab = tab;
             info!("Switched to tab: {:?}", tab);
         }
-        UserCommand::RefreshPlan => {
-            info!("Refreshing nomination plan");
-            if state.trigger_nomination_planning() {
-                let _ = ui_tx.send(UiUpdate::PlanStarted).await;
-            }
-        }
         UserCommand::RequestKeyframe => {
             info!("Manual keyframe refresh requested");
             if let Some(ref ws_tx) = state.ws_outbound_tx {
