@@ -6,10 +6,10 @@
 
 use std::collections::HashMap;
 
-use ratatui::layout::Rect;
+use ratatui::layout::{Margin, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 use ratatui::Frame;
 
 use crate::draft::pick::DraftPick;
@@ -33,11 +33,24 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
     // Build a name->value lookup map once to avoid O(n*m) scanning
     let value_map = build_value_map(&state.available_players);
 
-    // Build list items in reverse chronological order
-    let items: Vec<ListItem> = state
-        .draft_log
-        .iter()
-        .rev()
+    let scroll_offset = state.scroll_offset.get("draft_log").copied().unwrap_or(0);
+
+    // Visible row count: subtract 2 for borders
+    let visible_rows = (area.height as usize).saturating_sub(2);
+
+    // All picks in reverse chronological order
+    let all_picks: Vec<_> = state.draft_log.iter().rev().collect();
+    let total = all_picks.len();
+
+    // Clamp scroll offset
+    let max_offset = total.saturating_sub(visible_rows);
+    let scroll_offset = scroll_offset.min(max_offset);
+
+    // Build list items for visible slice only
+    let items: Vec<ListItem> = all_picks
+        .into_iter()
+        .skip(scroll_offset)
+        .take(visible_rows.max(1))
         .map(|pick| {
             let value = value_map.get(pick.player_name.as_str()).copied();
             let color = pick_color(pick.price, value);
@@ -54,6 +67,17 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
             .title(title),
     );
     frame.render_widget(list, area);
+
+    // Render vertical scrollbar if content overflows
+    if total > visible_rows {
+        let mut scrollbar_state = ScrollbarState::new(total.saturating_sub(visible_rows))
+            .position(scroll_offset);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight),
+            area.inner(Margin { vertical: 1, horizontal: 0 }),
+            &mut scrollbar_state,
+        );
+    }
 }
 
 /// Format a single draft pick for display.

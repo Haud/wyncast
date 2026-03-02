@@ -2,15 +2,20 @@
 //
 // Summary table of all teams: name, budget remaining, slots filled.
 
-use ratatui::layout::Rect;
+use ratatui::layout::{Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, Borders, Cell, Row, Table};
+use ratatui::widgets::{Block, Borders, Cell, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table};
 use ratatui::Frame;
 
 use crate::tui::ViewState;
 
 /// Render the teams overview into the given area.
 pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
+    let scroll_offset = state.scroll_offset.get("teams").copied().unwrap_or(0);
+
+    // Visible row count: subtract 2 (borders) + 1 (header)
+    let visible_rows = (area.height as usize).saturating_sub(3);
+
     let header = Row::new(vec![
         Cell::from("Team"),
         Cell::from("Budget"),
@@ -24,12 +29,20 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
     )
     .bottom_margin(0);
 
+    let total = state.team_summaries.len();
+
     let rows: Vec<Row> = if state.team_summaries.is_empty() {
         vec![Row::new(vec![Cell::from("  No team data available")])]
     } else {
+        // Clamp scroll offset
+        let max_offset = total.saturating_sub(visible_rows);
+        let scroll_offset = scroll_offset.min(max_offset);
+
         state
             .team_summaries
             .iter()
+            .skip(scroll_offset)
+            .take(visible_rows.max(1))
             .map(|team| {
                 let remaining_slots = team.total_slots.saturating_sub(team.slots_filled);
                 Row::new(vec![
@@ -55,6 +68,19 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
             .title("Teams"),
     );
     frame.render_widget(table, area);
+
+    // Render vertical scrollbar if content overflows
+    if total > visible_rows {
+        // Clamp scroll offset again for scrollbar state
+        let max_offset = total.saturating_sub(visible_rows);
+        let clamped_offset = scroll_offset.min(max_offset);
+        let mut scrollbar_state = ScrollbarState::new(max_offset).position(clamped_offset);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight),
+            area.inner(Margin { vertical: 1, horizontal: 0 }),
+            &mut scrollbar_state,
+        );
+    }
 }
 
 /// Format a budget value for display.

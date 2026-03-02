@@ -85,7 +85,7 @@ pub fn handle_key(
             None
         }
 
-        // Scrolling
+        // Scrolling (main panel)
         KeyCode::Up | KeyCode::Char('k') => {
             scroll_up(view_state, 1);
             None
@@ -100,6 +100,16 @@ pub fn handle_key(
         }
         KeyCode::PageDown => {
             scroll_down(view_state, page_size());
+            None
+        }
+
+        // Sidebar scrolling
+        KeyCode::Char('[') => {
+            sidebar_scroll_up(view_state, 1);
+            None
+        }
+        KeyCode::Char(']') => {
+            sidebar_scroll_down(view_state, 1);
             None
         }
 
@@ -237,6 +247,18 @@ fn scroll_up(view_state: &mut ViewState, lines: usize) {
 fn scroll_down(view_state: &mut ViewState, lines: usize) {
     let key = active_widget_key(view_state);
     let offset = view_state.scroll_offset.entry(key.to_string()).or_insert(0);
+    *offset = offset.saturating_add(lines);
+}
+
+/// Scroll the sidebar up by the given number of lines.
+fn sidebar_scroll_up(view_state: &mut ViewState, lines: usize) {
+    let offset = view_state.scroll_offset.entry("sidebar".to_string()).or_insert(0);
+    *offset = offset.saturating_sub(lines);
+}
+
+/// Scroll the sidebar down by the given number of lines.
+fn sidebar_scroll_down(view_state: &mut ViewState, lines: usize) {
+    let offset = view_state.scroll_offset.entry("sidebar".to_string()).or_insert(0);
     *offset = offset.saturating_add(lines);
 }
 
@@ -737,5 +759,45 @@ mod tests {
             state.scroll_offset.get("analysis").is_none(),
             "Repeat event should not modify scroll state"
         );
+    }
+
+    // -- Sidebar scrolling --
+
+    #[test]
+    fn bracket_right_scrolls_sidebar_down() {
+        let mut state = ViewState::default();
+        let result = handle_key(key(KeyCode::Char(']')), &mut state);
+        assert!(result.is_none());
+        assert_eq!(state.scroll_offset.get("sidebar"), Some(&1));
+    }
+
+    #[test]
+    fn bracket_left_scrolls_sidebar_up() {
+        let mut state = ViewState::default();
+        state.scroll_offset.insert("sidebar".to_string(), 5);
+        let result = handle_key(key(KeyCode::Char('[')), &mut state);
+        assert!(result.is_none());
+        assert_eq!(state.scroll_offset.get("sidebar"), Some(&4));
+    }
+
+    #[test]
+    fn sidebar_scroll_up_does_not_underflow() {
+        let mut state = ViewState::default();
+        // sidebar offset is 0 (default)
+        let result = handle_key(key(KeyCode::Char('[')), &mut state);
+        assert!(result.is_none());
+        assert_eq!(state.scroll_offset.get("sidebar"), Some(&0));
+    }
+
+    #[test]
+    fn sidebar_scroll_independent_of_main_scroll() {
+        let mut state = ViewState::default();
+        // Scroll main panel down
+        handle_key(key(KeyCode::Down), &mut state);
+        // Scroll sidebar down
+        handle_key(key(KeyCode::Char(']')), &mut state);
+        // Both should have independent offsets
+        assert_eq!(state.scroll_offset.get("analysis"), Some(&1));
+        assert_eq!(state.scroll_offset.get("sidebar"), Some(&1));
     }
 }

@@ -325,7 +325,7 @@ fn render_help_bar(frame: &mut Frame, layout: &AppLayout, state: &ViewState) {
     }
 
     spans.push(Span::styled(
-        "r:Refresh | ?:Help",
+        "r:Refresh | ↑↓/j/k/PgUp/PgDn:Scroll | [/]:Sidebar",
         Style::default().fg(Color::Gray),
     ));
 

@@ -3,11 +3,12 @@
 // Position slots with filled/empty status.
 // "C: [empty]" or "1B: Pete Alonso ($28)"
 // Highlight positions matching nominated player.
+// Scrollable with [ and ] keys (sidebar scroll).
 
-use ratatui::layout::Rect;
+use ratatui::layout::{Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 use ratatui::Frame;
 
 use crate::draft::pick::Position;
@@ -34,9 +35,21 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
         .as_ref()
         .and_then(|n| Position::from_str_pos(&n.position));
 
+    let scroll_offset = state.scroll_offset.get("sidebar").copied().unwrap_or(0);
+
+    // Visible row count: subtract 2 for borders
+    let visible_rows = (area.height as usize).saturating_sub(2);
+    let total = state.my_roster.len();
+
+    // Clamp scroll offset
+    let max_offset = total.saturating_sub(visible_rows);
+    let scroll_offset = scroll_offset.min(max_offset);
+
     let items: Vec<ListItem> = state
         .my_roster
         .iter()
+        .skip(scroll_offset)
+        .take(visible_rows.max(1))
         .map(|slot| {
             let is_highlight =
                 nominated_position.map_or(false, |pos| slot.position == pos);
@@ -45,7 +58,6 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
         .collect();
 
     let filled = state.my_roster.iter().filter(|s| s.player.is_some()).count();
-    let total = state.my_roster.len();
     let title = format!("My Roster ({}/{})", filled, total);
 
     let list = List::new(items).block(
@@ -54,6 +66,17 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
             .title(title),
     );
     frame.render_widget(list, area);
+
+    // Render vertical scrollbar if content overflows
+    if total > visible_rows {
+        let mut scrollbar_state = ScrollbarState::new(total.saturating_sub(visible_rows))
+            .position(scroll_offset);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight),
+            area.inner(Margin { vertical: 1, horizontal: 0 }),
+            &mut scrollbar_state,
+        );
+    }
 }
 
 /// Format a single roster slot as a ListItem.

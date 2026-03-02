@@ -28,7 +28,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
     let scroll = if state.plan_status == LlmStatus::Streaming && line_count > inner_height {
         (line_count - inner_height) as u16
     } else {
-        let offset = state.scroll_offset.get("plan").copied().unwrap_or(0);
+        let offset = state.scroll_offset.get("nom_plan").copied().unwrap_or(0);
         offset as u16
     };
 
