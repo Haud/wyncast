@@ -100,6 +100,36 @@ impl FocusPanel {
 }
 
 // ---------------------------------------------------------------------------
+// KeybindHint
+// ---------------------------------------------------------------------------
+
+/// A single keyboard shortcut hint displayed in the help bar.
+///
+/// Each hint pairs a key label (e.g. `"q"`, `"Tab"`, `"↑↓"`) with a short
+/// human-readable description (e.g. `"Quit"`, `"Focus"`, `"Scroll"`).
+///
+/// The active set of hints is stored in [`ViewState::active_keybinds`],
+/// recomputed on every render frame by [`compute_keybinds`]. The help bar is
+/// a dumb renderer that displays whatever hints are present there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeybindHint {
+    /// Short key label shown in the help bar (e.g. `"q"`, `"Tab"`, `"↑↓/j/k"`).
+    pub key: String,
+    /// Human-readable description of the action (e.g. `"Quit"`, `"Focus"`).
+    pub description: String,
+}
+
+impl KeybindHint {
+    /// Construct a new hint from string-like values.
+    pub fn new(key: impl Into<String>, description: impl Into<String>) -> Self {
+        KeybindHint {
+            key: key.into(),
+            description: description.into(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // BudgetStatus
 // ---------------------------------------------------------------------------
 
@@ -269,6 +299,12 @@ pub struct ViewState {
     pub focused_panel: Option<FocusPanel>,
     /// Position filter modal state.
     pub position_filter_modal: PositionFilterModal,
+    /// Active keybind hints displayed in the help bar.
+    ///
+    /// Recomputed on every render frame by [`compute_keybinds`] based on the
+    /// current UI mode and active tab. The help bar renders these directly
+    /// without any additional logic.
+    pub active_keybinds: Vec<KeybindHint>,
 }
 
 impl Default for ViewState {
@@ -298,6 +334,7 @@ impl Default for ViewState {
             my_roster: Vec::new(),
             focused_panel: None,
             position_filter_modal: PositionFilterModal::default(),
+            active_keybinds: Vec::new(),
         }
     }
 }
@@ -422,14 +459,95 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
 }
 
 // ---------------------------------------------------------------------------
+// Keybind computation
+// ---------------------------------------------------------------------------
+
+/// Compute the set of active keybind hints for the current UI state.
+///
+/// This is the single declarative source of truth for what appears in the
+/// help bar. It is called once per render frame and the result is stored in
+/// [`ViewState::active_keybinds`] so that the help bar widget is a dumb
+/// renderer with no conditional logic of its own.
+///
+/// Priority order (highest wins; earlier returns short-circuit):
+/// 1. Quit confirmation dialog
+/// 2. Position filter modal
+/// 3. Text filter mode (inline input bar)
+/// 4. Normal mode with tab-specific and focus-specific hints
+pub fn compute_keybinds(state: &ViewState) -> Vec<KeybindHint> {
+    // 1. Quit confirmation overlay: all other input is blocked
+    if state.confirm_quit {
+        return vec![
+            KeybindHint::new("y/q", "Confirm quit"),
+            KeybindHint::new("n/Esc", "Cancel"),
+        ];
+    }
+
+    // 2. Position filter modal
+    if state.position_filter_modal.open {
+        return vec![
+            KeybindHint::new("↑↓", "Navigate"),
+            KeybindHint::new("Enter", "Select"),
+            KeybindHint::new("Esc", "Cancel"),
+        ];
+    }
+
+    // 3. Text filter mode (the inline filter input bar)
+    if state.filter_mode {
+        return vec![
+            KeybindHint::new("Enter", "Apply"),
+            KeybindHint::new("Esc", "Cancel"),
+        ];
+    }
+
+    // 4. Normal mode: assemble context-sensitive hints
+    let mut hints = vec![
+        KeybindHint::new("q", "Quit"),
+        KeybindHint::new("1-4", "Tabs"),
+    ];
+
+    // Tab-specific: filtering and position-filter only on supported tabs
+    if state.active_tab.supports(TabFeature::Filter) {
+        hints.push(KeybindHint::new("/", "Filter"));
+        hints.push(KeybindHint::new("p", "Pos"));
+    }
+
+    // Focus/scroll hints depend on whether a panel is currently focused
+    if state.focused_panel.is_some() {
+        hints.push(KeybindHint::new("Tab", "Focus"));
+        hints.push(KeybindHint::new("r", "Resync"));
+        hints.push(KeybindHint::new("↑↓/j/k/PgUp/PgDn", "Scroll"));
+    } else {
+        hints.push(KeybindHint::new("Tab", "Focus"));
+        hints.push(KeybindHint::new("r", "Resync"));
+    }
+
+    // Active filter reminder: shown as a trailing hint when the Available tab
+    // has a non-empty filter so the user knows results are currently filtered.
+    if !state.filter_text.is_empty() && state.active_tab == TabId::Available {
+        hints.push(KeybindHint::new(
+            format!("filter:\"{}\"", state.filter_text),
+            "active",
+        ));
+    }
+
+    hints
+}
+
+// ---------------------------------------------------------------------------
 // Render frame
 // ---------------------------------------------------------------------------
 
 /// Render the complete dashboard frame.
 ///
 /// Delegates each zone to its dedicated widget module.
+///
+/// Note: keybind hints are computed here (from a shared reference to
+/// `state`) and passed directly to the help bar renderer, keeping the
+/// render path free of mutable borrows.
 fn render_frame(frame: &mut Frame, state: &ViewState) {
     let layout = build_layout(frame.area());
+    let keybinds = compute_keybinds(state);
 
     widgets::status_bar::render(frame, layout.status_bar, state);
     widgets::nomination_banner::render(frame, layout.nomination_banner, state);
@@ -454,8 +572,8 @@ fn render_frame(frame: &mut Frame, state: &ViewState) {
     widgets::budget::render(frame, layout.budget, state, budget_focused);
     widgets::nomination_plan::render(frame, layout.nomination_plan, state, nom_plan_focused);
 
-    // Help bar
-    render_help_bar(frame, &layout, state);
+    // Help bar: dumb renderer of the precomputed keybind hints
+    render_help_bar(frame, &layout, state, &keybinds);
 
     // Position filter modal overlay
     if state.position_filter_modal.open {
@@ -468,8 +586,23 @@ fn render_frame(frame: &mut Frame, state: &ViewState) {
     }
 }
 
-fn render_help_bar(frame: &mut Frame, layout: &AppLayout, state: &ViewState) {
-    // When filter mode is active, show a dedicated filter input bar
+/// Render the help bar using the pre-computed keybind hints.
+///
+/// This function is a dumb renderer: it knows nothing about modes, tabs, or
+/// focus. All context-sensitivity lives in [`compute_keybinds`]. The special
+/// case for filter mode (showing an inline input bar) is still handled here
+/// because it requires displaying live `ViewState` data (the current filter
+/// text and cursor), not just static hint labels.
+fn render_help_bar(
+    frame: &mut Frame,
+    layout: &AppLayout,
+    state: &ViewState,
+    keybinds: &[KeybindHint],
+) {
+    // Filter mode: show a dedicated inline filter input bar instead of hints.
+    // This is handled here (not in compute_keybinds) because the input bar
+    // embeds the live filter_text content, which is display state rather than
+    // a keybind description.
     if state.filter_mode {
         let spans = vec![
             Span::styled(
@@ -486,10 +619,7 @@ fn render_help_bar(frame: &mut Frame, layout: &AppLayout, state: &ViewState) {
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                "▎",
-                Style::default().fg(Color::Cyan),
-            ),
+            Span::styled("▎", Style::default().fg(Color::Cyan)),
             Span::styled(
                 "  (Enter:apply | Esc:cancel)",
                 Style::default().fg(Color::DarkGray),
@@ -501,33 +631,16 @@ fn render_help_bar(frame: &mut Frame, layout: &AppLayout, state: &ViewState) {
         return;
     }
 
-    let mut spans = vec![Span::styled(
-        " q:Quit | 1-4:Tabs | ",
-        Style::default().fg(Color::Gray),
-    )];
-
-    // Only show the filter hint when the active tab supports filtering
-    if state.active_tab.supports(TabFeature::Filter) {
+    // Normal / modal modes: render the precomputed hint list.
+    // Format: " key:desc | key:desc | ..."
+    let mut spans: Vec<Span> = Vec::new();
+    for (i, hint) in keybinds.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+        }
         spans.push(Span::styled(
-            "/:Filter | p:Pos | ",
+            format!(" {}:{}", hint.key, hint.description),
             Style::default().fg(Color::Gray),
-        ));
-    }
-
-    let help_text = if state.focused_panel.is_some() {
-        "Tab:Focus | r:Resync | ↑↓/j/k/PgUp/PgDn:Scroll"
-    } else {
-        "Tab:Focus | r:Resync"
-    };
-    spans.push(Span::styled(help_text, Style::default().fg(Color::Gray)));
-
-    // Show active filter text as a reminder on the Available tab
-    // when filter has content (visual cue that results are filtered)
-    if !state.filter_text.is_empty() && state.active_tab == TabId::Available {
-        let filter_reminder = format!("  filter:\"{}\"", state.filter_text);
-        spans.push(Span::styled(
-            filter_reminder,
-            Style::default().fg(Color::DarkGray),
         ));
     }
 
@@ -618,6 +731,10 @@ pub async fn run(
 
             // Render tick
             _ = render_tick.tick() => {
+                // Sync active keybinds into ViewState before rendering so the
+                // field reflects the current hints (useful for testing and
+                // any future consumers of ViewState outside the render path).
+                view_state.active_keybinds = compute_keybinds(&view_state);
                 terminal.draw(|frame| render_frame(frame, &view_state))?;
             }
         }
@@ -988,5 +1105,174 @@ mod tests {
             UiUpdate::ConnectionStatus(ConnectionStatus::Connected),
         );
         assert_eq!(state.connection_status, ConnectionStatus::Connected);
+    }
+
+    // -- KeybindHint --
+
+    #[test]
+    fn keybind_hint_new_stores_fields() {
+        let hint = KeybindHint::new("q", "Quit");
+        assert_eq!(hint.key, "q");
+        assert_eq!(hint.description, "Quit");
+    }
+
+    #[test]
+    fn keybind_hint_accepts_string_types() {
+        let hint = KeybindHint::new(String::from("Tab"), "Focus");
+        assert_eq!(hint.key, "Tab");
+        assert_eq!(hint.description, "Focus");
+    }
+
+    // -- compute_keybinds --
+
+    /// Helper: extract all key labels from a hint list.
+    fn keys(hints: &[KeybindHint]) -> Vec<&str> {
+        hints.iter().map(|h| h.key.as_str()).collect()
+    }
+
+    #[test]
+    fn compute_keybinds_normal_mode_base_hints_present() {
+        let state = ViewState::default();
+        let hints = compute_keybinds(&state);
+        let ks = keys(&hints);
+        assert!(ks.contains(&"q"), "should contain quit hint");
+        assert!(ks.contains(&"1-4"), "should contain tab-switch hint");
+        assert!(ks.contains(&"Tab"), "should contain focus hint");
+        assert!(ks.contains(&"r"), "should contain resync hint");
+    }
+
+    #[test]
+    fn compute_keybinds_no_scroll_hint_without_focus() {
+        let mut state = ViewState::default();
+        state.focused_panel = None;
+        let hints = compute_keybinds(&state);
+        let ks = keys(&hints);
+        // Scroll hint should only appear when a panel is focused
+        assert!(
+            !ks.contains(&"↑↓/j/k/PgUp/PgDn"),
+            "scroll hint should not appear without focus"
+        );
+    }
+
+    #[test]
+    fn compute_keybinds_scroll_hint_with_focus() {
+        let mut state = ViewState::default();
+        state.focused_panel = Some(FocusPanel::MainPanel);
+        let hints = compute_keybinds(&state);
+        let ks = keys(&hints);
+        assert!(
+            ks.contains(&"↑↓/j/k/PgUp/PgDn"),
+            "scroll hint should appear when a panel is focused"
+        );
+    }
+
+    #[test]
+    fn compute_keybinds_filter_hints_on_available_tab() {
+        let mut state = ViewState::default();
+        state.active_tab = TabId::Available;
+        let hints = compute_keybinds(&state);
+        let ks = keys(&hints);
+        assert!(ks.contains(&"/"), "filter hint should appear on Available tab");
+        assert!(ks.contains(&"p"), "pos filter hint should appear on Available tab");
+    }
+
+    #[test]
+    fn compute_keybinds_no_filter_hints_on_analysis_tab() {
+        let mut state = ViewState::default();
+        state.active_tab = TabId::Analysis;
+        let hints = compute_keybinds(&state);
+        let ks = keys(&hints);
+        assert!(
+            !ks.contains(&"/"),
+            "filter hint should not appear on Analysis tab"
+        );
+    }
+
+    #[test]
+    fn compute_keybinds_filter_mode() {
+        let mut state = ViewState::default();
+        state.filter_mode = true;
+        let hints = compute_keybinds(&state);
+        let ks = keys(&hints);
+        // Filter mode shows only Enter/Esc
+        assert!(ks.contains(&"Enter"), "filter mode should show Enter hint");
+        assert!(ks.contains(&"Esc"), "filter mode should show Esc hint");
+        // Normal mode hints should not appear
+        assert!(!ks.contains(&"q"), "normal quit hint should not appear in filter mode");
+        assert!(!ks.contains(&"1-4"), "tab hint should not appear in filter mode");
+    }
+
+    #[test]
+    fn compute_keybinds_position_modal_open() {
+        let mut state = ViewState::default();
+        state.position_filter_modal.open = true;
+        let hints = compute_keybinds(&state);
+        let ks = keys(&hints);
+        assert!(ks.contains(&"↑↓"), "modal should show navigate hint");
+        assert!(ks.contains(&"Enter"), "modal should show select hint");
+        assert!(ks.contains(&"Esc"), "modal should show cancel hint");
+        // Normal hints suppressed
+        assert!(!ks.contains(&"q"), "quit hint should not appear when modal is open");
+    }
+
+    #[test]
+    fn compute_keybinds_quit_confirm_mode() {
+        let mut state = ViewState::default();
+        state.confirm_quit = true;
+        let hints = compute_keybinds(&state);
+        let ks = keys(&hints);
+        assert!(ks.contains(&"y/q"), "confirm quit hint should appear");
+        assert!(ks.contains(&"n/Esc"), "cancel hint should appear");
+        // Normal hints suppressed
+        assert!(!ks.contains(&"1-4"), "tab hint should not appear in confirm mode");
+    }
+
+    #[test]
+    fn compute_keybinds_active_filter_reminder_on_available_tab() {
+        let mut state = ViewState::default();
+        state.active_tab = TabId::Available;
+        state.filter_text = "trout".to_string();
+        let hints = compute_keybinds(&state);
+        // There should be a hint whose key contains the filter text
+        let has_reminder = hints.iter().any(|h| h.key.contains("trout"));
+        assert!(has_reminder, "should show filter reminder hint with filter text");
+    }
+
+    #[test]
+    fn compute_keybinds_no_filter_reminder_on_analysis_tab() {
+        let mut state = ViewState::default();
+        state.active_tab = TabId::Analysis;
+        state.filter_text = "trout".to_string();
+        let hints = compute_keybinds(&state);
+        // Filter reminder should only appear on Available tab
+        let has_reminder = hints.iter().any(|h| h.key.contains("trout"));
+        assert!(
+            !has_reminder,
+            "filter reminder should not appear on Analysis tab"
+        );
+    }
+
+    #[test]
+    fn view_state_default_active_keybinds_empty() {
+        let state = ViewState::default();
+        assert!(
+            state.active_keybinds.is_empty(),
+            "active_keybinds should start empty before first render"
+        );
+    }
+
+    #[test]
+    fn quit_confirm_takes_priority_over_modal_and_filter_mode() {
+        // If somehow both confirm_quit and modal are set, confirm_quit wins
+        let mut state = ViewState::default();
+        state.confirm_quit = true;
+        state.position_filter_modal.open = true;
+        state.filter_mode = true;
+        let hints = compute_keybinds(&state);
+        let ks = keys(&hints);
+        assert!(ks.contains(&"y/q"), "quit confirm should take highest priority");
+        assert!(!ks.contains(&"↑↓"), "modal nav hint should not appear");
+        // Only the quit-confirm hints should be present, not filter-mode Enter
+        assert_eq!(hints.len(), 2, "only 2 quit-confirm hints should be present");
     }
 }
