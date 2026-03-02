@@ -2,6 +2,7 @@
 // consumers can access the crate's public API.
 
 pub mod app;
+pub mod app_dirs;
 pub mod config;
 pub mod db;
 pub mod draft;

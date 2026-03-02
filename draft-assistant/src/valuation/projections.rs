@@ -271,10 +271,47 @@ pub fn load_all(config: &Config) -> Result<AllProjections, ProjectionError> {
     load_all_from_paths(&config.data_paths)
 }
 
+/// Resolve a data file path from the config.
+///
+/// If the path is absolute, use it as-is. If it is relative, look for it in
+/// the following order:
+///
+/// 1. Relative to the OS app data directory (`~/.local/share/wyncast` on Linux)
+/// 2. Relative to the current working directory (fallback for development)
+///
+/// Returns the first path that exists, or falls back to the app data dir
+/// path if neither exists (so the caller gets a meaningful "file not found" error).
+fn resolve_data_path(raw: &str) -> std::path::PathBuf {
+    let p = Path::new(raw);
+    if p.is_absolute() {
+        return p.to_path_buf();
+    }
+
+    let app_data_candidate = crate::app_dirs::app_data_dir().join(p);
+    if app_data_candidate.exists() {
+        return app_data_candidate;
+    }
+
+    // Fall back to CWD-relative (useful for `cargo run` during development).
+    if let Ok(cwd) = std::env::current_dir() {
+        let cwd_candidate = cwd.join(p);
+        if cwd_candidate.exists() {
+            return cwd_candidate;
+        }
+    }
+
+    // Neither exists — return the app data dir path so the caller gets a
+    // descriptive error pointing to the preferred location.
+    app_data_candidate
+}
+
 /// Load all projection data from explicit paths. Exposed for testing and flexibility.
 pub fn load_all_from_paths(paths: &DataPaths) -> Result<AllProjections, ProjectionError> {
-    let hitters = load_hitter_projections(Path::new(&paths.hitters))?;
-    let pitchers = load_pitcher_projections(Path::new(&paths.pitchers))?;
+    let hitters_path = resolve_data_path(&paths.hitters);
+    let pitchers_path = resolve_data_path(&paths.pitchers);
+
+    let hitters = load_hitter_projections(&hitters_path)?;
+    let pitchers = load_pitcher_projections(&pitchers_path)?;
 
     if hitters.is_empty() {
         return Err(ProjectionError::Validation(

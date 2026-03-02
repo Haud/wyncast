@@ -38,9 +38,13 @@ async fn main() -> anyhow::Result<()> {
         config.league.name, config.league.num_teams, config.league.salary_cap
     );
 
-    // 3. Open database
-    let db = db::Database::open(&config.db_path).context("failed to open database")?;
-    info!("Database opened at {}", config.db_path);
+    // 3. Open database (always stored in the OS app data directory)
+    let db_path = draft_assistant::app_dirs::db_path();
+    let db_path_str = db_path
+        .to_str()
+        .context("database path contains non-UTF-8 characters")?;
+    let db = db::Database::open(db_path_str).context("failed to open database")?;
+    info!("Database opened at {}", db_path_str);
 
     // Clear all persisted draft state on launch. The live draft (via the
     // extension's keyframe snapshots) is the only source of truth. Stale
@@ -162,9 +166,7 @@ fn init_tracing() -> anyhow::Result<()> {
     use tracing_subscriber::fmt;
     use tracing_subscriber::EnvFilter;
 
-    let log_dir = std::env::current_dir()?.join("logs");
-    std::fs::create_dir_all(&log_dir)?;
-
+    let log_dir = draft_assistant::app_dirs::log_dir();
     let log_file = std::fs::File::create(log_dir.join("draft-assistant.log"))?;
 
     let subscriber = fmt::Subscriber::builder()
