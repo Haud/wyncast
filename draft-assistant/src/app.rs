@@ -341,7 +341,10 @@ impl AppState {
     }
 
     /// Handle nomination cleared (pick completed for the nominated player).
-    pub fn handle_nomination_cleared(&mut self) {
+    ///
+    /// Returns `true` if a nomination planning task was started, so callers
+    /// can send `UiUpdate::PlanStarted` to clear stale plan text in the TUI.
+    pub fn handle_nomination_cleared(&mut self) -> bool {
         self.draft_state.current_nomination = None;
         self.cancel_llm_task();
         self.llm_mode = None;
@@ -353,8 +356,9 @@ impl AppState {
         // config flag is set and we already know which team is ours.
         if self.config.strategy.llm.prefire_planning && self.draft_state.my_team().is_some() {
             info!("Auto-triggering nomination planning (prefire_planning=true)");
-            self.trigger_nomination_planning();
+            return self.trigger_nomination_planning();
         }
+        false
     }
 
     /// Cancel the current LLM task if one is running.
@@ -469,14 +473,19 @@ impl AppState {
     ///
     /// Cancels any in-flight LLM task, builds the planning prompt from
     /// current state, and spawns a streaming task.
-    pub fn trigger_nomination_planning(&mut self) {
+    ///
+    /// Returns `true` if a planning task was successfully started, `false` if
+    /// it was skipped (e.g. teams not yet registered). Callers that receive
+    /// `true` should send `UiUpdate::PlanStarted` to clear stale plan text in
+    /// the TUI before the first token arrives.
+    pub fn trigger_nomination_planning(&mut self) -> bool {
         self.cancel_llm_task();
 
         let my_team = match self.draft_state.my_team() {
             Some(t) => t,
             None => {
                 warn!("trigger_nomination_planning called before teams registered, skipping");
-                return;
+                return false;
             }
         };
 
@@ -512,6 +521,7 @@ impl AppState {
 
         self.current_llm_task = Some(handle);
         info!("Triggered LLM nomination planning (gen: {})", generation);
+        true
     }
 
     /// Convert extension PickData format to our internal StateUpdatePayload format.
@@ -950,8 +960,11 @@ async fn handle_state_update(
     if diff.nomination_changed {
         if diff.nomination_cleared {
             info!("Nomination cleared");
-            state.handle_nomination_cleared();
+            let planning_started = state.handle_nomination_cleared();
             let _ = ui_tx.send(UiUpdate::NominationCleared).await;
+            if planning_started {
+                let _ = ui_tx.send(UiUpdate::PlanStarted).await;
+            }
         } else if let Some(ref nomination) = diff.new_nomination {
             info!(
                 "New nomination: {} (bid: ${})",
@@ -1162,7 +1175,9 @@ async fn handle_user_command(
         }
         UserCommand::RefreshPlan => {
             info!("Refreshing nomination plan");
-            state.trigger_nomination_planning();
+            if state.trigger_nomination_planning() {
+                let _ = ui_tx.send(UiUpdate::PlanStarted).await;
+            }
         }
         UserCommand::ManualPick {
             player_name,
