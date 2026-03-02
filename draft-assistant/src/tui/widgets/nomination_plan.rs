@@ -145,4 +145,17 @@ mod tests {
             .draw(|frame| render(frame, frame.area(), &state))
             .unwrap();
     }
+
+    #[test]
+    fn render_does_not_panic_with_streaming() {
+        let backend = ratatui::backend::TestBackend::new(80, 5);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut state = ViewState::default();
+        // Create enough text to trigger auto-scroll
+        state.plan_text = (0..50).map(|i| format!("Line {}", i)).collect::<Vec<_>>().join("\n");
+        state.plan_status = LlmStatus::Streaming;
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state))
+            .unwrap();
+    }
 }
