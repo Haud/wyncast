@@ -110,6 +110,9 @@ pub struct AppState {
     /// Sender for LLM events; spawned tasks use a clone of this sender
     /// to stream tokens back to the main event loop.
     pub llm_tx: mpsc::Sender<LlmEvent>,
+    /// Sender for outbound WebSocket messages to the extension.
+    /// Used to send `REQUEST_KEYFRAME` messages.
+    pub ws_outbound_tx: Option<mpsc::Sender<String>>,
 }
 
 impl AppState {
@@ -126,6 +129,7 @@ impl AppState {
         draft_id: String,
         llm_client: LlmClient,
         llm_tx: mpsc::Sender<LlmEvent>,
+        ws_outbound_tx: Option<mpsc::Sender<String>>,
     ) -> Self {
         let scarcity = compute_scarcity(&available_players, &config.league);
         let inflation = InflationTracker::new();
@@ -154,6 +158,7 @@ impl AppState {
             category_needs: CategoryNeeds::default(),
             llm_client: Arc::new(llm_client),
             llm_tx,
+            ws_outbound_tx,
         }
     }
 
@@ -1167,16 +1172,23 @@ async fn handle_user_command(
             state.active_tab = tab;
             info!("Switched to tab: {:?}", tab);
         }
-        UserCommand::RefreshAnalysis => {
-            if let Some(nom) = state.draft_state.current_nomination.clone() {
-                info!("Refreshing analysis for {}", nom.player_name);
-                state.trigger_nomination_analysis(&nom);
-            }
-        }
         UserCommand::RefreshPlan => {
             info!("Refreshing nomination plan");
             if state.trigger_nomination_planning() {
                 let _ = ui_tx.send(UiUpdate::PlanStarted).await;
+            }
+        }
+        UserCommand::RequestKeyframe => {
+            info!("Manual keyframe refresh requested");
+            if let Some(ref ws_tx) = state.ws_outbound_tx {
+                let request = serde_json::json!({
+                    "type": "REQUEST_KEYFRAME"
+                });
+                if let Err(e) = ws_tx.send(request.to_string()).await {
+                    warn!("Failed to send REQUEST_KEYFRAME: {}", e);
+                }
+            } else {
+                warn!("Cannot request keyframe: no outbound WebSocket channel");
             }
         }
         UserCommand::ManualPick {
@@ -1216,64 +1228,6 @@ async fn handle_user_command(
             // Handled in the main loop
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Crash recovery
-// ---------------------------------------------------------------------------
-
-/// Restore application state from the database after a crash/restart.
-///
-/// If the DB has draft picks recorded for the current draft_id, loads them
-/// and replays them into the DraftState, then recalculates valuations.
-pub fn recover_from_db(state: &mut AppState) -> anyhow::Result<bool> {
-    if !state.db.has_draft_in_progress(&state.draft_id)? {
-        info!("No draft in progress for draft_id={}, starting fresh", state.draft_id);
-        return Ok(false);
-    }
-
-    let picks = state.db.load_picks(&state.draft_id)?;
-    let pick_count = picks.len();
-    info!(
-        "Crash recovery: restoring {} picks from DB for draft_id={}",
-        pick_count, state.draft_id
-    );
-
-    // Restore picks into DraftState (takes ownership)
-    state.draft_state.restore_from_picks(picks);
-
-    // Remove drafted players from available pool using the restored picks
-    for pick in &state.draft_state.picks {
-        state
-            .available_players
-            .retain(|p| p.name != pick.player_name);
-    }
-
-    // Recalculate valuations
-    crate::valuation::recalculate_all(
-        &mut state.available_players,
-        &state.config.league,
-        &state.config.strategy,
-        &state.draft_state,
-    );
-
-    // Update inflation
-    state.inflation.update(
-        &state.available_players,
-        &state.draft_state,
-        &state.config.league,
-    );
-
-    // Update scarcity
-    state.scarcity = compute_scarcity(&state.available_players, &state.config.league);
-
-    info!(
-        "Crash recovery complete: {} picks restored, {} players remaining",
-        pick_count,
-        state.available_players.len()
-    );
-
-    Ok(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -1643,7 +1597,7 @@ mod tests {
         let llm_client = LlmClient::Disabled;
         let (llm_tx, _llm_rx) = mpsc::channel(16);
 
-        AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx)
+        AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx, None)
     }
 
     // -----------------------------------------------------------------------
@@ -2104,107 +2058,6 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Tests: Crash recovery
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn crash_recovery_restores_state() {
-        let config = test_config();
-        let db = Database::open(":memory:").expect("in-memory db");
-        let draft_id = Database::generate_draft_id();
-
-        // Record some picks into the database (simulating a previous session)
-        let picks = vec![
-            DraftPick {
-                pick_number: 1,
-                team_id: "1".into(),
-                team_name: "Team 1".into(),
-                player_name: "H_Star".into(),
-                position: "1B".into(),
-                price: 45,
-                espn_player_id: None,
-                eligible_slots: vec![],
-            },
-            DraftPick {
-                pick_number: 2,
-                team_id: "2".into(),
-                team_name: "Team 2".into(),
-                player_name: "P_Ace".into(),
-                position: "SP".into(),
-                price: 50,
-                espn_player_id: None,
-                eligible_slots: vec![],
-            },
-        ];
-        for pick in &picks {
-            db.record_pick(pick, &draft_id).unwrap();
-        }
-        assert!(db.has_draft_in_progress(&draft_id).unwrap());
-
-        // Create a fresh AppState (simulating restart)
-        let mut draft_state = DraftState::new(260, &test_roster_config());
-        // Register teams from ESPN data (simulating what happens at connection)
-        draft_state.reconcile_budgets(&test_espn_budgets());
-        draft_state.set_my_team_by_name("Team 1");
-
-        let mut available = test_players();
-        crate::valuation::recalculate_all(
-            &mut available,
-            &config.league,
-            &config.strategy,
-            &draft_state,
-        );
-        let initial_player_count = available.len();
-
-        let llm_client = LlmClient::Disabled;
-        let (llm_tx, _llm_rx) = mpsc::channel(16);
-        let mut state = AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx);
-
-        // Run crash recovery
-        let recovered = recover_from_db(&mut state).unwrap();
-        assert!(recovered);
-
-        // Verify state was restored
-        assert_eq!(state.draft_state.pick_count, 2);
-        assert_eq!(state.draft_state.picks.len(), 2);
-        assert_eq!(state.draft_state.picks[0].player_name, "H_Star");
-        assert_eq!(state.draft_state.picks[1].player_name, "P_Ace");
-
-        // Players should be removed from available pool
-        assert_eq!(
-            state.available_players.len(),
-            initial_player_count - 2
-        );
-        assert!(!state.available_players.iter().any(|p| p.name == "H_Star"));
-        assert!(!state.available_players.iter().any(|p| p.name == "P_Ace"));
-
-        // Budget should be updated
-        let team1 = state.draft_state.team("1").unwrap();
-        assert_eq!(team1.budget_spent, 45);
-        let team2 = state.draft_state.team("2").unwrap();
-        assert_eq!(team2.budget_spent, 50);
-    }
-
-    #[test]
-    fn crash_recovery_no_picks_returns_false() {
-        let config = test_config();
-        let db = Database::open(":memory:").expect("in-memory db");
-        let draft_id = Database::generate_draft_id();
-        let mut draft_state = DraftState::new(260, &test_roster_config());
-        draft_state.reconcile_budgets(&test_espn_budgets());
-        draft_state.set_my_team_by_name("Team 1");
-        let available = test_players();
-
-        let llm_client = LlmClient::Disabled;
-        let (llm_tx, _llm_rx) = mpsc::channel(16);
-        let mut state = AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx);
-
-        let recovered = recover_from_db(&mut state).unwrap();
-        assert!(!recovered);
-        assert_eq!(state.draft_state.pick_count, 0);
-    }
-
-    // -----------------------------------------------------------------------
     // Tests: Async event loop
     // -----------------------------------------------------------------------
 
@@ -2415,7 +2268,7 @@ mod tests {
         let (llm_tx, _llm_rx) = mpsc::channel(16);
 
         let draft_id = Database::generate_draft_id();
-        AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx)
+        AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx, None)
     }
 
     #[tokio::test]
@@ -3414,6 +3267,7 @@ mod tests {
             draft_id,
             llm_client,
             llm_tx,
+            None,
         );
 
         // Step 1: process_new_picks while teams are empty

@@ -30,7 +30,7 @@ const POSITION_CYCLE: &[Position] = &[
 /// Handle a keyboard event.
 ///
 /// Returns `Some(UserCommand)` when the key press should be forwarded to the
-/// app orchestrator (e.g. RefreshAnalysis, Quit). Returns `None` when the
+/// app orchestrator (e.g. RequestKeyframe, Quit). Returns `None` when the
 /// key press was handled locally by mutating `ViewState` (e.g. tab switching,
 /// scrolling, filtering).
 pub fn handle_key(
@@ -137,8 +137,8 @@ pub fn handle_key(
             None
         }
 
-        // LLM refresh commands
-        KeyCode::Char('r') => Some(UserCommand::RefreshAnalysis),
+        // Request a full keyframe (FULL_STATE_SYNC) from the extension
+        KeyCode::Char('r') => Some(UserCommand::RequestKeyframe),
         KeyCode::Char('n') => Some(UserCommand::RefreshPlan),
 
         // Quit: enter confirmation mode instead of quitting immediately
@@ -760,10 +760,10 @@ mod tests {
     // -- Command returns --
 
     #[test]
-    fn r_returns_refresh_analysis() {
+    fn r_returns_request_keyframe() {
         let mut state = ViewState::default();
         let result = handle_key(key(KeyCode::Char('r')), &mut state);
-        assert_eq!(result, Some(UserCommand::RefreshAnalysis));
+        assert_eq!(result, Some(UserCommand::RequestKeyframe));
     }
 
     #[test]

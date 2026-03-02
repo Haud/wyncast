@@ -53,6 +53,7 @@ const MUTATION_DEBOUNCE_MS = 250;
 const POLL_INTERVAL_MS = 500;
 const POLL_TIMEOUT_MS = 10000;
 const FALLBACK_POLL_INTERVAL_MS = 1000;
+const KEYFRAME_INTERVAL_MS = 10000;
 
 // ---------------------------------------------------------------------------
 // Logging utility
@@ -713,6 +714,26 @@ function startPeriodicPolling() {
 }
 
 // ---------------------------------------------------------------------------
+// Periodic keyframe: automatically sends a FULL_STATE_SYNC every
+// KEYFRAME_INTERVAL_MS so the backend always has a recent known-good
+// snapshot. This prevents state drift from accumulating between reconnects.
+// ---------------------------------------------------------------------------
+
+let keyframeIntervalId = null;
+
+function startPeriodicKeyframe() {
+  if (keyframeIntervalId) clearInterval(keyframeIntervalId);
+  keyframeIntervalId = setInterval(() => {
+    const state = scrapeDom();
+    if (!state) return; // DOM not ready yet
+    const fingerprint = computeFingerprint(state);
+    if (fingerprint !== lastFingerprint) {
+      sendFullStateSync();
+    }
+  }, KEYFRAME_INTERVAL_MS);
+}
+
+// ---------------------------------------------------------------------------
 // Message listener: respond to requests from the background script
 // ---------------------------------------------------------------------------
 
@@ -743,6 +764,10 @@ function init() {
 
   // Start periodic polling fallback
   startPeriodicPolling();
+
+  // Start periodic keyframe: sends a FULL_STATE_SYNC every 10 seconds
+  // so the backend always has a recent known-good snapshot
+  startPeriodicKeyframe();
 
   log('Content script initialized');
 }

@@ -42,21 +42,20 @@ async fn main() -> anyhow::Result<()> {
     let db = db::Database::open(&config.db_path).context("failed to open database")?;
     info!("Database opened at {}", config.db_path);
 
-    // Load or generate the draft ID. On first run (or after a full DB clear)
-    // there is no stored draft_id, so we generate a fresh one. On subsequent
-    // runs we reuse the stored draft_id so crash recovery loads the correct
-    // picks.
-    let draft_id = match db.get_draft_id()? {
-        Some(id) => {
-            info!("Resuming draft session: {}", id);
-            id
-        }
-        None => {
-            let id = db::Database::generate_draft_id();
-            db.set_draft_id(&id)?;
-            info!("Starting new draft session: {}", id);
-            id
-        }
+    // Clear all persisted draft state on launch. The live draft (via the
+    // extension's keyframe snapshots) is the only source of truth. Stale
+    // DB data from previous sessions is the main source of phantom picks
+    // and roster corruption.
+    db.clear_all_drafts().context("failed to clear persisted draft state on startup")?;
+    info!("Cleared persisted draft state — starting fresh from extension keyframes");
+
+    // Generate a fresh draft ID for this session. Since we just cleared the
+    // DB, there is no stored draft_id to resume from.
+    let draft_id = {
+        let id = db::Database::generate_draft_id();
+        db.set_draft_id(&id)?;
+        info!("Starting new draft session: {}", id);
+        id
     };
 
     // 4. Load projections and compute initial valuations
@@ -84,6 +83,7 @@ async fn main() -> anyhow::Result<()> {
 
     // 6. Create mpsc channels (before AppState so llm_tx can be passed in)
     let (ws_tx, ws_rx) = mpsc::channel(256);
+    let (ws_outbound_tx, ws_outbound_rx) = mpsc::channel(64);
     let (llm_tx, llm_rx) = mpsc::channel(256);
     let (cmd_tx, cmd_rx) = mpsc::channel(64);
     let (ui_tx, ui_rx) = mpsc::channel(256);
@@ -95,17 +95,9 @@ async fn main() -> anyhow::Result<()> {
         llm::client::LlmClient::Disabled => info!("LLM client disabled (no API key)"),
     }
 
-    // Load stored ESPN draft ID (if any) so reconnects can detect draft changes.
-    let espn_draft_id = db.get_espn_draft_id().unwrap_or_else(|e| {
-        error!("Failed to load ESPN draft ID: {}", e);
-        None
-    });
-    if let Some(ref eid) = espn_draft_id {
-        info!("Loaded stored ESPN draft ID: {}", eid);
-    }
-
-    // Create the application state
-    let mut app_state = app::AppState::new(
+    // Create the application state. No crash recovery — we start fresh and
+    // wait for the first keyframe from the extension.
+    let app_state = app::AppState::new(
         config.clone(),
         draft_state,
         available_players,
@@ -114,25 +106,16 @@ async fn main() -> anyhow::Result<()> {
         draft_id,
         llm_client,
         llm_tx.clone(),
+        Some(ws_outbound_tx),
     );
-    app_state.espn_draft_id = espn_draft_id;
-
-    // Check for crash recovery
-    match app::recover_from_db(&mut app_state) {
-        Ok(true) => info!("Draft state restored from previous session"),
-        Ok(false) => info!("Starting fresh draft session"),
-        Err(e) => {
-            error!("Crash recovery failed: {}", e);
-            return Err(e.context("crash recovery failed"));
-        }
-    }
+    info!("Starting fresh — waiting for first keyframe from extension");
 
     // 7. Spawn WebSocket server task
     let ws_port = config.ws_port;
     let ws_handle = tokio::spawn(async move {
         match ws_server::TungsteniteListener::bind(ws_port).await {
             Ok(listener) => {
-                if let Err(e) = ws_server::run(listener, ws_tx).await {
+                if let Err(e) = ws_server::run(listener, ws_tx, ws_outbound_rx).await {
                     error!("WebSocket server error: {}", e);
                 }
             }
