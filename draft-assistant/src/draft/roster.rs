@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::pick::{Position, positions_from_espn_slot};
+use super::pick::{Position, position_from_espn_slot, positions_from_espn_slot};
 
 /// A player assigned to a roster slot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,22 +158,32 @@ impl Roster {
 
     /// Add a player using ESPN eligible slot IDs for multi-position placement.
     ///
+    /// When `assigned_slot` is provided, the player is placed directly into
+    /// that specific ESPN roster slot (bypassing position inference). This
+    /// is the authoritative slot ESPN used when the pick was made, so it
+    /// correctly handles two-way players like Ohtani who may be placed in
+    /// UTIL even though SP appears first in their eligible_slots list.
+    ///
     /// Slot assignment priority:
+    /// 0. If `assigned_slot` is `Some`, place directly into that slot type.
+    ///    Falls through to the ordered priority if the slot is already full.
     /// 1. Try each eligible position slot (mapped from ESPN slot IDs, in slot order)
     /// 2. Try UTIL slot (for hitters)
     /// 3. Try bench slot
     ///
-    /// Falls back to single-position `add_player()` if eligible_slots is empty.
+    /// Falls back to single-position `add_player()` if both `eligible_slots`
+    /// is empty and `assigned_slot` is None.
     pub fn add_player_with_slots(
         &mut self,
         name: &str,
         position_str: &str,
         price: u32,
         eligible_slots: &[u16],
+        assigned_slot: Option<u16>,
         espn_player_id: Option<&str>,
     ) -> bool {
-        // Fall back to single-position logic if no slots provided
-        if eligible_slots.is_empty() {
+        // Fall back to single-position logic if no slot data provided at all
+        if eligible_slots.is_empty() && assigned_slot.is_none() {
             return self.add_player(name, position_str, price, espn_player_id);
         }
 
@@ -196,6 +206,21 @@ impl Roster {
             eligible_slots: eligible_slots.to_vec(),
             espn_player_id: espn_player_id.map(|s| s.to_string()),
         };
+
+        // 0. If ESPN told us exactly which slot this player was placed in,
+        //    honour that assignment first. This is the source-of-truth path
+        //    for two-way players: Ohtani drafted to UTIL must land in UTIL,
+        //    not in SP just because SP appears first in eligible_slots.
+        if let Some(slot_id) = assigned_slot {
+            if let Some(pos) = position_from_espn_slot(slot_id) {
+                if let Some(slot) = self.slots.iter_mut().find(|s| s.position == pos && s.player.is_none()) {
+                    slot.player = Some(player);
+                    return true;
+                }
+                // The authoritative slot is already full (unlikely but defensive).
+                // Fall through to the standard priority ordering below.
+            }
+        }
 
         // 1. Try each eligible position slot (skip meta-slots like UTIL/BE/IL)
         for &slot_id in eligible_slots {
@@ -564,7 +589,7 @@ mod tests {
         // Fill SS slot first
         roster.add_player("Other SS", "SS", 10, None);
         // Mookie should go to 2B (next eligible position)
-        assert!(roster.add_player_with_slots("Mookie Betts", "SS", 40, &slots, None));
+        assert!(roster.add_player_with_slots("Mookie Betts", "SS", 40, &slots, None, None));
         let slot_2b = roster.slots.iter().find(|s| s.position == Position::SecondBase).unwrap();
         assert!(slot_2b.player.is_some());
         assert_eq!(slot_2b.player.as_ref().unwrap().name, "Mookie Betts");
@@ -578,7 +603,7 @@ mod tests {
         // Fill C slot
         roster.add_player("Other C", "C", 10, None);
         // Should go to UTIL since C is full
-        assert!(roster.add_player_with_slots("Player 2", "C", 8, &slots, None));
+        assert!(roster.add_player_with_slots("Player 2", "C", 8, &slots, None, None));
         let util = roster.slots.iter().find(|s| s.position == Position::Utility).unwrap();
         assert!(util.player.is_some());
         assert_eq!(util.player.as_ref().unwrap().name, "Player 2");
@@ -588,7 +613,7 @@ mod tests {
     fn add_player_with_slots_empty_falls_back() {
         let mut roster = Roster::new(&test_roster_config());
         // Empty eligible_slots should use single-position fallback
-        assert!(roster.add_player_with_slots("Mike Trout", "CF", 45, &[], None));
+        assert!(roster.add_player_with_slots("Mike Trout", "CF", 45, &[], None, None));
         let cf = roster.slots.iter().find(|s| s.position == Position::CenterField).unwrap();
         assert!(cf.player.is_some());
         assert_eq!(cf.player.as_ref().unwrap().name, "Mike Trout");
@@ -603,7 +628,7 @@ mod tests {
         }
         // SP with eligible_slots should go to bench, not UTIL
         let slots = vec![14, 16, 17]; // SP, BE, IL
-        assert!(roster.add_player_with_slots("Extra SP", "SP", 5, &slots, None));
+        assert!(roster.add_player_with_slots("Extra SP", "SP", 5, &slots, None, None));
         let util = roster.slots.iter().find(|s| s.position == Position::Utility).unwrap();
         assert!(util.player.is_none());
     }
@@ -658,7 +683,7 @@ mod tests {
         // Player eligible only at generic OF (slot 5), UTIL (12), BE (16), IL (17)
         // Does NOT have individual LF/CF/RF slots — only the generic OF combo slot
         let slots = vec![5, 12, 16, 17];
-        assert!(roster.add_player_with_slots("Juan Soto", "OF", 40, &slots, None));
+        assert!(roster.add_player_with_slots("Juan Soto", "OF", 40, &slots, None, None));
         // Should be placed in one of LF, CF, or RF via the expanded OF slot
         let of_filled: Vec<_> = roster
             .slots
@@ -681,7 +706,7 @@ mod tests {
         roster.add_player("Other 2B", "2B", 10, None);
         // Player eligible at MI (slot 6) only — not at individual 2B or SS
         let slots = vec![6, 12, 16, 17];
-        assert!(roster.add_player_with_slots("MI Player", "2B", 15, &slots, None));
+        assert!(roster.add_player_with_slots("MI Player", "2B", 15, &slots, None, None));
         // 2B is full, so MI expansion should place in SS
         let ss_slot = roster
             .slots
@@ -699,7 +724,7 @@ mod tests {
         roster.add_player("Other 1B", "1B", 10, None);
         // Player eligible at CI (slot 7) only
         let slots = vec![7, 12, 16, 17];
-        assert!(roster.add_player_with_slots("CI Player", "1B", 15, &slots, None));
+        assert!(roster.add_player_with_slots("CI Player", "1B", 15, &slots, None, None));
         // 1B is full, so CI expansion should place in 3B
         let slot_3b = roster
             .slots
@@ -756,7 +781,7 @@ mod tests {
         let mut roster = Roster::new(&test_roster_config());
         // Unknown position string "UNKNOWN", but eligible slots include hitter positions
         let hitter_slots = vec![5, 12, 16, 17]; // OF, UTIL, BE, IL
-        assert!(roster.add_player_with_slots("Mystery Hitter", "UNKNOWN", 10, &hitter_slots, None));
+        assert!(roster.add_player_with_slots("Mystery Hitter", "UNKNOWN", 10, &hitter_slots, None, None));
         // Should be placed as a hitter — check that UTIL was used (since "UNKNOWN" maps to Bench,
         // and the eligible slot expansion puts them in an OF slot first)
         let of_filled: Vec<_> = roster
@@ -782,7 +807,7 @@ mod tests {
         for i in 0..5 {
             roster.add_player(&format!("SP {}", i), "SP", 10, None);
         }
-        assert!(roster.add_player_with_slots("Mystery Pitcher", "UNKNOWN", 5, &pitcher_slots, None));
+        assert!(roster.add_player_with_slots("Mystery Pitcher", "UNKNOWN", 5, &pitcher_slots, None, None));
         // is_hitter should be false (derived from pitcher-only slots), so UTIL should NOT be used
         let util = roster
             .slots
@@ -798,5 +823,96 @@ mod tests {
             .collect();
         assert_eq!(bench_players.len(), 1);
         assert_eq!(bench_players[0].player.as_ref().unwrap().name, "Mystery Pitcher");
+    }
+
+    // -- assigned_slot (ESPN source-of-truth placement) tests --
+
+    #[test]
+    fn add_player_with_slots_assigned_slot_overrides_eligible_order() {
+        // Ohtani scenario: eligible_slots lists SP first, but ESPN assigned UTIL.
+        // Without assigned_slot the player would land in SP; with it they land in UTIL.
+        let mut roster = Roster::new(&test_roster_config());
+
+        // Ohtani's eligible slots include SP(14) first, then DH(11), UTIL(12), BE(16), IL(17).
+        // If we relied solely on eligible_slots order, he'd go to SP.
+        // But ESPN placed him in UTIL (slot 12).
+        let slots = vec![14, 11, 12, 16, 17]; // SP, DH, UTIL, BE, IL
+        let assigned = Some(super::super::pick::ESPN_SLOT_UTIL); // slot 12
+        assert!(roster.add_player_with_slots("Shohei Ohtani", "SP", 65, &slots, assigned, None));
+
+        // Should be in UTIL, not SP
+        let util = roster.slots.iter().find(|s| s.position == Position::Utility).unwrap();
+        assert!(util.player.is_some(), "Ohtani should be placed in UTIL");
+        assert_eq!(util.player.as_ref().unwrap().name, "Shohei Ohtani");
+
+        let sp_slots: Vec<_> = roster
+            .slots
+            .iter()
+            .filter(|s| s.position == Position::StartingPitcher && s.player.is_some())
+            .collect();
+        assert!(sp_slots.is_empty(), "SP slots should remain empty");
+    }
+
+    #[test]
+    fn add_player_with_slots_assigned_slot_sp_placement() {
+        // When ESPN assigns to SP, player lands in SP even if eligible for UTIL too.
+        let mut roster = Roster::new(&test_roster_config());
+        let slots = vec![14, 12, 16, 17]; // SP, UTIL, BE, IL
+        let assigned = Some(super::super::pick::ESPN_SLOT_SP); // slot 14
+        assert!(roster.add_player_with_slots("Corbin Burnes", "SP", 30, &slots, assigned, None));
+
+        let sp_slot = roster
+            .slots
+            .iter()
+            .find(|s| s.position == Position::StartingPitcher && s.player.is_some())
+            .unwrap();
+        assert_eq!(sp_slot.player.as_ref().unwrap().name, "Corbin Burnes");
+        let util = roster.slots.iter().find(|s| s.position == Position::Utility).unwrap();
+        assert!(util.player.is_none());
+    }
+
+    #[test]
+    fn add_player_with_slots_assigned_slot_full_falls_through() {
+        // If the assigned slot is already full, fall through to eligible_slots order.
+        let mut roster = Roster::new(&test_roster_config());
+        // Fill UTIL first
+        roster.add_player("First UTIL Player", "C", 5, None);
+        let util = roster.slots.iter_mut().find(|s| s.position == Position::Utility).unwrap();
+        util.player = Some(super::RosteredPlayer {
+            name: "First UTIL Player".to_string(),
+            price: 5,
+            position: Position::Utility,
+            eligible_slots: vec![],
+            espn_player_id: None,
+        });
+
+        // Now assign Ohtani to UTIL but it's full — should fall through to SP
+        let slots = vec![14, 11, 12, 16, 17]; // SP, DH, UTIL, BE, IL
+        let assigned = Some(super::super::pick::ESPN_SLOT_UTIL);
+        assert!(roster.add_player_with_slots("Shohei Ohtani", "SP", 65, &slots, assigned, None));
+
+        // Should land in SP (first eligible non-meta slot) since UTIL is taken
+        let sp_slots: Vec<_> = roster
+            .slots
+            .iter()
+            .filter(|s| s.position == Position::StartingPitcher && s.player.is_some())
+            .collect();
+        assert_eq!(sp_slots.len(), 1);
+        assert_eq!(sp_slots[0].player.as_ref().unwrap().name, "Shohei Ohtani");
+    }
+
+    #[test]
+    fn add_player_with_slots_assigned_slot_none_uses_eligible_order() {
+        // Without an assigned_slot, behavior is unchanged: eligible_slots order is used.
+        let mut roster = Roster::new(&test_roster_config());
+        let slots = vec![14, 11, 12, 16, 17]; // SP first
+        assert!(roster.add_player_with_slots("SP Player", "SP", 30, &slots, None, None));
+
+        let sp_slot = roster
+            .slots
+            .iter()
+            .find(|s| s.position == Position::StartingPitcher && s.player.is_some())
+            .unwrap();
+        assert_eq!(sp_slot.player.as_ref().unwrap().name, "SP Player");
     }
 }

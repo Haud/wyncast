@@ -57,6 +57,7 @@ impl Database {
                 position       TEXT NOT NULL,
                 price          INTEGER NOT NULL,
                 eligible_slots TEXT,
+                assigned_slot  INTEGER,
                 draft_id       TEXT NOT NULL DEFAULT '',
                 timestamp      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
                 PRIMARY KEY (pick_number, draft_id)
@@ -79,7 +80,18 @@ impl Database {
         // Detects old schema by checking if the draft_id column exists. If not, the
         // table is from a pre-draft-id version and needs a full table rebuild since
         // SQLite doesn't support altering primary keys in place.
+        // NOTE: This migration must run BEFORE the assigned_slot ALTER TABLE so that
+        // the rebuilt table gets the assigned_slot column added by the next migration.
         Self::migrate_draft_picks_add_draft_id(&conn)?;
+
+        // Migration: add assigned_slot column if it doesn't exist.
+        // Stores the ESPN roster slot ID the player was placed in when picked.
+        // NULL for picks loaded from pre-roster-slot-truth databases.
+        // Must run AFTER migrate_draft_picks_add_draft_id since that migration rebuilds
+        // the table without this column.
+        conn.execute_batch(
+            "ALTER TABLE draft_picks ADD COLUMN assigned_slot INTEGER;"
+        ).ok(); // Silently ignore if column already exists
 
         // Index on draft_id for efficient filtering. The composite PK is ordered
         // (pick_number, draft_id) so queries filtering by draft_id alone cannot
@@ -163,10 +175,11 @@ impl Database {
         let conn = self.conn();
         let eligible_slots_json = serde_json::to_string(&pick.eligible_slots)
             .context("failed to serialize eligible_slots")?;
+        let assigned_slot_val: Option<i64> = pick.assigned_slot.map(|v| v as i64);
         conn.execute(
             "INSERT OR IGNORE INTO draft_picks
-                (pick_number, team_id, team_name, espn_player_id, player_name, position, price, eligible_slots, draft_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                (pick_number, team_id, team_name, espn_player_id, player_name, position, price, eligible_slots, assigned_slot, draft_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 pick.pick_number,
                 pick.team_id,
@@ -176,6 +189,7 @@ impl Database {
                 pick.position,
                 pick.price,
                 eligible_slots_json,
+                assigned_slot_val,
                 draft_id,
             ],
         )
@@ -191,7 +205,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT pick_number, team_id, team_name, player_name, position, price, espn_player_id, eligible_slots
+                "SELECT pick_number, team_id, team_name, player_name, position, price, espn_player_id, eligible_slots, assigned_slot
                  FROM draft_picks WHERE draft_id = ?1 ORDER BY pick_number",
             )
             .context("failed to prepare load_picks query")?;
@@ -202,6 +216,8 @@ impl Database {
                 let eligible_slots = eligible_slots_json
                     .and_then(|json_str| serde_json::from_str::<Vec<u16>>(&json_str).ok())
                     .unwrap_or_default();
+                let assigned_slot_val: Option<u16> = row.get::<_, Option<i64>>(8)?
+                    .and_then(|v| u16::try_from(v).ok());
                 Ok(DraftPick {
                     pick_number: row.get(0)?,
                     team_id: row.get(1)?,
@@ -211,6 +227,7 @@ impl Database {
                     price: row.get(5)?,
                     espn_player_id: row.get(6)?,
                     eligible_slots,
+                    assigned_slot: assigned_slot_val,
                 })
             })
             .context("failed to query draft picks")?
@@ -511,6 +528,7 @@ mod tests {
             price: 25,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         }
     }
 
@@ -559,6 +577,7 @@ mod tests {
             price: 40,
             espn_player_id: Some("espn_2".to_string()),
             eligible_slots: vec![],
+            assigned_slot: None,
         };
 
         db.record_pick(&pick1, TEST_DRAFT_ID).unwrap();
@@ -1073,6 +1092,7 @@ mod tests {
             price: 35,
             espn_player_id: Some("espn_99".to_string()),
             eligible_slots: vec![9, 5, 12, 16, 17],
+            assigned_slot: None,
         };
         db.record_pick(&new_pick, TEST_DRAFT_ID).unwrap();
 

@@ -177,6 +177,7 @@ impl DraftState {
                 &pick.position,
                 pick.price,
                 &pick.eligible_slots,
+                pick.assigned_slot,
                 pick.espn_player_id.as_deref(),
             );
         }
@@ -396,6 +397,11 @@ pub struct PickPayload {
     pub price: u32,
     #[serde(default)]
     pub eligible_slots: Vec<u16>,
+    /// The ESPN roster slot ID that ESPN assigned this player to when the
+    /// pick was made. Provided by the extension when it can determine the
+    /// actual placement slot from the draft page. None / absent if unknown.
+    #[serde(default)]
+    pub assigned_slot: Option<u16>,
 }
 
 /// A nomination as received from the extension.
@@ -492,6 +498,7 @@ pub fn compute_state_diff(
                 price: pick_payload.price,
                 espn_player_id: Some(pick_payload.player_id.clone()),
                 eligible_slots: pick_payload.eligible_slots.clone(),
+                assigned_slot: pick_payload.assigned_slot,
             });
         }
     }
@@ -667,6 +674,7 @@ mod tests {
             price: 45,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         };
         state.record_pick(pick);
 
@@ -689,6 +697,7 @@ mod tests {
             price: 45,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         };
         state.record_pick(pick);
 
@@ -709,6 +718,7 @@ mod tests {
             price: 45,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         });
         state.record_pick(DraftPick {
             pick_number: 2,
@@ -719,6 +729,7 @@ mod tests {
             price: 50,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         });
         state.record_pick(DraftPick {
             pick_number: 3,
@@ -729,6 +740,7 @@ mod tests {
             price: 35,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         });
 
         assert_eq!(state.pick_count, 3);
@@ -756,6 +768,7 @@ mod tests {
             price: 30,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         });
         state.record_pick(DraftPick {
             pick_number: 2,
@@ -766,6 +779,7 @@ mod tests {
             price: 25,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         });
         assert_eq!(state.total_spent(), 55);
     }
@@ -792,6 +806,7 @@ mod tests {
                 price: 45,
                 espn_player_id: None,
                 eligible_slots: vec![],
+            assigned_slot: None,
             },
             DraftPick {
                 pick_number: 2,
@@ -802,6 +817,7 @@ mod tests {
                 price: 50,
                 espn_player_id: None,
                 eligible_slots: vec![],
+            assigned_slot: None,
             },
             DraftPick {
                 pick_number: 3,
@@ -812,6 +828,7 @@ mod tests {
                 price: 35,
                 espn_player_id: None,
                 eligible_slots: vec![],
+            assigned_slot: None,
             },
         ];
 
@@ -847,6 +864,7 @@ mod tests {
             price: 20,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         });
         assert_eq!(state.pick_count, 1);
 
@@ -860,6 +878,7 @@ mod tests {
             price: 30,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         }];
         state.restore_from_picks(new_picks);
 
@@ -895,6 +914,7 @@ mod tests {
             price: 45,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         });
         assert_eq!(state.picks[0].pick_number, 1, "first pick should be #1");
 
@@ -910,6 +930,7 @@ mod tests {
             price: 50,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         });
         assert_eq!(state.picks[1].pick_number, 2, "second pick should be #2 (not #3)");
 
@@ -925,6 +946,7 @@ mod tests {
             price: 35,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         });
         assert_eq!(state.picks[2].pick_number, 3, "third pick should be #3 (not #4)");
     }
@@ -950,6 +972,7 @@ mod tests {
                 price: 20 + i,
                 espn_player_id: Some(format!("espn_{}", i + 1)),
                 eligible_slots: vec![],
+            assigned_slot: None,
             });
         }
 
@@ -977,6 +1000,7 @@ mod tests {
             price: 30,
             espn_player_id: Some("espn_new".to_string()),
             eligible_slots: vec![],
+            assigned_slot: None,
         });
 
         assert_eq!(
@@ -1003,6 +1027,7 @@ mod tests {
             position: pos.to_string(),
             price,
             eligible_slots: vec![],
+            assigned_slot: None,
         }
     }
 
@@ -1324,6 +1349,7 @@ mod tests {
             price: 45,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         });
         state.record_pick(DraftPick {
             pick_number: 2,
@@ -1334,6 +1360,7 @@ mod tests {
             price: 50,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         });
 
         // Verify local tracking state before reconciliation
@@ -1383,6 +1410,7 @@ mod tests {
             price: 45,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         });
 
         // Reconcile with ESPN data that includes a non-existent team
@@ -1456,6 +1484,7 @@ mod tests {
             price: 45,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         };
 
         state.record_pick(pick.clone());
@@ -1497,6 +1526,7 @@ mod tests {
             price: 45,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         });
 
         let team = state.team("1").unwrap();
@@ -1514,6 +1544,7 @@ mod tests {
             price: 45,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         });
 
         assert_eq!(
@@ -1552,6 +1583,7 @@ mod tests {
             price: 45,
             espn_player_id: Some("33039".to_string()),
             eligible_slots: vec![],
+            assigned_slot: None,
         });
 
         // Record same ESPN player ID with different pick_number — should be no-op
@@ -1564,6 +1596,7 @@ mod tests {
             price: 45,
             espn_player_id: Some("33039".to_string()),
             eligible_slots: vec![],
+            assigned_slot: None,
         });
 
         assert_eq!(state.pick_count, 1, "same ESPN ID should dedup");
@@ -1584,6 +1617,7 @@ mod tests {
             price: 45,
             espn_player_id: Some("33039".to_string()),
             eligible_slots: vec![],
+            assigned_slot: None,
         });
 
         assert_eq!(state.pick_count, 1);
@@ -1600,6 +1634,7 @@ mod tests {
             price: 45,
             espn_player_id: Some("33039".to_string()), // Same ESPN ID
             eligible_slots: vec![],
+            assigned_slot: None,
         });
 
         assert_eq!(
@@ -1628,6 +1663,7 @@ mod tests {
             price: 45,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         });
 
         assert_eq!(
@@ -1651,6 +1687,7 @@ mod tests {
             price: 45,
             espn_player_id: Some("33039".to_string()),
             eligible_slots: vec![],
+            assigned_slot: None,
         });
 
         assert_eq!(
@@ -1674,6 +1711,7 @@ mod tests {
             price: 45,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         });
         state.record_pick(DraftPick {
             pick_number: 1,
@@ -1684,6 +1722,7 @@ mod tests {
             price: 50,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         });
         state.record_pick(DraftPick {
             pick_number: 1,
@@ -1694,6 +1733,7 @@ mod tests {
             price: 40,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         });
 
         assert_eq!(state.picks.len(), 3);
@@ -1719,6 +1759,7 @@ mod tests {
             price: 45,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         });
         state.record_pick(DraftPick {
             pick_number: 2,
@@ -1729,6 +1770,7 @@ mod tests {
             price: 35,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         });
 
         assert_eq!(state.pick_count, 2);
@@ -1772,6 +1814,7 @@ mod tests {
                 price: 62,
                 espn_player_id: None,
                 eligible_slots: vec![],
+            assigned_slot: None,
             },
             DraftPick {
                 pick_number: 2,
@@ -1782,6 +1825,7 @@ mod tests {
                 price: 55,
                 espn_player_id: None,
                 eligible_slots: vec![],
+            assigned_slot: None,
             },
         ];
         state.restore_from_picks(recovery_picks);
@@ -1798,6 +1842,7 @@ mod tests {
             price: 62,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         });
         state.record_pick(DraftPick {
             pick_number: 2,
@@ -1808,6 +1853,7 @@ mod tests {
             price: 55,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         });
         // Also a new pick
         state.record_pick(DraftPick {
@@ -1819,6 +1865,7 @@ mod tests {
             price: 40,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         });
 
         // Picks 1 and 2 should be deduped (already in self.picks from recovery)

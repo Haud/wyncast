@@ -231,6 +231,13 @@ pub struct DraftPick {
     /// Empty if not available (manual entry, old data).
     #[serde(default)]
     pub eligible_slots: Vec<u16>,
+    /// The ESPN roster slot ID that ESPN actually assigned this player to
+    /// when the pick was made (e.g. 12 for UTIL, 14 for SP). When present,
+    /// this overrides position-inference logic so two-way players like Ohtani
+    /// land in the correct slot (e.g. UTIL instead of SP).
+    /// None if not reported by the extension (old data, DOM-only scraping).
+    #[serde(default)]
+    pub assigned_slot: Option<u16>,
 }
 
 #[cfg(test)]
@@ -347,6 +354,7 @@ mod tests {
             price: 45,
             espn_player_id: Some("12345".to_string()),
             eligible_slots: vec![],
+            assigned_slot: None,
         };
         assert_eq!(pick.pick_number, 1);
         assert_eq!(pick.price, 45);

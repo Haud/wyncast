@@ -5,6 +5,67 @@
 'use strict';
 
 // ---------------------------------------------------------------------------
+// ESPN slot ID constants (from ESPN Fantasy API v3)
+// Must stay in sync with the constants in src/draft/pick.rs.
+// ---------------------------------------------------------------------------
+
+const ESPN_SLOT_C    = 0;
+const ESPN_SLOT_1B   = 1;
+const ESPN_SLOT_2B   = 2;
+const ESPN_SLOT_3B   = 3;
+const ESPN_SLOT_SS   = 4;
+const ESPN_SLOT_OF   = 5;  // generic OF combo
+const ESPN_SLOT_MI   = 6;  // 2B/SS combo
+const ESPN_SLOT_CI   = 7;  // 1B/3B combo
+const ESPN_SLOT_LF   = 8;
+const ESPN_SLOT_CF   = 9;
+const ESPN_SLOT_RF   = 10;
+const ESPN_SLOT_DH   = 11;
+const ESPN_SLOT_UTIL = 12;
+const ESPN_SLOT_P    = 13; // generic pitcher combo
+const ESPN_SLOT_SP   = 14;
+const ESPN_SLOT_RP   = 15;
+const ESPN_SLOT_BE   = 16;
+const ESPN_SLOT_IL   = 17;
+
+/**
+ * Map a position string from the ESPN draft page to the corresponding ESPN
+ * slot ID.  Returns null for unrecognised strings.
+ *
+ * This mirrors espn_slot_from_position() / Position::from_str_pos() in
+ * src/draft/pick.rs and is used to convert the position badge shown next to
+ * a completed pick in the draft log into the authoritative slot ID that ESPN
+ * assigned the player to.  That slot ID is forwarded to the Rust backend as
+ * `assignedSlot` so that two-way players like Ohtani land in the correct
+ * roster slot (e.g. UTIL) rather than the slot inferred from their primary
+ * position (e.g. SP).
+ */
+function espnSlotIdFromPositionStr(posStr) {
+  if (!posStr) return null;
+  switch (posStr.toUpperCase()) {
+    case 'C':    return ESPN_SLOT_C;
+    case '1B':   return ESPN_SLOT_1B;
+    case '2B':   return ESPN_SLOT_2B;
+    case '3B':   return ESPN_SLOT_3B;
+    case 'SS':   return ESPN_SLOT_SS;
+    case 'LF':   return ESPN_SLOT_LF;
+    case 'CF':   return ESPN_SLOT_CF;
+    case 'RF':   return ESPN_SLOT_RF;
+    case 'OF':   return ESPN_SLOT_OF;
+    case 'DH':   return ESPN_SLOT_DH;
+    case 'UTIL': return ESPN_SLOT_UTIL;
+    case 'SP':   return ESPN_SLOT_SP;
+    case 'RP':   return ESPN_SLOT_RP;
+    case 'P':    return ESPN_SLOT_P;
+    case 'BE':
+    case 'BN':   return ESPN_SLOT_BE;
+    case 'IL':
+    case 'DL':   return ESPN_SLOT_IL;
+    default:     return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // ESPN DOM selectors (verified against live ESPN auction draft page)
 // ---------------------------------------------------------------------------
 
@@ -317,6 +378,12 @@ function scrapePickLog() {
 
       if (playerName) {
         const { price, teamName } = parsePickInfo(pickInfoStr);
+        // Map the position string scraped from the pick log to the ESPN slot
+        // ID that ESPN assigned the player to.  This is the authoritative
+        // placement slot — e.g. for Ohtani drafted to UTIL the badge reads
+        // "UTIL" and we forward slot ID 12 so the backend places him there
+        // instead of inferring SP from his eligible positions.
+        const assignedSlot = espnSlotIdFromPositionStr(position);
         picks.push({
           pickNumber: completedPicks - entriesArray.length + idx + 1,
           teamId: teamName,
@@ -326,6 +393,7 @@ function scrapePickLog() {
           position: position,
           price: price,
           eligibleSlots: [],
+          assignedSlot: assignedSlot,
         });
       }
     });
