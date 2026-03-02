@@ -340,6 +340,14 @@ impl AppState {
         self.llm_mode = None;
         self.nomination_analysis_text.clear();
         self.nomination_analysis_status = LlmStatus::Idle;
+
+        // Auto-trigger nomination planning between picks so the plan panel
+        // is populated before the user needs to nominate. Only fire when the
+        // config flag is set and we already know which team is ours.
+        if self.config.strategy.llm.prefire_planning && self.draft_state.my_team().is_some() {
+            info!("Auto-triggering nomination planning (prefire_planning=true)");
+            self.trigger_nomination_planning();
+        }
     }
 
     /// Cancel the current LLM task if one is running.
@@ -1906,9 +1914,53 @@ mod tests {
         state.handle_nomination_cleared();
 
         assert!(state.draft_state.current_nomination.is_none());
+        // Analysis state should be fully reset
+        assert!(state.nomination_analysis_text.is_empty());
+        assert_eq!(state.nomination_analysis_status, LlmStatus::Idle);
+        // With prefire_planning=true and teams registered, planning should
+        // auto-trigger so the plan panel is populated between nominations.
+        assert!(
+            matches!(state.llm_mode, Some(LlmMode::NominationPlanning)),
+            "expected NominationPlanning mode after clearing (prefire_planning=true), got {:?}",
+            state.llm_mode
+        );
+        assert_eq!(state.nomination_plan_status, LlmStatus::Streaming);
+    }
+
+    #[tokio::test]
+    async fn nomination_cleared_skips_planning_when_prefire_disabled() {
+        let mut state = create_test_app_state();
+        state.config.strategy.llm.prefire_planning = false;
+
+        let nom = ActiveNomination {
+            player_name: "H_Star".into(),
+            player_id: "espn_1".into(),
+            position: "1B".into(),
+            nominated_by: "Team 2".into(),
+            current_bid: 5,
+            current_bidder: None,
+            time_remaining: Some(30),
+            eligible_slots: vec![],
+        };
+        state.handle_nomination(&nom);
+        state.nomination_analysis_text = "Analysis text".into();
+        state.nomination_analysis_status = LlmStatus::Streaming;
+
+        state.handle_nomination_cleared();
+
+        assert!(state.draft_state.current_nomination.is_none());
         assert!(state.llm_mode.is_none());
         assert!(state.nomination_analysis_text.is_empty());
         assert_eq!(state.nomination_analysis_status, LlmStatus::Idle);
+    }
+
+    #[tokio::test]
+    async fn nomination_cleared_skips_planning_when_no_teams() {
+        let mut state = create_test_app_state_no_teams();
+
+        state.handle_nomination_cleared();
+
+        assert!(state.llm_mode.is_none());
     }
 
     // -----------------------------------------------------------------------
