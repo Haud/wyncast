@@ -7,9 +7,15 @@
 // All config, database, and log files are stored here so the application
 // does not litter files in whatever directory it happens to be launched from.
 
+use directories::ProjectDirs;
 use std::path::PathBuf;
 
 const APP_NAME: &str = "wyncast";
+
+fn project_dirs() -> ProjectDirs {
+    ProjectDirs::from("", "", APP_NAME)
+        .expect("could not determine app data directory")
+}
 
 /// Returns the OS-standard application data directory for wyncast.
 ///
@@ -25,17 +31,7 @@ const APP_NAME: &str = "wyncast";
 /// indicate a misconfigured home directory) or if the directory cannot be
 /// created.
 pub fn app_data_dir() -> PathBuf {
-    let base = dirs::data_dir().unwrap_or_else(|| {
-        // Fallback: use a hidden directory in the user's home, or CWD as last resort.
-        dirs::home_dir()
-            .map(|h| h.join(".local").join("share"))
-            .unwrap_or_else(|| {
-                std::env::current_dir()
-                    .expect("cannot determine current directory for app data fallback")
-            })
-    });
-
-    let dir = base.join(APP_NAME);
+    let dir = project_dirs().data_dir().to_path_buf();
 
     std::fs::create_dir_all(&dir)
         .unwrap_or_else(|e| panic!("failed to create app data directory {}: {e}", dir.display()));
