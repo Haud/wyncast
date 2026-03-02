@@ -294,7 +294,6 @@ fn render_frame(frame: &mut Frame, state: &ViewState) {
     // Main panel: tab-dependent content
     match state.active_tab {
         TabId::Analysis => widgets::llm_analysis::render(frame, layout.main_panel, state),
-        TabId::NomPlan => widgets::nomination_plan::render(frame, layout.main_panel, state),
         TabId::Available => widgets::available::render(frame, layout.main_panel, state),
         TabId::DraftLog => widgets::draft_log::render(frame, layout.main_panel, state),
         TabId::Teams => widgets::teams::render(frame, layout.main_panel, state),
@@ -304,6 +303,7 @@ fn render_frame(frame: &mut Frame, state: &ViewState) {
     widgets::roster::render(frame, layout.roster, state);
     widgets::scarcity::render(frame, layout.scarcity, state);
     widgets::budget::render(frame, layout.budget, state);
+    widgets::nomination_plan::render(frame, layout.nomination_plan, state);
 
     // Help bar
     render_help_bar(frame, &layout, state);
@@ -316,7 +316,7 @@ fn render_frame(frame: &mut Frame, state: &ViewState) {
 
 fn render_help_bar(frame: &mut Frame, layout: &AppLayout, state: &ViewState) {
     let mut spans = vec![Span::styled(
-        " q:Quit | 1-5:Tabs | ",
+        " q:Quit | 1-4:Tabs | ",
         Style::default().fg(Color::Gray),
     )];
 
@@ -329,7 +329,7 @@ fn render_help_bar(frame: &mut Frame, layout: &AppLayout, state: &ViewState) {
     }
 
     spans.push(Span::styled(
-        "r:Refresh | ↑↓/j/k/PgUp/PgDn:Scroll | [/]:Sidebar",
+        "r:Refresh | n:Plan | ↑↓/j/k/PgUp/PgDn:Scroll | [/]:Sidebar",
         Style::default().fg(Color::Gray),
     ));
 
@@ -499,11 +499,11 @@ mod tests {
     #[test]
     fn apply_snapshot_updates_fields() {
         let mut state = ViewState::default();
-        let snapshot = test_snapshot(42, 260, Some(TabId::DraftLog));
+        let snapshot = test_snapshot(42, 260, Some(TabId::Teams));
         state.apply_snapshot(snapshot);
         assert_eq!(state.pick_number, 42);
         assert_eq!(state.total_picks, 260);
-        assert_eq!(state.active_tab, TabId::DraftLog);
+        assert_eq!(state.active_tab, TabId::Teams);
     }
 
     #[test]
@@ -519,11 +519,11 @@ mod tests {
     #[test]
     fn apply_ui_update_state_snapshot() {
         let mut state = ViewState::default();
-        let snapshot = test_snapshot(5, 100, Some(TabId::Teams));
+        let snapshot = test_snapshot(5, 100, Some(TabId::DraftLog));
         apply_ui_update(&mut state, UiUpdate::StateSnapshot(Box::new(snapshot)));
         assert_eq!(state.pick_number, 5);
         assert_eq!(state.total_picks, 100);
-        assert_eq!(state.active_tab, TabId::Teams);
+        assert_eq!(state.active_tab, TabId::DraftLog);
     }
 
     #[test]

@@ -8,9 +8,10 @@
 // | Nomination Banner (4 rows)                        |
 // +-------------------------+------------------------+
 // | Main Panel (65%)         | Sidebar (35%)          |
-// |                          | +- Roster (45%) ------+|
-// |                          | +- Scarcity (35%) ----+|
+// |                          | +- Roster (30%) ------+|
+// |                          | +- Scarcity (25%) ----+|
 // |                          | +- Budget (20%) ------+|
+// |                          | +- Nom Plan (25%) ----+|
 // +-------------------------+------------------------+
 // | Help Bar (1 row)                                  |
 // +--------------------------------------------------+
@@ -28,10 +29,12 @@ pub struct AppLayout {
     pub main_panel: Rect,
     /// Right sidebar top: user's roster.
     pub roster: Rect,
-    /// Right sidebar middle: positional scarcity index.
+    /// Right sidebar upper-middle: positional scarcity index.
     pub scarcity: Rect,
-    /// Right sidebar bottom: budget/inflation summary.
+    /// Right sidebar lower-middle: budget/inflation summary.
     pub budget: Rect,
+    /// Right sidebar bottom: nomination plan from LLM.
+    pub nomination_plan: Rect,
     /// Bottom row: keyboard shortcut hints.
     pub help_bar: Rect,
 }
@@ -70,19 +73,21 @@ pub fn build_layout(area: Rect) -> AppLayout {
     let main_panel = horizontal[0];
     let sidebar = horizontal[1];
 
-    // Sidebar vertical: roster (45%) | scarcity (35%) | budget (20%)
+    // Sidebar vertical: roster (30%) | scarcity (25%) | budget (20%) | nomination_plan (25%)
     let sidebar_sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage(45),
-            Constraint::Percentage(35),
+            Constraint::Percentage(30),
+            Constraint::Percentage(25),
             Constraint::Percentage(20),
+            Constraint::Percentage(25),
         ])
         .split(sidebar);
 
     let roster = sidebar_sections[0];
     let scarcity = sidebar_sections[1];
     let budget = sidebar_sections[2];
+    let nomination_plan = sidebar_sections[3];
 
     AppLayout {
         status_bar,
@@ -91,6 +96,7 @@ pub fn build_layout(area: Rect) -> AppLayout {
         roster,
         scarcity,
         budget,
+        nomination_plan,
         help_bar,
     }
 }
@@ -118,6 +124,7 @@ mod tests {
             ("roster", layout.roster),
             ("scarcity", layout.scarcity),
             ("budget", layout.budget),
+            ("nomination_plan", layout.nomination_plan),
             ("help_bar", layout.help_bar),
         ];
         for (name, rect) in &rects {
@@ -181,6 +188,11 @@ mod tests {
             layout.scarcity.y < layout.budget.y,
             "Scarcity should be above budget"
         );
+        // Budget should be above nomination_plan
+        assert!(
+            layout.budget.y < layout.nomination_plan.y,
+            "Budget should be above nomination_plan"
+        );
     }
 
     #[test]
@@ -192,6 +204,10 @@ mod tests {
         );
         assert_eq!(
             layout.scarcity.width, layout.budget.width,
+            "Sidebar sections should have the same width"
+        );
+        assert_eq!(
+            layout.budget.width, layout.nomination_plan.width,
             "Sidebar sections should have the same width"
         );
     }
@@ -207,6 +223,7 @@ mod tests {
             layout.roster,
             layout.scarcity,
             layout.budget,
+            layout.nomination_plan,
             layout.help_bar,
         ];
         for rect in &all_rects {
@@ -238,6 +255,7 @@ mod tests {
             layout.roster,
             layout.scarcity,
             layout.budget,
+            layout.nomination_plan,
             layout.help_bar,
         ];
         for rect in &rects {
