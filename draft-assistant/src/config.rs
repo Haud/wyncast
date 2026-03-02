@@ -37,7 +37,6 @@ pub struct Config {
     pub strategy: StrategyConfig,
     pub credentials: CredentialsConfig,
     pub ws_port: u16,
-    pub db_path: String,
     pub data_paths: DataPaths,
 }
 
@@ -101,7 +100,6 @@ struct StrategyFile {
     pool: PoolConfig,
     llm: LlmConfig,
     websocket: WebsocketSection,
-    database: DatabaseSection,
     data_paths: DataPaths,
 }
 
@@ -113,11 +111,6 @@ struct BudgetSection {
 #[derive(Debug, Clone, Deserialize)]
 struct WebsocketSection {
     port: u16,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct DatabaseSection {
-    path: String,
 }
 
 /// The public strategy config assembled from the strategy.toml sections.
@@ -222,7 +215,6 @@ pub(crate) fn load_config_from(base_dir: &Path) -> Result<Config, ConfigError> {
     };
 
     let ws_port = strategy_file.websocket.port;
-    let db_path = strategy_file.database.path;
     let data_paths = strategy_file.data_paths;
 
     // --- credentials.toml (optional) ---
@@ -242,7 +234,6 @@ pub(crate) fn load_config_from(base_dir: &Path) -> Result<Config, ConfigError> {
         strategy,
         credentials,
         ws_port,
-        db_path,
         data_paths,
     };
 
@@ -332,14 +323,135 @@ pub fn ensure_config_files(base_dir: &Path) -> Result<Vec<PathBuf>, ConfigError>
     Ok(copied)
 }
 
-/// Convenience wrapper: loads config relative to the current working directory.
-/// Ensures default config files are copied before loading.
+/// Convenience wrapper: loads config from the OS-standard app data directory.
+///
+/// Config files live in `<app_data_dir>/config/` (e.g. `~/.local/share/wyncast/config/`).
+/// If the config directory does not yet exist, defaults are copied from the `defaults/`
+/// directory found relative to the current working directory (useful during development)
+/// or relative to the binary's location.
+///
+/// This ensures the app does not require being run from any specific directory.
 pub fn load_config() -> Result<Config, ConfigError> {
+    let data_dir = crate::app_dirs::app_data_dir();
+
+    // Find the defaults/ directory: first try alongside the binary, then CWD.
+    let defaults_source = find_defaults_dir()?;
+
+    ensure_config_files_from_source(&defaults_source, &data_dir)?;
+    load_config_from(&data_dir)
+}
+
+/// Locate the directory that contains the `defaults/` folder bundled with the application.
+///
+/// Search order:
+/// 1. Alongside the running binary (for installed/release builds)
+/// 2. Current working directory (for `cargo run` during development)
+///
+/// Always returns `Ok(path)`: either the binary's directory (if a `defaults/` subfolder
+/// exists there) or the current working directory as a fallback. If neither location
+/// actually contains a `defaults/` folder, `ensure_config_files_from_source` handles it
+/// gracefully (no-op when `config/` already exists in the destination).
+fn find_defaults_dir() -> Result<PathBuf, ConfigError> {
+    // Check next to the binary first.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let candidate = exe_dir.join("defaults");
+            if candidate.is_dir() {
+                return Ok(exe_dir.to_path_buf());
+            }
+        }
+    }
+
+    // Fall back to CWD (works for `cargo run` and development).
     let cwd = std::env::current_dir().map_err(|_| ConfigError::FileNotFound {
         path: PathBuf::from("."),
     })?;
-    ensure_config_files(&cwd)?;
-    load_config_from(&cwd)
+    Ok(cwd)
+}
+
+/// Like [`ensure_config_files`] but allows specifying separate source and
+/// destination directories: copies missing config files from
+/// `<source>/defaults/` into `<dest>/config/`.
+fn ensure_config_files_from_source(
+    source_base: &Path,
+    dest_base: &Path,
+) -> Result<Vec<PathBuf>, ConfigError> {
+    let defaults_dir = source_base.join("defaults");
+    let config_dir = dest_base.join("config");
+
+    if !defaults_dir.exists() {
+        // If config/ also doesn't exist in the dest, fail with a helpful message.
+        if !config_dir.exists() {
+            return Err(ConfigError::DefaultsCopyError {
+                message: format!(
+                    "no defaults/ directory found in {} and no config/ directory found in {}; \
+                     run from the project root or ensure defaults/ is present",
+                    source_base.display(),
+                    dest_base.display()
+                ),
+            });
+        }
+        return Ok(vec![]);
+    }
+
+    std::fs::create_dir_all(&config_dir).map_err(|e| ConfigError::DefaultsCopyError {
+        message: format!("failed to create config directory: {e}"),
+    })?;
+
+    let mut copied = Vec::new();
+
+    let entries = std::fs::read_dir(&defaults_dir).map_err(|e| ConfigError::DefaultsCopyError {
+        message: format!("failed to read defaults directory: {e}"),
+    })?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| ConfigError::DefaultsCopyError {
+            message: format!("failed to read defaults entry: {e}"),
+        })?;
+        let path = entry.path();
+
+        if !path.is_file() {
+            continue;
+        }
+        let Some(file_name) = path.file_name() else {
+            continue;
+        };
+
+        // Skip .example template files.
+        if file_name.to_str().is_some_and(|n| n.ends_with(".example")) {
+            continue;
+        }
+        let target = config_dir.join(file_name);
+
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)
+        {
+            Ok(mut dest) => {
+                let content =
+                    std::fs::read(&path).map_err(|e| ConfigError::DefaultsCopyError {
+                        message: format!("failed to read {}: {e}", path.display()),
+                    })?;
+                std::io::Write::write_all(&mut dest, &content).map_err(|e| {
+                    ConfigError::DefaultsCopyError {
+                        message: format!("failed to write {}: {e}", target.display()),
+                    }
+                })?;
+                copied.push(target);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // File already exists in config/, skip it.
+            }
+            Err(e) => {
+                return Err(ConfigError::DefaultsCopyError {
+                    message: format!("failed to create {}: {e}", target.display()),
+                });
+            }
+        }
+    }
+
+    Ok(copied)
 }
 
 // ---------------------------------------------------------------------------
@@ -500,7 +612,8 @@ mod tests {
 
         // Infrastructure assertions
         assert_eq!(config.ws_port, 9001);
-        assert_eq!(config.db_path, "draft-assistant.db");
+        // Database path is now always resolved via app_dirs::db_path() and is
+        // not stored in Config — no assertion needed here.
         assert_eq!(config.data_paths.hitters, "data/projections/hitters.csv");
     }
 

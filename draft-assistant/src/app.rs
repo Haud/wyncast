@@ -1343,7 +1343,6 @@ mod tests {
             strategy: test_strategy_config(),
             credentials: CredentialsConfig::default(),
             ws_port: 9001,
-            db_path: ":memory:".into(),
             data_paths: DataPaths {
                 hitters: "data/projections/hitters.csv".into(),
                 pitchers: "data/projections/pitchers.csv".into(),

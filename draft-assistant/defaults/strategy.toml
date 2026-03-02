@@ -46,8 +46,10 @@ prefire_planning = true
 [websocket]
 port = 9001
 
-[database]
-path = "draft-assistant.db"
+# The database is stored in the OS app data directory and is not configurable here.
+# On Linux: ~/.local/share/wyncast/draft-assistant.db
+# On macOS: ~/Library/Application Support/wyncast/draft-assistant.db
+# On Windows: %APPDATA%\wyncast\draft-assistant.db
 
 [data_paths]
 hitters = "data/projections/hitters.csv"

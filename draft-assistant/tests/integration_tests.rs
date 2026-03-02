@@ -135,7 +135,6 @@ fn inline_config() -> Config {
         strategy,
         credentials: CredentialsConfig::default(),
         ws_port: 0,
-        db_path: ":memory:".into(),
         data_paths: DataPaths {
             hitters: format!("{}/sample_hitters.csv", FIXTURES),
             pitchers: format!("{}/sample_pitchers.csv", FIXTURES),
