@@ -71,8 +71,8 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState, focused: bool) {
     );
     frame.render_widget(list, area);
 
-    // Render vertical scrollbar if content overflows
-    if total > visible_rows {
+    // Render vertical scrollbar only when this panel is focused
+    if focused && total > visible_rows {
         let mut scrollbar_state = ScrollbarState::new(total.saturating_sub(visible_rows))
             .position(scroll_offset);
         frame.render_stateful_widget(
