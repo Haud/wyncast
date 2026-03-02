@@ -31,8 +31,12 @@ const SELECTORS = {
   nominationCurrentOffer: 'div.current-amount',
   biddingForm: 'div[data-testid="bidding-form"]',
 
-  // Bid history within nomination area
+  // Bid history within nomination area (primary and fallback selectors)
   bidHistoryItems: 'ul.bid-history__list > li.bid',
+  bidHistoryItemsFallback: 'ul.bid-history__list > li',
+
+  // Currently-nominating team in the pick train (highlighted/active item)
+  nominatingTeamItem: 'li.picklist--item.is-nominating, li.picklist--item.active, li.picklist--item.is-current',
 
   // Pick history / draft log (right column)
   pickLogEntries: 'li.pick-message__container',
@@ -201,6 +205,29 @@ function extractNominatedBy(bidItems) {
 }
 
 /**
+ * Fallback nominator extraction: try to identify the currently-nominating
+ * team from the pick train carousel. ESPN highlights the active nominator
+ * with a CSS class modifier (e.g. is-nominating, active, is-current).
+ * Returns the team name, or empty string if not found.
+ */
+function extractNominatingTeamFromPickTrain() {
+  try {
+    const nominatingItem = document.querySelector(SELECTORS.nominatingTeamItem);
+    if (nominatingItem) {
+      const nameEl = nominatingItem.querySelector(SELECTORS.teamBudgetName);
+      if (nameEl) {
+        const name = nameEl.textContent.trim();
+        // Strip the leading number prefix (e.g. "3. Team Name" -> "Team Name")
+        return name.replace(/^\d+\.\s*/, '');
+      }
+    }
+  } catch (e) {
+    // Pick train nominator extraction failed
+  }
+  return '';
+}
+
+/**
  * Extract team budgets from the pick train carousel.
  * Returns an array of { teamId, teamName, budget } objects.
  * The teamId is extracted from the leading number in the team name (e.g. "1. London Ligers" -> "1").
@@ -331,8 +358,13 @@ function scrapeCurrentNomination() {
     const playerName = extractText(playerSelected, SELECTORS.nominationPlayerName);
     if (!playerName) return null;
 
-    // Query bid history scoped to the pickArea, not the entire document
-    const bidItems = pickArea.querySelectorAll(SELECTORS.bidHistoryItems);
+    // Query bid history scoped to the pickArea, not the entire document.
+    // Try the primary selector first, then a fallback in case ESPN uses
+    // a different class on the <li> elements.
+    let bidItems = pickArea.querySelectorAll(SELECTORS.bidHistoryItems);
+    if (bidItems.length === 0) {
+      bidItems = pickArea.querySelectorAll(SELECTORS.bidHistoryItemsFallback);
+    }
 
     // Check that the nomination is in the active "offer" stage.
     // During the pre-nomination phase (nominator browsing/selecting), the
@@ -357,7 +389,14 @@ function scrapeCurrentNomination() {
     }
 
     const currentBidder = extractCurrentBidder(bidItems);
-    const nominatedBy = extractNominatedBy(bidItems);
+    let nominatedBy = extractNominatedBy(bidItems);
+
+    // Fallback: if bid history hasn't rendered yet but a bidding form is
+    // present, try to identify the nominator from the pick train. ESPN
+    // highlights the currently-nominating team with a CSS modifier class.
+    if (!nominatedBy) {
+      nominatedBy = extractNominatingTeamFromPickTrain();
+    }
 
     return {
       playerId: '',
@@ -473,7 +512,15 @@ function computeFingerprint(state) {
   return (
     picks.length +
     '|' +
-    (nom ? nom.playerName + '|' + nom.currentBid + '|' + (nom.currentBidder || '') : 'none') +
+    (nom
+      ? nom.playerName +
+        '|' +
+        nom.currentBid +
+        '|' +
+        (nom.currentBidder || '') +
+        '|' +
+        (nom.nominatedBy || '')
+      : 'none') +
     '|' +
     (state.myTeamId || '') +
     '|' +
