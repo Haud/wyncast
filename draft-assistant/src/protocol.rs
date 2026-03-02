@@ -240,6 +240,32 @@ pub enum TabId {
     Teams,
 }
 
+/// Features that a tab may support.
+///
+/// Used with `TabId::supports()` to gate behavior by capability rather than
+/// by checking specific tab variants. This keeps guard-check intent
+/// self-documenting and centralizes per-tab capability declarations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabFeature {
+    /// Text filter input (the `/` key to search/filter content).
+    Filter,
+    /// Position-based filter cycling (the `p` key).
+    PositionFilter,
+    /// Scrollable content (arrow keys, j/k, PgUp/PgDn).
+    Scroll,
+}
+
+impl TabId {
+    /// Returns whether this tab supports the given feature.
+    pub fn supports(self, feature: TabFeature) -> bool {
+        match feature {
+            TabFeature::Filter => matches!(self, TabId::Available),
+            TabFeature::PositionFilter => matches!(self, TabId::Available),
+            TabFeature::Scroll => true,
+        }
+    }
+}
+
 /// Widget identifiers for scroll targeting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WidgetId {
@@ -337,6 +363,45 @@ pub enum InstantVerdict {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- TabFeature capability API --
+
+    #[test]
+    fn available_supports_filter() {
+        assert!(TabId::Available.supports(TabFeature::Filter));
+    }
+
+    #[test]
+    fn available_supports_position_filter() {
+        assert!(TabId::Available.supports(TabFeature::PositionFilter));
+    }
+
+    #[test]
+    fn non_available_tabs_do_not_support_filter() {
+        for tab in [TabId::Analysis, TabId::DraftLog, TabId::Teams] {
+            assert!(
+                !tab.supports(TabFeature::Filter),
+                "{:?} should not support Filter",
+                tab
+            );
+            assert!(
+                !tab.supports(TabFeature::PositionFilter),
+                "{:?} should not support PositionFilter",
+                tab
+            );
+        }
+    }
+
+    #[test]
+    fn all_tabs_support_scroll() {
+        for tab in [TabId::Analysis, TabId::Available, TabId::DraftLog, TabId::Teams] {
+            assert!(
+                tab.supports(TabFeature::Scroll),
+                "{:?} should support Scroll",
+                tab
+            );
+        }
+    }
 
     // -- JSON round-trip for all ExtensionMessage variants --
 

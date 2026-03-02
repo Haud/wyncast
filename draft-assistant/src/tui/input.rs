@@ -7,7 +7,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::draft::pick::Position;
-use crate::protocol::{TabId, UserCommand};
+use crate::protocol::{TabFeature, TabId, UserCommand};
 use super::ViewState;
 
 /// The ordered list of positions for cycling with the `p` key.
@@ -109,9 +109,9 @@ pub fn handle_key(
             None
         }
 
-        // Filter mode entry: only available on the Players tab where it is relevant
+        // Filter mode entry: only on tabs that support filtering
         KeyCode::Char('/') => {
-            if view_state.active_tab == TabId::Available {
+            if view_state.active_tab.supports(TabFeature::Filter) {
                 view_state.filter_mode = true;
             }
             None
@@ -124,9 +124,11 @@ pub fn handle_key(
             None
         }
 
-        // Position filter cycling
+        // Position filter cycling: only on tabs that support it
         KeyCode::Char('p') => {
-            cycle_position_filter(view_state);
+            if view_state.active_tab.supports(TabFeature::PositionFilter) {
+                cycle_position_filter(view_state);
+            }
             None
         }
 
@@ -401,17 +403,6 @@ mod tests {
         assert_eq!(state.scroll_offset.get("nom_plan"), None);
     }
 
-    #[test]
-    fn nom_plan_tab_uses_correct_scroll_key() {
-        // Regression test: nomination_plan widget was looking up "plan" instead of "nom_plan".
-        // This verifies the input handler writes to "nom_plan" for Tab 2.
-        let mut state = ViewState::default();
-        state.active_tab = TabId::NomPlan;
-        handle_key(key(KeyCode::Down), &mut state);
-        assert_eq!(state.scroll_offset.get("nom_plan"), Some(&1));
-        assert_eq!(state.scroll_offset.get("plan"), None);
-    }
-
     // -- Filter mode --
 
     #[test]
@@ -514,6 +505,7 @@ mod tests {
     #[test]
     fn position_filter_cycles_from_none() {
         let mut state = ViewState::default();
+        state.active_tab = TabId::Available;
         assert!(state.position_filter.is_none());
         handle_key(key(KeyCode::Char('p')), &mut state);
         assert_eq!(state.position_filter, Some(Position::Catcher));
@@ -522,6 +514,7 @@ mod tests {
     #[test]
     fn position_filter_cycles_through_all() {
         let mut state = ViewState::default();
+        state.active_tab = TabId::Available;
         let expected = vec![
             Some(Position::Catcher),
             Some(Position::FirstBase),
@@ -549,9 +542,25 @@ mod tests {
     #[test]
     fn position_filter_wraps_from_rp_to_none() {
         let mut state = ViewState::default();
+        state.active_tab = TabId::Available;
         state.position_filter = Some(Position::ReliefPitcher);
         handle_key(key(KeyCode::Char('p')), &mut state);
         assert!(state.position_filter.is_none());
+    }
+
+    #[test]
+    fn position_filter_does_not_cycle_on_other_tabs() {
+        for tab in [TabId::Analysis, TabId::DraftLog, TabId::Teams] {
+            let mut state = ViewState::default();
+            state.active_tab = tab;
+            assert!(state.position_filter.is_none());
+            handle_key(key(KeyCode::Char('p')), &mut state);
+            assert!(
+                state.position_filter.is_none(),
+                "p on {:?} should not cycle position filter",
+                tab
+            );
+        }
     }
 
     // -- Command returns --

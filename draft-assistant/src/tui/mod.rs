@@ -22,8 +22,8 @@ use tokio::sync::mpsc;
 use crate::draft::pick::{DraftPick, Position};
 use crate::draft::roster::RosterSlot;
 use crate::protocol::{
-    AppSnapshot, ConnectionStatus, InstantAnalysis, LlmStatus, NominationInfo, TabId, UiUpdate,
-    UserCommand,
+    AppSnapshot, ConnectionStatus, InstantAnalysis, LlmStatus, NominationInfo, TabFeature, TabId,
+    UiUpdate, UserCommand,
 };
 use crate::valuation::scarcity::ScarcityEntry;
 use crate::valuation::zscore::PlayerValuation;
@@ -320,8 +320,8 @@ fn render_help_bar(frame: &mut Frame, layout: &AppLayout, state: &ViewState) {
         Style::default().fg(Color::Gray),
     )];
 
-    // Only show the filter hint when the Available Players tab is active
-    if state.active_tab == TabId::Available {
+    // Only show the filter hint when the active tab supports filtering
+    if state.active_tab.supports(TabFeature::Filter) {
         spans.push(Span::styled(
             "/:Filter | p:Pos | ",
             Style::default().fg(Color::Gray),
