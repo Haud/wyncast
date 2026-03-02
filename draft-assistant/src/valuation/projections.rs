@@ -22,8 +22,9 @@ pub enum PitcherType {
 
 /// Projected season stats for a hitter.
 ///
-/// Note: position eligibility is intentionally excluded from projections.
-/// It will be sourced from ESPN roster data via a separate overlay.
+/// The `espn_position` field is populated from the CSV's ESPN column at load
+/// time and provides a fallback position. Live ESPN eligible_slots data from
+/// the draft extension will override this at runtime when available.
 #[derive(Debug, Clone)]
 pub struct HitterProjection {
     pub name: String,
@@ -37,6 +38,9 @@ pub struct HitterProjection {
     pub bb: u32,
     pub sb: u32,
     pub avg: f64,
+    /// Raw ESPN position string from projections CSV (e.g. "SS", "DH", "OF").
+    /// Empty if the CSV didn't include an ESPN column.
+    pub espn_position: String,
 }
 
 /// Projected season stats for a pitcher.
@@ -95,6 +99,8 @@ struct RawRazzballHitter {
     Name: String,
     #[serde(default)]
     Team: String,
+    #[serde(default)]
+    ESPN: String,
     PA: f64,
     AB: f64,
     H: f64,
@@ -174,6 +180,7 @@ fn load_hitters_from_reader<R: Read>(rdr: R) -> Result<Vec<HitterProjection>, cs
                     bb: raw.BB.round() as u32,
                     sb: raw.SB.round() as u32,
                     avg: raw.AVG,
+                    espn_position: raw.ESPN.trim().to_string(),
                 });
             }
             Err(e) => {
@@ -604,6 +611,38 @@ Gerrit Cole,NYY,SP,32,32,200.0,16,0,2.80,1.05,250";
         let pitchers = load_pitchers_from_reader(csv_data.as_bytes()).unwrap();
         assert_eq!(pitchers.len(), 1);
         assert_eq!(pitchers[0].hd, 0);
+    }
+
+    // -- ESPN position column --
+
+    #[test]
+    fn hitter_csv_espn_position_captured() {
+        let csv_data = "\
+Name,Team,Bats,ESPN,PA,AB,H,HR,R,RBI,BB,SB,AVG
+Bobby Witt Jr.,KC,R,SS,652,590,171,27,96,87,49,32,0.289";
+
+        let hitters = load_hitters_from_reader(csv_data.as_bytes()).unwrap();
+        assert_eq!(hitters[0].espn_position, "SS");
+    }
+
+    #[test]
+    fn hitter_csv_missing_espn_column_defaults_empty() {
+        let csv_data = "\
+Name,Team,PA,AB,H,HR,R,RBI,BB,SB,AVG
+Aaron Judge,NYY,700,600,180,50,120,130,90,5,0.300";
+
+        let hitters = load_hitters_from_reader(csv_data.as_bytes()).unwrap();
+        assert_eq!(hitters[0].espn_position, "");
+    }
+
+    #[test]
+    fn hitter_csv_espn_position_trimmed() {
+        let csv_data = "\
+Name,Team,ESPN,PA,AB,H,HR,R,RBI,BB,SB,AVG
+Bobby Witt Jr.,KC, SS ,652,590,171,27,96,87,49,32,0.289";
+
+        let hitters = load_hitters_from_reader(csv_data.as_bytes()).unwrap();
+        assert_eq!(hitters[0].espn_position, "SS");
     }
 
 }

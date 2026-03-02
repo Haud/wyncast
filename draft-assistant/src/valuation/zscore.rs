@@ -528,12 +528,23 @@ pub fn compute_initial_zscores(
                 PitcherType::RP => Position::ReliefPitcher,
             };
 
+            // Start with pitcher position; add hitter position from CSV if available.
+            // Live ESPN eligible_slots will override these at runtime.
+            let mut two_way_positions = vec![pitcher_pos];
+            if !hitter.espn_position.is_empty() {
+                if let Some(pos) = Position::from_str_pos(&hitter.espn_position) {
+                    if !pos.is_meta_slot() && pos != pitcher_pos {
+                        two_way_positions.push(pos);
+                    }
+                }
+            }
+
             two_way_pitcher_names.insert(hitter.name.clone());
 
             valuations.push(PlayerValuation {
                 name: hitter.name.clone(),
                 team: hitter.team.clone(),
-                positions: vec![pitcher_pos], // ESPN overlay will add hitter positions later
+                positions: two_way_positions,
                 is_pitcher: false, // Fills a hitter slot for roster purposes
                 is_two_way: true,
                 pitcher_type: Some(matching_pitcher.pitcher_type),
@@ -571,10 +582,22 @@ pub fn compute_initial_zscores(
             // Normal hitter (not a two-way player).
             let zscores =
                 compute_hitter_zscores(hitter, &hitter_stats, league_avg_avg, weights);
+
+            // Parse position from CSV projection data as a fallback;
+            // may be overridden by live ESPN eligible_slots during draft.
+            let positions = if !hitter.espn_position.is_empty() {
+                Position::from_str_pos(&hitter.espn_position)
+                    .filter(|p| !p.is_meta_slot())
+                    .map(|p| vec![p])
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+
             valuations.push(PlayerValuation {
                 name: hitter.name.clone(),
                 team: hitter.team.clone(),
-                positions: Vec::new(), // Populated from ESPN roster data overlay
+                positions,
                 is_pitcher: false,
                 is_two_way: false,
                 pitcher_type: None,
@@ -764,6 +787,7 @@ mod tests {
             bb,
             sb,
             avg,
+            espn_position: String::new(),
         }
     }
 
@@ -1173,6 +1197,7 @@ mod tests {
                 bb: 50,
                 sb: 10,
                 avg: 150.0 / 540.0,
+                espn_position: String::new(),
             })
             .collect();
 
@@ -1683,5 +1708,100 @@ mod tests {
             "3 hitters (1 two-way merged) + 2 pure pitchers = 5 total, got {}",
             valuations.len()
         );
+    }
+
+    // ---- CSV ESPN position populates PlayerValuation.positions ----
+
+    #[test]
+    fn hitter_with_espn_position_has_populated_positions() {
+        let mut hitter = make_hitter("Bobby Witt Jr.", 652, 590, 171, 27, 96, 87, 49, 32);
+        hitter.espn_position = "SS".to_string();
+
+        let hitters = vec![
+            hitter,
+            make_hitter("Some Other", 600, 540, 150, 25, 80, 75, 50, 10),
+        ];
+        let pitchers = vec![make_sp("SP1", 180.0, 190, 14, 3.30, 1.10)];
+        let projections = AllProjections { hitters, pitchers };
+
+        let mut config = test_config();
+        config.strategy.pool.min_pa = 100;
+        config.strategy.pool.hitter_pool_size = 200;
+        config.strategy.pool.min_ip_sp = 10.0;
+        config.strategy.pool.sp_pool_size = 200;
+
+        let valuations = compute_initial_zscores(&projections, &config);
+
+        let witt = valuations.iter().find(|v| v.name == "Bobby Witt Jr.").unwrap();
+        assert_eq!(witt.positions, vec![Position::ShortStop]);
+
+        let other = valuations.iter().find(|v| v.name == "Some Other").unwrap();
+        assert!(other.positions.is_empty(), "Hitter without ESPN position should have empty positions");
+    }
+
+    #[test]
+    fn hitter_with_of_position_maps_to_center_field() {
+        let mut hitter = make_hitter("Juan Soto", 700, 600, 180, 40, 110, 100, 120, 5);
+        hitter.espn_position = "OF".to_string();
+
+        let hitters = vec![hitter];
+        let pitchers = vec![make_sp("SP1", 180.0, 190, 14, 3.30, 1.10)];
+        let projections = AllProjections { hitters, pitchers };
+
+        let mut config = test_config();
+        config.strategy.pool.min_pa = 100;
+        config.strategy.pool.hitter_pool_size = 200;
+        config.strategy.pool.min_ip_sp = 10.0;
+        config.strategy.pool.sp_pool_size = 200;
+
+        let valuations = compute_initial_zscores(&projections, &config);
+
+        let soto = valuations.iter().find(|v| v.name == "Juan Soto").unwrap();
+        // "OF" maps to CenterField via Position::from_str_pos
+        assert_eq!(soto.positions, vec![Position::CenterField]);
+    }
+
+    #[test]
+    fn hitter_with_dh_position_is_not_meta_slot() {
+        let mut hitter = make_hitter("Shohei Ohtani", 700, 600, 180, 50, 120, 130, 80, 10);
+        hitter.espn_position = "DH".to_string();
+
+        let hitters = vec![hitter];
+        let pitchers = vec![make_sp("SP1", 180.0, 190, 14, 3.30, 1.10)];
+        let projections = AllProjections { hitters, pitchers };
+
+        let mut config = test_config();
+        config.strategy.pool.min_pa = 100;
+        config.strategy.pool.hitter_pool_size = 200;
+        config.strategy.pool.min_ip_sp = 10.0;
+        config.strategy.pool.sp_pool_size = 200;
+
+        let valuations = compute_initial_zscores(&projections, &config);
+
+        let ohtani = valuations.iter().find(|v| v.name == "Shohei Ohtani").unwrap();
+        // DH is not a meta slot, so it should be populated
+        assert_eq!(ohtani.positions, vec![Position::DesignatedHitter]);
+    }
+
+    #[test]
+    fn hitter_with_util_position_filtered_as_meta_slot() {
+        let mut hitter = make_hitter("Test UTIL", 600, 540, 150, 25, 80, 75, 50, 10);
+        hitter.espn_position = "UTIL".to_string();
+
+        let hitters = vec![hitter];
+        let pitchers = vec![make_sp("SP1", 180.0, 190, 14, 3.30, 1.10)];
+        let projections = AllProjections { hitters, pitchers };
+
+        let mut config = test_config();
+        config.strategy.pool.min_pa = 100;
+        config.strategy.pool.hitter_pool_size = 200;
+        config.strategy.pool.min_ip_sp = 10.0;
+        config.strategy.pool.sp_pool_size = 200;
+
+        let valuations = compute_initial_zscores(&projections, &config);
+
+        let util_player = valuations.iter().find(|v| v.name == "Test UTIL").unwrap();
+        // UTIL is a meta slot, so positions should be empty (filtered out)
+        assert!(util_player.positions.is_empty());
     }
 }
