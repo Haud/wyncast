@@ -97,7 +97,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Create the application state. No crash recovery — we start fresh and
     // wait for the first keyframe from the extension.
-    let mut app_state = app::AppState::new(
+    let app_state = app::AppState::new(
         config.clone(),
         draft_state,
         available_players,
@@ -106,8 +106,8 @@ async fn main() -> anyhow::Result<()> {
         draft_id,
         llm_client,
         llm_tx.clone(),
+        Some(ws_outbound_tx),
     );
-    app_state.ws_outbound_tx = Some(ws_outbound_tx);
     info!("Starting fresh — waiting for first keyframe from extension");
 
     // 7. Spawn WebSocket server task

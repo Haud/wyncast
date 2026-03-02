@@ -719,9 +719,16 @@ function startPeriodicPolling() {
 // snapshot. This prevents state drift from accumulating between reconnects.
 // ---------------------------------------------------------------------------
 
+let keyframeIntervalId = null;
+
 function startPeriodicKeyframe() {
-  setInterval(() => {
-    sendFullStateSync();
+  if (keyframeIntervalId) clearInterval(keyframeIntervalId);
+  keyframeIntervalId = setInterval(() => {
+    const state = scrapeDom();
+    const fingerprint = computeFingerprint(state);
+    if (fingerprint !== lastFingerprint) {
+      sendFullStateSync();
+    }
   }, KEYFRAME_INTERVAL_MS);
 }
 

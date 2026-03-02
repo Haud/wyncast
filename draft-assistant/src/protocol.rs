@@ -171,7 +171,7 @@ pub enum UserCommand {
     RefreshAnalysis,
     RefreshPlan,
     /// Request a full keyframe (FULL_STATE_SYNC) from the extension.
-    /// Sends a REQUEST_FULL_STATE_SYNC message over the WebSocket so the
+    /// Sends a `REQUEST_KEYFRAME` message over the WebSocket so the
     /// extension responds with a complete state snapshot.
     RequestKeyframe,
     ManualPick {

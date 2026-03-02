@@ -113,9 +113,6 @@ pub struct AppState {
     /// Sender for outbound WebSocket messages to the extension.
     /// Used to send `REQUEST_KEYFRAME` messages.
     pub ws_outbound_tx: Option<mpsc::Sender<String>>,
-    /// Timestamp of the last keyframe (FULL_STATE_SYNC) received from the
-    /// extension. Useful for debugging state sync issues.
-    pub last_keyframe_time: Option<Instant>,
 }
 
 impl AppState {
@@ -132,6 +129,7 @@ impl AppState {
         draft_id: String,
         llm_client: LlmClient,
         llm_tx: mpsc::Sender<LlmEvent>,
+        ws_outbound_tx: Option<mpsc::Sender<String>>,
     ) -> Self {
         let scarcity = compute_scarcity(&available_players, &config.league);
         let inflation = InflationTracker::new();
@@ -160,8 +158,7 @@ impl AppState {
             category_needs: CategoryNeeds::default(),
             llm_client: Arc::new(llm_client),
             llm_tx,
-            ws_outbound_tx: None,
-            last_keyframe_time: None,
+            ws_outbound_tx,
         }
     }
 
@@ -786,9 +783,6 @@ async fn handle_full_state_sync(
         "Received FULL_STATE_SYNC with {} picks — resetting draft state",
         ext_payload.picks.len()
     );
-
-    // Track keyframe timestamp for debugging
-    state.last_keyframe_time = Some(Instant::now());
 
     // Reset in-memory draft state so the snapshot is applied from scratch.
     // Preserve salary_cap and roster_config (stored inside DraftState).
@@ -1667,7 +1661,7 @@ mod tests {
         let llm_client = LlmClient::Disabled;
         let (llm_tx, _llm_rx) = mpsc::channel(16);
 
-        AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx)
+        AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx, None)
     }
 
     // -----------------------------------------------------------------------
@@ -2182,7 +2176,7 @@ mod tests {
 
         let llm_client = LlmClient::Disabled;
         let (llm_tx, _llm_rx) = mpsc::channel(16);
-        let mut state = AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx);
+        let mut state = AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx, None);
 
         // Run crash recovery
         let recovered = recover_from_db(&mut state).unwrap();
@@ -2221,7 +2215,7 @@ mod tests {
 
         let llm_client = LlmClient::Disabled;
         let (llm_tx, _llm_rx) = mpsc::channel(16);
-        let mut state = AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx);
+        let mut state = AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx, None);
 
         let recovered = recover_from_db(&mut state).unwrap();
         assert!(!recovered);
@@ -2439,7 +2433,7 @@ mod tests {
         let (llm_tx, _llm_rx) = mpsc::channel(16);
 
         let draft_id = Database::generate_draft_id();
-        AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx)
+        AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx, None)
     }
 
     #[tokio::test]
@@ -3438,6 +3432,7 @@ mod tests {
             draft_id,
             llm_client,
             llm_tx,
+            None,
         );
 
         // Step 1: process_new_picks while teams are empty
