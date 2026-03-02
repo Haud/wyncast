@@ -298,7 +298,7 @@ fn render_frame(frame: &mut Frame, state: &ViewState) {
     widgets::budget::render(frame, layout.budget, state);
 
     // Help bar
-    render_help_bar(frame, &layout);
+    render_help_bar(frame, &layout, state);
 
     // Quit confirmation overlay (rendered last so it's on top)
     if state.confirm_quit {
@@ -306,15 +306,27 @@ fn render_frame(frame: &mut Frame, state: &ViewState) {
     }
 }
 
-fn render_help_bar(frame: &mut Frame, layout: &AppLayout) {
-    let text = " q:Quit | 1-5:Tabs | /:Filter | r:Refresh | ?:Help";
-    let paragraph = Paragraph::new(Line::from(vec![
-        Span::styled(
-            text,
+fn render_help_bar(frame: &mut Frame, layout: &AppLayout, state: &ViewState) {
+    let mut spans = vec![Span::styled(
+        " q:Quit | 1-5:Tabs | ",
+        Style::default().fg(Color::Gray),
+    )];
+
+    // Only show the filter hint when the Available Players tab is active
+    if state.active_tab == TabId::Available {
+        spans.push(Span::styled(
+            "/:Filter | p:Pos | ",
             Style::default().fg(Color::Gray),
-        ),
-    ]))
-    .style(Style::default().bg(Color::Black));
+        ));
+    }
+
+    spans.push(Span::styled(
+        "r:Refresh | ?:Help",
+        Style::default().fg(Color::Gray),
+    ));
+
+    let paragraph = Paragraph::new(Line::from(spans))
+        .style(Style::default().bg(Color::Black));
     frame.render_widget(paragraph, layout.help_bar);
 }
 

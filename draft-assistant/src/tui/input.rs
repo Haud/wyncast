@@ -103,9 +103,11 @@ pub fn handle_key(
             None
         }
 
-        // Filter mode entry
+        // Filter mode entry: only available on the Players tab where it is relevant
         KeyCode::Char('/') => {
-            view_state.filter_mode = true;
+            if view_state.active_tab == TabId::Available {
+                view_state.filter_mode = true;
+            }
             None
         }
 
@@ -391,11 +393,27 @@ mod tests {
     // -- Filter mode --
 
     #[test]
-    fn slash_enters_filter_mode() {
+    fn slash_enters_filter_mode_on_available_tab() {
         let mut state = ViewState::default();
+        state.active_tab = TabId::Available;
         let result = handle_key(key(KeyCode::Char('/')), &mut state);
         assert!(result.is_none());
         assert!(state.filter_mode);
+    }
+
+    #[test]
+    fn slash_does_not_enter_filter_mode_on_other_tabs() {
+        for tab in [TabId::Analysis, TabId::NomPlan, TabId::DraftLog, TabId::Teams] {
+            let mut state = ViewState::default();
+            state.active_tab = tab;
+            let result = handle_key(key(KeyCode::Char('/')), &mut state);
+            assert!(result.is_none(), "/ on {:?} should return None", tab);
+            assert!(
+                !state.filter_mode,
+                "/ on {:?} should not activate filter_mode",
+                tab
+            );
+        }
     }
 
     #[test]
