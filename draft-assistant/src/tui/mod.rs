@@ -154,6 +154,67 @@ pub struct TeamSummary {
 // ViewState
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// PositionFilterModal
+// ---------------------------------------------------------------------------
+
+/// State for the position filter modal overlay.
+///
+/// When `open` is true the modal is shown on the Available Players tab.
+/// The user can navigate with arrow keys, type to narrow the list, press
+/// Enter to apply the highlighted selection, or press Escape to cancel.
+#[derive(Debug, Clone, Default)]
+pub struct PositionFilterModal {
+    /// Whether the modal is currently visible.
+    pub open: bool,
+    /// Incremental search text typed by the user while the modal is open.
+    pub search_text: String,
+    /// Index into the *filtered* list of options that is currently highlighted.
+    pub selected_index: usize,
+}
+
+impl PositionFilterModal {
+    /// The full ordered list of selectable options (None = "ALL").
+    ///
+    /// `None` represents "no filter" (show all positions).
+    pub const OPTIONS: &'static [Option<Position>] = &[
+        None,
+        Some(Position::Catcher),
+        Some(Position::FirstBase),
+        Some(Position::SecondBase),
+        Some(Position::ThirdBase),
+        Some(Position::ShortStop),
+        Some(Position::LeftField),
+        Some(Position::CenterField),
+        Some(Position::RightField),
+        Some(Position::Utility),
+        Some(Position::StartingPitcher),
+        Some(Position::ReliefPitcher),
+    ];
+
+    /// Return the display label for an option.
+    pub fn option_label(opt: Option<Position>) -> &'static str {
+        match opt {
+            None => "ALL",
+            Some(p) => p.display_str(),
+        }
+    }
+
+    /// Return the subset of options that match the current search text
+    /// (case-insensitive prefix or substring match).
+    pub fn filtered_options(&self) -> Vec<Option<Position>> {
+        let search = self.search_text.to_uppercase();
+        Self::OPTIONS
+            .iter()
+            .copied()
+            .filter(|opt| {
+                let label = Self::option_label(*opt);
+                label.contains(search.as_str())
+            })
+            .collect()
+    }
+}
+
 /// TUI-local state that mirrors the application state for rendering.
 ///
 /// Updated incrementally via `UiUpdate` messages from the app orchestrator.
@@ -206,6 +267,8 @@ pub struct ViewState {
     /// Which panel currently has keyboard focus for scroll routing.
     /// `None` means no panel is focused (scroll goes to active tab by default).
     pub focused_panel: Option<FocusPanel>,
+    /// Position filter modal state.
+    pub position_filter_modal: PositionFilterModal,
 }
 
 impl Default for ViewState {
@@ -234,6 +297,7 @@ impl Default for ViewState {
             team_summaries: Vec::new(),
             my_roster: Vec::new(),
             focused_panel: None,
+            position_filter_modal: PositionFilterModal::default(),
         }
     }
 }
@@ -393,6 +457,11 @@ fn render_frame(frame: &mut Frame, state: &ViewState) {
     // Quit confirmation overlay (rendered last so it's on top)
     if state.confirm_quit {
         widgets::quit_confirm::render(frame, frame.area(), state);
+    }
+
+    // Position filter modal overlay (rendered after quit dialog so quit takes priority)
+    if state.position_filter_modal.open {
+        widgets::position_filter_modal::render(frame, frame.area(), state);
     }
 }
 
@@ -618,6 +687,9 @@ mod tests {
         assert!(state.team_summaries.is_empty());
         assert!(state.my_roster.is_empty());
         assert!(state.focused_panel.is_none());
+        assert!(!state.position_filter_modal.open);
+        assert!(state.position_filter_modal.search_text.is_empty());
+        assert_eq!(state.position_filter_modal.selected_index, 0);
     }
 
     #[test]
