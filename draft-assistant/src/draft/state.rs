@@ -181,6 +181,12 @@ impl DraftState {
             );
         }
         self.pick_count += 1;
+        // Assign the canonical pick number from the internal counter.
+        // The extension's pick_number can be unreliable due to ESPN's
+        // virtualized pick list, which only renders a window of recent
+        // picks and can renumber entries as the window shifts.
+        let mut pick = pick;
+        pick.pick_number = self.pick_count as u32;
         self.picks.push(pick);
     }
 
@@ -283,9 +289,18 @@ impl DraftState {
         self.current_nomination = None;
 
         if self.teams.is_empty() {
-            // Teams not registered yet — store picks for deferred replay
+            // Teams not registered yet — store picks for deferred replay.
+            // Assign sequential pick numbers now so the draft log renders
+            // correctly even before replay_pending_picks() renumbers them.
             self.pick_count = picks.len();
-            self.picks = picks;
+            self.picks = picks
+                .into_iter()
+                .enumerate()
+                .map(|(i, mut p)| {
+                    p.pick_number = (i + 1) as u32;
+                    p
+                })
+                .collect();
             return;
         }
 
@@ -1488,6 +1503,52 @@ mod tests {
             "empty player_name but valid ESPN ID should be accepted"
         );
         assert_eq!(state.picks.len(), 1);
+    }
+
+    #[test]
+    fn record_pick_assigns_sequential_pick_numbers() {
+        let mut state = create_test_state();
+
+        // Simulate ESPN sending all picks with pick_number=1 (the known bug)
+        state.record_pick(DraftPick {
+            pick_number: 1,
+            team_id: "1".to_string(),
+            team_name: "Team 1".to_string(),
+            player_name: "Mike Trout".to_string(),
+            position: "CF".to_string(),
+            price: 45,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        });
+        state.record_pick(DraftPick {
+            pick_number: 1,
+            team_id: "2".to_string(),
+            team_name: "Team 2".to_string(),
+            player_name: "Shohei Ohtani".to_string(),
+            position: "SP".to_string(),
+            price: 50,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        });
+        state.record_pick(DraftPick {
+            pick_number: 1,
+            team_id: "3".to_string(),
+            team_name: "Team 3".to_string(),
+            player_name: "Aaron Judge".to_string(),
+            position: "RF".to_string(),
+            price: 40,
+            espn_player_id: None,
+            eligible_slots: vec![],
+        });
+
+        assert_eq!(state.picks.len(), 3);
+        assert_eq!(state.pick_count, 3);
+
+        // Verify canonical pick numbers are sequential 1, 2, 3
+        // regardless of ESPN sending all as pick_number=1
+        assert_eq!(state.picks[0].pick_number, 1);
+        assert_eq!(state.picks[1].pick_number, 2);
+        assert_eq!(state.picks[2].pick_number, 3);
     }
 
     #[test]

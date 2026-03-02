@@ -179,12 +179,19 @@ impl AppState {
                 pick.pick_number, pick.player_name, pick.team_name, pick.price
             );
 
-            // Record in DraftState
+            // Record in DraftState (assigns canonical sequential pick_number)
+            let prev_count = self.draft_state.picks.len();
             self.draft_state.record_pick(pick.clone());
 
-            // Persist to DB
-            if let Err(e) = self.db.record_pick(pick, &self.draft_id) {
-                warn!("Failed to persist pick to DB: {}", e);
+            // Only persist if record_pick actually added a new pick (wasn't deduped).
+            // Use the pick from draft_state.picks which has the corrected pick_number;
+            // the original `pick` from ESPN may have an unreliable pick_number (e.g.
+            // always 1) due to ESPN's virtualized pick list.
+            if self.draft_state.picks.len() > prev_count {
+                let canonical_pick = self.draft_state.picks.last().unwrap();
+                if let Err(e) = self.db.record_pick(canonical_pick, &self.draft_id) {
+                    warn!("Failed to persist pick to DB: {}", e);
+                }
             }
 
             // Remove from available player pool.
@@ -1695,6 +1702,58 @@ mod tests {
         assert_eq!(db_picks[0].player_name, "H_Star");
         assert_eq!(db_picks[0].price, 45);
         assert_eq!(db_picks[0].espn_player_id, Some("espn_123".into()));
+    }
+
+    #[test]
+    fn process_new_picks_persists_canonical_pick_number_to_db() {
+        let mut state = create_test_app_state();
+
+        // Simulate ESPN sending all picks with pick_number=1 (the known bug
+        // in ESPN's virtualized pick list)
+        let picks = vec![
+            DraftPick {
+                pick_number: 1,
+                team_id: "1".into(),
+                team_name: "Team 1".into(),
+                player_name: "H_Star".into(),
+                position: "1B".into(),
+                price: 45,
+                espn_player_id: Some("espn_1".into()),
+                eligible_slots: vec![],
+            },
+            DraftPick {
+                pick_number: 1,
+                team_id: "2".into(),
+                team_name: "Team 2".into(),
+                player_name: "P_Ace".into(),
+                position: "SP".into(),
+                price: 50,
+                espn_player_id: Some("espn_2".into()),
+                eligible_slots: vec![],
+            },
+            DraftPick {
+                pick_number: 1,
+                team_id: "3".into(),
+                team_name: "Team 3".into(),
+                player_name: "H_Good".into(),
+                position: "2B".into(),
+                price: 30,
+                espn_player_id: Some("espn_3".into()),
+                eligible_slots: vec![],
+            },
+        ];
+
+        state.process_new_picks(picks);
+
+        // All 3 picks should be persisted with canonical sequential pick numbers
+        let db_picks = state.db.load_picks(&state.draft_id).unwrap();
+        assert_eq!(db_picks.len(), 3, "All picks must be persisted, not just the first");
+        assert_eq!(db_picks[0].pick_number, 1);
+        assert_eq!(db_picks[0].player_name, "H_Star");
+        assert_eq!(db_picks[1].pick_number, 2);
+        assert_eq!(db_picks[1].player_name, "P_Ace");
+        assert_eq!(db_picks[2].pick_number, 3);
+        assert_eq!(db_picks[2].player_name, "H_Good");
     }
 
     #[test]
