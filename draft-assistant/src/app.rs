@@ -356,8 +356,7 @@ impl AppState {
         // config flag is set and we already know which team is ours.
         if self.config.strategy.llm.prefire_planning && self.draft_state.my_team().is_some() {
             info!("Auto-triggering nomination planning (prefire_planning=true)");
-            self.trigger_nomination_planning();
-            return true;
+            return self.trigger_nomination_planning();
         }
         false
     }
