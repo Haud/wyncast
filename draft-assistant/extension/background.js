@@ -165,6 +165,12 @@ function connect() {
 
     // Start heartbeat
     startHeartbeat();
+
+    // Request a full state snapshot from the content script so the backend
+    // can rebuild draft state from scratch rather than applying diffs against
+    // a blank slate. This is critical when resuming a mid-draft session after
+    // a disconnect. We use a small delay to allow the handshake to complete.
+    requestFullStateSyncFromContentScript();
   };
 
   ws.onclose = (event) => {
@@ -185,6 +191,36 @@ function connect() {
     // For now, just log them.
     log('Received from backend:', event.data);
   };
+}
+
+/**
+ * Request a FULL_STATE_SYNC from the active ESPN draft tab content script.
+ *
+ * Sends a REQUEST_FULL_STATE_SYNC message to any active ESPN draft tab so
+ * the content script will respond with a FULL_STATE_SYNC message (which is
+ * then forwarded to the backend via WebSocket). This is called whenever the
+ * WebSocket connects or reconnects so the backend can rebuild from the full
+ * current state rather than starting from a blank slate.
+ */
+function requestFullStateSyncFromContentScript() {
+  browser.tabs.query({ url: '*://fantasy.espn.com/baseball/draft*' }).then((tabs) => {
+    if (!tabs || tabs.length === 0) {
+      log('No active ESPN draft tab found for FULL_STATE_SYNC request');
+      return;
+    }
+    // Send to all matching ESPN draft tabs (usually just one)
+    tabs.forEach((tab) => {
+      browser.tabs.sendMessage(tab.id, {
+        source: 'wyndham-draft-sync-bg',
+        type: 'REQUEST_FULL_STATE_SYNC',
+      }).catch((err) => {
+        // Content script may not be loaded yet (e.g. page still loading)
+        log('Could not reach content script on tab', tab.id, ':', err.message || err);
+      });
+    });
+  }).catch((err) => {
+    warn('Failed to query tabs for FULL_STATE_SYNC request:', err.message || err);
+  });
 }
 
 // ---------------------------------------------------------------------------
