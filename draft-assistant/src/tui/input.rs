@@ -641,7 +641,6 @@ mod tests {
         }
     }
 
-
     // -- Filter mode --
 
     #[test]
