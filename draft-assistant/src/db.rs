@@ -18,8 +18,8 @@ impl Database {
     /// exist. Pass `":memory:"` for an ephemeral in-memory database (useful
     /// for tests).
     pub fn open(path: &str) -> Result<Self> {
-        let conn = Connection::open(path)
-            .with_context(|| format!("failed to open database at {path}"))?;
+        let conn =
+            Connection::open(path).with_context(|| format!("failed to open database at {path}"))?;
 
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
@@ -72,9 +72,8 @@ impl Database {
         .context("failed to create database schema")?;
 
         // Migration: add eligible_slots column if it doesn't exist (for pre-v0.2 databases)
-        conn.execute_batch(
-            "ALTER TABLE draft_picks ADD COLUMN eligible_slots TEXT;"
-        ).ok(); // Silently ignore if column already exists (ALTER TABLE fails with "duplicate column name")
+        conn.execute_batch("ALTER TABLE draft_picks ADD COLUMN eligible_slots TEXT;")
+            .ok(); // Silently ignore if column already exists (ALTER TABLE fails with "duplicate column name")
 
         // Migration: migrate draft_picks to composite primary key (pick_number, draft_id).
         // Detects old schema by checking if the draft_id column exists. If not, the
@@ -89,16 +88,16 @@ impl Database {
         // NULL for picks loaded from pre-roster-slot-truth databases.
         // Must run AFTER migrate_draft_picks_add_draft_id since that migration rebuilds
         // the table without this column.
-        conn.execute_batch(
-            "ALTER TABLE draft_picks ADD COLUMN assigned_slot INTEGER;"
-        ).ok(); // Silently ignore if column already exists
+        conn.execute_batch("ALTER TABLE draft_picks ADD COLUMN assigned_slot INTEGER;")
+            .ok(); // Silently ignore if column already exists
 
         // Index on draft_id for efficient filtering. The composite PK is ordered
         // (pick_number, draft_id) so queries filtering by draft_id alone cannot
         // use it efficiently.
         conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_draft_picks_draft_id ON draft_picks(draft_id);"
-        ).context("failed to create draft_id index")?;
+            "CREATE INDEX IF NOT EXISTS idx_draft_picks_draft_id ON draft_picks(draft_id);",
+        )
+        .context("failed to create draft_id index")?;
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -216,7 +215,8 @@ impl Database {
                 let eligible_slots = eligible_slots_json
                     .and_then(|json_str| serde_json::from_str::<Vec<u16>>(&json_str).ok())
                     .unwrap_or_default();
-                let assigned_slot_val: Option<u16> = row.get::<_, Option<i64>>(8)?
+                let assigned_slot_val: Option<u16> = row
+                    .get::<_, Option<i64>>(8)?
                     .and_then(|v| u16::try_from(v).ok());
                 Ok(DraftPick {
                     pick_number: row.get(0)?,
@@ -241,8 +241,7 @@ impl Database {
     /// repeated saves overwrite the previous value.
     pub fn save_state(&self, key: &str, value: &serde_json::Value) -> Result<()> {
         let conn = self.conn();
-        let json_str =
-            serde_json::to_string(value).context("failed to serialize state value")?;
+        let json_str = serde_json::to_string(value).context("failed to serialize state value")?;
         conn.execute(
             "INSERT OR REPLACE INTO draft_state (key, value) VALUES (?1, ?2)",
             params![key, json_str],
@@ -269,8 +268,8 @@ impl Database {
         match rows.next() {
             Some(row_result) => {
                 let json_str = row_result.context("failed to read state row")?;
-                let value: serde_json::Value = serde_json::from_str(&json_str)
-                    .context("failed to deserialize state value")?;
+                let value: serde_json::Value =
+                    serde_json::from_str(&json_str).context("failed to deserialize state value")?;
                 Ok(Some(value))
             }
             None => Ok(None),
@@ -447,7 +446,8 @@ impl Database {
         )
         .context("failed to save espn_draft_id")?;
 
-        tx.commit().context("failed to commit draft ID transaction")?;
+        tx.commit()
+            .context("failed to commit draft ID transaction")?;
         Ok(())
     }
 
@@ -470,7 +470,9 @@ impl Database {
         players: &[(&str, &str, &[String], &str, &[(&str, &str, f64)])],
     ) -> Result<()> {
         let mut conn = self.conn();
-        let tx = conn.transaction().context("failed to begin import transaction")?;
+        let tx = conn
+            .transaction()
+            .context("failed to begin import transaction")?;
 
         for &(name, team, ref positions, player_type, ref projections) in players {
             let positions_json =
@@ -1077,7 +1079,11 @@ mod tests {
         // Legacy picks have NULL draft_id, so they should NOT appear
         // when loading with a specific draft_id.
         let picks = db.load_picks(TEST_DRAFT_ID).unwrap();
-        assert_eq!(picks.len(), 0, "Legacy picks with NULL draft_id should not be loaded");
+        assert_eq!(
+            picks.len(),
+            0,
+            "Legacy picks with NULL draft_id should not be loaded"
+        );
 
         // Legacy picks should not count for has_draft_in_progress either
         assert!(!db.has_draft_in_progress(TEST_DRAFT_ID).unwrap());
@@ -1163,9 +1169,17 @@ mod tests {
     #[test]
     fn generate_draft_id_format() {
         let id = Database::generate_draft_id();
-        assert!(id.starts_with("draft_"), "Draft ID should start with 'draft_': {}", id);
+        assert!(
+            id.starts_with("draft_"),
+            "Draft ID should start with 'draft_': {}",
+            id
+        );
         // Should be ~25 chars: draft_YYYYMMDD_HHMMSS_SSS
-        assert!(id.len() >= 24, "Draft ID should be at least 24 chars: {}", id);
+        assert!(
+            id.len() >= 24,
+            "Draft ID should be at least 24 chars: {}",
+            id
+        );
     }
 
     #[test]

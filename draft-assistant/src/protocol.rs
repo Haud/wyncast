@@ -841,11 +841,14 @@ mod tests {
             position: "SS".into(),
             price: 40,
             eligible_slots: vec![4, 2, 5, 8, 9, 10, 11, 12, 16, 17],
-                    assigned_slot: None,
+            assigned_slot: None,
         };
         let json = serde_json::to_string(&pick_data).unwrap();
         let parsed: PickData = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.eligible_slots, vec![4, 2, 5, 8, 9, 10, 11, 12, 16, 17]);
+        assert_eq!(
+            parsed.eligible_slots,
+            vec![4, 2, 5, 8, 9, 10, 11, 12, 16, 17]
+        );
     }
 
     // -- FULL_STATE_SYNC variant --
@@ -865,7 +868,7 @@ mod tests {
                         position: "CF".to_string(),
                         price: 50,
                         eligible_slots: vec![],
-                    assigned_slot: None,
+                        assigned_slot: None,
                     },
                     PickData {
                         pick_number: 2,
@@ -876,7 +879,7 @@ mod tests {
                         position: "SP".to_string(),
                         price: 65,
                         eligible_slots: vec![11, 12, 16, 17],
-                    assigned_slot: None,
+                        assigned_slot: None,
                     },
                 ],
                 current_nomination: None,

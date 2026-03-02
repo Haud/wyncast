@@ -78,10 +78,7 @@ impl DraftState {
     /// # Arguments
     /// - `salary_cap`: Per-team salary cap
     /// - `roster_config`: Position -> slot count mapping from league config
-    pub fn new(
-        salary_cap: u32,
-        roster_config: &HashMap<String, usize>,
-    ) -> Self {
+    pub fn new(salary_cap: u32, roster_config: &HashMap<String, usize>) -> Self {
         DraftState {
             teams: Vec::new(),
             picks: Vec::new(),
@@ -512,7 +509,9 @@ pub fn compute_state_diff(
     diff.new_picks.sort_unstable_by_key(|p| p.pick_number);
 
     // Compare nominations
-    let prev_nom = previous.as_ref().and_then(|p| p.current_nomination.as_ref());
+    let prev_nom = previous
+        .as_ref()
+        .and_then(|p| p.current_nomination.as_ref());
     let curr_nom = current.current_nomination.as_ref();
 
     match (prev_nom, curr_nom) {
@@ -651,7 +650,9 @@ mod tests {
         let mut state = DraftState::new(260, &test_roster_config());
         state.reconcile_budgets(&test_espn_budgets());
         state.set_my_team_by_name("Team 3");
-        let my = state.my_team().expect("my_team should be Some after reconcile");
+        let my = state
+            .my_team()
+            .expect("my_team should be Some after reconcile");
         assert_eq!(my.team_name, "Team 3");
         assert_eq!(my.budget_remaining, 260);
     }
@@ -806,7 +807,7 @@ mod tests {
                 price: 45,
                 espn_player_id: None,
                 eligible_slots: vec![],
-            assigned_slot: None,
+                assigned_slot: None,
             },
             DraftPick {
                 pick_number: 2,
@@ -817,7 +818,7 @@ mod tests {
                 price: 50,
                 espn_player_id: None,
                 eligible_slots: vec![],
-            assigned_slot: None,
+                assigned_slot: None,
             },
             DraftPick {
                 pick_number: 3,
@@ -828,7 +829,7 @@ mod tests {
                 price: 35,
                 espn_player_id: None,
                 eligible_slots: vec![],
-            assigned_slot: None,
+                assigned_slot: None,
             },
         ];
 
@@ -932,7 +933,10 @@ mod tests {
             eligible_slots: vec![],
             assigned_slot: None,
         });
-        assert_eq!(state.picks[1].pick_number, 2, "second pick should be #2 (not #3)");
+        assert_eq!(
+            state.picks[1].pick_number, 2,
+            "second pick should be #2 (not #3)"
+        );
 
         // Simulate ESPN clock override: "PK 3 OF 260" → pick_count = 3
         state.pick_count = 3;
@@ -948,7 +952,10 @@ mod tests {
             eligible_slots: vec![],
             assigned_slot: None,
         });
-        assert_eq!(state.picks[2].pick_number, 3, "third pick should be #3 (not #4)");
+        assert_eq!(
+            state.picks[2].pick_number, 3,
+            "third pick should be #3 (not #4)"
+        );
     }
 
     #[test]
@@ -972,7 +979,7 @@ mod tests {
                 price: 20 + i,
                 espn_player_id: Some(format!("espn_{}", i + 1)),
                 eligible_slots: vec![],
-            assigned_slot: None,
+                assigned_slot: None,
             });
         }
 
@@ -1064,7 +1071,10 @@ mod tests {
         assert_eq!(diff.new_picks.len(), 2);
         assert!(diff.nomination_changed);
         assert!(diff.new_nomination.is_some());
-        assert_eq!(diff.new_nomination.as_ref().unwrap().player_name, "Player C");
+        assert_eq!(
+            diff.new_nomination.as_ref().unwrap().player_name,
+            "Player C"
+        );
         assert!(!diff.nomination_cleared);
         assert!(!diff.bid_updated);
     }
@@ -1275,7 +1285,7 @@ mod tests {
                 player_name: "Player A".to_string(),
                 position: "SP".to_string(),
                 nominated_by: "team_3".to_string(), // now populated
-                current_bid: 1,        // unchanged
+                current_bid: 1,                     // unchanged
                 current_bidder: Some("team_2".to_string()), // unchanged
                 time_remaining: Some(28),
                 eligible_slots: vec![],
@@ -1290,10 +1300,7 @@ mod tests {
             "should detect nominated_by backfill as bid_updated"
         );
         assert!(diff.new_nomination.is_some());
-        assert_eq!(
-            diff.new_nomination.as_ref().unwrap().nominated_by,
-            "team_3"
-        );
+        assert_eq!(diff.new_nomination.as_ref().unwrap().nominated_by, "team_3");
     }
 
     #[test]
@@ -1321,7 +1328,7 @@ mod tests {
                 player_name: "Player A".to_string(),
                 position: "SP".to_string(),
                 nominated_by: "team_3".to_string(), // same value
-                current_bid: 1,        // unchanged
+                current_bid: 1,                     // unchanged
                 current_bidder: Some("team_2".to_string()), // unchanged
                 time_remaining: Some(28),
                 eligible_slots: vec![],
@@ -1331,7 +1338,10 @@ mod tests {
 
         let diff = compute_state_diff(&Some(previous), &current);
         assert!(!diff.nomination_changed);
-        assert!(!diff.bid_updated, "no change — should not trigger bid_updated");
+        assert!(
+            !diff.bid_updated,
+            "no change — should not trigger bid_updated"
+        );
         assert!(diff.new_nomination.is_none());
     }
 
@@ -1814,7 +1824,7 @@ mod tests {
                 price: 62,
                 espn_player_id: None,
                 eligible_slots: vec![],
-            assigned_slot: None,
+                assigned_slot: None,
             },
             DraftPick {
                 pick_number: 2,
@@ -1825,7 +1835,7 @@ mod tests {
                 price: 55,
                 espn_player_id: None,
                 eligible_slots: vec![],
-            assigned_slot: None,
+                assigned_slot: None,
             },
         ];
         state.restore_from_picks(recovery_picks);

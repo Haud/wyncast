@@ -80,17 +80,9 @@ pub fn compute_auction_values(
     let hitting_distributable = distributable * strategy.hitting_budget_fraction;
     let pitching_distributable = distributable * (1.0 - strategy.hitting_budget_fraction);
 
-    let total_hitter_vor: f64 = hitters
-        .iter()
-        .filter(|p| p.vor > 0.0)
-        .map(|p| p.vor)
-        .sum();
+    let total_hitter_vor: f64 = hitters.iter().filter(|p| p.vor > 0.0).map(|p| p.vor).sum();
 
-    let total_pitcher_vor: f64 = pitchers
-        .iter()
-        .filter(|p| p.vor > 0.0)
-        .map(|p| p.vor)
-        .sum();
+    let total_pitcher_vor: f64 = pitchers.iter().filter(|p| p.vor > 0.0).map(|p| p.vor).sum();
 
     let dollars_per_vor_hitter = if total_hitter_vor > 0.0 {
         hitting_distributable / total_hitter_vor
@@ -699,7 +691,11 @@ mod tests {
             } else {
                 PitcherType::RP
             };
-            players.push(make_pitcher(&format!("P{}", i + 1), 3.0 + i as f64 * 0.1, pt));
+            players.push(make_pitcher(
+                &format!("P{}", i + 1),
+                3.0 + i as f64 * 0.1,
+                pt,
+            ));
         }
 
         apply_auction_values(&mut players, &league, &strategy);
@@ -1051,7 +1047,7 @@ mod tests {
             price: 50,
             espn_player_id: None,
             eligible_slots: vec![],
-        assigned_slot: None,
+            assigned_slot: None,
         });
 
         // Available pool: remaining players with known dollar values

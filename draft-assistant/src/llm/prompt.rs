@@ -174,15 +174,21 @@ pub fn build_nomination_analysis_prompt(
         for comp in &comps {
             prompt.push_str(&format!(
                 "  {} ({}) - Value: ${:.0}, Paid: ${}, Overpay: {:+.0}%\n",
-                comp.player_name, comp.position, comp.predraft_value, comp.paid_price, comp.overpay_pct,
+                comp.player_name,
+                comp.position,
+                comp.predraft_value,
+                comp.paid_price,
+                comp.overpay_pct,
             ));
         }
         prompt.push('\n');
     }
 
     // Section 8: Closing question
-    prompt.push_str("## WHAT SHOULD I DO?\n\
-         Give me your verdict, bid range, fit assessment, and strategy notes.");
+    prompt.push_str(
+        "## WHAT SHOULD I DO?\n\
+         Give me your verdict, bid range, fit assessment, and strategy notes.",
+    );
 
     prompt
 }
@@ -303,8 +309,10 @@ pub fn build_nomination_planning_prompt(
     }
 
     // Section 8: Closing question
-    prompt.push_str("## WHO SHOULD I NOMINATE AND WHY?\n\
-         Give me your top pick to nominate, backup option, and reasoning.");
+    prompt.push_str(
+        "## WHO SHOULD I NOMINATE AND WHY?\n\
+         Give me your top pick to nominate, backup option, and reasoning.",
+    );
 
     prompt
 }
@@ -322,17 +330,21 @@ fn format_player_profile(
     match (&player.projection, &player.category_zscores) {
         (
             PlayerProjectionData::Hitter {
-                pa, r, hr, rbi, bb, sb, avg, ..
+                pa,
+                r,
+                hr,
+                rbi,
+                bb,
+                sb,
+                avg,
+                ..
             },
             CategoryZScores::Hitter(z),
         ) => {
             s.push_str(&format!("  PA: {}\n", pa));
             s.push_str("  Cat   Proj  Z-Score  Rank\n");
             let ranks = compute_hitter_ranks(player, available_players);
-            s.push_str(&format!(
-                "  R     {:>4}  {:>+6.2}   #{}\n",
-                r, z.r, ranks.0
-            ));
+            s.push_str(&format!("  R     {:>4}  {:>+6.2}   #{}\n", r, z.r, ranks.0));
             s.push_str(&format!(
                 "  HR    {:>4}  {:>+6.2}   #{}\n",
                 hr, z.hr, ranks.1
@@ -356,21 +368,22 @@ fn format_player_profile(
         }
         (
             PlayerProjectionData::Pitcher {
-                ip, k, w, sv, hd, era, whip, ..
+                ip,
+                k,
+                w,
+                sv,
+                hd,
+                era,
+                whip,
+                ..
             },
             CategoryZScores::Pitcher(z),
         ) => {
             s.push_str(&format!("  IP: {:.0}\n", ip));
             s.push_str("  Cat   Proj  Z-Score  Rank\n");
             let ranks = compute_pitcher_ranks(player, available_players);
-            s.push_str(&format!(
-                "  K     {:>4}  {:>+6.2}   #{}\n",
-                k, z.k, ranks.0
-            ));
-            s.push_str(&format!(
-                "  W     {:>4}  {:>+6.2}   #{}\n",
-                w, z.w, ranks.1
-            ));
+            s.push_str(&format!("  K     {:>4}  {:>+6.2}   #{}\n", k, z.k, ranks.0));
+            s.push_str(&format!("  W     {:>4}  {:>+6.2}   #{}\n", w, z.w, ranks.1));
             s.push_str(&format!(
                 "  SV    {:>4}  {:>+6.2}   #{}\n",
                 sv, z.sv, ranks.2
@@ -390,8 +403,21 @@ fn format_player_profile(
         }
         (
             PlayerProjectionData::TwoWay {
-                pa, r, hr, rbi, bb, sb, avg,
-                ip, k, w, sv, hd, era, whip, ..
+                pa,
+                r,
+                hr,
+                rbi,
+                bb,
+                sb,
+                avg,
+                ip,
+                k,
+                w,
+                sv,
+                hd,
+                era,
+                whip,
+                ..
             },
             CategoryZScores::TwoWay(tw),
         ) => {
@@ -632,11 +658,7 @@ pub fn find_market_comps(
     let window_start = recent_picks.len().saturating_sub(20);
     let recent = &recent_picks[window_start..];
 
-    let player_positions: Vec<&str> = player
-        .positions
-        .iter()
-        .map(|p| p.display_str())
-        .collect();
+    let player_positions: Vec<&str> = player.positions.iter().map(|p| p.display_str()).collect();
 
     let mut comps = Vec::new();
 
@@ -706,9 +728,7 @@ pub fn find_similar_players(
                 && p.dollar_value >= min_value
                 && p.dollar_value <= max_value
                 && p.dollar_value > 1.0
-                && p.positions
-                    .iter()
-                    .any(|pos| player.positions.contains(pos))
+                && p.positions.iter().any(|pos| player.positions.contains(pos))
         })
         .map(|p| {
             let positions_str = p
@@ -788,10 +808,7 @@ pub fn find_nominate_to_sell_candidates(
     let mut candidates: Vec<SellCandidate> = available_players
         .iter()
         .filter(|p| {
-            p.dollar_value > 5.0
-                && p.positions
-                    .iter()
-                    .any(|pos| filled_positions.contains(pos))
+            p.dollar_value > 5.0 && p.positions.iter().any(|pos| filled_positions.contains(pos))
         })
         .map(|p| {
             let best_sell_pos = p
@@ -802,10 +819,7 @@ pub fn find_nominate_to_sell_candidates(
                 .copied()
                 .unwrap_or(p.positions[0]);
 
-            let demand = position_demand
-                .get(&best_sell_pos)
-                .copied()
-                .unwrap_or(0);
+            let demand = position_demand.get(&best_sell_pos).copied().unwrap_or(0);
 
             let reason = format!(
                 "{} teams need {}; I don't",
@@ -889,10 +903,7 @@ fn find_top_targets<'a>(
         })
         .collect();
 
-    scored.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
     scored.into_iter().take(count).map(|(p, _)| p).collect()
 }
@@ -904,19 +915,19 @@ fn find_top_targets<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::*;
+    use crate::draft::pick::DraftPick;
     use crate::draft::pick::Position;
     use crate::draft::roster::Roster;
     use crate::draft::state::DraftState;
     use crate::protocol::NominationInfo;
     use crate::valuation::analysis::CategoryNeeds;
     use crate::valuation::auction::InflationTracker;
+    use crate::valuation::projections::PitcherType;
     use crate::valuation::scarcity::{compute_scarcity, ScarcityEntry, ScarcityUrgency};
     use crate::valuation::zscore::{
         CategoryZScores, HitterZScores, PitcherZScores, PlayerProjectionData, PlayerValuation,
     };
-    use crate::valuation::projections::PitcherType;
-    use crate::config::*;
-    use crate::draft::pick::DraftPick;
     use std::collections::HashMap;
 
     // ---- Test helpers ----
@@ -948,14 +959,22 @@ mod tests {
             salary_cap: 260,
             batting_categories: CategoriesSection {
                 categories: vec![
-                    "R".into(), "HR".into(), "RBI".into(),
-                    "BB".into(), "SB".into(), "AVG".into(),
+                    "R".into(),
+                    "HR".into(),
+                    "RBI".into(),
+                    "BB".into(),
+                    "SB".into(),
+                    "AVG".into(),
                 ],
             },
             pitching_categories: CategoriesSection {
                 categories: vec![
-                    "K".into(), "W".into(), "SV".into(),
-                    "HD".into(), "ERA".into(), "WHIP".into(),
+                    "K".into(),
+                    "W".into(),
+                    "SV".into(),
+                    "HD".into(),
+                    "ERA".into(),
+                    "WHIP".into(),
                 ],
             },
             roster: test_roster_config(),
@@ -996,11 +1015,25 @@ mod tests {
             is_two_way: false,
             pitcher_type: None,
             projection: PlayerProjectionData::Hitter {
-                pa: 600, ab: 550, h: 150, hr: 25, r: 80, rbi: 85, bb: 50, sb: 10, avg: 0.273,
+                pa: 600,
+                ab: 550,
+                h: 150,
+                hr: 25,
+                r: 80,
+                rbi: 85,
+                bb: 50,
+                sb: 10,
+                avg: 0.273,
             },
             total_zscore: vor + 2.0,
             category_zscores: CategoryZScores::Hitter(HitterZScores {
-                r: 1.5, hr: 1.2, rbi: 0.8, bb: 2.0, sb: 0.3, avg: 0.5, total: vor + 2.0,
+                r: 1.5,
+                hr: 1.2,
+                rbi: 0.8,
+                bb: 2.0,
+                sb: 0.3,
+                avg: 0.5,
+                total: vor + 2.0,
             }),
             vor,
             best_position: positions.first().copied(),
@@ -1021,11 +1054,25 @@ mod tests {
             is_two_way: false,
             pitcher_type: Some(pt),
             projection: PlayerProjectionData::Pitcher {
-                ip: 180.0, k: 200, w: 14, sv: 0, hd: 0, era: 3.20, whip: 1.10, g: 30, gs: 30,
+                ip: 180.0,
+                k: 200,
+                w: 14,
+                sv: 0,
+                hd: 0,
+                era: 3.20,
+                whip: 1.10,
+                g: 30,
+                gs: 30,
             },
             total_zscore: vor + 1.0,
             category_zscores: CategoryZScores::Pitcher(PitcherZScores {
-                k: 1.5, w: 0.8, sv: 0.0, hd: 0.0, era: 1.2, whip: 0.9, total: vor + 1.0,
+                k: 1.5,
+                w: 0.8,
+                sv: 0.0,
+                hd: 0.0,
+                era: 1.2,
+                whip: 0.9,
+                total: vor + 1.0,
             }),
             vor,
             best_position: Some(pos),
@@ -1038,7 +1085,10 @@ mod tests {
     #[test]
     fn system_prompt_contains_key_elements() {
         let sp = system_prompt();
-        assert!(sp.contains("10-team H2H Most Categories"), "should mention league format");
+        assert!(
+            sp.contains("10-team H2H Most Categories"),
+            "should mention league format"
+        );
         assert!(sp.contains("BB (walks)"), "should mention BB edge");
         assert!(sp.contains("HD (holds)"), "should mention HD edge");
         assert!(sp.contains("Stars-and-scrubs"), "should mention strategy");
@@ -1083,15 +1133,33 @@ mod tests {
             &inflation,
         );
 
-        assert!(prompt.contains("## NOMINATION"), "should have NOMINATION section");
+        assert!(
+            prompt.contains("## NOMINATION"),
+            "should have NOMINATION section"
+        );
         assert!(prompt.contains("Mike Trout"), "should contain player name");
         assert!(prompt.contains("CF"), "should contain position");
         assert!(prompt.contains("Team 5"), "should contain nominator");
-        assert!(prompt.contains("## PLAYER PROFILE"), "should have PLAYER PROFILE section");
-        assert!(prompt.contains("## MY ROSTER"), "should have MY ROSTER section");
-        assert!(prompt.contains("## CATEGORY NEEDS"), "should have CATEGORY NEEDS section");
-        assert!(prompt.contains("## POSITIONAL SCARCITY"), "should have SCARCITY section");
-        assert!(prompt.contains("WHAT SHOULD I DO"), "should have closing question");
+        assert!(
+            prompt.contains("## PLAYER PROFILE"),
+            "should have PLAYER PROFILE section"
+        );
+        assert!(
+            prompt.contains("## MY ROSTER"),
+            "should have MY ROSTER section"
+        );
+        assert!(
+            prompt.contains("## CATEGORY NEEDS"),
+            "should have CATEGORY NEEDS section"
+        );
+        assert!(
+            prompt.contains("## POSITIONAL SCARCITY"),
+            "should have SCARCITY section"
+        );
+        assert!(
+            prompt.contains("WHAT SHOULD I DO"),
+            "should have closing question"
+        );
     }
 
     #[test]
@@ -1155,13 +1223,34 @@ mod tests {
             &inflation,
         );
 
-        assert!(prompt.contains("## NOMINATION PLANNING"), "should have header");
-        assert!(prompt.contains("## MY ROSTER"), "should have roster section");
-        assert!(prompt.contains("## CATEGORY STRENGTHS"), "should have category section");
-        assert!(prompt.contains("## POSITIONAL SCARCITY"), "should have scarcity section");
-        assert!(prompt.contains("## OPPONENT BUDGETS"), "should have opponent section");
-        assert!(prompt.contains("## TOP 10 AVAILABLE TARGETS"), "should have targets section");
-        assert!(prompt.contains("WHO SHOULD I NOMINATE"), "should have closing question");
+        assert!(
+            prompt.contains("## NOMINATION PLANNING"),
+            "should have header"
+        );
+        assert!(
+            prompt.contains("## MY ROSTER"),
+            "should have roster section"
+        );
+        assert!(
+            prompt.contains("## CATEGORY STRENGTHS"),
+            "should have category section"
+        );
+        assert!(
+            prompt.contains("## POSITIONAL SCARCITY"),
+            "should have scarcity section"
+        );
+        assert!(
+            prompt.contains("## OPPONENT BUDGETS"),
+            "should have opponent section"
+        );
+        assert!(
+            prompt.contains("## TOP 10 AVAILABLE TARGETS"),
+            "should have targets section"
+        );
+        assert!(
+            prompt.contains("WHO SHOULD I NOMINATE"),
+            "should have closing question"
+        );
     }
 
     #[test]
@@ -1198,8 +1287,14 @@ mod tests {
         );
 
         assert!(prompt.contains("Team 2"), "should list opponent teams");
-        assert!(prompt.contains("$50 spent"), "should show opponent spending");
-        assert!(prompt.contains("$210 remaining"), "should show opponent remaining budget");
+        assert!(
+            prompt.contains("$50 spent"),
+            "should show opponent spending"
+        );
+        assert!(
+            prompt.contains("$210 remaining"),
+            "should show opponent remaining budget"
+        );
     }
 
     // ---- Market comp tests ----
@@ -1268,7 +1363,7 @@ mod tests {
                 price: 20 + i,
                 espn_player_id: None,
                 eligible_slots: vec![],
-            assigned_slot: None,
+                assigned_slot: None,
             });
         }
 
@@ -1276,7 +1371,11 @@ mod tests {
         let available = vec![player.clone()];
 
         let comps = find_market_comps(&draft_state, &player, &available);
-        assert!(comps.len() <= 5, "should limit to 5 comps, got {}", comps.len());
+        assert!(
+            comps.len() <= 5,
+            "should limit to 5 comps, got {}",
+            comps.len()
+        );
     }
 
     // ---- Similar player tests ----
@@ -1361,7 +1460,10 @@ mod tests {
         // Should find the expensive CF since we already have CF filled
         assert!(!candidates.is_empty(), "should find sell candidates");
         assert_eq!(candidates[0].name, "Good CF");
-        assert!(candidates[0].reason.contains("CF"), "reason should mention position");
+        assert!(
+            candidates[0].reason.contains("CF"),
+            "reason should mention position"
+        );
     }
 
     #[test]
@@ -1369,28 +1471,35 @@ mod tests {
         let mut roster = Roster::new(&test_roster_config());
         roster.add_player("My C", "C", 10, None);
 
-        let available = vec![
-            make_hitter("Cheap C", 0.5, vec![Position::Catcher], 3.0),
-        ];
+        let available = vec![make_hitter("Cheap C", 0.5, vec![Position::Catcher], 3.0)];
 
         let draft_state = create_test_draft_state();
 
         let candidates = find_nominate_to_sell_candidates(&available, &roster, &draft_state, 5);
-        assert!(candidates.is_empty(), "should not nominate cheap players to sell");
+        assert!(
+            candidates.is_empty(),
+            "should not nominate cheap players to sell"
+        );
     }
 
     #[test]
     fn nominate_to_sell_empty_when_no_filled_positions() {
         let roster = Roster::new(&test_roster_config()); // All empty
 
-        let available = vec![
-            make_hitter("Good 1B", 10.0, vec![Position::FirstBase], 40.0),
-        ];
+        let available = vec![make_hitter(
+            "Good 1B",
+            10.0,
+            vec![Position::FirstBase],
+            40.0,
+        )];
 
         let draft_state = create_test_draft_state();
 
         let candidates = find_nominate_to_sell_candidates(&available, &roster, &draft_state, 5);
-        assert!(candidates.is_empty(), "should not sell when no positions filled");
+        assert!(
+            candidates.is_empty(),
+            "should not sell when no positions filled"
+        );
     }
 
     // ---- Roster formatting tests ----
@@ -1404,9 +1513,15 @@ mod tests {
         let formatted = format_roster_for_prompt(&roster);
 
         assert!(formatted.contains("[EMPTY]"), "should show empty slots");
-        assert!(formatted.contains("Mike Trout"), "should show filled player");
+        assert!(
+            formatted.contains("Mike Trout"),
+            "should show filled player"
+        );
         assert!(formatted.contains("$45"), "should show player price");
-        assert!(formatted.contains("Corbin Burnes"), "should show second player");
+        assert!(
+            formatted.contains("Corbin Burnes"),
+            "should show second player"
+        );
         // "UTIL" contains substring "IL", so check for the specific IL slot format
         assert!(!formatted.contains("  IL:"), "should exclude IL slots");
     }
