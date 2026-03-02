@@ -412,6 +412,17 @@ mod tests {
         assert_eq!(state.scroll_offset.get("analysis"), None);
     }
 
+    #[test]
+    fn nom_plan_tab_uses_correct_scroll_key() {
+        // Regression test: nomination_plan widget was looking up "plan" instead of "nom_plan".
+        // This verifies the input handler writes to "nom_plan" for Tab 2.
+        let mut state = ViewState::default();
+        state.active_tab = TabId::NomPlan;
+        handle_key(key(KeyCode::Down), &mut state);
+        assert_eq!(state.scroll_offset.get("nom_plan"), Some(&1));
+        assert_eq!(state.scroll_offset.get("plan"), None);
+    }
+
     // -- Filter mode --
 
     #[test]
