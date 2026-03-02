@@ -269,6 +269,8 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
             state.analysis_text.clear();
             state.analysis_status = LlmStatus::Idle;
             state.instant_analysis = None;
+            // Clear focused panel to avoid a stale cyan border on the new nomination
+            state.focused_panel = None;
             // Reset main panel scroll offsets so the new nomination context is visible from the top.
             // This ensures the nominated player highlight in the Available tab is not scrolled off screen.
             state.scroll_offset.insert("available".to_string(), 0);
@@ -406,7 +408,7 @@ fn render_help_bar(frame: &mut Frame, layout: &AppLayout, state: &ViewState) {
     }
 
     spans.push(Span::styled(
-        "Tab:Focus | r:Refresh | n:Plan | ↑↓/j/k/PgUp/PgDn:Scroll",
+        "Tab:Focus | r:Refresh | n:Plan | ↑↓/j/k/PgUp/PgDn:Scroll | [/]:Sidebar",
         Style::default().fg(Color::Gray),
     ));
 
