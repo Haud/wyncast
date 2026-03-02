@@ -3,10 +3,10 @@
 // Similar to analysis but for plan_text.
 // Header: "Nomination Plan -- streaming.../ready/not yet computed"
 
-use ratatui::layout::Rect;
+use ratatui::layout::{Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
 use ratatui::Frame;
 
 use crate::protocol::LlmStatus;
@@ -48,6 +48,17 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState, focused: bool) {
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
     frame.render_widget(paragraph, area);
+
+    // Render vertical scrollbar whenever content overflows
+    if line_count > inner_height {
+        let mut scrollbar_state = ScrollbarState::new(line_count.saturating_sub(inner_height))
+            .position(scroll as usize);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight),
+            area.inner(Margin { vertical: 1, horizontal: 0 }),
+            &mut scrollbar_state,
+        );
+    }
 }
 
 /// Build the title line with status indicator.

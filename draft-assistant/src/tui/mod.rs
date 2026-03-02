@@ -514,10 +514,12 @@ fn render_help_bar(frame: &mut Frame, layout: &AppLayout, state: &ViewState) {
         ));
     }
 
-    spans.push(Span::styled(
-        "Tab:Focus | r:Resync | ↑↓/j/k/PgUp/PgDn:Scroll",
-        Style::default().fg(Color::Gray),
-    ));
+    let help_text = if state.focused_panel.is_some() {
+        "Tab:Focus | r:Resync | ↑↓/j/k/PgUp/PgDn:Scroll"
+    } else {
+        "Tab:Focus | r:Resync"
+    };
+    spans.push(Span::styled(help_text, Style::default().fg(Color::Gray)));
 
     // Show active filter text as a reminder on the Available tab
     // when filter has content (visual cue that results are filtered)
