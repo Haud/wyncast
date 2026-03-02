@@ -251,17 +251,17 @@ pub enum TabFeature {
     Filter,
     /// Position-based filter cycling (the `p` key).
     PositionFilter,
-    /// Scrollable content (arrow keys, j/k, PgUp/PgDn).
-    Scroll,
 }
 
 impl TabId {
     /// Returns whether this tab supports the given feature.
     pub fn supports(self, feature: TabFeature) -> bool {
         match feature {
+            // Filter and PositionFilter are intentionally separate variants even though
+            // they currently resolve to the same set of tabs. This allows future tabs to
+            // support text filtering without position cycling (or vice versa).
             TabFeature::Filter => matches!(self, TabId::Available),
             TabFeature::PositionFilter => matches!(self, TabId::Available),
-            TabFeature::Scroll => true,
         }
     }
 }
@@ -387,17 +387,6 @@ mod tests {
             assert!(
                 !tab.supports(TabFeature::PositionFilter),
                 "{:?} should not support PositionFilter",
-                tab
-            );
-        }
-    }
-
-    #[test]
-    fn all_tabs_support_scroll() {
-        for tab in [TabId::Analysis, TabId::Available, TabId::DraftLog, TabId::Teams] {
-            assert!(
-                tab.supports(TabFeature::Scroll),
-                "{:?} should support Scroll",
                 tab
             );
         }
