@@ -227,6 +227,10 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
             state.analysis_text.clear();
             state.analysis_status = LlmStatus::Idle;
             state.instant_analysis = None;
+            // Reset main panel scroll offsets so the new nomination context is visible from the top.
+            // This ensures the nominated player highlight in the Available tab is not scrolled off screen.
+            state.scroll_offset.insert("available".to_string(), 0);
+            state.scroll_offset.insert("analysis".to_string(), 0);
         }
         UiUpdate::BidUpdate(nomination) => {
             // Update nomination info (new bid) but preserve LLM streaming text
@@ -325,7 +329,7 @@ fn render_help_bar(frame: &mut Frame, layout: &AppLayout, state: &ViewState) {
     }
 
     spans.push(Span::styled(
-        "r:Refresh | ?:Help",
+        "r:Refresh | ↑↓/j/k/PgUp/PgDn:Scroll | [/]:Sidebar",
         Style::default().fg(Color::Gray),
     ));
 
@@ -596,6 +600,10 @@ mod tests {
         assert_eq!(state.analysis_status, LlmStatus::Idle);
         // instant_analysis should also be cleared to avoid stale data from previous nomination
         assert!(state.instant_analysis.is_none());
+        // Scroll offsets for available and analysis panels should be reset so the nominated
+        // player highlight is visible from the top of the list.
+        assert_eq!(state.scroll_offset.get("available").copied(), Some(0));
+        assert_eq!(state.scroll_offset.get("analysis").copied(), Some(0));
     }
 
     #[test]

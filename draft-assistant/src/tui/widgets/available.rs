@@ -5,10 +5,10 @@
 // Highlight nominated player row
 // Column headers bold
 
-use ratatui::layout::Rect;
+use ratatui::layout::{Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Row, Table};
+use ratatui::widgets::{Block, Borders, Cell, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table};
 use ratatui::Frame;
 
 use crate::draft::pick::Position;
@@ -28,6 +28,15 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
         .as_ref()
         .map(|n| n.player_name.as_str());
 
+    let scroll_offset = state.scroll_offset.get("available").copied().unwrap_or(0);
+
+    // Visible row count: subtract 2 (borders) + 1 (header) = 3
+    let visible_rows = (area.height as usize).saturating_sub(3);
+
+    // Clamp scroll offset so we don't scroll past the end
+    let max_offset = filtered.len().saturating_sub(visible_rows);
+    let scroll_offset = scroll_offset.min(max_offset);
+
     let header = Row::new(vec![
         Cell::from("#"),
         Cell::from("Name"),
@@ -43,9 +52,16 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
     )
     .bottom_margin(0);
 
-    let rows: Vec<Row> = filtered
+    // Only render the visible slice of rows
+    let visible_filtered: Vec<_> = filtered
         .iter()
         .enumerate()
+        .skip(scroll_offset)
+        .take(visible_rows.max(1))
+        .collect();
+
+    let rows: Vec<Row> = visible_filtered
+        .iter()
         .map(|(i, p)| {
             let is_nominated = nominated_name.map_or(false, |name| name == p.name);
             let style = if is_nominated {
@@ -80,8 +96,6 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
         ratatui::layout::Constraint::Length(7),
     ];
 
-    let _scroll_offset = state.scroll_offset.get("available").copied().unwrap_or(0);
-
     // When filter mode is active, highlight the border in cyan and show a
     // "[FILTER MODE]" label so the user has clear feedback that keystrokes
     // are being routed to the filter input rather than the navigation layer.
@@ -105,6 +119,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
             .title(title)
     };
 
+
     let table = Table::new(rows, widths)
         .header(header)
         .block(block)
@@ -112,6 +127,17 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
         .highlight_symbol(">> ");
 
     frame.render_widget(table, area);
+
+    // Render vertical scrollbar if content overflows
+    if filtered.len() > visible_rows {
+        let mut scrollbar_state = ScrollbarState::new(filtered.len().saturating_sub(visible_rows))
+            .position(scroll_offset);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight),
+            area.inner(Margin { vertical: 1, horizontal: 0 }),
+            &mut scrollbar_state,
+        );
+    }
 }
 
 /// Filter players by position and text search.

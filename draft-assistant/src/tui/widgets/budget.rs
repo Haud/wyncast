@@ -16,11 +16,19 @@ use crate::tui::{BudgetStatus, ViewState};
 pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
     let lines = build_budget_lines(&state.budget);
 
-    let paragraph = Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("Budget"),
-    );
+    let scroll_offset = state.scroll_offset.get("sidebar").copied().unwrap_or(0);
+    let total_lines = lines.len();
+    let visible_rows = (area.height as usize).saturating_sub(2);
+    let max_offset = total_lines.saturating_sub(visible_rows);
+    let scroll = (scroll_offset.min(max_offset)) as u16;
+
+    let paragraph = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Budget"),
+        )
+        .scroll((scroll, 0));
     frame.render_widget(paragraph, area);
 }
 
