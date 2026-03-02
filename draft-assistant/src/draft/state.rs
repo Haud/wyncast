@@ -507,8 +507,15 @@ pub fn compute_state_diff(
                 diff.new_nomination = Some(nomination_from_payload(curr));
             } else if prev.current_bid != curr.current_bid
                 || prev.current_bidder != curr.current_bidder
+                || (prev.nominated_by.is_empty() && !curr.nominated_by.is_empty())
             {
-                // Same player, bid changed
+                // Same player, bid changed or nominated_by was backfilled.
+                // The nominated_by check handles a race condition where the
+                // ESPN bid history DOM is not yet populated when the nomination
+                // first appears (the bidding form triggers the nomination but
+                // bid history items render slightly later). Once the bid
+                // history appears the extension sends an updated nominated_by;
+                // we detect this as a bid update so the TUI picks it up.
                 diff.bid_updated = true;
                 diff.new_nomination = Some(nomination_from_payload(curr));
             }
@@ -1043,6 +1050,94 @@ mod tests {
             diff.new_nomination.as_ref().unwrap().current_bidder,
             Some("team_3".to_string())
         );
+    }
+
+    #[test]
+    fn diff_bid_updated_nominated_by_backfilled() {
+        // Simulates the race condition where the ESPN bid history DOM hasn't
+        // rendered yet when the nomination first appears. The initial snapshot
+        // has nominated_by = "" (empty), then a subsequent snapshot populates
+        // it. Even if bid/bidder are unchanged, we should detect this as a
+        // bid_updated so the TUI can display the nominator.
+        let previous = StateUpdatePayload {
+            picks: vec![],
+            current_nomination: Some(NominationPayload {
+                player_id: "p1".to_string(),
+                player_name: "Player A".to_string(),
+                position: "SP".to_string(),
+                nominated_by: "".to_string(), // empty — bid history not rendered yet
+                current_bid: 1,
+                current_bidder: Some("team_2".to_string()),
+                time_remaining: Some(30),
+                eligible_slots: vec![],
+            }),
+            ..Default::default()
+        };
+        let current = StateUpdatePayload {
+            picks: vec![],
+            current_nomination: Some(NominationPayload {
+                player_id: "p1".to_string(),
+                player_name: "Player A".to_string(),
+                position: "SP".to_string(),
+                nominated_by: "team_3".to_string(), // now populated
+                current_bid: 1,        // unchanged
+                current_bidder: Some("team_2".to_string()), // unchanged
+                time_remaining: Some(28),
+                eligible_slots: vec![],
+            }),
+            ..Default::default()
+        };
+
+        let diff = compute_state_diff(&Some(previous), &current);
+        assert!(!diff.nomination_changed, "should not be a new nomination");
+        assert!(
+            diff.bid_updated,
+            "should detect nominated_by backfill as bid_updated"
+        );
+        assert!(diff.new_nomination.is_some());
+        assert_eq!(
+            diff.new_nomination.as_ref().unwrap().nominated_by,
+            "team_3"
+        );
+    }
+
+    #[test]
+    fn diff_no_update_when_nominated_by_stays_populated() {
+        // Once nominated_by is populated, subsequent snapshots with the same
+        // value should NOT trigger bid_updated (no change).
+        let previous = StateUpdatePayload {
+            picks: vec![],
+            current_nomination: Some(NominationPayload {
+                player_id: "p1".to_string(),
+                player_name: "Player A".to_string(),
+                position: "SP".to_string(),
+                nominated_by: "team_3".to_string(),
+                current_bid: 1,
+                current_bidder: Some("team_2".to_string()),
+                time_remaining: Some(30),
+                eligible_slots: vec![],
+            }),
+            ..Default::default()
+        };
+        let current = StateUpdatePayload {
+            picks: vec![],
+            current_nomination: Some(NominationPayload {
+                player_id: "p1".to_string(),
+                player_name: "Player A".to_string(),
+                position: "SP".to_string(),
+                nominated_by: "team_3".to_string(), // same value
+                current_bid: 1,        // unchanged
+                current_bidder: Some("team_2".to_string()), // unchanged
+                time_remaining: Some(28),
+                eligible_slots: vec![],
+            }),
+            ..Default::default()
+        };
+
+        let diff = compute_state_diff(&Some(previous), &current);
+        assert!(!diff.nomination_changed);
+        assert!(!diff.bid_updated, "no change — should not trigger bid_updated");
+        assert!(diff.new_nomination.is_none());
     }
 
     #[test]
