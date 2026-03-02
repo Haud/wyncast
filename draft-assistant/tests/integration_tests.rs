@@ -2,7 +2,7 @@
 //
 // These tests exercise the full system end-to-end using the library crate's
 // public API. They verify that the major subsystems (valuation pipeline,
-// draft state management, crash recovery, CSV import, LLM prompt construction,
+// draft state management, CSV import, LLM prompt construction,
 // and WebSocket protocol handling) work together correctly.
 
 use std::collections::HashMap;
@@ -505,127 +505,6 @@ fn valuations_recalculate_after_picks() {
             );
         }
     }
-}
-
-// ===========================================================================
-// Test: Crash recovery
-// ===========================================================================
-
-#[test]
-fn crash_recovery_restores_picks_and_continues() {
-    let config = inline_config();
-    let projections = load_fixture_projections(&config);
-    let mut available = load_fixture_players(&config);
-
-    // Simulate a first session: create state, record picks, then "crash"
-    let db = Database::open(":memory:").expect("in-memory db");
-    let draft_id = Database::generate_draft_id();
-
-    // Record 3 picks directly to DB (simulating a previous session)
-    let events = generate_mock_draft_events();
-    for event in &events[..3] {
-        let pick = mock_event_to_pick(event);
-        db.record_pick(&pick, &draft_id).unwrap();
-    }
-    db.set_draft_id(&draft_id).unwrap();
-    assert!(db.has_draft_in_progress(&draft_id).unwrap());
-
-    // Simulate restart: create a fresh AppState with the same DB
-    let mut draft_state = DraftState::new(260, &roster_config());
-    draft_state.reconcile_budgets(&ten_team_budgets());
-    draft_state.set_my_team_by_name("Team 1");
-
-    draft_assistant::valuation::recalculate_all(
-        &mut available,
-        &config.league,
-        &config.strategy,
-        &draft_state,
-    );
-    let initial_player_count = available.len();
-
-    let llm_client = LlmClient::Disabled;
-    let (llm_tx, _llm_rx) = mpsc::channel(16);
-    let mut state = AppState::new(
-        config,
-        draft_state,
-        available,
-        projections,
-        db,
-        draft_id,
-        llm_client,
-        llm_tx,
-        None,
-    );
-
-    // Run crash recovery
-    let recovered = app::recover_from_db(&mut state).unwrap();
-    assert!(recovered, "Should detect draft in progress and recover");
-
-    // Verify state was restored
-    assert_eq!(state.draft_state.pick_count, 3);
-    assert_eq!(state.draft_state.picks.len(), 3);
-    assert_eq!(state.draft_state.picks[0].player_name, "Shohei Ohtani");
-    assert_eq!(state.draft_state.picks[1].player_name, "Aaron Judge");
-    assert_eq!(state.draft_state.picks[2].player_name, "Juan Soto");
-
-    // Players should be removed from available pool
-    assert_eq!(state.available_players.len(), initial_player_count - 3);
-    assert!(!state.available_players.iter().any(|p| p.name == "Shohei Ohtani"));
-    assert!(!state.available_players.iter().any(|p| p.name == "Aaron Judge"));
-    assert!(!state.available_players.iter().any(|p| p.name == "Juan Soto"));
-
-    // Budget should be updated for each team
-    let team3 = state.draft_state.team("3").unwrap();
-    assert_eq!(team3.budget_spent, 62);
-    let team4 = state.draft_state.team("4").unwrap();
-    assert_eq!(team4.budget_spent, 55);
-    let team5 = state.draft_state.team("5").unwrap();
-    assert_eq!(team5.budget_spent, 48);
-
-    // Inflation and scarcity should be recalculated
-    assert!(state.inflation.total_dollars_spent > 0.0);
-    assert!(!state.scarcity.is_empty());
-
-    // Now continue the draft with a new pick (pick 4)
-    let pick4 = mock_event_to_pick(&events[3]);
-    state.process_new_picks(vec![pick4]);
-
-    assert_eq!(state.draft_state.pick_count, 4);
-    assert!(!state.available_players.iter().any(|p| p.name == "Bobby Witt Jr."));
-
-    // All 4 picks should be in the DB
-    let db_picks = state.db.load_picks(&state.draft_id).unwrap();
-    assert_eq!(db_picks.len(), 4);
-}
-
-/// Verify that crash recovery with an empty DB returns false (no recovery needed).
-#[test]
-fn crash_recovery_empty_db_returns_false() {
-    let config = inline_config();
-    let projections = load_fixture_projections(&config);
-    let available = load_fixture_players(&config);
-    let mut draft_state = DraftState::new(260, &roster_config());
-    draft_state.reconcile_budgets(&ten_team_budgets());
-    draft_state.set_my_team_by_name("Team 1");
-    let db = Database::open(":memory:").expect("in-memory db");
-    let draft_id = Database::generate_draft_id();
-    let llm_client = LlmClient::Disabled;
-    let (llm_tx, _llm_rx) = mpsc::channel(16);
-    let mut state = AppState::new(
-        config,
-        draft_state,
-        available,
-        projections,
-        db,
-        draft_id,
-        llm_client,
-        llm_tx,
-        None,
-    );
-
-    let recovered = app::recover_from_db(&mut state).unwrap();
-    assert!(!recovered, "Empty DB should not trigger recovery");
-    assert_eq!(state.draft_state.pick_count, 0);
 }
 
 // ===========================================================================

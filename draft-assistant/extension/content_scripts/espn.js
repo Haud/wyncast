@@ -725,6 +725,7 @@ function startPeriodicKeyframe() {
   if (keyframeIntervalId) clearInterval(keyframeIntervalId);
   keyframeIntervalId = setInterval(() => {
     const state = scrapeDom();
+    if (!state) return; // DOM not ready yet
     const fingerprint = computeFingerprint(state);
     if (fingerprint !== lastFingerprint) {
       sendFullStateSync();
