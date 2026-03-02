@@ -91,6 +91,11 @@ pub struct PickData {
     pub price: u32,
     #[serde(default)]
     pub eligible_slots: Vec<u16>,
+    /// The ESPN roster slot ID that ESPN assigned this player to when
+    /// the pick was made. Sent by the extension when it can determine
+    /// the actual placement slot. None / absent if unknown.
+    #[serde(default)]
+    pub assigned_slot: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -423,6 +428,7 @@ mod tests {
                     position: "DH".to_string(),
                     price: 62,
                     eligible_slots: vec![11, 12, 16, 17],
+                    assigned_slot: None,
                 }],
                 current_nomination: Some(NominationData {
                     player_id: "67890".to_string(),
@@ -655,6 +661,7 @@ mod tests {
                     position: "C".to_string(),
                     price: 10,
                     eligible_slots: vec![],
+                    assigned_slot: None,
                 }],
                 current_nomination: None,
                 my_team_id: Some("team_5".to_string()),
@@ -834,10 +841,14 @@ mod tests {
             position: "SS".into(),
             price: 40,
             eligible_slots: vec![4, 2, 5, 8, 9, 10, 11, 12, 16, 17],
+            assigned_slot: None,
         };
         let json = serde_json::to_string(&pick_data).unwrap();
         let parsed: PickData = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.eligible_slots, vec![4, 2, 5, 8, 9, 10, 11, 12, 16, 17]);
+        assert_eq!(
+            parsed.eligible_slots,
+            vec![4, 2, 5, 8, 9, 10, 11, 12, 16, 17]
+        );
     }
 
     // -- FULL_STATE_SYNC variant --
@@ -857,6 +868,7 @@ mod tests {
                         position: "CF".to_string(),
                         price: 50,
                         eligible_slots: vec![],
+                        assigned_slot: None,
                     },
                     PickData {
                         pick_number: 2,
@@ -867,6 +879,7 @@ mod tests {
                         position: "SP".to_string(),
                         price: 65,
                         eligible_slots: vec![11, 12, 16, 17],
+                        assigned_slot: None,
                     },
                 ],
                 current_nomination: None,

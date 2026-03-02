@@ -18,8 +18,8 @@ impl Database {
     /// exist. Pass `":memory:"` for an ephemeral in-memory database (useful
     /// for tests).
     pub fn open(path: &str) -> Result<Self> {
-        let conn = Connection::open(path)
-            .with_context(|| format!("failed to open database at {path}"))?;
+        let conn =
+            Connection::open(path).with_context(|| format!("failed to open database at {path}"))?;
 
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
@@ -57,6 +57,7 @@ impl Database {
                 position       TEXT NOT NULL,
                 price          INTEGER NOT NULL,
                 eligible_slots TEXT,
+                assigned_slot  INTEGER,
                 draft_id       TEXT NOT NULL DEFAULT '',
                 timestamp      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
                 PRIMARY KEY (pick_number, draft_id)
@@ -71,22 +72,32 @@ impl Database {
         .context("failed to create database schema")?;
 
         // Migration: add eligible_slots column if it doesn't exist (for pre-v0.2 databases)
-        conn.execute_batch(
-            "ALTER TABLE draft_picks ADD COLUMN eligible_slots TEXT;"
-        ).ok(); // Silently ignore if column already exists (ALTER TABLE fails with "duplicate column name")
+        conn.execute_batch("ALTER TABLE draft_picks ADD COLUMN eligible_slots TEXT;")
+            .ok(); // Silently ignore if column already exists (ALTER TABLE fails with "duplicate column name")
 
         // Migration: migrate draft_picks to composite primary key (pick_number, draft_id).
         // Detects old schema by checking if the draft_id column exists. If not, the
         // table is from a pre-draft-id version and needs a full table rebuild since
         // SQLite doesn't support altering primary keys in place.
+        // NOTE: This migration must run BEFORE the assigned_slot ALTER TABLE so that
+        // the rebuilt table gets the assigned_slot column added by the next migration.
         Self::migrate_draft_picks_add_draft_id(&conn)?;
+
+        // Migration: add assigned_slot column if it doesn't exist.
+        // Stores the ESPN roster slot ID the player was placed in when picked.
+        // NULL for picks loaded from pre-roster-slot-truth databases.
+        // Must run AFTER migrate_draft_picks_add_draft_id since that migration rebuilds
+        // the table without this column.
+        conn.execute_batch("ALTER TABLE draft_picks ADD COLUMN assigned_slot INTEGER;")
+            .ok(); // Silently ignore if column already exists
 
         // Index on draft_id for efficient filtering. The composite PK is ordered
         // (pick_number, draft_id) so queries filtering by draft_id alone cannot
         // use it efficiently.
         conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_draft_picks_draft_id ON draft_picks(draft_id);"
-        ).context("failed to create draft_id index")?;
+            "CREATE INDEX IF NOT EXISTS idx_draft_picks_draft_id ON draft_picks(draft_id);",
+        )
+        .context("failed to create draft_id index")?;
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -163,10 +174,11 @@ impl Database {
         let conn = self.conn();
         let eligible_slots_json = serde_json::to_string(&pick.eligible_slots)
             .context("failed to serialize eligible_slots")?;
+        let assigned_slot_val: Option<i64> = pick.assigned_slot.map(|v| v as i64);
         conn.execute(
             "INSERT OR IGNORE INTO draft_picks
-                (pick_number, team_id, team_name, espn_player_id, player_name, position, price, eligible_slots, draft_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                (pick_number, team_id, team_name, espn_player_id, player_name, position, price, eligible_slots, assigned_slot, draft_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 pick.pick_number,
                 pick.team_id,
@@ -176,6 +188,7 @@ impl Database {
                 pick.position,
                 pick.price,
                 eligible_slots_json,
+                assigned_slot_val,
                 draft_id,
             ],
         )
@@ -191,7 +204,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT pick_number, team_id, team_name, player_name, position, price, espn_player_id, eligible_slots
+                "SELECT pick_number, team_id, team_name, player_name, position, price, espn_player_id, eligible_slots, assigned_slot
                  FROM draft_picks WHERE draft_id = ?1 ORDER BY pick_number",
             )
             .context("failed to prepare load_picks query")?;
@@ -202,6 +215,9 @@ impl Database {
                 let eligible_slots = eligible_slots_json
                     .and_then(|json_str| serde_json::from_str::<Vec<u16>>(&json_str).ok())
                     .unwrap_or_default();
+                let assigned_slot_val: Option<u16> = row
+                    .get::<_, Option<i64>>(8)?
+                    .and_then(|v| u16::try_from(v).ok());
                 Ok(DraftPick {
                     pick_number: row.get(0)?,
                     team_id: row.get(1)?,
@@ -211,6 +227,7 @@ impl Database {
                     price: row.get(5)?,
                     espn_player_id: row.get(6)?,
                     eligible_slots,
+                    assigned_slot: assigned_slot_val,
                 })
             })
             .context("failed to query draft picks")?
@@ -224,8 +241,7 @@ impl Database {
     /// repeated saves overwrite the previous value.
     pub fn save_state(&self, key: &str, value: &serde_json::Value) -> Result<()> {
         let conn = self.conn();
-        let json_str =
-            serde_json::to_string(value).context("failed to serialize state value")?;
+        let json_str = serde_json::to_string(value).context("failed to serialize state value")?;
         conn.execute(
             "INSERT OR REPLACE INTO draft_state (key, value) VALUES (?1, ?2)",
             params![key, json_str],
@@ -252,8 +268,8 @@ impl Database {
         match rows.next() {
             Some(row_result) => {
                 let json_str = row_result.context("failed to read state row")?;
-                let value: serde_json::Value = serde_json::from_str(&json_str)
-                    .context("failed to deserialize state value")?;
+                let value: serde_json::Value =
+                    serde_json::from_str(&json_str).context("failed to deserialize state value")?;
                 Ok(Some(value))
             }
             None => Ok(None),
@@ -430,7 +446,8 @@ impl Database {
         )
         .context("failed to save espn_draft_id")?;
 
-        tx.commit().context("failed to commit draft ID transaction")?;
+        tx.commit()
+            .context("failed to commit draft ID transaction")?;
         Ok(())
     }
 
@@ -453,7 +470,9 @@ impl Database {
         players: &[(&str, &str, &[String], &str, &[(&str, &str, f64)])],
     ) -> Result<()> {
         let mut conn = self.conn();
-        let tx = conn.transaction().context("failed to begin import transaction")?;
+        let tx = conn
+            .transaction()
+            .context("failed to begin import transaction")?;
 
         for &(name, team, ref positions, player_type, ref projections) in players {
             let positions_json =
@@ -511,6 +530,7 @@ mod tests {
             price: 25,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         }
     }
 
@@ -559,6 +579,7 @@ mod tests {
             price: 40,
             espn_player_id: Some("espn_2".to_string()),
             eligible_slots: vec![],
+            assigned_slot: None,
         };
 
         db.record_pick(&pick1, TEST_DRAFT_ID).unwrap();
@@ -1058,7 +1079,11 @@ mod tests {
         // Legacy picks have NULL draft_id, so they should NOT appear
         // when loading with a specific draft_id.
         let picks = db.load_picks(TEST_DRAFT_ID).unwrap();
-        assert_eq!(picks.len(), 0, "Legacy picks with NULL draft_id should not be loaded");
+        assert_eq!(
+            picks.len(),
+            0,
+            "Legacy picks with NULL draft_id should not be loaded"
+        );
 
         // Legacy picks should not count for has_draft_in_progress either
         assert!(!db.has_draft_in_progress(TEST_DRAFT_ID).unwrap());
@@ -1073,6 +1098,7 @@ mod tests {
             price: 35,
             espn_player_id: Some("espn_99".to_string()),
             eligible_slots: vec![9, 5, 12, 16, 17],
+            assigned_slot: None,
         };
         db.record_pick(&new_pick, TEST_DRAFT_ID).unwrap();
 
@@ -1143,9 +1169,17 @@ mod tests {
     #[test]
     fn generate_draft_id_format() {
         let id = Database::generate_draft_id();
-        assert!(id.starts_with("draft_"), "Draft ID should start with 'draft_': {}", id);
+        assert!(
+            id.starts_with("draft_"),
+            "Draft ID should start with 'draft_': {}",
+            id
+        );
         // Should be ~25 chars: draft_YYYYMMDD_HHMMSS_SSS
-        assert!(id.len() >= 24, "Draft ID should be at least 24 chars: {}", id);
+        assert!(
+            id.len() >= 24,
+            "Draft ID should be at least 24 chars: {}",
+            id
+        );
     }
 
     #[test]

@@ -112,7 +112,10 @@ impl Position {
 
     /// Whether this is a meta-slot (not a concrete playing position).
     pub fn is_meta_slot(&self) -> bool {
-        matches!(self, Position::Utility | Position::Bench | Position::InjuredList)
+        matches!(
+            self,
+            Position::Utility | Position::Bench | Position::InjuredList
+        )
     }
 
     /// Deterministic ordering index for roster slot display.
@@ -172,7 +175,11 @@ pub fn position_from_espn_slot(slot_id: u16) -> Option<Position> {
 /// Regular slots return a single position; combo/generic slots expand to multiple.
 pub fn positions_from_espn_slot(slot_id: u16) -> Vec<Position> {
     match slot_id {
-        ESPN_SLOT_OF => vec![Position::LeftField, Position::CenterField, Position::RightField],
+        ESPN_SLOT_OF => vec![
+            Position::LeftField,
+            Position::CenterField,
+            Position::RightField,
+        ],
         ESPN_SLOT_MI => vec![Position::SecondBase, Position::ShortStop],
         ESPN_SLOT_CI => vec![Position::FirstBase, Position::ThirdBase],
         ESPN_SLOT_P => vec![Position::StartingPitcher, Position::ReliefPitcher],
@@ -231,6 +238,13 @@ pub struct DraftPick {
     /// Empty if not available (manual entry, old data).
     #[serde(default)]
     pub eligible_slots: Vec<u16>,
+    /// The ESPN roster slot ID that ESPN actually assigned this player to
+    /// when the pick was made (e.g. 12 for UTIL, 14 for SP). When present,
+    /// this overrides position-inference logic so two-way players like Ohtani
+    /// land in the correct slot (e.g. UTIL instead of SP).
+    /// None if not reported by the extension (old data, DOM-only scraping).
+    #[serde(default)]
+    pub assigned_slot: Option<u16>,
 }
 
 #[cfg(test)]
@@ -241,7 +255,10 @@ mod tests {
     fn from_str_pos_standard_positions() {
         assert_eq!(Position::from_str_pos("C"), Some(Position::Catcher));
         assert_eq!(Position::from_str_pos("SS"), Some(Position::ShortStop));
-        assert_eq!(Position::from_str_pos("SP"), Some(Position::StartingPitcher));
+        assert_eq!(
+            Position::from_str_pos("SP"),
+            Some(Position::StartingPitcher)
+        );
         assert_eq!(Position::from_str_pos("RP"), Some(Position::ReliefPitcher));
         assert_eq!(Position::from_str_pos("LF"), Some(Position::LeftField));
         assert_eq!(Position::from_str_pos("CF"), Some(Position::CenterField));
@@ -263,7 +280,10 @@ mod tests {
     #[test]
     fn from_str_pos_special_slots() {
         assert_eq!(Position::from_str_pos("UTIL"), Some(Position::Utility));
-        assert_eq!(Position::from_str_pos("DH"), Some(Position::DesignatedHitter));
+        assert_eq!(
+            Position::from_str_pos("DH"),
+            Some(Position::DesignatedHitter)
+        );
         assert_eq!(Position::from_str_pos("BE"), Some(Position::Bench));
         assert_eq!(Position::from_str_pos("BN"), Some(Position::Bench));
         assert_eq!(Position::from_str_pos("IL"), Some(Position::InjuredList));
@@ -272,7 +292,10 @@ mod tests {
 
     #[test]
     fn from_str_pos_case_insensitive() {
-        assert_eq!(Position::from_str_pos("sp"), Some(Position::StartingPitcher));
+        assert_eq!(
+            Position::from_str_pos("sp"),
+            Some(Position::StartingPitcher)
+        );
         assert_eq!(Position::from_str_pos("Ss"), Some(Position::ShortStop));
         assert_eq!(Position::from_str_pos("1b"), Some(Position::FirstBase));
         assert_eq!(Position::from_str_pos("util"), Some(Position::Utility));
@@ -347,6 +370,7 @@ mod tests {
             price: 45,
             espn_player_id: Some("12345".to_string()),
             eligible_slots: vec![],
+            assigned_slot: None,
         };
         assert_eq!(pick.pick_number, 1);
         assert_eq!(pick.price, 45);
@@ -359,20 +383,59 @@ mod tests {
 
     #[test]
     fn position_from_espn_slot_standard_positions() {
-        assert_eq!(position_from_espn_slot(ESPN_SLOT_C), Some(Position::Catcher));
-        assert_eq!(position_from_espn_slot(ESPN_SLOT_1B), Some(Position::FirstBase));
-        assert_eq!(position_from_espn_slot(ESPN_SLOT_2B), Some(Position::SecondBase));
-        assert_eq!(position_from_espn_slot(ESPN_SLOT_3B), Some(Position::ThirdBase));
-        assert_eq!(position_from_espn_slot(ESPN_SLOT_SS), Some(Position::ShortStop));
-        assert_eq!(position_from_espn_slot(ESPN_SLOT_LF), Some(Position::LeftField));
-        assert_eq!(position_from_espn_slot(ESPN_SLOT_CF), Some(Position::CenterField));
-        assert_eq!(position_from_espn_slot(ESPN_SLOT_RF), Some(Position::RightField));
-        assert_eq!(position_from_espn_slot(ESPN_SLOT_DH), Some(Position::DesignatedHitter));
-        assert_eq!(position_from_espn_slot(ESPN_SLOT_UTIL), Some(Position::Utility));
-        assert_eq!(position_from_espn_slot(ESPN_SLOT_SP), Some(Position::StartingPitcher));
-        assert_eq!(position_from_espn_slot(ESPN_SLOT_RP), Some(Position::ReliefPitcher));
+        assert_eq!(
+            position_from_espn_slot(ESPN_SLOT_C),
+            Some(Position::Catcher)
+        );
+        assert_eq!(
+            position_from_espn_slot(ESPN_SLOT_1B),
+            Some(Position::FirstBase)
+        );
+        assert_eq!(
+            position_from_espn_slot(ESPN_SLOT_2B),
+            Some(Position::SecondBase)
+        );
+        assert_eq!(
+            position_from_espn_slot(ESPN_SLOT_3B),
+            Some(Position::ThirdBase)
+        );
+        assert_eq!(
+            position_from_espn_slot(ESPN_SLOT_SS),
+            Some(Position::ShortStop)
+        );
+        assert_eq!(
+            position_from_espn_slot(ESPN_SLOT_LF),
+            Some(Position::LeftField)
+        );
+        assert_eq!(
+            position_from_espn_slot(ESPN_SLOT_CF),
+            Some(Position::CenterField)
+        );
+        assert_eq!(
+            position_from_espn_slot(ESPN_SLOT_RF),
+            Some(Position::RightField)
+        );
+        assert_eq!(
+            position_from_espn_slot(ESPN_SLOT_DH),
+            Some(Position::DesignatedHitter)
+        );
+        assert_eq!(
+            position_from_espn_slot(ESPN_SLOT_UTIL),
+            Some(Position::Utility)
+        );
+        assert_eq!(
+            position_from_espn_slot(ESPN_SLOT_SP),
+            Some(Position::StartingPitcher)
+        );
+        assert_eq!(
+            position_from_espn_slot(ESPN_SLOT_RP),
+            Some(Position::ReliefPitcher)
+        );
         assert_eq!(position_from_espn_slot(ESPN_SLOT_BE), Some(Position::Bench));
-        assert_eq!(position_from_espn_slot(ESPN_SLOT_IL), Some(Position::InjuredList));
+        assert_eq!(
+            position_from_espn_slot(ESPN_SLOT_IL),
+            Some(Position::InjuredList)
+        );
     }
 
     #[test]
@@ -410,7 +473,13 @@ mod tests {
         for pos in positions {
             let slot_id = espn_slot_from_position(pos);
             let roundtripped = position_from_espn_slot(slot_id);
-            assert_eq!(roundtripped, Some(pos), "Roundtrip failed for {:?} (slot {})", pos, slot_id);
+            assert_eq!(
+                roundtripped,
+                Some(pos),
+                "Roundtrip failed for {:?} (slot {})",
+                pos,
+                slot_id
+            );
         }
     }
 
@@ -418,9 +487,16 @@ mod tests {
     fn playing_positions_from_slots_filters_meta_slots() {
         // Mookie Betts: SS, 2B, OF, LF, CF, RF, DH, UTIL, BE, IL
         let slots = vec![
-            ESPN_SLOT_SS, ESPN_SLOT_2B, ESPN_SLOT_OF, ESPN_SLOT_LF,
-            ESPN_SLOT_CF, ESPN_SLOT_RF, ESPN_SLOT_DH, ESPN_SLOT_UTIL,
-            ESPN_SLOT_BE, ESPN_SLOT_IL,
+            ESPN_SLOT_SS,
+            ESPN_SLOT_2B,
+            ESPN_SLOT_OF,
+            ESPN_SLOT_LF,
+            ESPN_SLOT_CF,
+            ESPN_SLOT_RF,
+            ESPN_SLOT_DH,
+            ESPN_SLOT_UTIL,
+            ESPN_SLOT_BE,
+            ESPN_SLOT_IL,
         ];
         let positions = playing_positions_from_slots(&slots);
         // Should include SS, 2B, LF, CF, RF, DH
@@ -474,7 +550,14 @@ mod tests {
     #[test]
     fn positions_from_espn_slot_generic_of() {
         let positions = positions_from_espn_slot(ESPN_SLOT_OF);
-        assert_eq!(positions, vec![Position::LeftField, Position::CenterField, Position::RightField]);
+        assert_eq!(
+            positions,
+            vec![
+                Position::LeftField,
+                Position::CenterField,
+                Position::RightField
+            ]
+        );
     }
 
     #[test]
@@ -492,16 +575,31 @@ mod tests {
     #[test]
     fn positions_from_espn_slot_generic_pitcher() {
         let positions = positions_from_espn_slot(ESPN_SLOT_P);
-        assert_eq!(positions, vec![Position::StartingPitcher, Position::ReliefPitcher]);
+        assert_eq!(
+            positions,
+            vec![Position::StartingPitcher, Position::ReliefPitcher]
+        );
     }
 
     #[test]
     fn positions_from_espn_slot_regular_slot() {
         // Regular slots should return a single-element vec
-        assert_eq!(positions_from_espn_slot(ESPN_SLOT_C), vec![Position::Catcher]);
-        assert_eq!(positions_from_espn_slot(ESPN_SLOT_SS), vec![Position::ShortStop]);
-        assert_eq!(positions_from_espn_slot(ESPN_SLOT_SP), vec![Position::StartingPitcher]);
-        assert_eq!(positions_from_espn_slot(ESPN_SLOT_BE), vec![Position::Bench]);
+        assert_eq!(
+            positions_from_espn_slot(ESPN_SLOT_C),
+            vec![Position::Catcher]
+        );
+        assert_eq!(
+            positions_from_espn_slot(ESPN_SLOT_SS),
+            vec![Position::ShortStop]
+        );
+        assert_eq!(
+            positions_from_espn_slot(ESPN_SLOT_SP),
+            vec![Position::StartingPitcher]
+        );
+        assert_eq!(
+            positions_from_espn_slot(ESPN_SLOT_BE),
+            vec![Position::Bench]
+        );
     }
 
     #[test]

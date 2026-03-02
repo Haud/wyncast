@@ -546,6 +546,7 @@ impl AppState {
                     position: p.position.clone(),
                     price: p.price,
                     eligible_slots: p.eligible_slots.clone(),
+                    assigned_slot: p.assigned_slot,
                 })
                 .collect(),
             current_nomination: payload.current_nomination.as_ref().and_then(|n| {
@@ -1205,6 +1206,7 @@ async fn handle_user_command(
                     price,
                     espn_player_id: None,
                     eligible_slots: vec![],
+            assigned_slot: None,
                 };
                 state.process_new_picks(vec![pick]);
 
@@ -1613,6 +1615,7 @@ mod tests {
             price: 45,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         };
 
         state.process_new_picks(vec![pick]);
@@ -1646,6 +1649,7 @@ mod tests {
             price: 45,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         };
 
         state.process_new_picks(vec![pick]);
@@ -1675,6 +1679,7 @@ mod tests {
             price: 45,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         };
 
         state.process_new_picks(vec![pick]);
@@ -1711,6 +1716,7 @@ mod tests {
             price: 45,
             espn_player_id: Some("espn_123".into()),
             eligible_slots: vec![],
+            assigned_slot: None,
         };
 
         state.process_new_picks(vec![pick]);
@@ -1739,6 +1745,7 @@ mod tests {
                 price: 45,
                 espn_player_id: Some("espn_1".into()),
                 eligible_slots: vec![],
+            assigned_slot: None,
             },
             DraftPick {
                 pick_number: 1,
@@ -1749,6 +1756,7 @@ mod tests {
                 price: 50,
                 espn_player_id: Some("espn_2".into()),
                 eligible_slots: vec![],
+            assigned_slot: None,
             },
             DraftPick {
                 pick_number: 1,
@@ -1759,6 +1767,7 @@ mod tests {
                 price: 30,
                 espn_player_id: Some("espn_3".into()),
                 eligible_slots: vec![],
+            assigned_slot: None,
             },
         ];
 
@@ -1790,6 +1799,7 @@ mod tests {
                 price: 45,
                 espn_player_id: None,
                 eligible_slots: vec![],
+            assigned_slot: None,
             },
             DraftPick {
                 pick_number: 2,
@@ -1800,6 +1810,7 @@ mod tests {
                 price: 50,
                 espn_player_id: None,
                 eligible_slots: vec![],
+            assigned_slot: None,
             },
         ];
 
@@ -1828,6 +1839,7 @@ mod tests {
             price: 30,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         };
 
         state.process_new_picks(vec![pick]);
@@ -2536,6 +2548,7 @@ mod tests {
                 position: "SP".into(),
                 price: 30,
                 eligible_slots: vec![14, 13, 16, 17],
+            assigned_slot: None,
             }],
             current_nomination: Some(crate::protocol::NominationData {
                 player_id: "espn_2".into(),
@@ -3081,6 +3094,7 @@ mod tests {
                 price: 45,
                 espn_player_id: None,
                 eligible_slots: vec![],
+            assigned_slot: None,
             },
             DraftPick {
                 pick_number: 2,
@@ -3091,6 +3105,7 @@ mod tests {
                 price: 50,
                 espn_player_id: None,
                 eligible_slots: vec![],
+            assigned_slot: None,
             },
             DraftPick {
                 pick_number: 3,
@@ -3101,6 +3116,7 @@ mod tests {
                 price: 30,
                 espn_player_id: None,
                 eligible_slots: vec![],
+            assigned_slot: None,
             },
         ]);
 
@@ -3170,6 +3186,7 @@ mod tests {
                 price: 45,
                 espn_player_id: None,
                 eligible_slots: vec![],
+            assigned_slot: None,
             },
             DraftPick {
                 pick_number: 2,
@@ -3180,6 +3197,7 @@ mod tests {
                 price: 50,
                 espn_player_id: None,
                 eligible_slots: vec![],
+            assigned_slot: None,
             },
         ]);
 
@@ -3276,6 +3294,7 @@ mod tests {
                 price: 45,
                 espn_player_id: None,
                 eligible_slots: vec![],
+            assigned_slot: None,
             },
             DraftPick {
                 pick_number: 2,
@@ -3286,6 +3305,7 @@ mod tests {
                 price: 50,
                 espn_player_id: None,
                 eligible_slots: vec![],
+            assigned_slot: None,
             },
         ]);
 
@@ -3366,6 +3386,7 @@ mod tests {
                 position: "1B".into(),
                 price: 45,
                 eligible_slots: vec![],
+            assigned_slot: None,
             }],
             current_nomination: None,
             teams: vec![],
@@ -3402,6 +3423,7 @@ mod tests {
                     position: "1B".into(),
                     price: 45,
                     eligible_slots: vec![],
+            assigned_slot: None,
                 },
                 PickPayload {
                     pick_number: 2,
@@ -3412,6 +3434,7 @@ mod tests {
                     position: "SP".into(),
                     price: 50,
                     eligible_slots: vec![],
+            assigned_slot: None,
                 },
             ],
             current_nomination: None,
@@ -3447,6 +3470,7 @@ mod tests {
                     position: "1B".into(),
                     price: 45,
                     eligible_slots: vec![],
+            assigned_slot: None,
                 },
                 PickPayload {
                     pick_number: 2,
@@ -3457,6 +3481,7 @@ mod tests {
                     position: "SP".into(),
                     price: 50,
                     eligible_slots: vec![],
+            assigned_slot: None,
                 },
                 PickPayload {
                     pick_number: 3,
@@ -3467,6 +3492,7 @@ mod tests {
                     position: "2B".into(),
                     price: 30,
                     eligible_slots: vec![],
+            assigned_slot: None,
                 },
             ],
             current_nomination: None,
@@ -3522,6 +3548,7 @@ mod tests {
                 price: 45,
                 espn_player_id: None,
                 eligible_slots: vec![],
+            assigned_slot: None,
             },
             DraftPick {
                 pick_number: 2,
@@ -3532,6 +3559,7 @@ mod tests {
                 price: 50,
                 espn_player_id: None,
                 eligible_slots: vec![],
+            assigned_slot: None,
             },
         ]);
 
@@ -3574,6 +3602,7 @@ mod tests {
             price: 45,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         }]);
 
         // Pick should be recorded
@@ -3745,6 +3774,7 @@ mod tests {
                 position: "1B".into(),
                 price: 45,
                 eligible_slots: vec![],
+            assigned_slot: None,
             }],
             current_nomination: None,
             my_team_id: Some("Team 1".into()),
@@ -3787,6 +3817,7 @@ mod tests {
                 position: "1B".into(),
                 price: 45,
                 eligible_slots: vec![],
+            assigned_slot: None,
             }],
             current_nomination: None,
             my_team_id: Some("Team 1".into()),

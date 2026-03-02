@@ -9,13 +9,15 @@ use std::collections::HashMap;
 use ratatui::layout::{Margin, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
+use ratatui::widgets::{
+    Block, Borders, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+};
 use ratatui::Frame;
 
+use super::focused_border_style;
 use crate::draft::pick::DraftPick;
 use crate::tui::ViewState;
 use crate::valuation::zscore::PlayerValuation;
-use super::focused_border_style;
 
 /// Render the draft log into the given area.
 ///
@@ -78,11 +80,14 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState, focused: bool) {
 
     // Render vertical scrollbar whenever content overflows
     if total > visible_rows {
-        let mut scrollbar_state = ScrollbarState::new(total.saturating_sub(visible_rows))
-            .position(scroll_offset);
+        let mut scrollbar_state =
+            ScrollbarState::new(total.saturating_sub(visible_rows)).position(scroll_offset);
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight),
-            area.inner(Margin { vertical: 1, horizontal: 0 }),
+            area.inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
             &mut scrollbar_state,
         );
     }
@@ -144,11 +149,9 @@ mod tests {
             price: 45,
             espn_player_id: None,
             eligible_slots: vec![],
+            assigned_slot: None,
         };
-        assert_eq!(
-            format_pick(&pick),
-            "#42 Vorticists: Mike Trout (CF) -- $45"
-        );
+        assert_eq!(format_pick(&pick), "#42 Vorticists: Mike Trout (CF) -- $45");
     }
 
     #[test]
@@ -214,6 +217,7 @@ mod tests {
                 price: 30,
                 espn_player_id: None,
                 eligible_slots: vec![],
+                assigned_slot: None,
             },
             DraftPick {
                 pick_number: 2,
@@ -224,6 +228,7 @@ mod tests {
                 price: 15,
                 espn_player_id: None,
                 eligible_slots: vec![],
+                assigned_slot: None,
             },
         ];
         terminal
