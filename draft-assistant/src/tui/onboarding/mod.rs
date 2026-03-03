@@ -1,11 +1,8 @@
 // Onboarding screen dispatcher: routes rendering to the correct step screen.
 
 pub mod llm_setup;
+pub mod strategy_setup;
 
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::onboarding::OnboardingStep;
@@ -23,52 +20,16 @@ pub fn render(frame: &mut Frame, step: &OnboardingStep, state: &ViewState) {
             llm_setup::render(frame, frame.area(), &state.llm_setup);
         }
         OnboardingStep::StrategySetup => {
-            // Placeholder until Task 5 implements the strategy setup screen
-            render_strategy_placeholder(frame, frame.area());
+            strategy_setup::render(frame, frame.area(), &state.strategy_setup);
         }
         OnboardingStep::Complete => {
             // Should not reach here -- the app transitions to Draft mode
             // when onboarding completes. Render a fallback just in case.
-            render_strategy_placeholder(frame, frame.area());
+            strategy_setup::render(frame, frame.area(), &state.strategy_setup);
         }
     }
 }
 
-/// Placeholder renderer for the strategy setup step (Task 5).
-fn render_strategy_placeholder(frame: &mut Frame, area: Rect) {
-    let outer = Layout::vertical([
-        Constraint::Percentage(40),
-        Constraint::Length(3),
-        Constraint::Percentage(40),
-        Constraint::Length(1),
-    ])
-    .split(area);
-
-    let message = Paragraph::new(Line::from(vec![
-        Span::styled(
-            "Strategy Configuration (coming soon)",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]))
-    .alignment(Alignment::Center)
-    .style(Style::default().bg(Color::Black));
-
-    frame.render_widget(message, outer[1]);
-
-    let help = Paragraph::new(Line::from(vec![
-        Span::styled(" n:next", Style::default().fg(Color::Gray)),
-        Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Esc:back", Style::default().fg(Color::Gray)),
-        Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-        Span::styled("q:quit", Style::default().fg(Color::Gray)),
-    ]))
-    .alignment(Alignment::Center)
-    .style(Style::default().bg(Color::Black));
-
-    frame.render_widget(help, outer[3]);
-}
 
 // ---------------------------------------------------------------------------
 // Tests

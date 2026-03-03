@@ -1450,9 +1450,148 @@ async fn handle_onboarding_action(
                 .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
                 .await;
         }
-        OnboardingAction::SaveStrategyConfig => {
-            // Will be implemented in Task 5
-            info!("SaveStrategyConfig received (placeholder)");
+        OnboardingAction::SaveStrategyConfig { hitting_budget_pct, category_weights } => {
+            // Update in-memory config
+            state.config.strategy.hitting_budget_fraction = hitting_budget_pct as f64 / 100.0;
+            state.config.strategy.weights = category_weights.to_config_weights();
+
+            // Persist to strategy.toml
+            if let Err(e) = state.onboarding_manager.save_strategy(
+                hitting_budget_pct,
+                &category_weights,
+            ) {
+                warn!("Failed to save strategy.toml: {}", e);
+            } else {
+                info!("Saved strategy config to strategy.toml (budget={}%, weights updated)", hitting_budget_pct);
+            }
+
+            // Mark strategy as configured and advance to Complete
+            state.onboarding_progress.strategy_configured = true;
+            state.onboarding_progress.current_step = OnboardingStep::Complete;
+            if let Err(e) = state
+                .onboarding_manager
+                .save_progress(&state.onboarding_progress)
+            {
+                warn!("Failed to save onboarding progress: {}", e);
+            }
+
+            // Rebuild LLM client with new config
+            state.llm_client = Arc::new(LlmClient::from_config(&state.config));
+
+            // Transition to Draft mode
+            state.app_mode = AppMode::Draft;
+            let _ = ui_tx.send(UiUpdate::ModeChanged(AppMode::Draft)).await;
+            let snapshot = state.build_snapshot();
+            let _ = ui_tx
+                .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
+                .await;
+        }
+        OnboardingAction::ConfigureStrategyWithLlm(description) => {
+            // Check if LLM is available
+            let llm_client = state.llm_client.clone();
+            match &*llm_client {
+                LlmClient::Disabled => {
+                    let _ = ui_tx
+                        .send(UiUpdate::OnboardingUpdate(
+                            OnboardingUpdate::StrategyLlmError(
+                                "LLM is not configured. Please set up an API key first.".to_string(),
+                            ),
+                        ))
+                        .await;
+                }
+                LlmClient::Active(_) => {
+                    // Increment generation counter BEFORE spawning the task
+                    // to prevent race conditions with stale events.
+                    state.llm_generation += 1;
+                    let generation = state.llm_generation;
+                    let tx = ui_tx.clone();
+
+                    // Build the prompt for strategy configuration
+                    let system = "You are a fantasy baseball strategy advisor. Given the user's \
+                        strategy description, output ONLY a valid JSON object (no markdown, no \
+                        explanation) with exactly these fields:\n\
+                        - \"hitting_budget_pct\": integer 0-100 (percentage of budget for hitting)\n\
+                        - \"category_weights\": object with keys R, HR, RBI, BB, SB, AVG, K, W, SV, HD, ERA, WHIP, \
+                        each a float where 1.0 = normal importance, >1.0 = overweight, <1.0 = underweight (min 0.0, max 5.0)\n\n\
+                        League: 10-team H2H Most Categories, salary cap $260, 26 keepers.\n\
+                        Categories: R, HR, RBI, BB, SB, AVG (hitting) | K, W, SV, HD, ERA, WHIP (pitching)\n\
+                        Key edges: BB (walks) and HD (holds) are non-standard and undervalued.";
+
+                    let user_content = format!(
+                        "Configure my draft strategy based on this description:\n\n{}",
+                        description
+                    );
+
+                    // Spawn LLM streaming task
+                    tokio::spawn(async move {
+                        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel::<crate::protocol::LlmEvent>(100);
+
+                        // Start the LLM stream in a separate task
+                        let client = llm_client.clone();
+                        let sys = system.to_string();
+                        let usr = user_content.clone();
+                        tokio::spawn(async move {
+                            let _ = client.stream_message(&sys, &usr, 1024, stream_tx, generation).await;
+                        });
+
+                        let mut full_text = String::new();
+
+                        while let Some(event) = stream_rx.recv().await {
+                            match event {
+                                crate::protocol::LlmEvent::Token { text, generation: g } => {
+                                    if g == generation {
+                                        full_text.push_str(&text);
+                                        let _ = tx
+                                            .send(UiUpdate::OnboardingUpdate(
+                                                OnboardingUpdate::StrategyLlmToken(text),
+                                            ))
+                                            .await;
+                                    }
+                                }
+                                crate::protocol::LlmEvent::Complete { full_text: ft, generation: g, .. } => {
+                                    if g == generation {
+                                        full_text = ft;
+                                        break;
+                                    }
+                                }
+                                crate::protocol::LlmEvent::Error { message, generation: g } => {
+                                    if g == generation {
+                                        let _ = tx
+                                            .send(UiUpdate::OnboardingUpdate(
+                                                OnboardingUpdate::StrategyLlmError(message),
+                                            ))
+                                            .await;
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Parse JSON from the response
+                        match parse_strategy_json(&full_text) {
+                            Ok((pct, weights)) => {
+                                let _ = tx
+                                    .send(UiUpdate::OnboardingUpdate(
+                                        OnboardingUpdate::StrategyLlmComplete {
+                                            hitting_budget_pct: pct,
+                                            category_weights: weights,
+                                        },
+                                    ))
+                                    .await;
+                            }
+                            Err(e) => {
+                                let _ = tx
+                                    .send(UiUpdate::OnboardingUpdate(
+                                        OnboardingUpdate::StrategyLlmError(
+                                            format!("Failed to parse LLM response: {}", e),
+                                        ),
+                                    ))
+                                    .await;
+                            }
+                        }
+                    });
+                }
+            }
         }
     }
 }
@@ -1601,6 +1740,67 @@ async fn test_api_connection(
             }
         }
     }
+}
+
+/// Parse the LLM's JSON response into a hitting budget percentage and category weights.
+///
+/// The LLM is prompted to return a JSON object with `hitting_budget_pct` (int 0-100) and
+/// `category_weights` (map of category name to float). This function extracts the JSON
+/// from the response (stripping any surrounding text/markdown fences) and parses it.
+fn parse_strategy_json(
+    text: &str,
+) -> Result<(u8, crate::tui::onboarding::strategy_setup::CategoryWeights), String> {
+    use crate::tui::onboarding::strategy_setup::CategoryWeights;
+
+    // Strip markdown code fences if present.
+    // Use safe string operations to avoid panics on edge cases.
+    let trimmed = text.trim();
+    let json_str = if trimmed.starts_with("```") {
+        // Find end of the opening fence line (e.g. "```json\n")
+        let after_fence = if let Some(newline_pos) = trimmed.find('\n') {
+            &trimmed[newline_pos + 1..]
+        } else {
+            // Opening fence with no newline — strip the leading ```
+            &trimmed[3..]
+        };
+        // Strip the closing ``` if present
+        if let Some(close_pos) = after_fence.rfind("```") {
+            &after_fence[..close_pos]
+        } else {
+            after_fence
+        }
+    } else {
+        trimmed
+    };
+
+    // Try to find a JSON object in the text (between first { and last })
+    let json_str = if let (Some(start), Some(end)) = (json_str.find('{'), json_str.rfind('}')) {
+        &json_str[start..=end]
+    } else {
+        return Err("No JSON object found in response".to_string());
+    };
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(json_str).map_err(|e| format!("JSON parse error: {}", e))?;
+
+    let pct = parsed
+        .get("hitting_budget_pct")
+        .and_then(|v| v.as_u64())
+        .map(|v| v.min(100) as u8)
+        .unwrap_or(65);
+
+    let mut weights = CategoryWeights::default();
+
+    if let Some(cw) = parsed.get("category_weights").and_then(|v| v.as_object()) {
+        for (idx, name) in crate::tui::onboarding::strategy_setup::CATEGORIES.iter().enumerate() {
+            if let Some(val) = cw.get(*name).and_then(|v| v.as_f64()) {
+                let clamped = val.max(0.0).min(5.0) as f32;
+                weights.set(idx, clamped);
+            }
+        }
+    }
+
+    Ok((pct, weights))
 }
 
 // ---------------------------------------------------------------------------
@@ -4300,5 +4500,120 @@ mod tests {
             "second update should be StateSnapshot, got {:?}",
             snapshot_update,
         );
+    }
+
+    #[tokio::test]
+    async fn save_strategy_config_updates_state_and_transitions_to_draft() {
+        use crate::onboarding::OnboardingStep;
+        use crate::tui::onboarding::strategy_setup::CategoryWeights;
+
+        let mut state = create_test_app_state();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
+
+        let weights = CategoryWeights {
+            r: 1.0, hr: 1.1, rbi: 1.0, bb: 1.3, sb: 1.0, avg: 1.0,
+            k: 1.0, w: 1.0, sv: 0.3, hd: 1.2, era: 1.0, whip: 1.0,
+        };
+
+        let (ui_tx, mut ui_rx) = mpsc::channel(16);
+
+        handle_user_command(
+            &mut state,
+            UserCommand::OnboardingAction(OnboardingAction::SaveStrategyConfig {
+                hitting_budget_pct: 70,
+                category_weights: weights,
+            }),
+            &ui_tx,
+        )
+        .await;
+
+        // In-memory config should be updated
+        assert!(
+            (state.config.strategy.hitting_budget_fraction - 0.70).abs() < f64::EPSILON,
+            "budget fraction should be 0.70, got {}",
+            state.config.strategy.hitting_budget_fraction,
+        );
+        assert!(
+            (state.config.strategy.weights.BB - 1.3).abs() < 0.001,
+            "BB weight should be 1.3",
+        );
+        assert!(
+            (state.config.strategy.weights.SV - 0.3).abs() < 0.001,
+            "SV weight should be 0.3",
+        );
+
+        // Onboarding progress should be marked as strategy configured
+        assert!(state.onboarding_progress.strategy_configured);
+        assert_eq!(state.onboarding_progress.current_step, OnboardingStep::Complete);
+
+        // AppState should now be in Draft mode
+        assert_eq!(state.app_mode, AppMode::Draft);
+
+        // UI channel should have received ModeChanged(Draft)
+        let update = ui_rx.recv().await.expect("expected ModeChanged update");
+        assert!(
+            matches!(update, UiUpdate::ModeChanged(AppMode::Draft)),
+            "first update should be ModeChanged(Draft), got {:?}",
+            update,
+        );
+
+        // UI channel should also have received a StateSnapshot
+        let snapshot_update = ui_rx.recv().await.expect("expected StateSnapshot update");
+        assert!(
+            matches!(snapshot_update, UiUpdate::StateSnapshot(_)),
+            "second update should be StateSnapshot, got {:?}",
+            snapshot_update,
+        );
+    }
+
+    // -- parse_strategy_json tests --
+
+    #[test]
+    fn parse_strategy_json_valid() {
+        let json = r#"{"hitting_budget_pct": 70, "category_weights": {"R": 1.0, "HR": 1.1, "RBI": 1.0, "BB": 1.3, "SB": 0.8, "AVG": 1.0, "K": 1.0, "W": 1.0, "SV": 0.3, "HD": 1.2, "ERA": 1.0, "WHIP": 1.0}}"#;
+        let (pct, weights) = parse_strategy_json(json).unwrap();
+        assert_eq!(pct, 70);
+        assert!((weights.bb - 1.3).abs() < f32::EPSILON);
+        assert!((weights.sv - 0.3).abs() < f32::EPSILON);
+        assert!((weights.hd - 1.2).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn parse_strategy_json_with_markdown_fences() {
+        let json = "```json\n{\"hitting_budget_pct\": 65, \"category_weights\": {\"R\": 1.0, \"HR\": 1.0, \"RBI\": 1.0, \"BB\": 1.0, \"SB\": 1.0, \"AVG\": 1.0, \"K\": 1.0, \"W\": 1.0, \"SV\": 0.7, \"HD\": 1.0, \"ERA\": 1.0, \"WHIP\": 1.0}}\n```";
+        let (pct, weights) = parse_strategy_json(json).unwrap();
+        assert_eq!(pct, 65);
+        assert!((weights.sv - 0.7).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn parse_strategy_json_clamps_values() {
+        let json = r#"{"hitting_budget_pct": 200, "category_weights": {"SV": -1.0, "BB": 7.0}}"#;
+        let (pct, weights) = parse_strategy_json(json).unwrap();
+        assert_eq!(pct, 100); // clamped to 100
+        assert!((weights.sv - 0.0).abs() < f32::EPSILON); // clamped to 0.0
+        assert!((weights.bb - 5.0).abs() < f32::EPSILON); // clamped to 5.0
+    }
+
+    #[test]
+    fn parse_strategy_json_missing_fields_uses_defaults() {
+        let json = r#"{"category_weights": {"BB": 1.3}}"#;
+        let (pct, weights) = parse_strategy_json(json).unwrap();
+        assert_eq!(pct, 65); // default
+        assert!((weights.bb - 1.3).abs() < f32::EPSILON);
+        assert!((weights.r - 1.0).abs() < f32::EPSILON); // default
+    }
+
+    #[test]
+    fn parse_strategy_json_no_json_object() {
+        let result = parse_strategy_json("no json here");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_strategy_json_with_surrounding_text() {
+        let text = "Here is the configuration:\n{\"hitting_budget_pct\": 60, \"category_weights\": {}}\nEnjoy!";
+        let (pct, _) = parse_strategy_json(text).unwrap();
+        assert_eq!(pct, 60);
     }
 }

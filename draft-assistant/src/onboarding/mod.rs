@@ -129,6 +129,66 @@ impl<F: FileSystem> OnboardingManager<F> {
         self.fs.rename(&tmp_path, &path)
     }
 
+    /// Save strategy configuration to `strategy.toml` using atomic write-to-temp-then-rename.
+    ///
+    /// Reads the existing strategy.toml (to preserve non-weight fields like pool
+    /// sizes, LLM config, etc.), updates the budget fraction and category weights,
+    /// then writes the whole file back.
+    pub fn save_strategy(
+        &self,
+        hitting_budget_pct: u8,
+        weights: &crate::tui::onboarding::strategy_setup::CategoryWeights,
+    ) -> std::io::Result<()> {
+        self.fs.create_dir_all(&self.config_dir)?;
+        let path = self.config_dir.join("strategy.toml");
+
+        // Read existing content and do a surgical replacement.
+        // Since strategy.toml is structured with [budget], [category_weights], etc.,
+        // we read the existing file, parse it as a TOML table, update the relevant
+        // fields, and serialize it back. If the file doesn't exist or can't be parsed,
+        // we only write the budget and weights sections.
+        let existing_text = self.fs.read_to_string(&path).unwrap_or_default();
+        let mut doc: toml::Table = toml::from_str(&existing_text).unwrap_or_default();
+
+        // Update [budget]
+        let budget_table = doc
+            .entry("budget")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if let toml::Value::Table(ref mut t) = budget_table {
+            let fraction = hitting_budget_pct as f64 / 100.0;
+            t.insert(
+                "hitting_budget_fraction".to_string(),
+                toml::Value::Float(fraction),
+            );
+        }
+
+        // Update [category_weights]
+        let cw_table = doc
+            .entry("category_weights")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if let toml::Value::Table(ref mut t) = cw_table {
+            let config_w = weights.to_config_weights();
+            t.insert("R".to_string(), toml::Value::Float(config_w.R));
+            t.insert("HR".to_string(), toml::Value::Float(config_w.HR));
+            t.insert("RBI".to_string(), toml::Value::Float(config_w.RBI));
+            t.insert("BB".to_string(), toml::Value::Float(config_w.BB));
+            t.insert("SB".to_string(), toml::Value::Float(config_w.SB));
+            t.insert("AVG".to_string(), toml::Value::Float(config_w.AVG));
+            t.insert("K".to_string(), toml::Value::Float(config_w.K));
+            t.insert("W".to_string(), toml::Value::Float(config_w.W));
+            t.insert("SV".to_string(), toml::Value::Float(config_w.SV));
+            t.insert("HD".to_string(), toml::Value::Float(config_w.HD));
+            t.insert("ERA".to_string(), toml::Value::Float(config_w.ERA));
+            t.insert("WHIP".to_string(), toml::Value::Float(config_w.WHIP));
+        }
+
+        let text = toml::to_string_pretty(&doc)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let tmp_path = path.with_extension("toml.tmp");
+        self.fs.write(&tmp_path, &text)?;
+        self.fs.rename(&tmp_path, &path)
+    }
+
     /// Save credentials to `credentials.toml` using atomic write-to-temp-then-rename.
     pub fn save_credentials(&self, credentials: &CredentialsConfig) -> std::io::Result<()> {
         self.fs.create_dir_all(&self.config_dir)?;
@@ -676,5 +736,73 @@ mod tests {
         assert!(p.llm_provider.is_none());
         assert!(p.llm_model.is_none());
         assert!(!p.strategy_configured);
+    }
+
+    // -- save_strategy tests -------------------------------------------------
+
+    #[test]
+    fn save_strategy_writes_to_strategy_toml() {
+        use crate::tui::onboarding::strategy_setup::CategoryWeights;
+
+        let manager = fake_manager(FakeFileSystem::new());
+        let weights = CategoryWeights {
+            r: 1.0,
+            hr: 1.1,
+            rbi: 1.0,
+            bb: 1.3,
+            sb: 1.0,
+            avg: 1.0,
+            k: 1.0,
+            w: 1.0,
+            sv: 0.3,
+            hd: 1.2,
+            era: 1.0,
+            whip: 1.0,
+        };
+
+        manager.save_strategy(70, &weights).unwrap();
+
+        let contents = manager.fs.get("/fake/config/strategy.toml");
+        assert!(contents.is_some(), "strategy.toml should exist after save");
+
+        let text = contents.unwrap();
+        // Verify the budget fraction was written correctly
+        assert!(text.contains("hitting_budget_fraction"), "should contain budget fraction");
+        // Verify category weights were written
+        assert!(text.contains("BB"), "should contain BB weight");
+        assert!(text.contains("SV"), "should contain SV weight");
+    }
+
+    #[test]
+    fn save_strategy_preserves_existing_sections() {
+        use crate::tui::onboarding::strategy_setup::CategoryWeights;
+
+        // Pre-populate with existing content that has other sections
+        let existing = "[pool]\nmin_pa = 200\nhitter_pool_size = 150\n\n[llm]\nmodel = \"claude-sonnet-4-6\"\n";
+        let fs = FakeFileSystem::new().with_file("/fake/config/strategy.toml", existing);
+        let manager = fake_manager(fs);
+
+        let weights = CategoryWeights::default();
+        manager.save_strategy(65, &weights).unwrap();
+
+        let text = manager.fs.get("/fake/config/strategy.toml").unwrap();
+        // Existing sections should be preserved
+        assert!(text.contains("min_pa"), "pool config should be preserved");
+        assert!(text.contains("claude-sonnet-4-6"), "llm model should be preserved");
+        // New budget and weights sections should be present
+        assert!(text.contains("hitting_budget_fraction"), "budget should be written");
+    }
+
+    #[test]
+    fn save_strategy_temp_file_cleaned_up() {
+        use crate::tui::onboarding::strategy_setup::CategoryWeights;
+
+        let manager = fake_manager(FakeFileSystem::new());
+        let weights = CategoryWeights::default();
+        manager.save_strategy(65, &weights).unwrap();
+
+        // Temp file should have been renamed away
+        let tmp = manager.fs.get("/fake/config/strategy.toml.tmp");
+        assert!(tmp.is_none(), "temp file should not remain after rename");
     }
 }
