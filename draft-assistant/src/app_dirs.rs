@@ -39,6 +39,15 @@ pub fn app_data_dir() -> PathBuf {
     dir
 }
 
+/// Returns the path to the configuration directory inside the app data directory.
+///
+/// Example: `~/.local/share/wyncast/config`
+///
+/// Does **not** create the directory -- config loading handles that.
+pub fn config_dir() -> PathBuf {
+    app_data_dir().join("config")
+}
+
 /// Returns the path to the database file inside the app data directory.
 ///
 /// Example: `~/.local/share/wyncast/draft-assistant.db`
