@@ -380,8 +380,9 @@ fn handle_llm_setup_key(
 /// Handle keyboard input on the settings screen.
 ///
 /// Dispatches to the same input handlers used by onboarding (LLM setup or
-/// strategy setup) depending on the active settings tab. Tab/1/2 switch
-/// between settings tabs; Esc returns to draft mode; `s`/`S` saves.
+/// strategy setup) depending on the active settings tab. 1/2 switch between
+/// settings tabs; Tab cycles sections within the active tab; Esc returns to
+/// draft mode; `s`/`S` saves (Strategy tab only).
 fn handle_settings_key(
     key_event: KeyEvent,
     view_state: &mut ViewState,
@@ -392,12 +393,7 @@ fn handle_settings_key(
 
     // Check if we're in an editing sub-mode. If so, delegate fully to the
     // appropriate onboarding handler (it handles its own Esc/Enter).
-    let is_editing = match active_tab {
-        SettingsSection::LlmConfig => view_state.llm_setup.api_key_editing,
-        SettingsSection::StrategyConfig => view_state.strategy_setup.is_editing(),
-    };
-
-    if is_editing {
+    if view_state.settings_is_editing() {
         // Delegate to onboarding handler for editing input. However, we need
         // to intercept the commands it returns and translate onboarding-specific
         // ones (GoBack, GoNext, Skip) since those make no sense in settings.
@@ -410,14 +406,13 @@ fn handle_settings_key(
 
     // Not editing: handle settings-level keys first, then delegate
     match key_event.code {
-        // Tab switching between LLM and Strategy tabs
+        // Tab switching between LLM and Strategy tabs — dispatch to backend
+        // so that app_mode and settings_tab stay in sync via ModeChanged.
         KeyCode::Char('1') => {
-            view_state.settings_tab = SettingsSection::LlmConfig;
-            None
+            Some(UserCommand::SwitchSettingsTab(SettingsSection::LlmConfig))
         }
         KeyCode::Char('2') => {
-            view_state.settings_tab = SettingsSection::StrategyConfig;
-            None
+            Some(UserCommand::SwitchSettingsTab(SettingsSection::StrategyConfig))
         }
 
         // Esc: exit settings and return to draft mode
@@ -1887,15 +1882,19 @@ mod tests {
         state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
         state.settings_tab = SettingsSection::LlmConfig;
 
-        // Press '2' to switch to Strategy tab
+        // Press '2' to switch to Strategy tab — dispatches to backend
         let result = handle_key(key(KeyCode::Char('2')), &mut state);
-        assert!(result.is_none());
-        assert_eq!(state.settings_tab, SettingsSection::StrategyConfig);
+        assert_eq!(
+            result,
+            Some(UserCommand::SwitchSettingsTab(SettingsSection::StrategyConfig)),
+        );
 
-        // Press '1' to switch back to LLM tab
+        // Press '1' to switch back to LLM tab — dispatches to backend
         let result = handle_key(key(KeyCode::Char('1')), &mut state);
-        assert!(result.is_none());
-        assert_eq!(state.settings_tab, SettingsSection::LlmConfig);
+        assert_eq!(
+            result,
+            Some(UserCommand::SwitchSettingsTab(SettingsSection::LlmConfig)),
+        );
     }
 
     #[test]

@@ -97,12 +97,7 @@ fn render_tab_bar(frame: &mut Frame, area: Rect, active_tab: SettingsSection) {
 /// Render the settings help bar.
 fn render_settings_help_bar(frame: &mut Frame, area: Rect, state: &ViewState) {
     // When editing, defer to the onboarding widget's own help
-    let is_editing = match state.settings_tab {
-        SettingsSection::LlmConfig => state.llm_setup.api_key_editing,
-        SettingsSection::StrategyConfig => state.strategy_setup.is_editing(),
-    };
-
-    let spans = if is_editing {
+    let spans = if state.settings_is_editing() {
         vec![
             Span::styled("Type value", Style::default().fg(Color::Gray)),
             Span::styled(" | ", Style::default().fg(Color::DarkGray)),
@@ -111,17 +106,25 @@ fn render_settings_help_bar(frame: &mut Frame, area: Rect, state: &ViewState) {
             Span::styled("Esc:cancel", Style::default().fg(Color::Gray)),
         ]
     } else {
-        vec![
+        let mut spans = vec![
             Span::styled("1/2:tab", Style::default().fg(Color::Gray)),
             Span::styled(" | ", Style::default().fg(Color::DarkGray)),
             Span::styled("Tab:section", Style::default().fg(Color::Gray)),
             Span::styled(" | ", Style::default().fg(Color::DarkGray)),
             Span::styled("^v:navigate", Style::default().fg(Color::Gray)),
             Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-            Span::styled("s:save", Style::default().fg(Color::Gray)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc:back to draft", Style::default().fg(Color::Gray)),
-        ]
+        ];
+        match state.settings_tab {
+            SettingsSection::StrategyConfig => {
+                spans.push(Span::styled("s:save", Style::default().fg(Color::Gray)));
+            }
+            SettingsSection::LlmConfig => {
+                spans.push(Span::styled("Enter:test connection", Style::default().fg(Color::Gray)));
+            }
+        }
+        spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled("Esc:back to draft", Style::default().fg(Color::Gray)));
+        spans
     };
 
     frame.render_widget(

@@ -1651,12 +1651,21 @@ async fn handle_settings_action(
     match action {
         OnboardingAction::SetProvider(provider) => {
             state.config.strategy.llm.provider = provider.clone();
+            state.config.strategy.llm.model = String::new();
             state.onboarding_progress.llm_provider = Some(provider);
             state.onboarding_progress.llm_model = None;
+            state.reload_llm_client();
+            if let Err(e) = state.onboarding_manager.save_progress(&state.onboarding_progress) {
+                warn!("Failed to save onboarding progress after SetProvider: {}", e);
+            }
         }
         OnboardingAction::SetModel(model_id) => {
             state.config.strategy.llm.model = model_id.clone();
             state.onboarding_progress.llm_model = Some(model_id);
+            state.reload_llm_client();
+            if let Err(e) = state.onboarding_manager.save_progress(&state.onboarding_progress) {
+                warn!("Failed to save onboarding progress after SetModel: {}", e);
+            }
         }
         OnboardingAction::SetApiKey(key) => {
             let provider = state
@@ -1716,10 +1725,13 @@ async fn handle_settings_action(
             state.config.strategy.hitting_budget_fraction = hitting_budget_pct as f64 / 100.0;
             state.config.strategy.weights = category_weights.to_config_weights();
 
-            // Persist to strategy.toml
-            if let Err(e) = state.onboarding_manager.save_strategy(
+            // Persist to strategy.toml (including current LLM provider/model
+            // in case they were changed on the LLM tab)
+            if let Err(e) = state.onboarding_manager.save_strategy_with_llm(
                 hitting_budget_pct,
                 &category_weights,
+                Some(&state.config.strategy.llm.provider),
+                Some(&state.config.strategy.llm.model),
             ) {
                 warn!("Failed to save strategy.toml: {}", e);
             } else {
