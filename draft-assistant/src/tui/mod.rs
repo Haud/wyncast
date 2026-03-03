@@ -354,7 +354,7 @@ impl Default for ViewState {
             llm_setup: LlmSetupState::default(),
             strategy_setup: StrategySetupState::default(),
             settings_tab: SettingsSection::LlmConfig,
-            llm_configured: false,
+            llm_configured: true,
         }
     }
 }
@@ -1643,17 +1643,19 @@ mod tests {
     #[test]
     fn apply_snapshot_updates_llm_configured() {
         let mut state = ViewState::default();
-        assert!(!state.llm_configured);
-
-        let mut snapshot = test_snapshot(0, 0, None);
-        snapshot.llm_configured = true;
-        state.apply_snapshot(snapshot);
+        // Default is true (optimistic) to avoid flashing "No LLM" before
+        // the first snapshot arrives.
         assert!(state.llm_configured);
 
-        let mut snapshot2 = test_snapshot(0, 0, None);
-        snapshot2.llm_configured = false;
-        state.apply_snapshot(snapshot2);
+        let mut snapshot = test_snapshot(0, 0, None);
+        snapshot.llm_configured = false;
+        state.apply_snapshot(snapshot);
         assert!(!state.llm_configured);
+
+        let mut snapshot2 = test_snapshot(0, 0, None);
+        snapshot2.llm_configured = true;
+        state.apply_snapshot(snapshot2);
+        assert!(state.llm_configured);
     }
 
     #[test]
