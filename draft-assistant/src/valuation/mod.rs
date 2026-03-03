@@ -497,6 +497,7 @@ mod tests {
                 rp_pool_size: 80,
             },
             llm: LlmConfig {
+                provider: crate::llm::provider::LlmProvider::Anthropic,
                 model: "test".into(),
                 analysis_max_tokens: 2048,
                 planning_max_tokens: 2048,

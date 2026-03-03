@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
+use crate::llm::provider::LlmProvider;
+
 // ---------------------------------------------------------------------------
 // Error types
 // ---------------------------------------------------------------------------
@@ -153,11 +155,19 @@ pub struct PoolConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct LlmConfig {
+    /// Which LLM backend to use.  Defaults to `anthropic` for backwards
+    /// compatibility with existing strategy.toml files that predate this field.
+    #[serde(default = "default_llm_provider")]
+    pub provider: LlmProvider,
     pub model: String,
     pub analysis_max_tokens: u32,
     pub planning_max_tokens: u32,
     pub analysis_trigger: String,
     pub prefire_planning: bool,
+}
+
+fn default_llm_provider() -> LlmProvider {
+    LlmProvider::Anthropic
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -173,6 +183,8 @@ pub struct DataPaths {
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct CredentialsConfig {
     pub anthropic_api_key: Option<String>,
+    pub google_api_key: Option<String>,
+    pub openai_api_key: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -604,7 +616,8 @@ mod tests {
         assert_eq!(config.strategy.pool.hitter_pool_size, 150);
         assert_eq!(config.strategy.pool.sp_pool_size, 70);
         assert_eq!(config.strategy.pool.rp_pool_size, 80);
-        assert_eq!(config.strategy.llm.model, "claude-sonnet-4-5-20250929");
+        assert_eq!(config.strategy.llm.model, "claude-sonnet-4-6");
+        assert_eq!(config.strategy.llm.provider, LlmProvider::Anthropic);
         assert_eq!(config.strategy.llm.analysis_max_tokens, 2048);
         assert_eq!(config.strategy.llm.planning_max_tokens, 2048);
         assert_eq!(config.strategy.llm.analysis_trigger, "nomination");

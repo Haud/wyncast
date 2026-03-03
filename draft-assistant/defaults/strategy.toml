@@ -28,7 +28,9 @@ sp_pool_size = 70      # Number of SP in the valuation pool
 rp_pool_size = 80      # Number of RP in the valuation pool
 
 [llm]
-model = "claude-sonnet-4-5-20250929"
+# LLM provider: "anthropic", "google", or "openai"
+provider = "anthropic"
+model = "claude-sonnet-4-6"
 
 # Nomination analysis: fires on every new nomination to analyze the current player
 analysis_max_tokens = 2048
