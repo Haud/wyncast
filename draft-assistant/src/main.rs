@@ -40,13 +40,17 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Check onboarding status
-    let onboarding_progress = onboarding::load_onboarding_progress();
-    if onboarding::is_configured(&onboarding_progress, &config.credentials) {
+    let onboarding_manager = onboarding::OnboardingManager::new(
+        draft_assistant::app_dirs::config_dir(),
+        onboarding::RealFileSystem,
+    );
+    if onboarding_manager.is_configured(&config.credentials) {
         info!("Onboarding complete, proceeding to draft view");
     } else {
+        let progress = onboarding_manager.load_progress();
         info!(
             "Onboarding needed (current step: {:?}), but continuing with normal startup for now",
-            onboarding_progress.current_step
+            progress.current_step
         );
     }
 

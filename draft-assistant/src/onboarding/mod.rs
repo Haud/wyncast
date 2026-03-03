@@ -128,51 +128,31 @@ impl<F: FileSystem> OnboardingManager<F> {
         self.fs.write(&tmp_path, &text)?;
         self.fs.rename(&tmp_path, &path)
     }
+
+    /// Returns `true` when onboarding is complete and the app is ready to run.
+    ///
+    /// Loads the persisted progress internally, then checks:
+    ///
+    /// 1. `current_step == Complete`
+    /// 2. The selected LLM provider has a non-empty API key in credentials
+    /// 3. A non-empty model name has been selected
+    /// 4. Strategy has been configured (i.e. `strategy_configured == true`)
+    ///
+    /// This is the main gate for deciding whether to show the onboarding wizard
+    /// or proceed directly to the draft view.
+    pub fn is_configured(&self, credentials: &CredentialsConfig) -> bool {
+        let progress = self.load_progress();
+        check_configured(&progress, credentials)
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Convenience functions (backward-compatible public API)
+// Private helpers
 // ---------------------------------------------------------------------------
 
-/// Returns the config directory path derived from the OS app data directory.
-fn default_config_dir() -> PathBuf {
-    crate::app_dirs::app_data_dir().join("config")
-}
-
-/// Load onboarding progress from `onboarding.toml` in the app data config
-/// directory.
-///
-/// Returns `OnboardingProgress::default()` (step = `LlmSetup`) when the file
-/// does not exist or cannot be parsed.
-pub fn load_onboarding_progress() -> OnboardingProgress {
-    let manager = OnboardingManager::new(default_config_dir(), RealFileSystem);
-    manager.load_progress()
-}
-
-/// Save onboarding progress to `onboarding.toml` in the app data config
-/// directory.
-///
-/// Creates the config directory if it does not exist.
-pub fn save_onboarding_progress(progress: &OnboardingProgress) -> std::io::Result<()> {
-    let manager = OnboardingManager::new(default_config_dir(), RealFileSystem);
-    manager.save_progress(progress)
-}
-
-// ---------------------------------------------------------------------------
-// is_configured
-// ---------------------------------------------------------------------------
-
-/// Returns `true` when onboarding is complete and the app is ready to run:
-///
-/// 1. `current_step == Complete`
-/// 2. The selected LLM provider has a non-empty API key in credentials
-/// 3. Strategy has been configured (i.e. `strategy_configured == true`)
-///
-/// This is the main gate for deciding whether to show the onboarding wizard
-/// or proceed directly to the draft view.
-///
-/// This is a pure function with no I/O -- it only inspects the provided data.
-pub fn is_configured(progress: &OnboardingProgress, credentials: &CredentialsConfig) -> bool {
+/// Pure logic check: returns `true` when progress + credentials indicate the
+/// app is fully configured. No I/O -- only inspects the provided data.
+fn check_configured(progress: &OnboardingProgress, credentials: &CredentialsConfig) -> bool {
     if progress.current_step != OnboardingStep::Complete {
         return false;
     }
@@ -295,6 +275,13 @@ mod tests {
 
     // -- is_configured tests ------------------------------------------------
 
+    /// Helper: create a manager with progress pre-populated in the fake FS.
+    fn manager_with_progress(progress: &OnboardingProgress) -> OnboardingManager<FakeFileSystem> {
+        let toml_text = toml::to_string_pretty(progress).unwrap();
+        let fs = FakeFileSystem::new().with_file("/fake/config/onboarding.toml", toml_text);
+        fake_manager(fs)
+    }
+
     #[test]
     fn is_configured_false_when_step_not_complete() {
         let progress = OnboardingProgress {
@@ -308,7 +295,8 @@ mod tests {
             google_api_key: None,
             openai_api_key: None,
         };
-        assert!(!is_configured(&progress, &creds));
+        let manager = manager_with_progress(&progress);
+        assert!(!manager.is_configured(&creds));
     }
 
     #[test]
@@ -324,7 +312,8 @@ mod tests {
             google_api_key: None,
             openai_api_key: None,
         };
-        assert!(!is_configured(&progress, &creds));
+        let manager = manager_with_progress(&progress);
+        assert!(!manager.is_configured(&creds));
     }
 
     #[test]
@@ -340,7 +329,8 @@ mod tests {
             google_api_key: None,
             openai_api_key: None,
         };
-        assert!(!is_configured(&progress, &creds));
+        let manager = manager_with_progress(&progress);
+        assert!(!manager.is_configured(&creds));
     }
 
     #[test]
@@ -356,7 +346,8 @@ mod tests {
             google_api_key: Some(String::new()),
             openai_api_key: None,
         };
-        assert!(!is_configured(&progress, &creds));
+        let manager = manager_with_progress(&progress);
+        assert!(!manager.is_configured(&creds));
     }
 
     #[test]
@@ -372,7 +363,8 @@ mod tests {
             google_api_key: None,
             openai_api_key: None,
         };
-        assert!(!is_configured(&progress, &creds));
+        let manager = manager_with_progress(&progress);
+        assert!(!manager.is_configured(&creds));
     }
 
     #[test]
@@ -388,7 +380,8 @@ mod tests {
             google_api_key: None,
             openai_api_key: None,
         };
-        assert!(!is_configured(&progress, &creds));
+        let manager = manager_with_progress(&progress);
+        assert!(!manager.is_configured(&creds));
     }
 
     #[test]
@@ -404,7 +397,8 @@ mod tests {
             google_api_key: None,
             openai_api_key: None,
         };
-        assert!(is_configured(&progress, &creds));
+        let manager = manager_with_progress(&progress);
+        assert!(manager.is_configured(&creds));
     }
 
     #[test]
@@ -420,7 +414,8 @@ mod tests {
             google_api_key: Some("google-key-123".to_string()),
             openai_api_key: None,
         };
-        assert!(is_configured(&progress, &creds));
+        let manager = manager_with_progress(&progress);
+        assert!(manager.is_configured(&creds));
     }
 
     #[test]
@@ -436,7 +431,8 @@ mod tests {
             google_api_key: None,
             openai_api_key: Some("sk-openai-test-key".to_string()),
         };
-        assert!(is_configured(&progress, &creds));
+        let manager = manager_with_progress(&progress);
+        assert!(manager.is_configured(&creds));
     }
 
     #[test]
@@ -453,7 +449,8 @@ mod tests {
             google_api_key: None,
             openai_api_key: None,
         };
-        assert!(!is_configured(&progress, &creds));
+        let manager = manager_with_progress(&progress);
+        assert!(!manager.is_configured(&creds));
     }
 
     #[test]
@@ -469,7 +466,8 @@ mod tests {
             google_api_key: None,
             openai_api_key: None,
         };
-        assert!(!is_configured(&progress, &creds));
+        let manager = manager_with_progress(&progress);
+        assert!(!manager.is_configured(&creds));
     }
 
     #[test]
@@ -485,7 +483,8 @@ mod tests {
             google_api_key: None,
             openai_api_key: None,
         };
-        assert!(!is_configured(&progress, &creds));
+        let manager = manager_with_progress(&progress);
+        assert!(!manager.is_configured(&creds));
     }
 
     #[test]
@@ -501,7 +500,8 @@ mod tests {
             google_api_key: None,
             openai_api_key: None,
         };
-        assert!(!is_configured(&progress, &creds));
+        let manager = manager_with_progress(&progress);
+        assert!(!manager.is_configured(&creds));
     }
 
     #[test]
@@ -517,7 +517,20 @@ mod tests {
             google_api_key: None,
             openai_api_key: None,
         };
-        assert!(!is_configured(&progress, &creds));
+        let manager = manager_with_progress(&progress);
+        assert!(!manager.is_configured(&creds));
+    }
+
+    #[test]
+    fn is_configured_false_when_no_file_exists() {
+        // No onboarding.toml -> defaults (LlmSetup step) -> not configured
+        let manager = fake_manager(FakeFileSystem::new());
+        let creds = CredentialsConfig {
+            anthropic_api_key: Some("sk-ant-test-key".to_string()),
+            google_api_key: None,
+            openai_api_key: None,
+        };
+        assert!(!manager.is_configured(&creds));
     }
 
     // -- save / load round-trip tests (all use FakeFileSystem) ---------------
