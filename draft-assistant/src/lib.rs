@@ -8,6 +8,7 @@ pub mod db;
 pub mod migrations;
 pub mod draft;
 pub mod llm;
+pub mod onboarding;
 pub mod protocol;
 pub mod tui;
 pub mod valuation;

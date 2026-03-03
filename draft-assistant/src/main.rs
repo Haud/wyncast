@@ -17,6 +17,7 @@ use draft_assistant::config;
 use draft_assistant::db;
 use draft_assistant::draft;
 use draft_assistant::llm;
+use draft_assistant::onboarding;
 use draft_assistant::tui;
 use draft_assistant::valuation;
 use draft_assistant::ws_server;
@@ -37,6 +38,17 @@ async fn main() -> anyhow::Result<()> {
         "Config loaded: league={}, {} teams, ${} salary cap",
         config.league.name, config.league.num_teams, config.league.salary_cap
     );
+
+    // Check onboarding status
+    let onboarding_progress = onboarding::load_onboarding_progress();
+    if onboarding::is_configured(&onboarding_progress, &config.credentials) {
+        info!("Onboarding complete, proceeding to draft view");
+    } else {
+        info!(
+            "Onboarding needed (current step: {:?}), but continuing with normal startup for now",
+            onboarding_progress.current_step
+        );
+    }
 
     // 3. Open database (always stored in the OS app data directory)
     let db_path = draft_assistant::app_dirs::db_path();
