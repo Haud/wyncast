@@ -2,10 +2,17 @@
 //
 // Persists partial onboarding progress to `onboarding.toml` in the app data
 // config directory so users can resume if interrupted mid-flow.
+//
+// All filesystem access goes through the [`FileSystem`] trait so tests can
+// inject a fake implementation and avoid writing to disk.
+
+pub mod fs;
 
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tracing::warn;
+
+pub use fs::{FileSystem, RealFileSystem};
 
 use crate::config::CredentialsConfig;
 use crate::llm::provider::LlmProvider;
@@ -63,25 +70,74 @@ impl Default for OnboardingProgress {
 }
 
 // ---------------------------------------------------------------------------
-// File path helper
+// OnboardingManager
 // ---------------------------------------------------------------------------
 
-/// Returns the path to `onboarding.toml` inside the given config directory.
+/// Manages loading and saving of [`OnboardingProgress`].
 ///
-/// The config directory is `<app_data_dir>/config/` (the same directory that
-/// houses `league.toml`, `strategy.toml`, and `credentials.toml`).
-fn onboarding_toml_path(config_dir: &Path) -> PathBuf {
-    config_dir.join("onboarding.toml")
+/// All filesystem access is delegated to the generic `F: FileSystem`
+/// parameter, allowing tests to inject an in-memory fake.
+pub struct OnboardingManager<F: FileSystem> {
+    config_dir: PathBuf,
+    fs: F,
 }
+
+impl<F: FileSystem> OnboardingManager<F> {
+    /// Create a new manager for the given config directory and filesystem.
+    pub fn new(config_dir: PathBuf, fs: F) -> Self {
+        Self { config_dir, fs }
+    }
+
+    /// Returns the path to `onboarding.toml` inside the config directory.
+    fn onboarding_toml_path(&self) -> PathBuf {
+        self.config_dir.join("onboarding.toml")
+    }
+
+    /// Load onboarding progress from `onboarding.toml`.
+    ///
+    /// Returns `OnboardingProgress::default()` (step = `LlmSetup`) when the
+    /// file does not exist or cannot be parsed.
+    pub fn load_progress(&self) -> OnboardingProgress {
+        let path = self.onboarding_toml_path();
+        match self.fs.read_to_string(&path) {
+            Ok(text) => match toml::from_str(&text) {
+                Ok(progress) => progress,
+                Err(e) => {
+                    warn!("Failed to parse onboarding.toml, resetting to defaults: {e}");
+                    OnboardingProgress::default()
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => OnboardingProgress::default(),
+            Err(e) => {
+                warn!("Failed to read onboarding.toml, resetting to defaults: {e}");
+                OnboardingProgress::default()
+            }
+        }
+    }
+
+    /// Save onboarding progress to `onboarding.toml`.
+    ///
+    /// Creates the config directory if it does not exist. Uses atomic
+    /// write-to-temp-then-rename.
+    pub fn save_progress(&self, progress: &OnboardingProgress) -> std::io::Result<()> {
+        self.fs.create_dir_all(&self.config_dir)?;
+        let path = self.onboarding_toml_path();
+        let text = toml::to_string_pretty(progress)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let tmp_path = path.with_extension("toml.tmp");
+        self.fs.write(&tmp_path, &text)?;
+        self.fs.rename(&tmp_path, &path)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Convenience functions (backward-compatible public API)
+// ---------------------------------------------------------------------------
 
 /// Returns the config directory path derived from the OS app data directory.
 fn default_config_dir() -> PathBuf {
     crate::app_dirs::app_data_dir().join("config")
 }
-
-// ---------------------------------------------------------------------------
-// Load / Save
-// ---------------------------------------------------------------------------
 
 /// Load onboarding progress from `onboarding.toml` in the app data config
 /// directory.
@@ -89,27 +145,8 @@ fn default_config_dir() -> PathBuf {
 /// Returns `OnboardingProgress::default()` (step = `LlmSetup`) when the file
 /// does not exist or cannot be parsed.
 pub fn load_onboarding_progress() -> OnboardingProgress {
-    load_onboarding_progress_from(&default_config_dir())
-}
-
-/// Load onboarding progress from a specific config directory. Useful for
-/// testing.
-pub(crate) fn load_onboarding_progress_from(config_dir: &Path) -> OnboardingProgress {
-    let path = onboarding_toml_path(config_dir);
-    match std::fs::read_to_string(&path) {
-        Ok(text) => match toml::from_str(&text) {
-            Ok(progress) => progress,
-            Err(e) => {
-                warn!("Failed to parse onboarding.toml, resetting to defaults: {e}");
-                OnboardingProgress::default()
-            }
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => OnboardingProgress::default(),
-        Err(e) => {
-            warn!("Failed to read onboarding.toml, resetting to defaults: {e}");
-            OnboardingProgress::default()
-        }
-    }
+    let manager = OnboardingManager::new(default_config_dir(), RealFileSystem);
+    manager.load_progress()
 }
 
 /// Save onboarding progress to `onboarding.toml` in the app data config
@@ -117,22 +154,8 @@ pub(crate) fn load_onboarding_progress_from(config_dir: &Path) -> OnboardingProg
 ///
 /// Creates the config directory if it does not exist.
 pub fn save_onboarding_progress(progress: &OnboardingProgress) -> std::io::Result<()> {
-    save_onboarding_progress_to(progress, &default_config_dir())
-}
-
-/// Save onboarding progress to a specific config directory. Useful for
-/// testing.
-pub(crate) fn save_onboarding_progress_to(
-    progress: &OnboardingProgress,
-    config_dir: &Path,
-) -> std::io::Result<()> {
-    std::fs::create_dir_all(config_dir)?;
-    let path = onboarding_toml_path(config_dir);
-    let text = toml::to_string_pretty(progress)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-    let tmp_path = path.with_extension("toml.tmp");
-    std::fs::write(&tmp_path, &text)?;
-    std::fs::rename(&tmp_path, &path)
+    let manager = OnboardingManager::new(default_config_dir(), RealFileSystem);
+    manager.save_progress(progress)
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +170,8 @@ pub(crate) fn save_onboarding_progress_to(
 ///
 /// This is the main gate for deciding whether to show the onboarding wizard
 /// or proceed directly to the draft view.
+///
+/// This is a pure function with no I/O -- it only inspects the provided data.
 pub fn is_configured(progress: &OnboardingProgress, credentials: &CredentialsConfig) -> bool {
     if progress.current_step != OnboardingStep::Complete {
         return false;
@@ -191,6 +216,82 @@ fn has_api_key_for_provider(provider: &LlmProvider, credentials: &CredentialsCon
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::path::Path;
+    use std::sync::Mutex;
+
+    // -----------------------------------------------------------------------
+    // FakeFileSystem
+    // -----------------------------------------------------------------------
+
+    /// In-memory filesystem for tests. No disk I/O.
+    struct FakeFileSystem {
+        files: Mutex<HashMap<PathBuf, String>>,
+    }
+
+    impl FakeFileSystem {
+        fn new() -> Self {
+            Self {
+                files: Mutex::new(HashMap::new()),
+            }
+        }
+
+        /// Pre-populate a file for read tests.
+        fn with_file(self, path: impl Into<PathBuf>, contents: impl Into<String>) -> Self {
+            self.files
+                .lock()
+                .unwrap()
+                .insert(path.into(), contents.into());
+            self
+        }
+
+        /// Read back what was written (for assertions).
+        fn get(&self, path: impl AsRef<Path>) -> Option<String> {
+            self.files
+                .lock()
+                .unwrap()
+                .get(path.as_ref())
+                .cloned()
+        }
+    }
+
+    impl FileSystem for FakeFileSystem {
+        fn read_to_string(&self, path: &Path) -> std::io::Result<String> {
+            self.files
+                .lock()
+                .unwrap()
+                .get(path)
+                .cloned()
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "not found"))
+        }
+
+        fn write(&self, path: &Path, contents: &str) -> std::io::Result<()> {
+            self.files
+                .lock()
+                .unwrap()
+                .insert(path.to_path_buf(), contents.to_string());
+            Ok(())
+        }
+
+        fn create_dir_all(&self, _path: &Path) -> std::io::Result<()> {
+            // No-op in the fake: directories are implicit.
+            Ok(())
+        }
+
+        fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+            let mut files = self.files.lock().unwrap();
+            let contents = files.remove(from).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "source not found")
+            })?;
+            files.insert(to.to_path_buf(), contents);
+            Ok(())
+        }
+    }
+
+    /// Helper: create a manager backed by a FakeFileSystem.
+    fn fake_manager(fs: FakeFileSystem) -> OnboardingManager<FakeFileSystem> {
+        OnboardingManager::new(PathBuf::from("/fake/config"), fs)
+    }
 
     // -- is_configured tests ------------------------------------------------
 
@@ -419,13 +520,11 @@ mod tests {
         assert!(!is_configured(&progress, &creds));
     }
 
-    // -- save / load round-trip tests ---------------------------------------
+    // -- save / load round-trip tests (all use FakeFileSystem) ---------------
 
     #[test]
     fn save_load_roundtrip_full_progress() {
-        let tmp = std::env::temp_dir().join("onboarding_test_roundtrip");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
+        let manager = fake_manager(FakeFileSystem::new());
 
         let progress = OnboardingProgress {
             current_step: OnboardingStep::StrategySetup,
@@ -434,25 +533,18 @@ mod tests {
             strategy_configured: false,
         };
 
-        save_onboarding_progress_to(&progress, &tmp).unwrap();
-        let loaded = load_onboarding_progress_from(&tmp);
+        manager.save_progress(&progress).unwrap();
+        let loaded = manager.load_progress();
 
         assert_eq!(loaded.current_step, OnboardingStep::StrategySetup);
         assert_eq!(loaded.llm_provider, Some(LlmProvider::Anthropic));
-        assert_eq!(
-            loaded.llm_model.as_deref(),
-            Some("claude-sonnet-4-6")
-        );
+        assert_eq!(loaded.llm_model.as_deref(), Some("claude-sonnet-4-6"));
         assert!(!loaded.strategy_configured);
-
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn save_load_roundtrip_complete() {
-        let tmp = std::env::temp_dir().join("onboarding_test_roundtrip_complete");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
+        let manager = fake_manager(FakeFileSystem::new());
 
         let progress = OnboardingProgress {
             current_step: OnboardingStep::Complete,
@@ -461,22 +553,18 @@ mod tests {
             strategy_configured: true,
         };
 
-        save_onboarding_progress_to(&progress, &tmp).unwrap();
-        let loaded = load_onboarding_progress_from(&tmp);
+        manager.save_progress(&progress).unwrap();
+        let loaded = manager.load_progress();
 
         assert_eq!(loaded.current_step, OnboardingStep::Complete);
         assert_eq!(loaded.llm_provider, Some(LlmProvider::Google));
         assert_eq!(loaded.llm_model.as_deref(), Some("gemini-2.5-pro"));
         assert!(loaded.strategy_configured);
-
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn save_load_roundtrip_minimal_progress() {
-        let tmp = std::env::temp_dir().join("onboarding_test_roundtrip_minimal");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
+        let manager = fake_manager(FakeFileSystem::new());
 
         let progress = OnboardingProgress {
             current_step: OnboardingStep::LlmSetup,
@@ -485,94 +573,67 @@ mod tests {
             strategy_configured: false,
         };
 
-        save_onboarding_progress_to(&progress, &tmp).unwrap();
-        let loaded = load_onboarding_progress_from(&tmp);
+        manager.save_progress(&progress).unwrap();
+        let loaded = manager.load_progress();
 
         assert_eq!(loaded.current_step, OnboardingStep::LlmSetup);
         assert!(loaded.llm_provider.is_none());
         assert!(loaded.llm_model.is_none());
         assert!(!loaded.strategy_configured);
-
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn load_returns_default_when_file_missing() {
-        let tmp = std::env::temp_dir().join("onboarding_test_missing_file");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-
-        // No onboarding.toml in the directory
-        let loaded = load_onboarding_progress_from(&tmp);
+        // Empty fake FS -- no onboarding.toml
+        let manager = fake_manager(FakeFileSystem::new());
+        let loaded = manager.load_progress();
 
         assert_eq!(loaded.current_step, OnboardingStep::LlmSetup);
         assert!(loaded.llm_provider.is_none());
         assert!(loaded.llm_model.is_none());
         assert!(!loaded.strategy_configured);
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn load_returns_default_when_directory_missing() {
-        let tmp = std::env::temp_dir().join("onboarding_test_no_dir_at_all");
-        let _ = std::fs::remove_dir_all(&tmp);
-
-        // Directory does not exist
-        let loaded = load_onboarding_progress_from(&tmp);
-
-        assert_eq!(loaded.current_step, OnboardingStep::LlmSetup);
-        assert!(loaded.llm_provider.is_none());
     }
 
     #[test]
     fn load_returns_default_when_file_is_invalid_toml() {
-        let tmp = std::env::temp_dir().join("onboarding_test_invalid_toml");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
+        let fs = FakeFileSystem::new()
+            .with_file("/fake/config/onboarding.toml", "not valid [[[ toml");
+        let manager = fake_manager(fs);
 
-        std::fs::write(tmp.join("onboarding.toml"), "not valid [[[ toml").unwrap();
-
-        let loaded = load_onboarding_progress_from(&tmp);
+        let loaded = manager.load_progress();
         assert_eq!(loaded.current_step, OnboardingStep::LlmSetup);
-
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn load_handles_partial_toml() {
-        // A file with only some fields should still load, filling in defaults
-        let tmp = std::env::temp_dir().join("onboarding_test_partial_toml");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-
-        std::fs::write(
-            tmp.join("onboarding.toml"),
+        let fs = FakeFileSystem::new().with_file(
+            "/fake/config/onboarding.toml",
             "current_step = \"strategy_setup\"\n",
-        )
-        .unwrap();
+        );
+        let manager = fake_manager(fs);
 
-        let loaded = load_onboarding_progress_from(&tmp);
+        let loaded = manager.load_progress();
         assert_eq!(loaded.current_step, OnboardingStep::StrategySetup);
         assert!(loaded.llm_provider.is_none());
         assert!(loaded.llm_model.is_none());
         assert!(!loaded.strategy_configured);
-
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
-    fn save_creates_directory_if_missing() {
-        let tmp = std::env::temp_dir().join("onboarding_test_create_dir");
-        let nested = tmp.join("nested").join("config");
-        let _ = std::fs::remove_dir_all(&tmp);
+    fn save_writes_to_onboarding_toml() {
+        let fs = FakeFileSystem::new();
+        let manager = fake_manager(fs);
 
         let progress = OnboardingProgress::default();
-        save_onboarding_progress_to(&progress, &nested).unwrap();
+        manager.save_progress(&progress).unwrap();
 
-        assert!(nested.join("onboarding.toml").exists());
+        // Verify the file was written at the expected path
+        let contents = manager.fs.get("/fake/config/onboarding.toml");
+        assert!(contents.is_some(), "onboarding.toml should exist after save");
 
-        let _ = std::fs::remove_dir_all(&tmp);
+        // The temp file should have been renamed away
+        let tmp_contents = manager.fs.get("/fake/config/onboarding.toml.tmp");
+        assert!(tmp_contents.is_none(), "temp file should not remain after rename");
     }
 
     // -- OnboardingStep default test ----------------------------------------
