@@ -6,7 +6,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use crate::protocol::{TabFeature, TabId, UserCommand};
+use crate::protocol::{AppMode, OnboardingAction, TabFeature, TabId, UserCommand};
 use super::{FocusPanel, PositionFilterModal, ViewState};
 
 /// Handle a keyboard event.
@@ -33,6 +33,59 @@ pub fn handle_key(
         return Some(UserCommand::Quit);
     }
 
+    // Dispatch to mode-specific input handlers
+    match &view_state.app_mode {
+        AppMode::Onboarding(_) => handle_onboarding_key(key_event, view_state),
+        AppMode::Settings(_) => handle_settings_key(key_event, view_state),
+        AppMode::Draft => handle_draft_key(key_event, view_state),
+    }
+}
+
+/// Handle keyboard input during the onboarding wizard.
+///
+/// Placeholder implementation: supports basic navigation (GoNext, GoBack, Skip).
+/// Real onboarding input handling will be implemented in Task 4.
+fn handle_onboarding_key(
+    key_event: KeyEvent,
+    _view_state: &mut ViewState,
+) -> Option<UserCommand> {
+    match key_event.code {
+        KeyCode::Enter | KeyCode::Right => {
+            Some(UserCommand::OnboardingAction(OnboardingAction::GoNext))
+        }
+        KeyCode::Left => {
+            Some(UserCommand::OnboardingAction(OnboardingAction::GoBack))
+        }
+        KeyCode::Char('s') => {
+            Some(UserCommand::OnboardingAction(OnboardingAction::Skip))
+        }
+        KeyCode::Char('q') => Some(UserCommand::Quit),
+        _ => None,
+    }
+}
+
+/// Handle keyboard input on the settings screen.
+///
+/// Placeholder implementation: Esc returns to draft mode.
+/// Real settings input handling will be implemented in Task 6.
+fn handle_settings_key(
+    key_event: KeyEvent,
+    _view_state: &mut ViewState,
+) -> Option<UserCommand> {
+    match key_event.code {
+        KeyCode::Esc => Some(UserCommand::ExitSettings),
+        KeyCode::Char('q') => Some(UserCommand::Quit),
+        _ => None,
+    }
+}
+
+/// Handle keyboard input in draft mode (the main operational view).
+///
+/// This contains all the existing draft-mode key handling logic unchanged.
+fn handle_draft_key(
+    key_event: KeyEvent,
+    view_state: &mut ViewState,
+) -> Option<UserCommand> {
     // Quit confirmation mode: only y/q confirm, n/Esc cancel, everything else blocked
     if view_state.confirm_quit {
         return handle_confirm_quit(key_event, view_state);
@@ -1203,5 +1256,146 @@ mod tests {
         assert_eq!(state.scroll_offset.get("analysis"), Some(&1));
         // Other panels should be untouched
         assert!(state.scroll_offset.get("scarcity").is_none());
+    }
+
+    // -- AppMode-aware input dispatch --
+
+    #[test]
+    fn onboarding_mode_enter_sends_go_next() {
+        use crate::onboarding::OnboardingStep;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+        let result = handle_key(key(KeyCode::Enter), &mut state);
+        assert!(matches!(
+            result,
+            Some(UserCommand::OnboardingAction(OnboardingAction::GoNext))
+        ));
+    }
+
+    #[test]
+    fn onboarding_mode_right_sends_go_next() {
+        use crate::onboarding::OnboardingStep;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+        let result = handle_key(key(KeyCode::Right), &mut state);
+        assert!(matches!(
+            result,
+            Some(UserCommand::OnboardingAction(OnboardingAction::GoNext))
+        ));
+    }
+
+    #[test]
+    fn onboarding_mode_left_sends_go_back() {
+        use crate::onboarding::OnboardingStep;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
+        let result = handle_key(key(KeyCode::Left), &mut state);
+        assert!(matches!(
+            result,
+            Some(UserCommand::OnboardingAction(OnboardingAction::GoBack))
+        ));
+    }
+
+    #[test]
+    fn onboarding_mode_s_sends_skip() {
+        use crate::onboarding::OnboardingStep;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+        let result = handle_key(key(KeyCode::Char('s')), &mut state);
+        assert!(matches!(
+            result,
+            Some(UserCommand::OnboardingAction(OnboardingAction::Skip))
+        ));
+    }
+
+    #[test]
+    fn onboarding_mode_q_quits() {
+        use crate::onboarding::OnboardingStep;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+        let result = handle_key(key(KeyCode::Char('q')), &mut state);
+        assert_eq!(result, Some(UserCommand::Quit));
+    }
+
+    #[test]
+    fn onboarding_mode_ignores_draft_keys() {
+        use crate::onboarding::OnboardingStep;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+        // Tab switching should not work in onboarding mode
+        let result = handle_key(key(KeyCode::Char('1')), &mut state);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn settings_mode_esc_returns_to_draft() {
+        use crate::protocol::SettingsSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        let result = handle_key(key(KeyCode::Esc), &mut state);
+        // Esc now returns ExitSettings command instead of mutating view_state directly
+        assert_eq!(result, Some(UserCommand::ExitSettings));
+        // ViewState.app_mode should NOT be mutated; the app orchestrator handles the transition
+        assert_eq!(state.app_mode, AppMode::Settings(SettingsSection::LlmConfig));
+    }
+
+    #[test]
+    fn settings_mode_q_quits() {
+        use crate::protocol::SettingsSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::StrategyConfig);
+        let result = handle_key(key(KeyCode::Char('q')), &mut state);
+        assert_eq!(result, Some(UserCommand::Quit));
+    }
+
+    #[test]
+    fn settings_mode_ignores_draft_keys() {
+        use crate::protocol::SettingsSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        // Tab switching should not work in settings mode
+        let result = handle_key(key(KeyCode::Char('1')), &mut state);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn draft_mode_tab_switching_still_works() {
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Draft;
+        state.active_tab = TabId::Analysis;
+        let result = handle_key(key(KeyCode::Char('2')), &mut state);
+        assert!(result.is_none());
+        assert_eq!(state.active_tab, TabId::Available);
+    }
+
+    #[test]
+    fn ctrl_c_quits_in_any_mode() {
+        use crate::onboarding::OnboardingStep;
+        use crate::protocol::SettingsSection;
+
+        // Onboarding mode
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+        let result = handle_key(ctrl_key(KeyCode::Char('c')), &mut state);
+        assert_eq!(result, Some(UserCommand::Quit));
+
+        // Settings mode
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        let result = handle_key(ctrl_key(KeyCode::Char('c')), &mut state);
+        assert_eq!(result, Some(UserCommand::Quit));
+
+        // Draft mode
+        state.app_mode = AppMode::Draft;
+        let result = handle_key(ctrl_key(KeyCode::Char('c')), &mut state);
+        assert_eq!(result, Some(UserCommand::Quit));
     }
 }
