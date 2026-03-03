@@ -35,6 +35,19 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
     let tabs = tab_spans(state.active_tab);
     spans.extend(tabs);
 
+    // "No LLM configured" hint when LLM is disabled
+    if !state.llm_configured {
+        spans.push(Span::styled(" | ", Style::default().fg(Color::Gray)));
+        spans.push(Span::styled(
+            "No LLM configured",
+            Style::default().fg(Color::Yellow),
+        ));
+        spans.push(Span::styled(
+            " — press , for Settings",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
     let paragraph = Paragraph::new(Line::from(spans))
         .style(Style::default().bg(Color::Black));
     frame.render_widget(paragraph, area);
@@ -137,6 +150,28 @@ mod tests {
             labels,
             vec!["[1:Analysis]", "[2:Players]", "[3:Log]", "[4:Teams]"]
         );
+    }
+
+    #[test]
+    fn render_does_not_panic_with_llm_unconfigured() {
+        let backend = ratatui::backend::TestBackend::new(120, 1);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut state = ViewState::default();
+        state.llm_configured = false;
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state))
+            .unwrap();
+    }
+
+    #[test]
+    fn render_does_not_panic_with_llm_configured() {
+        let backend = ratatui::backend::TestBackend::new(120, 1);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut state = ViewState::default();
+        state.llm_configured = true;
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state))
+            .unwrap();
     }
 
     #[test]

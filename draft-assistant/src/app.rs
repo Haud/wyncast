@@ -4,6 +4,7 @@
 // extension, LLM streaming events, and user commands from the TUI. Maintains
 // the complete application state and pushes UI updates to the TUI render loop.
 
+use std::sync::atomic::{AtomicI8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -121,6 +122,11 @@ pub struct AppState {
     /// Cached onboarding progress (updated in-memory on each Set* action,
     /// persisted to disk on GoNext/GoBack transitions).
     pub onboarding_progress: OnboardingProgress,
+    /// Tracks the result of the last API connection test during onboarding.
+    /// -1 = never tested, 0 = failed, 1 = success.
+    /// Shared with the spawned TestConnection task via Arc so it can update
+    /// the result without routing through the event loop.
+    pub connection_test_result: Arc<AtomicI8>,
 }
 
 impl AppState {
@@ -173,6 +179,7 @@ impl AppState {
             ws_outbound_tx,
             onboarding_manager,
             onboarding_progress,
+            connection_test_result: Arc::new(AtomicI8::new(-1)),
         }
     }
 
@@ -328,6 +335,7 @@ impl AppState {
             max_bid,
             avg_per_slot,
             team_snapshots,
+            llm_configured: matches!(*self.llm_client, LlmClient::Active(_)),
         }
     }
 
@@ -1339,6 +1347,7 @@ async fn handle_onboarding_action(
             let api_key = get_api_key_for_provider(&provider, &state.config);
 
             if api_key.is_empty() {
+                state.connection_test_result.store(0, Ordering::Relaxed);
                 let _ = ui_tx
                     .send(UiUpdate::OnboardingUpdate(
                         OnboardingUpdate::ConnectionTestResult {
@@ -1351,12 +1360,15 @@ async fn handle_onboarding_action(
             }
 
             let tx = ui_tx.clone();
+            let tracker = Arc::clone(&state.connection_test_result);
             tokio::spawn(async move {
                 let result = test_api_connection(&provider, &api_key, &model_id).await;
+                let success = result.is_ok();
+                tracker.store(if success { 1 } else { 0 }, Ordering::Relaxed);
                 let _ = tx
                     .send(UiUpdate::OnboardingUpdate(
                         OnboardingUpdate::ConnectionTestResult {
-                            success: result.is_ok(),
+                            success,
                             message: match &result {
                                 Ok(msg) => msg.clone(),
                                 Err(msg) => msg.clone(),
@@ -1369,6 +1381,21 @@ async fn handle_onboarding_action(
         OnboardingAction::GoNext => {
             match state.onboarding_progress.current_step {
                 OnboardingStep::LlmSetup => {
+                    // Block advance if the last connection test explicitly failed.
+                    let test_val = state.connection_test_result.load(Ordering::Relaxed);
+                    if test_val == 0 {
+                        // Test was run and failed — send error back to TUI
+                        let _ = ui_tx
+                            .send(UiUpdate::OnboardingUpdate(
+                                OnboardingUpdate::ConnectionTestResult {
+                                    success: false,
+                                    message: "Connection test failed — fix the API key or skip to proceed".to_string(),
+                                },
+                            ))
+                            .await;
+                        return;
+                    }
+
                     // Save the LLM provider/model to strategy config and persist
                     if let Some(ref provider) = state.onboarding_progress.llm_provider {
                         state.config.strategy.llm.provider = provider.clone();
@@ -1475,12 +1502,47 @@ async fn handle_onboarding_action(
             }
         }
         OnboardingAction::Skip => {
-            state.app_mode = AppMode::Draft;
-            let _ = ui_tx.send(UiUpdate::ModeChanged(AppMode::Draft)).await;
-            let snapshot = state.build_snapshot();
-            let _ = ui_tx
-                .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
-                .await;
+            // Save partial progress but keep current_step at the skipped step
+            // so re-running the app will resume from this step.
+            if let Err(e) = state
+                .onboarding_manager
+                .save_progress(&state.onboarding_progress)
+            {
+                warn!("Failed to save onboarding progress on skip: {}", e);
+            }
+
+            match state.onboarding_progress.current_step {
+                OnboardingStep::LlmSetup => {
+                    // Skip LlmSetup -> show StrategySetup for this session
+                    // but don't advance current_step (stays at LlmSetup)
+                    state.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
+                    let _ = ui_tx
+                        .send(UiUpdate::ModeChanged(AppMode::Onboarding(
+                            OnboardingStep::StrategySetup,
+                        )))
+                        .await;
+                }
+                OnboardingStep::StrategySetup => {
+                    // Skip StrategySetup -> transition to Draft for this session
+                    // but don't advance current_step (stays at StrategySetup)
+                    state.llm_client = Arc::new(LlmClient::from_config(&state.config));
+                    state.app_mode = AppMode::Draft;
+                    let _ = ui_tx.send(UiUpdate::ModeChanged(AppMode::Draft)).await;
+                    let snapshot = state.build_snapshot();
+                    let _ = ui_tx
+                        .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
+                        .await;
+                }
+                OnboardingStep::Complete => {
+                    // Already complete, go to draft
+                    state.app_mode = AppMode::Draft;
+                    let _ = ui_tx.send(UiUpdate::ModeChanged(AppMode::Draft)).await;
+                    let snapshot = state.build_snapshot();
+                    let _ = ui_tx
+                        .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
+                        .await;
+                }
+            }
         }
         OnboardingAction::SaveStrategyConfig { hitting_budget_pct, category_weights } => {
             // Update in-memory config
@@ -1625,6 +1687,31 @@ async fn handle_onboarding_action(
                 }
             }
         }
+        OnboardingAction::ResetOnboarding => {
+            // Reset onboarding to defaults and restart from LlmSetup
+            state.onboarding_progress = OnboardingProgress::default();
+            state.connection_test_result.store(-1, Ordering::Relaxed);
+            if let Err(e) = state
+                .onboarding_manager
+                .save_progress(&state.onboarding_progress)
+            {
+                warn!("Failed to save reset onboarding progress: {}", e);
+            }
+            state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+            let _ = ui_tx
+                .send(UiUpdate::ModeChanged(AppMode::Onboarding(
+                    OnboardingStep::LlmSetup,
+                )))
+                .await;
+            let _ = ui_tx
+                .send(UiUpdate::OnboardingUpdate(
+                    OnboardingUpdate::ProgressSync {
+                        provider: None,
+                        model: None,
+                    },
+                ))
+                .await;
+        }
     }
 }
 
@@ -1764,6 +1851,32 @@ async fn handle_settings_action(
                 ui_tx,
             )
             .await;
+        }
+        OnboardingAction::ResetOnboarding => {
+            // Clear onboarding progress, save to disk, switch to onboarding mode
+            state.onboarding_progress = OnboardingProgress::default();
+            state.connection_test_result.store(-1, Ordering::Relaxed);
+            if let Err(e) = state
+                .onboarding_manager
+                .save_progress(&state.onboarding_progress)
+            {
+                warn!("Failed to save reset onboarding progress: {}", e);
+            }
+            state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+            let _ = ui_tx
+                .send(UiUpdate::ModeChanged(AppMode::Onboarding(
+                    OnboardingStep::LlmSetup,
+                )))
+                .await;
+            // Sync the reset state back to the TUI
+            let _ = ui_tx
+                .send(UiUpdate::OnboardingUpdate(
+                    OnboardingUpdate::ProgressSync {
+                        provider: None,
+                        model: None,
+                    },
+                ))
+                .await;
         }
         // GoNext/GoBack/Skip are filtered by the input handler and should
         // not reach here. If they do, ignore them silently.
@@ -4611,11 +4724,50 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[tokio::test]
-    async fn onboarding_skip_transitions_to_draft_mode() {
+    async fn onboarding_skip_from_llm_setup_shows_strategy_setup() {
         use crate::onboarding::OnboardingStep;
 
         let mut state = create_test_app_state();
         state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+        state.onboarding_progress.current_step = OnboardingStep::LlmSetup;
+
+        let (ui_tx, mut ui_rx) = mpsc::channel(16);
+
+        handle_user_command(
+            &mut state,
+            UserCommand::OnboardingAction(OnboardingAction::Skip),
+            &ui_tx,
+        )
+        .await;
+
+        // AppState should now show StrategySetup (not Draft)
+        assert_eq!(
+            state.app_mode,
+            AppMode::Onboarding(OnboardingStep::StrategySetup)
+        );
+
+        // Persisted step should remain at LlmSetup (not advanced)
+        assert_eq!(state.onboarding_progress.current_step, OnboardingStep::LlmSetup);
+
+        // UI channel should have received ModeChanged(Onboarding(StrategySetup))
+        let update = ui_rx.recv().await.expect("expected ModeChanged update");
+        assert!(
+            matches!(
+                update,
+                UiUpdate::ModeChanged(AppMode::Onboarding(OnboardingStep::StrategySetup))
+            ),
+            "first update should be ModeChanged(Onboarding(StrategySetup)), got {:?}",
+            update,
+        );
+    }
+
+    #[tokio::test]
+    async fn onboarding_skip_from_strategy_setup_transitions_to_draft() {
+        use crate::onboarding::OnboardingStep;
+
+        let mut state = create_test_app_state();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
+        state.onboarding_progress.current_step = OnboardingStep::StrategySetup;
 
         let (ui_tx, mut ui_rx) = mpsc::channel(16);
 
@@ -4628,6 +4780,9 @@ mod tests {
 
         // AppState should now be in Draft mode
         assert_eq!(state.app_mode, AppMode::Draft);
+
+        // Persisted step should remain at StrategySetup (not advanced to Complete)
+        assert_eq!(state.onboarding_progress.current_step, OnboardingStep::StrategySetup);
 
         // UI channel should have received ModeChanged(Draft)
         let update = ui_rx.recv().await.expect("expected ModeChanged update");
@@ -4644,6 +4799,169 @@ mod tests {
             "second update should be StateSnapshot, got {:?}",
             snapshot_update,
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: GoNext blocked when connection test failed (Task 7)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn go_next_blocked_when_connection_test_failed() {
+        use crate::onboarding::OnboardingStep;
+
+        let mut state = create_test_app_state();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+        state.onboarding_progress.current_step = OnboardingStep::LlmSetup;
+        // Simulate a failed connection test
+        state.connection_test_result.store(0, Ordering::Relaxed);
+
+        let (ui_tx, mut ui_rx) = mpsc::channel(16);
+
+        handle_user_command(
+            &mut state,
+            UserCommand::OnboardingAction(OnboardingAction::GoNext),
+            &ui_tx,
+        )
+        .await;
+
+        // Should NOT advance — still on LlmSetup
+        assert_eq!(
+            state.app_mode,
+            AppMode::Onboarding(OnboardingStep::LlmSetup)
+        );
+        assert_eq!(state.onboarding_progress.current_step, OnboardingStep::LlmSetup);
+
+        // Should have received an error message via ConnectionTestResult
+        let update = ui_rx.recv().await.expect("expected error update");
+        match update {
+            UiUpdate::OnboardingUpdate(OnboardingUpdate::ConnectionTestResult {
+                success,
+                message,
+            }) => {
+                assert!(!success);
+                assert!(message.contains("failed"));
+            }
+            other => panic!("expected ConnectionTestResult error, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn go_next_allowed_when_connection_test_never_run() {
+        use crate::onboarding::OnboardingStep;
+
+        let mut state = create_test_app_state();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+        state.onboarding_progress.current_step = OnboardingStep::LlmSetup;
+        // Never tested: -1 (default)
+        assert_eq!(state.connection_test_result.load(Ordering::Relaxed), -1);
+
+        let (ui_tx, _ui_rx) = mpsc::channel(16);
+
+        handle_user_command(
+            &mut state,
+            UserCommand::OnboardingAction(OnboardingAction::GoNext),
+            &ui_tx,
+        )
+        .await;
+
+        // Should advance to StrategySetup
+        assert_eq!(
+            state.app_mode,
+            AppMode::Onboarding(OnboardingStep::StrategySetup)
+        );
+    }
+
+    #[tokio::test]
+    async fn go_next_allowed_when_connection_test_succeeded() {
+        use crate::onboarding::OnboardingStep;
+
+        let mut state = create_test_app_state();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+        state.onboarding_progress.current_step = OnboardingStep::LlmSetup;
+        // Simulate a successful connection test
+        state.connection_test_result.store(1, Ordering::Relaxed);
+
+        let (ui_tx, _ui_rx) = mpsc::channel(16);
+
+        handle_user_command(
+            &mut state,
+            UserCommand::OnboardingAction(OnboardingAction::GoNext),
+            &ui_tx,
+        )
+        .await;
+
+        // Should advance to StrategySetup
+        assert_eq!(
+            state.app_mode,
+            AppMode::Onboarding(OnboardingStep::StrategySetup)
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: Reset Onboarding from Settings (Task 7)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn reset_onboarding_from_settings_resets_to_llm_setup() {
+        use crate::onboarding::OnboardingStep;
+        use crate::protocol::SettingsSection;
+
+        let mut state = create_test_app_state();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        // Simulate completed onboarding
+        state.onboarding_progress.current_step = OnboardingStep::Complete;
+        state.onboarding_progress.strategy_configured = true;
+        state.onboarding_progress.llm_provider = Some(crate::llm::provider::LlmProvider::Anthropic);
+        state.onboarding_progress.llm_model = Some("claude-sonnet-4-6".to_string());
+        state.connection_test_result.store(1, Ordering::Relaxed);
+
+        let (ui_tx, mut ui_rx) = mpsc::channel(16);
+
+        handle_user_command(
+            &mut state,
+            UserCommand::OnboardingAction(OnboardingAction::ResetOnboarding),
+            &ui_tx,
+        )
+        .await;
+
+        // Should be in Onboarding(LlmSetup) mode
+        assert_eq!(
+            state.app_mode,
+            AppMode::Onboarding(OnboardingStep::LlmSetup)
+        );
+
+        // Progress should be reset to defaults
+        assert_eq!(state.onboarding_progress.current_step, OnboardingStep::LlmSetup);
+        assert!(state.onboarding_progress.llm_provider.is_none());
+        assert!(state.onboarding_progress.llm_model.is_none());
+        assert!(!state.onboarding_progress.strategy_configured);
+
+        // Connection test tracker should be reset
+        assert_eq!(state.connection_test_result.load(Ordering::Relaxed), -1);
+
+        // Should have received ModeChanged and ProgressSync
+        let update1 = ui_rx.recv().await.expect("expected ModeChanged");
+        assert!(matches!(
+            update1,
+            UiUpdate::ModeChanged(AppMode::Onboarding(OnboardingStep::LlmSetup))
+        ));
+        let update2 = ui_rx.recv().await.expect("expected ProgressSync");
+        assert!(matches!(
+            update2,
+            UiUpdate::OnboardingUpdate(OnboardingUpdate::ProgressSync { .. })
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: build_snapshot includes llm_configured (Task 7)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_snapshot_llm_configured_false_when_disabled() {
+        let state = create_test_app_state();
+        // create_test_app_state uses LlmClient::Disabled
+        let snap = state.build_snapshot();
+        assert!(!snap.llm_configured);
     }
 
     #[tokio::test]
