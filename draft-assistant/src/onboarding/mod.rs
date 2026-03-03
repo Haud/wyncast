@@ -133,11 +133,24 @@ impl<F: FileSystem> OnboardingManager<F> {
     ///
     /// Reads the existing strategy.toml (to preserve non-weight fields like pool
     /// sizes, LLM config, etc.), updates the budget fraction and category weights,
-    /// then writes the whole file back.
+    /// then writes the whole file back. Optionally updates the `[llm]` section's
+    /// `provider` and `model` fields if provided.
     pub fn save_strategy(
         &self,
         hitting_budget_pct: u8,
         weights: &crate::tui::onboarding::strategy_setup::CategoryWeights,
+    ) -> std::io::Result<()> {
+        self.save_strategy_with_llm(hitting_budget_pct, weights, None, None)
+    }
+
+    /// Save strategy configuration to `strategy.toml`, optionally including
+    /// updated LLM provider and model in the `[llm]` section.
+    pub fn save_strategy_with_llm(
+        &self,
+        hitting_budget_pct: u8,
+        weights: &crate::tui::onboarding::strategy_setup::CategoryWeights,
+        provider: Option<&LlmProvider>,
+        model: Option<&str>,
     ) -> std::io::Result<()> {
         self.fs.create_dir_all(&self.config_dir)?;
         let path = self.config_dir.join("strategy.toml");
@@ -180,6 +193,33 @@ impl<F: FileSystem> OnboardingManager<F> {
             t.insert("HD".to_string(), toml::Value::Float(config_w.HD));
             t.insert("ERA".to_string(), toml::Value::Float(config_w.ERA));
             t.insert("WHIP".to_string(), toml::Value::Float(config_w.WHIP));
+        }
+
+        // Optionally update [llm] provider and model
+        if provider.is_some() || model.is_some() {
+            let llm_table = doc
+                .entry("llm")
+                .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+            if let toml::Value::Table(ref mut t) = llm_table {
+                if let Some(p) = provider {
+                    // Serialize the provider enum to its lowercase string form
+                    let provider_str = toml::to_string(p)
+                        .unwrap_or_default()
+                        .trim_matches('"')
+                        .trim()
+                        .to_string();
+                    t.insert(
+                        "provider".to_string(),
+                        toml::Value::String(provider_str),
+                    );
+                }
+                if let Some(m) = model {
+                    t.insert(
+                        "model".to_string(),
+                        toml::Value::String(m.to_string()),
+                    );
+                }
+            }
         }
 
         let text = toml::to_string_pretty(&doc)

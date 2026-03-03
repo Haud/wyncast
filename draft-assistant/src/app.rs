@@ -176,6 +176,18 @@ impl AppState {
         }
     }
 
+    /// Reconstruct the LLM client from the current config.
+    ///
+    /// Called after settings changes (API key, provider, model) so that
+    /// subsequent LLM calls use the updated configuration.
+    pub fn reload_llm_client(&mut self) {
+        self.llm_client = Arc::new(LlmClient::from_config(&self.config));
+        info!("Reloaded LLM client (provider={:?}, model={})",
+            self.config.strategy.llm.provider,
+            self.config.strategy.llm.model,
+        );
+    }
+
     /// Process new picks from the extension state diff.
     ///
     /// For each new pick:
@@ -1236,11 +1248,25 @@ async fn handle_user_command(
             // Scroll is handled by the TUI directly, no app-level action needed
         }
         UserCommand::OnboardingAction(action) => {
+            let in_settings = matches!(state.app_mode, AppMode::Settings(_));
             match &action {
                 OnboardingAction::SetApiKey(_) => info!("Onboarding action: SetApiKey(***)"),
                 _ => info!("Onboarding action: {:?}", action),
             }
-            handle_onboarding_action(state, action, ui_tx).await;
+            if in_settings {
+                handle_settings_action(state, action, ui_tx).await;
+            } else {
+                handle_onboarding_action(state, action, ui_tx).await;
+            }
+        }
+        UserCommand::OpenSettings => {
+            info!("Opening settings screen");
+            state.app_mode = AppMode::Settings(crate::protocol::SettingsSection::LlmConfig);
+            let _ = ui_tx
+                .send(UiUpdate::ModeChanged(AppMode::Settings(
+                    crate::protocol::SettingsSection::LlmConfig,
+                )))
+                .await;
         }
         UserCommand::ExitSettings => {
             info!("Exiting settings, returning to draft mode");
@@ -1249,6 +1275,12 @@ async fn handle_user_command(
             let snapshot = state.build_snapshot();
             let _ = ui_tx
                 .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
+                .await;
+        }
+        UserCommand::SwitchSettingsTab(section) => {
+            state.app_mode = AppMode::Settings(section);
+            let _ = ui_tx
+                .send(UiUpdate::ModeChanged(AppMode::Settings(section)))
                 .await;
         }
         UserCommand::Quit => {
@@ -1593,6 +1625,149 @@ async fn handle_onboarding_action(
                 }
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Settings action handling
+// ---------------------------------------------------------------------------
+
+/// Handle an onboarding-style action dispatched from the settings screen.
+///
+/// Settings mode reuses the same onboarding input handlers, so it receives
+/// the same `OnboardingAction` variants. However, the behavior differs:
+/// - `SetProvider`/`SetModel`/`SetApiKey` update config and reload the LLM client
+/// - `SaveStrategyConfig` persists strategy without transitioning to Draft
+/// - `TestConnection` works the same as during onboarding
+/// - `GoNext`/`GoBack`/`Skip` are filtered out by input.rs and should not arrive
+/// - `ConfigureStrategyWithLlm` works the same as during onboarding
+async fn handle_settings_action(
+    state: &mut AppState,
+    action: OnboardingAction,
+    ui_tx: &mpsc::Sender<UiUpdate>,
+) {
+    use crate::llm::provider::LlmProvider;
+
+    match action {
+        OnboardingAction::SetProvider(provider) => {
+            state.config.strategy.llm.provider = provider.clone();
+            state.config.strategy.llm.model = String::new();
+            state.onboarding_progress.llm_provider = Some(provider);
+            state.onboarding_progress.llm_model = None;
+            state.reload_llm_client();
+            if let Err(e) = state.onboarding_manager.save_progress(&state.onboarding_progress) {
+                warn!("Failed to save onboarding progress after SetProvider: {}", e);
+            }
+        }
+        OnboardingAction::SetModel(model_id) => {
+            state.config.strategy.llm.model = model_id.clone();
+            state.onboarding_progress.llm_model = Some(model_id);
+            state.reload_llm_client();
+            if let Err(e) = state.onboarding_manager.save_progress(&state.onboarding_progress) {
+                warn!("Failed to save onboarding progress after SetModel: {}", e);
+            }
+        }
+        OnboardingAction::SetApiKey(key) => {
+            let provider = state
+                .onboarding_progress
+                .llm_provider
+                .clone()
+                .unwrap_or(LlmProvider::Anthropic);
+            save_api_key_for_provider(&provider, &key, &mut state.config, &state.onboarding_manager);
+            // Reload LLM client so the new key takes effect immediately
+            state.reload_llm_client();
+        }
+        OnboardingAction::TestConnection => {
+            // Same as onboarding: spawn async test
+            let provider = state
+                .onboarding_progress
+                .llm_provider
+                .clone()
+                .unwrap_or(LlmProvider::Anthropic);
+            let model_id = state
+                .onboarding_progress
+                .llm_model
+                .clone()
+                .unwrap_or_else(|| state.config.strategy.llm.model.clone());
+
+            let api_key = get_api_key_for_provider(&provider, &state.config);
+
+            if api_key.is_empty() {
+                let _ = ui_tx
+                    .send(UiUpdate::OnboardingUpdate(
+                        OnboardingUpdate::ConnectionTestResult {
+                            success: false,
+                            message: "No API key entered".to_string(),
+                        },
+                    ))
+                    .await;
+                return;
+            }
+
+            let tx = ui_tx.clone();
+            tokio::spawn(async move {
+                let result = test_api_connection(&provider, &api_key, &model_id).await;
+                let _ = tx
+                    .send(UiUpdate::OnboardingUpdate(
+                        OnboardingUpdate::ConnectionTestResult {
+                            success: result.is_ok(),
+                            message: match &result {
+                                Ok(msg) => msg.clone(),
+                                Err(msg) => msg.clone(),
+                            },
+                        },
+                    ))
+                    .await;
+            });
+        }
+        OnboardingAction::SaveStrategyConfig { hitting_budget_pct, category_weights } => {
+            // Update in-memory config
+            state.config.strategy.hitting_budget_fraction = hitting_budget_pct as f64 / 100.0;
+            state.config.strategy.weights = category_weights.to_config_weights();
+
+            // Persist to strategy.toml (including current LLM provider/model
+            // in case they were changed on the LLM tab)
+            if let Err(e) = state.onboarding_manager.save_strategy_with_llm(
+                hitting_budget_pct,
+                &category_weights,
+                Some(&state.config.strategy.llm.provider),
+                Some(&state.config.strategy.llm.model),
+            ) {
+                warn!("Failed to save strategy.toml: {}", e);
+            } else {
+                info!("Settings: saved strategy config (budget={}%, weights updated)", hitting_budget_pct);
+            }
+
+            // Reload LLM client in case provider/model changed on the LLM tab
+            state.reload_llm_client();
+
+            // Recalculate valuations with new strategy weights
+            valuation::recalculate_all(
+                &mut state.available_players,
+                &state.config.league,
+                &state.config.strategy,
+                &state.draft_state,
+            );
+            state.scarcity = compute_scarcity(&state.available_players, &state.config.league);
+
+            // Send updated snapshot to TUI (stay in Settings mode)
+            let snapshot = state.build_snapshot();
+            let _ = ui_tx
+                .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
+                .await;
+        }
+        OnboardingAction::ConfigureStrategyWithLlm(description) => {
+            // Delegate to the same LLM generation logic as onboarding
+            handle_onboarding_action(
+                state,
+                OnboardingAction::ConfigureStrategyWithLlm(description),
+                ui_tx,
+            )
+            .await;
+        }
+        // GoNext/GoBack/Skip are filtered by the input handler and should
+        // not reach here. If they do, ignore them silently.
+        OnboardingAction::GoNext | OnboardingAction::GoBack | OnboardingAction::Skip => {}
     }
 }
 
@@ -4615,5 +4790,189 @@ mod tests {
         let text = "Here is the configuration:\n{\"hitting_budget_pct\": 60, \"category_weights\": {}}\nEnjoy!";
         let (pct, _) = parse_strategy_json(text).unwrap();
         assert_eq!(pct, 60);
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: Settings mode (Task 6)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn open_settings_transitions_to_settings_mode() {
+        use crate::protocol::SettingsSection;
+
+        let mut state = create_test_app_state();
+        state.app_mode = AppMode::Draft;
+
+        let (ui_tx, mut ui_rx) = mpsc::channel(16);
+
+        handle_user_command(&mut state, UserCommand::OpenSettings, &ui_tx).await;
+
+        // AppState should now be in Settings(LlmConfig) mode
+        assert_eq!(
+            state.app_mode,
+            AppMode::Settings(SettingsSection::LlmConfig)
+        );
+
+        // UI channel should have received ModeChanged
+        let update = ui_rx.recv().await.expect("expected ModeChanged update");
+        assert!(
+            matches!(
+                update,
+                UiUpdate::ModeChanged(AppMode::Settings(SettingsSection::LlmConfig))
+            ),
+            "expected ModeChanged(Settings(LlmConfig)), got {:?}",
+            update,
+        );
+    }
+
+    #[tokio::test]
+    async fn exit_settings_transitions_back_to_draft() {
+        use crate::protocol::SettingsSection;
+
+        let mut state = create_test_app_state();
+        state.app_mode = AppMode::Settings(SettingsSection::StrategyConfig);
+
+        let (ui_tx, mut ui_rx) = mpsc::channel(16);
+
+        handle_user_command(&mut state, UserCommand::ExitSettings, &ui_tx).await;
+
+        assert_eq!(state.app_mode, AppMode::Draft);
+
+        let update = ui_rx.recv().await.expect("expected ModeChanged update");
+        assert!(
+            matches!(update, UiUpdate::ModeChanged(AppMode::Draft)),
+            "expected ModeChanged(Draft), got {:?}",
+            update,
+        );
+    }
+
+    #[test]
+    fn reload_llm_client_updates_client() {
+        let mut state = create_test_app_state();
+
+        // Initially disabled (no API key in test config)
+        assert!(matches!(&*state.llm_client, LlmClient::Disabled));
+
+        // Set an API key and reload
+        state.config.credentials.anthropic_api_key = Some("sk-ant-test-key".to_string());
+        state.reload_llm_client();
+
+        // Now the client should be Active
+        assert!(matches!(&*state.llm_client, LlmClient::Active(_)));
+    }
+
+    #[tokio::test]
+    async fn settings_save_strategy_updates_config_stays_in_settings() {
+        use crate::protocol::SettingsSection;
+        use crate::tui::onboarding::strategy_setup::CategoryWeights;
+
+        let mut state = create_test_app_state();
+        state.app_mode = AppMode::Settings(SettingsSection::StrategyConfig);
+
+        let weights = CategoryWeights {
+            r: 1.0, hr: 1.1, rbi: 1.0, bb: 1.3, sb: 1.0, avg: 1.0,
+            k: 1.0, w: 1.0, sv: 0.3, hd: 1.2, era: 1.0, whip: 1.0,
+        };
+
+        let (ui_tx, mut ui_rx) = mpsc::channel(16);
+
+        handle_user_command(
+            &mut state,
+            UserCommand::OnboardingAction(OnboardingAction::SaveStrategyConfig {
+                hitting_budget_pct: 70,
+                category_weights: weights,
+            }),
+            &ui_tx,
+        )
+        .await;
+
+        // In-memory config should be updated
+        assert!(
+            (state.config.strategy.hitting_budget_fraction - 0.70).abs() < f64::EPSILON,
+            "budget fraction should be 0.70, got {}",
+            state.config.strategy.hitting_budget_fraction,
+        );
+        assert!(
+            (state.config.strategy.weights.BB - 1.3).abs() < 0.001,
+            "BB weight should be 1.3",
+        );
+
+        // Should stay in Settings mode (not transition to Draft)
+        assert_eq!(
+            state.app_mode,
+            AppMode::Settings(SettingsSection::StrategyConfig),
+            "should remain in Settings mode after saving strategy",
+        );
+
+        // Should receive a StateSnapshot (recalculated valuations)
+        let update = ui_rx.recv().await.expect("expected StateSnapshot update");
+        assert!(
+            matches!(update, UiUpdate::StateSnapshot(_)),
+            "expected StateSnapshot, got {:?}",
+            update,
+        );
+    }
+
+    #[tokio::test]
+    async fn settings_set_api_key_reloads_llm_client() {
+        use crate::protocol::SettingsSection;
+
+        let mut state = create_test_app_state();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        state.onboarding_progress.llm_provider = Some(crate::llm::provider::LlmProvider::Anthropic);
+
+        // Initially disabled
+        assert!(matches!(&*state.llm_client, LlmClient::Disabled));
+
+        let (ui_tx, _ui_rx) = mpsc::channel(16);
+
+        handle_user_command(
+            &mut state,
+            UserCommand::OnboardingAction(OnboardingAction::SetApiKey("sk-ant-test-key".to_string())),
+            &ui_tx,
+        )
+        .await;
+
+        // API key should be saved and LLM client should be reloaded
+        assert_eq!(
+            state.config.credentials.anthropic_api_key.as_deref(),
+            Some("sk-ant-test-key"),
+        );
+        assert!(
+            matches!(&*state.llm_client, LlmClient::Active(_)),
+            "LLM client should be Active after setting API key in settings",
+        );
+    }
+
+    #[tokio::test]
+    async fn switch_settings_tab_changes_mode() {
+        use crate::protocol::SettingsSection;
+
+        let mut state = create_test_app_state();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+
+        let (ui_tx, mut ui_rx) = mpsc::channel(16);
+
+        handle_user_command(
+            &mut state,
+            UserCommand::SwitchSettingsTab(SettingsSection::StrategyConfig),
+            &ui_tx,
+        )
+        .await;
+
+        assert_eq!(
+            state.app_mode,
+            AppMode::Settings(SettingsSection::StrategyConfig),
+        );
+
+        let update = ui_rx.recv().await.expect("expected ModeChanged update");
+        assert!(
+            matches!(
+                update,
+                UiUpdate::ModeChanged(AppMode::Settings(SettingsSection::StrategyConfig))
+            ),
+            "expected ModeChanged(Settings(StrategyConfig)), got {:?}",
+            update,
+        );
     }
 }

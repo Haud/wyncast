@@ -7,6 +7,7 @@
 pub mod input;
 pub mod layout;
 pub mod onboarding;
+pub mod settings;
 pub mod widgets;
 
 use std::collections::HashMap;
@@ -24,7 +25,7 @@ use crate::draft::pick::{DraftPick, Position};
 use crate::draft::roster::RosterSlot;
 use crate::protocol::{
     AppMode, AppSnapshot, ConnectionStatus, InstantAnalysis, LlmStatus, NominationInfo,
-    TabFeature, TabId, UiUpdate, UserCommand,
+    SettingsSection, TabFeature, TabId, UiUpdate, UserCommand,
 };
 use crate::valuation::scarcity::ScarcityEntry;
 use crate::valuation::zscore::PlayerValuation;
@@ -314,6 +315,8 @@ pub struct ViewState {
     pub llm_setup: LlmSetupState,
     /// State for the strategy setup onboarding screen.
     pub strategy_setup: StrategySetupState,
+    /// Which settings tab is currently active (LLM or Strategy).
+    pub settings_tab: SettingsSection,
 }
 
 impl Default for ViewState {
@@ -347,6 +350,7 @@ impl Default for ViewState {
             active_keybinds: Vec::new(),
             llm_setup: LlmSetupState::default(),
             strategy_setup: StrategySetupState::default(),
+            settings_tab: SettingsSection::LlmConfig,
         }
     }
 }
@@ -398,6 +402,15 @@ impl ViewState {
                 total_slots: ts.total_slots,
             })
             .collect();
+    }
+
+    /// Returns `true` when the settings screen is in an editing sub-mode
+    /// (e.g. typing an API key or editing a strategy field).
+    pub fn settings_is_editing(&self) -> bool {
+        match self.settings_tab {
+            SettingsSection::LlmConfig => self.llm_setup.api_key_editing,
+            SettingsSection::StrategyConfig => self.strategy_setup.is_editing(),
+        }
     }
 }
 
@@ -511,6 +524,9 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
             }
         }
         UiUpdate::ModeChanged(mode) => {
+            if let AppMode::Settings(section) = &mode {
+                state.settings_tab = *section;
+            }
             state.app_mode = mode;
         }
     }
@@ -536,12 +552,7 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
 pub fn compute_keybinds(state: &ViewState) -> Vec<KeybindHint> {
     match &state.app_mode {
         AppMode::Onboarding(step) => compute_onboarding_keybinds(state, step),
-        AppMode::Settings(_) => {
-            vec![
-                KeybindHint::new("Esc", "Back to Draft"),
-                KeybindHint::new("q", "Quit"),
-            ]
-        }
+        AppMode::Settings(_) => compute_settings_keybinds(state),
         AppMode::Draft => compute_draft_keybinds(state),
     }
 }
@@ -617,6 +628,33 @@ fn compute_onboarding_keybinds(state: &ViewState, step: &crate::onboarding::Onbo
     }
 }
 
+/// Compute keybind hints for settings mode.
+fn compute_settings_keybinds(state: &ViewState) -> Vec<KeybindHint> {
+    if state.settings_is_editing() {
+        vec![
+            KeybindHint::new("type", "Input"),
+            KeybindHint::new("Enter", "Confirm"),
+            KeybindHint::new("Esc", "Cancel"),
+        ]
+    } else {
+        let mut hints = vec![
+            KeybindHint::new("1/2", "Tab"),
+            KeybindHint::new("Tab", "Section"),
+            KeybindHint::new("^v", "Navigate"),
+        ];
+        match state.settings_tab {
+            SettingsSection::StrategyConfig => {
+                hints.push(KeybindHint::new("s", "Save"));
+            }
+            SettingsSection::LlmConfig => {
+                hints.push(KeybindHint::new("Enter", "Test Connection"));
+            }
+        }
+        hints.push(KeybindHint::new("Esc", "Back to Draft"));
+        hints
+    }
+}
+
 /// Compute keybind hints for draft mode.
 fn compute_draft_keybinds(state: &ViewState) -> Vec<KeybindHint> {
     // 1. Quit confirmation overlay: all other input is blocked
@@ -656,9 +694,10 @@ fn compute_draft_keybinds(state: &ViewState) -> Vec<KeybindHint> {
         hints.push(KeybindHint::new("p", "Pos"));
     }
 
-    // Focus cycling and resync are always available in normal mode
+    // Focus cycling, resync, and settings are always available in normal mode
     hints.push(KeybindHint::new("Tab", "Focus"));
     hints.push(KeybindHint::new("r", "Resync"));
+    hints.push(KeybindHint::new(",", "Settings"));
 
     // Scroll hint only appears when a panel is focused (scroll is routed there)
     if state.focused_panel.is_some() {
@@ -697,7 +736,7 @@ fn render_frame(frame: &mut Frame, state: &ViewState) {
             onboarding::render(frame, step, state);
         }
         AppMode::Settings(_section) => {
-            render_placeholder(frame, "Settings", &state.active_keybinds);
+            settings::render(frame, state);
         }
         AppMode::Draft => {
             render_draft_frame(frame, state);
@@ -746,57 +785,6 @@ fn render_draft_frame(frame: &mut Frame, state: &ViewState) {
     }
 }
 
-/// Render a centered placeholder screen with the given message and a help bar.
-///
-/// Used for Onboarding and Settings modes until their real UIs are implemented.
-fn render_placeholder(frame: &mut Frame, message: &str, keybinds: &[KeybindHint]) {
-    use ratatui::layout::{Alignment, Constraint, Layout};
-
-    let area = frame.area();
-
-    // Split into main content area and a 1-line help bar at the bottom
-    let outer = Layout::vertical([
-        Constraint::Min(0),
-        Constraint::Length(1),
-    ])
-    .split(area);
-
-    // Vertically center the text block within the main content area
-    let vertical = Layout::vertical([
-        Constraint::Percentage(40),
-        Constraint::Length(3),
-        Constraint::Percentage(40),
-    ])
-    .split(outer[0]);
-
-    let paragraph = Paragraph::new(Line::from(vec![
-        Span::styled(
-            message,
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]))
-    .alignment(Alignment::Center)
-    .style(Style::default().bg(Color::Black));
-
-    frame.render_widget(paragraph, vertical[1]);
-
-    // Help bar: render keybind hints at the bottom
-    let mut spans: Vec<Span> = Vec::new();
-    for (i, hint) in keybinds.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
-        }
-        spans.push(Span::styled(
-            format!(" {}:{}", hint.key, hint.description),
-            Style::default().fg(Color::Gray),
-        ));
-    }
-    let help_bar = Paragraph::new(Line::from(spans))
-        .style(Style::default().bg(Color::Black));
-    frame.render_widget(help_bar, outer[1]);
-}
 
 /// Render the help bar using the pre-computed keybind hints.
 ///
@@ -1573,15 +1561,42 @@ mod tests {
     fn compute_keybinds_settings_mode() {
         use crate::protocol::SettingsSection;
 
+        // LLM tab: should show "Enter: Test Connection" instead of "s: Save"
         let mut state = ViewState::default();
         state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        state.settings_tab = SettingsSection::LlmConfig;
         let hints = compute_keybinds(&state);
         let ks = keys(&hints);
         assert!(ks.contains(&"Esc"), "settings should show Back hint");
-        assert!(ks.contains(&"q"), "settings should show Quit hint");
+        assert!(ks.contains(&"1/2"), "settings should show tab switch hint");
+        assert!(ks.contains(&"Tab"), "settings should show section hint");
+        assert!(ks.contains(&"Enter"), "LLM tab should show Test Connection hint");
+        assert!(!ks.contains(&"s"), "LLM tab should not show save hint");
         // Draft-specific hints should NOT appear
-        assert!(!ks.contains(&"1-4"), "tab hints should not appear in settings");
-        assert!(!ks.contains(&"Tab"), "focus hint should not appear in settings");
+        assert!(!ks.contains(&"1-4"), "draft tab hints should not appear in settings");
+        assert!(!ks.contains(&"r"), "resync hint should not appear in settings");
+
+        // Strategy tab: should show "s: Save"
+        state.settings_tab = SettingsSection::StrategyConfig;
+        let hints = compute_keybinds(&state);
+        let ks = keys(&hints);
+        assert!(ks.contains(&"s"), "Strategy tab should show save hint");
+        assert!(!ks.contains(&"Enter"), "Strategy tab should not show Enter hint in normal mode");
+    }
+
+    #[test]
+    fn compute_keybinds_settings_editing_mode() {
+        use crate::protocol::SettingsSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        state.settings_tab = SettingsSection::LlmConfig;
+        state.llm_setup.api_key_editing = true;
+        let hints = compute_keybinds(&state);
+        let ks = keys(&hints);
+        assert!(ks.contains(&"Enter"), "editing should show confirm hint");
+        assert!(ks.contains(&"Esc"), "editing should show cancel hint");
+        assert!(!ks.contains(&"s"), "editing should not show save hint");
     }
 
     #[test]
@@ -1595,6 +1610,7 @@ mod tests {
         assert!(ks.contains(&"1-4"), "draft mode should contain tab-switch hint");
         assert!(ks.contains(&"Tab"), "draft mode should contain focus hint");
         assert!(ks.contains(&"r"), "draft mode should contain resync hint");
+        assert!(ks.contains(&","), "draft mode should contain settings hint");
     }
 
     // -- AppMode in ViewState --

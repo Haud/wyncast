@@ -162,7 +162,7 @@ pub enum AppMode {
 }
 
 /// Which section of the settings screen is active.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsSection {
     /// LLM provider / model / API key configuration.
     LlmConfig,
@@ -270,8 +270,12 @@ pub enum UserCommand {
     },
     /// User action during the onboarding wizard.
     OnboardingAction(OnboardingAction),
+    /// Open the settings screen from draft mode.
+    OpenSettings,
     /// Exit the settings screen and return to draft mode.
     ExitSettings,
+    /// Switch which settings tab is active.
+    SwitchSettingsTab(SettingsSection),
     Quit,
 }
 
