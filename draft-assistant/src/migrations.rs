@@ -22,13 +22,8 @@ pub struct Migration {
 static MIGRATIONS: &[Migration] = &[Migration {
     version: 1,
     name: "initial_schema",
-    up: include_str!("../migrations/V001__initial_schema.sql"),
-    down: Some(
-        "DROP TABLE IF EXISTS draft_state;
-         DROP TABLE IF EXISTS draft_picks;
-         DROP TABLE IF EXISTS projections;
-         DROP TABLE IF EXISTS players;",
-    ),
+    up: include_str!("../migrations/V001__initial_schema.up.sql"),
+    down: Some(include_str!("../migrations/V001__initial_schema.down.sql")),
 }];
 
 /// Drives schema migrations for the SQLite database.
