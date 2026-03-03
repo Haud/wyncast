@@ -20,8 +20,8 @@ use crate::draft::state::{
 use crate::llm::client::LlmClient;
 use crate::llm::prompt;
 use crate::protocol::{
-    AppSnapshot, ConnectionStatus, ExtensionMessage, LlmEvent, LlmStatus, NominationInfo, TabId,
-    TeamSnapshot, UiUpdate, UserCommand,
+    AppMode, AppSnapshot, ConnectionStatus, ExtensionMessage, LlmEvent, LlmStatus, NominationInfo,
+    TabId, TeamSnapshot, UiUpdate, UserCommand,
 };
 use crate::valuation;
 use crate::valuation::analysis::{compute_instant_analysis, CategoryNeeds, InstantAnalysis};
@@ -67,6 +67,8 @@ pub const HEARTBEAT_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
 /// The complete application state.
 pub struct AppState {
+    /// Current UI mode (Onboarding, Draft, or Settings).
+    pub app_mode: AppMode,
     pub config: Config,
     pub draft_state: DraftState,
     pub available_players: Vec<PlayerValuation>,
@@ -130,11 +132,13 @@ impl AppState {
         llm_client: LlmClient,
         llm_tx: mpsc::Sender<LlmEvent>,
         ws_outbound_tx: Option<mpsc::Sender<String>>,
+        app_mode: AppMode,
     ) -> Self {
         let scarcity = compute_scarcity(&available_players, &config.league);
         let inflation = InflationTracker::new();
 
         AppState {
+            app_mode,
             config,
             draft_state,
             available_players,
@@ -287,6 +291,7 @@ impl AppState {
             .collect();
 
         AppSnapshot {
+            app_mode: self.app_mode.clone(),
             pick_count: self.draft_state.pick_count,
             total_picks: self.draft_state.total_picks,
             active_tab: None, // Don't override the user's active tab
@@ -1220,6 +1225,24 @@ async fn handle_user_command(
         UserCommand::Scroll { .. } => {
             // Scroll is handled by the TUI directly, no app-level action needed
         }
+        UserCommand::OnboardingAction(action) => {
+            // Placeholder: onboarding action handling will be implemented in Task 4.
+            // For now, just log and handle Skip (transitions to Draft mode).
+            info!("Onboarding action received: {:?}", action);
+            match action {
+                crate::protocol::OnboardingAction::Skip => {
+                    state.app_mode = AppMode::Draft;
+                    let _ = ui_tx.send(UiUpdate::ModeChanged(AppMode::Draft)).await;
+                    let snapshot = state.build_snapshot();
+                    let _ = ui_tx
+                        .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
+                        .await;
+                }
+                _ => {
+                    // Other actions will be implemented in Task 4
+                }
+            }
+        }
         UserCommand::Quit => {
             // Handled in the main loop
         }
@@ -1593,7 +1616,7 @@ mod tests {
         let llm_client = LlmClient::Disabled;
         let (llm_tx, _llm_rx) = mpsc::channel(16);
 
-        AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx, None)
+        AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx, None, AppMode::Draft)
     }
 
     // -----------------------------------------------------------------------
@@ -2274,7 +2297,7 @@ mod tests {
         let (llm_tx, _llm_rx) = mpsc::channel(16);
 
         let draft_id = Database::generate_draft_id();
-        AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx, None)
+        AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx, None, AppMode::Draft)
     }
 
     #[tokio::test]
@@ -3280,6 +3303,7 @@ mod tests {
             llm_client,
             llm_tx,
             None,
+            AppMode::Draft,
         );
 
         // Step 1: process_new_picks while teams are empty

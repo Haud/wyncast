@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::draft::pick::DraftPick;
 use crate::draft::roster::RosterSlot;
+use crate::llm::provider::LlmProvider;
+use crate::onboarding::OnboardingStep;
 use crate::valuation::scarcity::ScarcityEntry;
 use crate::valuation::zscore::PlayerValuation;
 
@@ -143,6 +145,67 @@ pub enum InternalEvent {
 }
 
 // ---------------------------------------------------------------------------
+// App mode and settings
+// ---------------------------------------------------------------------------
+
+/// The current mode of the application UI.
+///
+/// Determines which screen the TUI renders and which input handlers are active.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppMode {
+    /// First-run onboarding wizard (LLM setup, strategy config).
+    Onboarding(OnboardingStep),
+    /// Main draft dashboard (the default operational mode).
+    Draft,
+    /// Settings screen (accessible from draft mode).
+    Settings(SettingsSection),
+}
+
+/// Which section of the settings screen is active.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SettingsSection {
+    /// LLM provider / model / API key configuration.
+    LlmConfig,
+    /// Strategy tuning (budget split, punt categories, etc.).
+    StrategyConfig,
+}
+
+/// Actions the user can take during onboarding.
+///
+/// Sent from the TUI to the app orchestrator via `UserCommand::OnboardingAction`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum OnboardingAction {
+    /// Select an LLM provider.
+    SetProvider(LlmProvider),
+    /// Select a model (by model ID string).
+    SetModel(String),
+    /// Enter an API key.
+    SetApiKey(String),
+    /// Request an API connection test.
+    TestConnection,
+    /// Save the strategy configuration.
+    SaveStrategyConfig,
+    /// Navigate back to the previous onboarding step.
+    GoBack,
+    /// Advance to the next onboarding step.
+    GoNext,
+    /// Skip onboarding entirely and go straight to draft mode.
+    Skip,
+}
+
+/// Updates pushed from the app orchestrator to the TUI during onboarding.
+#[derive(Debug, Clone)]
+pub enum OnboardingUpdate {
+    /// Result of an API connection test.
+    ConnectionTestResult {
+        success: bool,
+        message: String,
+    },
+    /// The onboarding step has changed (e.g. after GoNext/GoBack).
+    StepChanged(OnboardingStep),
+}
+
+// ---------------------------------------------------------------------------
 // Internal app messages (for mpsc channels, no serde needed)
 // ---------------------------------------------------------------------------
 
@@ -187,6 +250,8 @@ pub enum UserCommand {
         widget: WidgetId,
         direction: ScrollDirection,
     },
+    /// User action during the onboarding wizard.
+    OnboardingAction(OnboardingAction),
     Quit,
 }
 
@@ -220,6 +285,10 @@ pub enum UiUpdate {
     BidUpdate(Box<NominationInfo>),
     /// The current nomination was cleared (pick completed).
     NominationCleared,
+    /// An update for the onboarding wizard (e.g. connection test result).
+    OnboardingUpdate(OnboardingUpdate),
+    /// The app mode has changed (e.g. onboarding -> draft).
+    ModeChanged(AppMode),
 }
 
 /// WebSocket connection status.
@@ -300,6 +369,7 @@ pub enum ScrollDirection {
 /// can update its ViewState in one shot.
 #[derive(Debug, Clone)]
 pub struct AppSnapshot {
+    pub app_mode: AppMode,
     pub pick_count: usize,
     pub total_picks: usize,
     pub active_tab: Option<TabId>,
@@ -695,6 +765,7 @@ mod tests {
     #[test]
     fn app_snapshot_construction() {
         let snap = AppSnapshot {
+            app_mode: AppMode::Draft,
             pick_count: 0,
             total_picks: 0,
             active_tab: None,
@@ -710,6 +781,7 @@ mod tests {
             avg_per_slot: 0.0,
             team_snapshots: vec![],
         };
+        assert_eq!(snap.app_mode, AppMode::Draft);
         assert_eq!(snap.pick_count, 0);
         assert_eq!(snap.total_picks, 0);
         assert_eq!(snap.active_tab, None);
@@ -969,5 +1041,94 @@ mod tests {
 
         assert!(matches!(full_sync, ExtensionMessage::FullStateSync { .. }));
         assert!(matches!(state_update, ExtensionMessage::StateUpdate { .. }));
+    }
+
+    // -- AppMode / SettingsSection / OnboardingAction --
+
+    #[test]
+    fn app_mode_equality() {
+        use crate::onboarding::OnboardingStep;
+
+        assert_eq!(AppMode::Draft, AppMode::Draft);
+        assert_eq!(
+            AppMode::Onboarding(OnboardingStep::LlmSetup),
+            AppMode::Onboarding(OnboardingStep::LlmSetup)
+        );
+        assert_eq!(
+            AppMode::Settings(SettingsSection::LlmConfig),
+            AppMode::Settings(SettingsSection::LlmConfig)
+        );
+        assert_ne!(AppMode::Draft, AppMode::Onboarding(OnboardingStep::LlmSetup));
+        assert_ne!(
+            AppMode::Settings(SettingsSection::LlmConfig),
+            AppMode::Settings(SettingsSection::StrategyConfig)
+        );
+    }
+
+    #[test]
+    fn settings_section_equality() {
+        assert_eq!(SettingsSection::LlmConfig, SettingsSection::LlmConfig);
+        assert_eq!(SettingsSection::StrategyConfig, SettingsSection::StrategyConfig);
+        assert_ne!(SettingsSection::LlmConfig, SettingsSection::StrategyConfig);
+    }
+
+    #[test]
+    fn onboarding_action_variants_constructable() {
+        use crate::llm::provider::LlmProvider;
+
+        // Ensure all OnboardingAction variants can be constructed
+        let _set_provider = OnboardingAction::SetProvider(LlmProvider::Anthropic);
+        let _set_model = OnboardingAction::SetModel("claude-sonnet-4-6".to_string());
+        let _set_key = OnboardingAction::SetApiKey("sk-test".to_string());
+        let _test_conn = OnboardingAction::TestConnection;
+        let _save_strategy = OnboardingAction::SaveStrategyConfig;
+        let _go_back = OnboardingAction::GoBack;
+        let _go_next = OnboardingAction::GoNext;
+        let _skip = OnboardingAction::Skip;
+    }
+
+    #[test]
+    fn user_command_onboarding_action_variant() {
+        let cmd = UserCommand::OnboardingAction(OnboardingAction::GoNext);
+        assert!(matches!(cmd, UserCommand::OnboardingAction(OnboardingAction::GoNext)));
+    }
+
+    #[test]
+    fn ui_update_mode_changed_variant() {
+        let update = UiUpdate::ModeChanged(AppMode::Draft);
+        assert!(matches!(update, UiUpdate::ModeChanged(AppMode::Draft)));
+    }
+
+    #[test]
+    fn ui_update_onboarding_update_variant() {
+        let update = UiUpdate::OnboardingUpdate(OnboardingUpdate::ConnectionTestResult {
+            success: true,
+            message: "Connected!".to_string(),
+        });
+        assert!(matches!(update, UiUpdate::OnboardingUpdate(OnboardingUpdate::ConnectionTestResult { .. })));
+    }
+
+    #[test]
+    fn app_snapshot_carries_app_mode() {
+        use crate::onboarding::OnboardingStep;
+
+        let snap = AppSnapshot {
+            app_mode: AppMode::Onboarding(OnboardingStep::StrategySetup),
+            pick_count: 0,
+            total_picks: 0,
+            active_tab: None,
+            available_players: vec![],
+            positional_scarcity: vec![],
+            draft_log: vec![],
+            my_roster: vec![],
+            budget_spent: 0,
+            budget_remaining: 260,
+            salary_cap: 260,
+            inflation_rate: 1.0,
+            max_bid: 0,
+            avg_per_slot: 0.0,
+            team_snapshots: vec![],
+        };
+        assert_eq!(snap.app_mode, AppMode::Onboarding(OnboardingStep::StrategySetup));
     }
 }

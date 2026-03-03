@@ -39,20 +39,22 @@ async fn main() -> anyhow::Result<()> {
         config.league.name, config.league.num_teams, config.league.salary_cap
     );
 
-    // Check onboarding status
+    // Check onboarding status and determine initial app mode
     let onboarding_manager = onboarding::OnboardingManager::new(
         draft_assistant::app_dirs::config_dir(),
         onboarding::RealFileSystem,
     );
-    if onboarding_manager.is_configured(&config.credentials) {
+    let initial_app_mode = if onboarding_manager.is_configured(&config.credentials) {
         info!("Onboarding complete, proceeding to draft view");
+        draft_assistant::protocol::AppMode::Draft
     } else {
         let progress = onboarding_manager.load_progress();
         info!(
-            "Onboarding needed (current step: {:?}), but continuing with normal startup for now",
+            "Onboarding needed (current step: {:?}), starting onboarding wizard",
             progress.current_step
         );
-    }
+        draft_assistant::protocol::AppMode::Onboarding(progress.current_step)
+    };
 
     // 3. Open database (always stored in the OS app data directory)
     let db_path = draft_assistant::app_dirs::db_path();
@@ -127,6 +129,7 @@ async fn main() -> anyhow::Result<()> {
         llm_client,
         llm_tx.clone(),
         Some(ws_outbound_tx),
+        initial_app_mode,
     );
     info!("Starting fresh — waiting for first keyframe from extension");
 

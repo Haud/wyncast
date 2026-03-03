@@ -22,8 +22,8 @@ use tokio::sync::mpsc;
 use crate::draft::pick::{DraftPick, Position};
 use crate::draft::roster::RosterSlot;
 use crate::protocol::{
-    AppSnapshot, ConnectionStatus, InstantAnalysis, LlmStatus, NominationInfo, TabFeature, TabId,
-    UiUpdate, UserCommand,
+    AppMode, AppSnapshot, ConnectionStatus, InstantAnalysis, LlmStatus, NominationInfo,
+    TabFeature, TabId, UiUpdate, UserCommand,
 };
 use crate::valuation::scarcity::ScarcityEntry;
 use crate::valuation::zscore::PlayerValuation;
@@ -250,6 +250,8 @@ impl PositionFilterModal {
 /// Updated incrementally via `UiUpdate` messages from the app orchestrator.
 /// The `render_frame` function reads this struct to draw the dashboard.
 pub struct ViewState {
+    /// Current app mode (Onboarding, Draft, or Settings).
+    pub app_mode: AppMode,
     /// Current active nomination, if any.
     pub current_nomination: Option<NominationInfo>,
     /// Instant analysis for the current nomination.
@@ -310,6 +312,7 @@ pub struct ViewState {
 impl Default for ViewState {
     fn default() -> Self {
         ViewState {
+            app_mode: AppMode::Draft,
             current_nomination: None,
             instant_analysis: None,
             available_players: Vec::new(),
@@ -346,6 +349,7 @@ impl ViewState {
     /// covered by the snapshot (e.g. LLM text, scroll offsets) are left
     /// unchanged.
     pub fn apply_snapshot(&mut self, snapshot: AppSnapshot) {
+        self.app_mode = snapshot.app_mode;
         self.pick_number = snapshot.pick_count;
         self.total_picks = snapshot.total_picks;
         if let Some(tab) = snapshot.active_tab {
@@ -455,6 +459,12 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
         UiUpdate::ConnectionStatus(status) => {
             state.connection_status = status;
         }
+        UiUpdate::OnboardingUpdate(_update) => {
+            // Placeholder: onboarding update handling will be implemented in Task 4
+        }
+        UiUpdate::ModeChanged(mode) => {
+            state.app_mode = mode;
+        }
     }
 }
 
@@ -469,12 +479,34 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
 /// [`ViewState::active_keybinds`] so that the help bar widget is a dumb
 /// renderer with no conditional logic of its own.
 ///
-/// Priority order (highest wins; earlier returns short-circuit):
+/// Dispatches to mode-specific hint builders first. Draft mode then uses the
+/// priority order:
 /// 1. Quit confirmation dialog
 /// 2. Position filter modal
 /// 3. Text filter mode (inline input bar)
 /// 4. Normal mode with tab-specific and focus-specific hints
 pub fn compute_keybinds(state: &ViewState) -> Vec<KeybindHint> {
+    match &state.app_mode {
+        AppMode::Onboarding(_) => {
+            vec![
+                KeybindHint::new("Enter/→", "Next"),
+                KeybindHint::new("←", "Back"),
+                KeybindHint::new("s", "Skip"),
+                KeybindHint::new("q", "Quit"),
+            ]
+        }
+        AppMode::Settings(_) => {
+            vec![
+                KeybindHint::new("Esc", "Back to Draft"),
+                KeybindHint::new("q", "Quit"),
+            ]
+        }
+        AppMode::Draft => compute_draft_keybinds(state),
+    }
+}
+
+/// Compute keybind hints for draft mode.
+fn compute_draft_keybinds(state: &ViewState) -> Vec<KeybindHint> {
     // 1. Quit confirmation overlay: all other input is blocked
     if state.confirm_quit {
         return vec![
@@ -539,12 +571,30 @@ pub fn compute_keybinds(state: &ViewState) -> Vec<KeybindHint> {
 
 /// Render the complete dashboard frame.
 ///
-/// Delegates each zone to its dedicated widget module.
+/// Dispatches to different render paths based on the current app mode:
+/// - `Draft` renders the full draft dashboard (tabs, sidebar, help bar)
+/// - `Onboarding` renders a placeholder screen (real UI in Task 4)
+/// - `Settings` renders a placeholder screen (real UI in Task 6)
 ///
 /// Note: active keybind hints are read from `state.active_keybinds`, which is
 /// pre-synced by the run loop before each draw call. This avoids recomputing
 /// keybinds inside the render path.
 fn render_frame(frame: &mut Frame, state: &ViewState) {
+    match &state.app_mode {
+        AppMode::Onboarding(step) => {
+            render_placeholder(frame, &format!("Onboarding: {:?}", step));
+        }
+        AppMode::Settings(_section) => {
+            render_placeholder(frame, "Settings");
+        }
+        AppMode::Draft => {
+            render_draft_frame(frame, state);
+        }
+    }
+}
+
+/// Render the full draft dashboard (the main operational view).
+fn render_draft_frame(frame: &mut Frame, state: &ViewState) {
     let layout = build_layout(frame.area());
 
     widgets::status_bar::render(frame, layout.status_bar, state);
@@ -582,6 +632,36 @@ fn render_frame(frame: &mut Frame, state: &ViewState) {
     if state.confirm_quit {
         widgets::quit_confirm::render(frame, frame.area(), state);
     }
+}
+
+/// Render a centered placeholder screen with the given message.
+///
+/// Used for Onboarding and Settings modes until their real UIs are implemented.
+fn render_placeholder(frame: &mut Frame, message: &str) {
+    use ratatui::layout::{Alignment, Constraint, Layout};
+
+    let area = frame.area();
+
+    // Vertically center the text block
+    let vertical = Layout::vertical([
+        Constraint::Percentage(40),
+        Constraint::Length(3),
+        Constraint::Percentage(40),
+    ])
+    .split(area);
+
+    let paragraph = Paragraph::new(Line::from(vec![
+        Span::styled(
+            message,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]))
+    .alignment(Alignment::Center)
+    .style(Style::default().bg(Color::Black));
+
+    frame.render_widget(paragraph, vertical[1]);
 }
 
 /// Render the help bar using the pre-computed keybind hints.
@@ -751,7 +831,7 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::TeamSnapshot;
+    use crate::protocol::{AppMode, TeamSnapshot};
 
     // -- FocusPanel cycling --
 
@@ -786,6 +866,7 @@ mod tests {
     #[test]
     fn view_state_default_is_sensible() {
         let state = ViewState::default();
+        assert_eq!(state.app_mode, AppMode::Draft);
         assert!(state.current_nomination.is_none());
         assert!(state.instant_analysis.is_none());
         assert!(state.available_players.is_empty());
@@ -826,6 +907,7 @@ mod tests {
     /// Helper to build a test AppSnapshot with sensible defaults.
     fn test_snapshot(pick_count: usize, total_picks: usize, active_tab: Option<TabId>) -> AppSnapshot {
         AppSnapshot {
+            app_mode: AppMode::Draft,
             pick_count,
             total_picks,
             active_tab,
@@ -1272,5 +1354,92 @@ mod tests {
         assert!(!ks.contains(&"↑↓"), "modal nav hint should not appear");
         // Only the quit-confirm hints should be present, not filter-mode Enter
         assert_eq!(hints.len(), 2, "only 2 quit-confirm hints should be present");
+    }
+
+    // -- AppMode-aware keybind computation --
+
+    #[test]
+    fn compute_keybinds_onboarding_mode() {
+        use crate::onboarding::OnboardingStep;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+        let hints = compute_keybinds(&state);
+        let ks = keys(&hints);
+        assert!(ks.contains(&"Enter/→"), "onboarding should show Next hint");
+        assert!(ks.contains(&"←"), "onboarding should show Back hint");
+        assert!(ks.contains(&"s"), "onboarding should show Skip hint");
+        assert!(ks.contains(&"q"), "onboarding should show Quit hint");
+        // Draft-specific hints should NOT appear
+        assert!(!ks.contains(&"1-4"), "tab hints should not appear in onboarding");
+        assert!(!ks.contains(&"Tab"), "focus hint should not appear in onboarding");
+    }
+
+    #[test]
+    fn compute_keybinds_settings_mode() {
+        use crate::protocol::SettingsSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        let hints = compute_keybinds(&state);
+        let ks = keys(&hints);
+        assert!(ks.contains(&"Esc"), "settings should show Back hint");
+        assert!(ks.contains(&"q"), "settings should show Quit hint");
+        // Draft-specific hints should NOT appear
+        assert!(!ks.contains(&"1-4"), "tab hints should not appear in settings");
+        assert!(!ks.contains(&"Tab"), "focus hint should not appear in settings");
+    }
+
+    #[test]
+    fn compute_keybinds_draft_mode_unchanged() {
+        // Verify that draft mode keybinds are the same as before (no regression)
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Draft;
+        let hints = compute_keybinds(&state);
+        let ks = keys(&hints);
+        assert!(ks.contains(&"q"), "draft mode should contain quit hint");
+        assert!(ks.contains(&"1-4"), "draft mode should contain tab-switch hint");
+        assert!(ks.contains(&"Tab"), "draft mode should contain focus hint");
+        assert!(ks.contains(&"r"), "draft mode should contain resync hint");
+    }
+
+    // -- AppMode in ViewState --
+
+    #[test]
+    fn apply_snapshot_updates_app_mode() {
+        use crate::onboarding::OnboardingStep;
+
+        let mut state = ViewState::default();
+        assert_eq!(state.app_mode, AppMode::Draft);
+
+        let mut snapshot = test_snapshot(0, 0, None);
+        snapshot.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
+        state.apply_snapshot(snapshot);
+        assert_eq!(state.app_mode, AppMode::Onboarding(OnboardingStep::StrategySetup));
+    }
+
+    #[test]
+    fn apply_ui_update_mode_changed() {
+        use crate::onboarding::OnboardingStep;
+
+        let mut state = ViewState::default();
+        assert_eq!(state.app_mode, AppMode::Draft);
+
+        apply_ui_update(
+            &mut state,
+            UiUpdate::ModeChanged(AppMode::Onboarding(OnboardingStep::LlmSetup)),
+        );
+        assert_eq!(state.app_mode, AppMode::Onboarding(OnboardingStep::LlmSetup));
+    }
+
+    #[test]
+    fn apply_ui_update_mode_changed_to_draft() {
+        use crate::onboarding::OnboardingStep;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+
+        apply_ui_update(&mut state, UiUpdate::ModeChanged(AppMode::Draft));
+        assert_eq!(state.app_mode, AppMode::Draft);
     }
 }
