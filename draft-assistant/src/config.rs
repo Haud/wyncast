@@ -180,7 +180,7 @@ pub struct DataPaths {
 // credentials.toml structs
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize, Default)]
 pub struct CredentialsConfig {
     pub anthropic_api_key: Option<String>,
     pub google_api_key: Option<String>,

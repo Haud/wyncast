@@ -6,6 +6,7 @@
 
 pub mod input;
 pub mod layout;
+pub mod onboarding;
 pub mod widgets;
 
 use std::collections::HashMap;
@@ -29,6 +30,7 @@ use crate::valuation::scarcity::ScarcityEntry;
 use crate::valuation::zscore::PlayerValuation;
 
 use layout::{build_layout, AppLayout};
+pub use onboarding::llm_setup::LlmSetupState;
 
 // ---------------------------------------------------------------------------
 // FocusPanel
@@ -307,6 +309,8 @@ pub struct ViewState {
     /// current UI mode and active tab. The help bar renders these directly
     /// without any additional logic.
     pub active_keybinds: Vec<KeybindHint>,
+    /// State for the LLM setup onboarding screen.
+    pub llm_setup: LlmSetupState,
 }
 
 impl Default for ViewState {
@@ -338,6 +342,7 @@ impl Default for ViewState {
             focused_panel: None,
             position_filter_modal: PositionFilterModal::default(),
             active_keybinds: Vec::new(),
+            llm_setup: LlmSetupState::default(),
         }
     }
 }
@@ -459,8 +464,22 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
         UiUpdate::ConnectionStatus(status) => {
             state.connection_status = status;
         }
-        UiUpdate::OnboardingUpdate(_update) => {
-            // Placeholder: onboarding update handling will be implemented in Task 4
+        UiUpdate::OnboardingUpdate(update) => {
+            use crate::protocol::OnboardingUpdate;
+            use onboarding::llm_setup::LlmConnectionStatus;
+
+            match update {
+                OnboardingUpdate::ConnectionTestResult { success, message } => {
+                    state.llm_setup.connection_status = if success {
+                        LlmConnectionStatus::Success(message)
+                    } else {
+                        LlmConnectionStatus::Failed(message)
+                    };
+                }
+                OnboardingUpdate::StepChanged(step) => {
+                    state.app_mode = AppMode::Onboarding(step);
+                }
+            }
         }
         UiUpdate::ModeChanged(mode) => {
             state.app_mode = mode;
@@ -487,14 +506,7 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
 /// 4. Normal mode with tab-specific and focus-specific hints
 pub fn compute_keybinds(state: &ViewState) -> Vec<KeybindHint> {
     match &state.app_mode {
-        AppMode::Onboarding(_) => {
-            vec![
-                KeybindHint::new("Enter/→", "Next"),
-                KeybindHint::new("←", "Back"),
-                KeybindHint::new("s", "Skip"),
-                KeybindHint::new("q", "Quit"),
-            ]
-        }
+        AppMode::Onboarding(step) => compute_onboarding_keybinds(state, step),
         AppMode::Settings(_) => {
             vec![
                 KeybindHint::new("Esc", "Back to Draft"),
@@ -502,6 +514,44 @@ pub fn compute_keybinds(state: &ViewState) -> Vec<KeybindHint> {
             ]
         }
         AppMode::Draft => compute_draft_keybinds(state),
+    }
+}
+
+/// Compute keybind hints for onboarding mode.
+fn compute_onboarding_keybinds(state: &ViewState, step: &crate::onboarding::OnboardingStep) -> Vec<KeybindHint> {
+    use crate::onboarding::OnboardingStep;
+    use onboarding::llm_setup::LlmSetupSection;
+
+    match step {
+        OnboardingStep::LlmSetup => {
+            if state.llm_setup.api_key_editing {
+                vec![
+                    KeybindHint::new("type", "Input key"),
+                    KeybindHint::new("Enter", "Confirm"),
+                    KeybindHint::new("Esc", "Cancel"),
+                ]
+            } else {
+                let mut hints = vec![
+                    KeybindHint::new("^v", "Select"),
+                    KeybindHint::new("Tab", "Section"),
+                ];
+                if state.llm_setup.active_section == LlmSetupSection::ApiKey {
+                    hints.push(KeybindHint::new("Enter", "Edit key"));
+                } else if state.llm_setup.active_section == LlmSetupSection::TestButton {
+                    hints.push(KeybindHint::new("Enter", "Test"));
+                }
+                hints.push(KeybindHint::new("n", "Next"));
+                hints.push(KeybindHint::new("Esc", "Back"));
+                hints
+            }
+        }
+        OnboardingStep::StrategySetup | OnboardingStep::Complete => {
+            vec![
+                KeybindHint::new("n", "Next"),
+                KeybindHint::new("Esc", "Back"),
+                KeybindHint::new("q", "Quit"),
+            ]
+        }
     }
 }
 
@@ -582,7 +632,7 @@ fn compute_draft_keybinds(state: &ViewState) -> Vec<KeybindHint> {
 fn render_frame(frame: &mut Frame, state: &ViewState) {
     match &state.app_mode {
         AppMode::Onboarding(step) => {
-            render_placeholder(frame, &format!("Onboarding: {:?}", step), &state.active_keybinds);
+            onboarding::render(frame, step, state);
         }
         AppMode::Settings(_section) => {
             render_placeholder(frame, "Settings", &state.active_keybinds);
@@ -1387,20 +1437,46 @@ mod tests {
     // -- AppMode-aware keybind computation --
 
     #[test]
-    fn compute_keybinds_onboarding_mode() {
+    fn compute_keybinds_llm_setup_normal_mode() {
         use crate::onboarding::OnboardingStep;
 
         let mut state = ViewState::default();
         state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
         let hints = compute_keybinds(&state);
         let ks = keys(&hints);
-        assert!(ks.contains(&"Enter/→"), "onboarding should show Next hint");
-        assert!(ks.contains(&"←"), "onboarding should show Back hint");
-        assert!(ks.contains(&"s"), "onboarding should show Skip hint");
-        assert!(ks.contains(&"q"), "onboarding should show Quit hint");
+        assert!(ks.contains(&"^v"), "LLM setup should show select hint");
+        assert!(ks.contains(&"Tab"), "LLM setup should show Tab hint");
+        assert!(ks.contains(&"n"), "LLM setup should show Next hint");
+        assert!(ks.contains(&"Esc"), "LLM setup should show Back hint");
         // Draft-specific hints should NOT appear
         assert!(!ks.contains(&"1-4"), "tab hints should not appear in onboarding");
-        assert!(!ks.contains(&"Tab"), "focus hint should not appear in onboarding");
+    }
+
+    #[test]
+    fn compute_keybinds_llm_setup_editing_mode() {
+        use crate::onboarding::OnboardingStep;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+        state.llm_setup.api_key_editing = true;
+        let hints = compute_keybinds(&state);
+        let ks = keys(&hints);
+        assert!(ks.contains(&"Enter"), "editing should show confirm hint");
+        assert!(ks.contains(&"Esc"), "editing should show cancel hint");
+        assert!(!ks.contains(&"n"), "editing should not show Next hint");
+    }
+
+    #[test]
+    fn compute_keybinds_strategy_setup_placeholder() {
+        use crate::onboarding::OnboardingStep;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
+        let hints = compute_keybinds(&state);
+        let ks = keys(&hints);
+        assert!(ks.contains(&"n"), "strategy setup should show Next hint");
+        assert!(ks.contains(&"Esc"), "strategy setup should show Back hint");
+        assert!(ks.contains(&"q"), "strategy setup should show Quit hint");
     }
 
     #[test]

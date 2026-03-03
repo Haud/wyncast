@@ -19,9 +19,10 @@ use crate::draft::state::{
 };
 use crate::llm::client::LlmClient;
 use crate::llm::prompt;
+use crate::onboarding::{OnboardingManager, OnboardingProgress, OnboardingStep, RealFileSystem};
 use crate::protocol::{
     AppMode, AppSnapshot, ConnectionStatus, ExtensionMessage, LlmEvent, LlmStatus, NominationInfo,
-    OnboardingAction, TabId, TeamSnapshot, UiUpdate, UserCommand,
+    OnboardingAction, OnboardingUpdate, TabId, TeamSnapshot, UiUpdate, UserCommand,
 };
 use crate::valuation;
 use crate::valuation::analysis::{compute_instant_analysis, CategoryNeeds, InstantAnalysis};
@@ -115,6 +116,11 @@ pub struct AppState {
     /// Sender for outbound WebSocket messages to the extension.
     /// Used to send `REQUEST_KEYFRAME` messages.
     pub ws_outbound_tx: Option<mpsc::Sender<String>>,
+    /// Onboarding manager for loading/saving onboarding progress.
+    pub onboarding_manager: OnboardingManager<RealFileSystem>,
+    /// Cached onboarding progress (updated in-memory on each Set* action,
+    /// persisted to disk on GoNext/GoBack transitions).
+    pub onboarding_progress: OnboardingProgress,
 }
 
 impl AppState {
@@ -133,9 +139,11 @@ impl AppState {
         llm_tx: mpsc::Sender<LlmEvent>,
         ws_outbound_tx: Option<mpsc::Sender<String>>,
         app_mode: AppMode,
+        onboarding_manager: OnboardingManager<RealFileSystem>,
     ) -> Self {
         let scarcity = compute_scarcity(&available_players, &config.league);
         let inflation = InflationTracker::new();
+        let onboarding_progress = onboarding_manager.load_progress();
 
         AppState {
             app_mode,
@@ -163,6 +171,8 @@ impl AppState {
             llm_client: Arc::new(llm_client),
             llm_tx,
             ws_outbound_tx,
+            onboarding_manager,
+            onboarding_progress,
         }
     }
 
@@ -1226,25 +1236,11 @@ async fn handle_user_command(
             // Scroll is handled by the TUI directly, no app-level action needed
         }
         UserCommand::OnboardingAction(action) => {
-            // Placeholder: onboarding action handling will be implemented in Task 4.
-            // For now, just log and handle Skip (transitions to Draft mode).
             match &action {
-                OnboardingAction::SetApiKey(_) => info!("Onboarding action received: SetApiKey(***)"),
-                _ => info!("Onboarding action received: {:?}", action),
+                OnboardingAction::SetApiKey(_) => info!("Onboarding action: SetApiKey(***)"),
+                _ => info!("Onboarding action: {:?}", action),
             }
-            match action {
-                OnboardingAction::Skip => {
-                    state.app_mode = AppMode::Draft;
-                    let _ = ui_tx.send(UiUpdate::ModeChanged(AppMode::Draft)).await;
-                    let snapshot = state.build_snapshot();
-                    let _ = ui_tx
-                        .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
-                        .await;
-                }
-                _ => {
-                    // Other actions will be implemented in Task 4
-                }
-            }
+            handle_onboarding_action(state, action, ui_tx).await;
         }
         UserCommand::ExitSettings => {
             info!("Exiting settings, returning to draft mode");
@@ -1257,6 +1253,361 @@ async fn handle_user_command(
         }
         UserCommand::Quit => {
             // Handled in the main loop
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Onboarding action handling
+// ---------------------------------------------------------------------------
+
+/// Handle a single onboarding action from the TUI.
+///
+/// Updates `OnboardingProgress` in memory and persists it to disk on
+/// step transitions (GoNext/GoBack). Dispatches `UiUpdate` messages
+/// back to the TUI so it can reflect changes.
+async fn handle_onboarding_action(
+    state: &mut AppState,
+    action: OnboardingAction,
+    ui_tx: &mpsc::Sender<UiUpdate>,
+) {
+    use crate::llm::provider::LlmProvider;
+
+    match action {
+        OnboardingAction::SetProvider(provider) => {
+            state.onboarding_progress.llm_provider = Some(provider);
+            // Model is reset by the TUI; we just clear it here too for consistency
+            state.onboarding_progress.llm_model = None;
+        }
+        OnboardingAction::SetModel(model_id) => {
+            state.onboarding_progress.llm_model = Some(model_id);
+        }
+        OnboardingAction::SetApiKey(key) => {
+            // Persist the API key to credentials.toml for the current provider
+            if let Some(ref provider) = state.onboarding_progress.llm_provider {
+                save_api_key_for_provider(provider, &key, &mut state.config);
+            } else {
+                // Default to Anthropic if no provider selected yet
+                save_api_key_for_provider(&LlmProvider::Anthropic, &key, &mut state.config);
+            }
+        }
+        OnboardingAction::TestConnection => {
+            // Spawn an async task to test the API connection
+            let provider = state
+                .onboarding_progress
+                .llm_provider
+                .clone()
+                .unwrap_or(LlmProvider::Anthropic);
+            let model_id = state
+                .onboarding_progress
+                .llm_model
+                .clone()
+                .unwrap_or_else(|| "claude-sonnet-4-6".to_string());
+
+            let api_key = get_api_key_for_provider(&provider, &state.config);
+
+            if api_key.is_empty() {
+                let _ = ui_tx
+                    .send(UiUpdate::OnboardingUpdate(
+                        OnboardingUpdate::ConnectionTestResult {
+                            success: false,
+                            message: "No API key entered".to_string(),
+                        },
+                    ))
+                    .await;
+                return;
+            }
+
+            let tx = ui_tx.clone();
+            tokio::spawn(async move {
+                let result = test_api_connection(&provider, &api_key, &model_id).await;
+                let _ = tx
+                    .send(UiUpdate::OnboardingUpdate(
+                        OnboardingUpdate::ConnectionTestResult {
+                            success: result.is_ok(),
+                            message: match &result {
+                                Ok(msg) => msg.clone(),
+                                Err(msg) => msg.clone(),
+                            },
+                        },
+                    ))
+                    .await;
+            });
+        }
+        OnboardingAction::GoNext => {
+            match state.onboarding_progress.current_step {
+                OnboardingStep::LlmSetup => {
+                    // Save the LLM provider/model to strategy config and persist
+                    if let Some(ref provider) = state.onboarding_progress.llm_provider {
+                        state.config.strategy.llm.provider = provider.clone();
+                    }
+                    if let Some(ref model) = state.onboarding_progress.llm_model {
+                        state.config.strategy.llm.model = model.clone();
+                    }
+
+                    // Advance to next step
+                    state.onboarding_progress.current_step = OnboardingStep::StrategySetup;
+                    if let Err(e) = state
+                        .onboarding_manager
+                        .save_progress(&state.onboarding_progress)
+                    {
+                        warn!("Failed to save onboarding progress: {}", e);
+                    }
+
+                    state.app_mode =
+                        AppMode::Onboarding(OnboardingStep::StrategySetup);
+                    let _ = ui_tx
+                        .send(UiUpdate::OnboardingUpdate(
+                            OnboardingUpdate::StepChanged(OnboardingStep::StrategySetup),
+                        ))
+                        .await;
+                    let _ = ui_tx
+                        .send(UiUpdate::ModeChanged(AppMode::Onboarding(
+                            OnboardingStep::StrategySetup,
+                        )))
+                        .await;
+                }
+                OnboardingStep::StrategySetup => {
+                    // Mark onboarding as complete
+                    state.onboarding_progress.current_step = OnboardingStep::Complete;
+                    state.onboarding_progress.strategy_configured = true;
+                    if let Err(e) = state
+                        .onboarding_manager
+                        .save_progress(&state.onboarding_progress)
+                    {
+                        warn!("Failed to save onboarding progress: {}", e);
+                    }
+
+                    // Rebuild LLM client with new config
+                    state.llm_client = Arc::new(LlmClient::from_config(&state.config));
+
+                    state.app_mode = AppMode::Draft;
+                    let _ = ui_tx.send(UiUpdate::ModeChanged(AppMode::Draft)).await;
+                    let snapshot = state.build_snapshot();
+                    let _ = ui_tx
+                        .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
+                        .await;
+                }
+                OnboardingStep::Complete => {
+                    // Already complete, go to draft
+                    state.app_mode = AppMode::Draft;
+                    let _ = ui_tx.send(UiUpdate::ModeChanged(AppMode::Draft)).await;
+                    let snapshot = state.build_snapshot();
+                    let _ = ui_tx
+                        .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
+                        .await;
+                }
+            }
+        }
+        OnboardingAction::GoBack => {
+            match state.onboarding_progress.current_step {
+                OnboardingStep::LlmSetup => {
+                    // Already at first step, no-op
+                }
+                OnboardingStep::StrategySetup => {
+                    state.onboarding_progress.current_step = OnboardingStep::LlmSetup;
+                    if let Err(e) = state
+                        .onboarding_manager
+                        .save_progress(&state.onboarding_progress)
+                    {
+                        warn!("Failed to save onboarding progress: {}", e);
+                    }
+
+                    state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+                    let _ = ui_tx
+                        .send(UiUpdate::OnboardingUpdate(
+                            OnboardingUpdate::StepChanged(OnboardingStep::LlmSetup),
+                        ))
+                        .await;
+                    let _ = ui_tx
+                        .send(UiUpdate::ModeChanged(AppMode::Onboarding(
+                            OnboardingStep::LlmSetup,
+                        )))
+                        .await;
+                }
+                OnboardingStep::Complete => {
+                    // Go back to strategy setup
+                    state.onboarding_progress.current_step = OnboardingStep::StrategySetup;
+                    state.app_mode =
+                        AppMode::Onboarding(OnboardingStep::StrategySetup);
+                    let _ = ui_tx
+                        .send(UiUpdate::ModeChanged(AppMode::Onboarding(
+                            OnboardingStep::StrategySetup,
+                        )))
+                        .await;
+                }
+            }
+        }
+        OnboardingAction::Skip => {
+            state.app_mode = AppMode::Draft;
+            let _ = ui_tx.send(UiUpdate::ModeChanged(AppMode::Draft)).await;
+            let snapshot = state.build_snapshot();
+            let _ = ui_tx
+                .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
+                .await;
+        }
+        OnboardingAction::SaveStrategyConfig => {
+            // Will be implemented in Task 5
+            info!("SaveStrategyConfig received (placeholder)");
+        }
+    }
+}
+
+/// Persist an API key for the given provider to both in-memory config and
+/// the `credentials.toml` file in the app data config directory.
+fn save_api_key_for_provider(
+    provider: &crate::llm::provider::LlmProvider,
+    key: &str,
+    config: &mut Config,
+) {
+    use crate::llm::provider::LlmProvider;
+
+    match provider {
+        LlmProvider::Anthropic => {
+            config.credentials.anthropic_api_key = Some(key.to_string());
+        }
+        LlmProvider::Google => {
+            config.credentials.google_api_key = Some(key.to_string());
+        }
+        LlmProvider::OpenAI => {
+            config.credentials.openai_api_key = Some(key.to_string());
+        }
+    }
+
+    // Persist to disk
+    let config_dir = crate::app_dirs::config_dir();
+    let creds_path = config_dir.join("credentials.toml");
+    match toml::to_string_pretty(&config.credentials) {
+        Ok(text) => {
+            if let Err(e) = std::fs::create_dir_all(&config_dir) {
+                warn!("Failed to create config dir: {}", e);
+                return;
+            }
+            if let Err(e) = std::fs::write(&creds_path, text) {
+                warn!("Failed to write credentials.toml: {}", e);
+            } else {
+                info!("Saved API key for {} to credentials.toml", provider.display_name());
+            }
+        }
+        Err(e) => {
+            warn!("Failed to serialize credentials: {}", e);
+        }
+    }
+}
+
+/// Get the API key for a given provider from the current config.
+fn get_api_key_for_provider(
+    provider: &crate::llm::provider::LlmProvider,
+    config: &Config,
+) -> String {
+    use crate::llm::provider::LlmProvider;
+
+    match provider {
+        LlmProvider::Anthropic => config
+            .credentials
+            .anthropic_api_key
+            .clone()
+            .unwrap_or_default(),
+        LlmProvider::Google => config
+            .credentials
+            .google_api_key
+            .clone()
+            .unwrap_or_default(),
+        LlmProvider::OpenAI => config
+            .credentials
+            .openai_api_key
+            .clone()
+            .unwrap_or_default(),
+    }
+}
+
+/// Test an API connection by making a minimal request to the provider.
+///
+/// Returns `Ok(message)` on success or `Err(message)` on failure.
+async fn test_api_connection(
+    provider: &crate::llm::provider::LlmProvider,
+    api_key: &str,
+    model_id: &str,
+) -> Result<String, String> {
+    use crate::llm::provider::LlmProvider;
+
+    let client = reqwest::Client::new();
+
+    match provider {
+        LlmProvider::Anthropic => {
+            let resp = client
+                .post("https://api.anthropic.com/v1/messages")
+                .header("x-api-key", api_key)
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type", "application/json")
+                .json(&serde_json::json!({
+                    "model": model_id,
+                    "max_tokens": 1,
+                    "messages": [{"role": "user", "content": "hi"}]
+                }))
+                .send()
+                .await
+                .map_err(|e| format!("Connection error: {}", e))?;
+
+            let status = resp.status();
+            if status.is_success() {
+                Ok("Connected to Anthropic API".to_string())
+            } else if status.as_u16() == 401 || status.as_u16() == 403 {
+                Err("Invalid API key".to_string())
+            } else {
+                let body = resp.text().await.unwrap_or_default();
+                Err(format!("HTTP {}: {}", status, body.chars().take(100).collect::<String>()))
+            }
+        }
+        LlmProvider::Google => {
+            let url = format!(
+                "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+                model_id, api_key
+            );
+            let resp = client
+                .post(&url)
+                .header("content-type", "application/json")
+                .json(&serde_json::json!({
+                    "contents": [{"parts": [{"text": "hi"}]}],
+                    "generationConfig": {"maxOutputTokens": 1}
+                }))
+                .send()
+                .await
+                .map_err(|e| format!("Connection error: {}", e))?;
+
+            let status = resp.status();
+            if status.is_success() {
+                Ok("Connected to Google Gemini API".to_string())
+            } else if status.as_u16() == 400 || status.as_u16() == 401 || status.as_u16() == 403 {
+                Err("Invalid API key".to_string())
+            } else {
+                let body = resp.text().await.unwrap_or_default();
+                Err(format!("HTTP {}: {}", status, body.chars().take(100).collect::<String>()))
+            }
+        }
+        LlmProvider::OpenAI => {
+            let resp = client
+                .post("https://api.openai.com/v1/chat/completions")
+                .header("Authorization", format!("Bearer {}", api_key))
+                .header("content-type", "application/json")
+                .json(&serde_json::json!({
+                    "model": model_id,
+                    "max_tokens": 1,
+                    "messages": [{"role": "user", "content": "hi"}]
+                }))
+                .send()
+                .await
+                .map_err(|e| format!("Connection error: {}", e))?;
+
+            let status = resp.status();
+            if status.is_success() {
+                Ok("Connected to OpenAI API".to_string())
+            } else if status.as_u16() == 401 || status.as_u16() == 403 {
+                Err("Invalid API key".to_string())
+            } else {
+                let body = resp.text().await.unwrap_or_default();
+                Err(format!("HTTP {}: {}", status, body.chars().take(100).collect::<String>()))
+            }
         }
     }
 }
@@ -1606,6 +1957,12 @@ mod tests {
         }
     }
 
+    fn test_onboarding_manager() -> OnboardingManager<RealFileSystem> {
+        let tmp = std::env::temp_dir().join(format!("wyncast_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&tmp);
+        OnboardingManager::new(tmp, RealFileSystem)
+    }
+
     fn create_test_app_state() -> AppState {
         let config = test_config();
         let mut draft_state = DraftState::new(260, &test_roster_config());
@@ -1628,7 +1985,7 @@ mod tests {
         let llm_client = LlmClient::Disabled;
         let (llm_tx, _llm_rx) = mpsc::channel(16);
 
-        AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx, None, AppMode::Draft)
+        AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx, None, AppMode::Draft, test_onboarding_manager())
     }
 
     // -----------------------------------------------------------------------
@@ -2309,7 +2666,7 @@ mod tests {
         let (llm_tx, _llm_rx) = mpsc::channel(16);
 
         let draft_id = Database::generate_draft_id();
-        AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx, None, AppMode::Draft)
+        AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx, None, AppMode::Draft, test_onboarding_manager())
     }
 
     #[tokio::test]
@@ -3316,6 +3673,7 @@ mod tests {
             llm_tx,
             None,
             AppMode::Draft,
+            test_onboarding_manager(),
         );
 
         // Step 1: process_new_picks while teams are empty

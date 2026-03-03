@@ -130,6 +130,7 @@ async fn main() -> anyhow::Result<()> {
         llm_tx.clone(),
         Some(ws_outbound_tx),
         initial_app_mode.clone(),
+        onboarding_manager,
     );
     info!("Starting fresh — waiting for first keyframe from extension");
 
