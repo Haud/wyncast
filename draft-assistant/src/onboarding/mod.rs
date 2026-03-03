@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use tracing::warn;
 
 use crate::config::CredentialsConfig;
 use crate::llm::provider::LlmProvider;
@@ -35,7 +36,7 @@ impl Default for OnboardingStep {
 /// Tracks partial onboarding progress. Persisted to `onboarding.toml`.
 ///
 /// API keys are NOT stored here -- they go directly to `credentials.toml`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OnboardingProgress {
     #[serde(default)]
     pub current_step: OnboardingStep,
@@ -96,8 +97,18 @@ pub fn load_onboarding_progress() -> OnboardingProgress {
 pub(crate) fn load_onboarding_progress_from(config_dir: &Path) -> OnboardingProgress {
     let path = onboarding_toml_path(config_dir);
     match std::fs::read_to_string(&path) {
-        Ok(text) => toml::from_str(&text).unwrap_or_default(),
-        Err(_) => OnboardingProgress::default(),
+        Ok(text) => match toml::from_str(&text) {
+            Ok(progress) => progress,
+            Err(e) => {
+                warn!("Failed to parse onboarding.toml, resetting to defaults: {e}");
+                OnboardingProgress::default()
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => OnboardingProgress::default(),
+        Err(e) => {
+            warn!("Failed to read onboarding.toml, resetting to defaults: {e}");
+            OnboardingProgress::default()
+        }
     }
 }
 
@@ -119,7 +130,9 @@ pub(crate) fn save_onboarding_progress_to(
     let path = onboarding_toml_path(config_dir);
     let text = toml::to_string_pretty(progress)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-    std::fs::write(&path, text)
+    let tmp_path = path.with_extension("toml.tmp");
+    std::fs::write(&tmp_path, &text)?;
+    std::fs::rename(&tmp_path, &path)
 }
 
 // ---------------------------------------------------------------------------
@@ -143,6 +156,15 @@ pub fn is_configured(progress: &OnboardingProgress, credentials: &CredentialsCon
         return false;
     }
 
+    // Check that a non-empty model name has been selected.
+    let model_valid = progress
+        .llm_model
+        .as_deref()
+        .is_some_and(|m| !m.trim().is_empty());
+    if !model_valid {
+        return false;
+    }
+
     // Check that the selected provider has a non-empty API key.
     let Some(ref provider) = progress.llm_provider else {
         return false;
@@ -159,7 +181,7 @@ fn has_api_key_for_provider(provider: &LlmProvider, credentials: &CredentialsCon
         LlmProvider::OpenAI => credentials.openai_api_key.as_deref(),
     };
 
-    key.is_some_and(|k| !k.is_empty())
+    key.is_some_and(|k| !k.trim().is_empty())
 }
 
 // ---------------------------------------------------------------------------
@@ -323,6 +345,70 @@ mod tests {
             current_step: OnboardingStep::Complete,
             llm_provider: Some(LlmProvider::OpenAI),
             llm_model: Some("gpt-4.1".to_string()),
+            strategy_configured: true,
+        };
+        let creds = CredentialsConfig {
+            anthropic_api_key: Some("sk-ant-test-key".to_string()),
+            google_api_key: None,
+            openai_api_key: None,
+        };
+        assert!(!is_configured(&progress, &creds));
+    }
+
+    #[test]
+    fn is_configured_false_when_whitespace_only_api_key() {
+        let progress = OnboardingProgress {
+            current_step: OnboardingStep::Complete,
+            llm_provider: Some(LlmProvider::Anthropic),
+            llm_model: Some("claude-sonnet-4-6".to_string()),
+            strategy_configured: true,
+        };
+        let creds = CredentialsConfig {
+            anthropic_api_key: Some("   \t\n".to_string()),
+            google_api_key: None,
+            openai_api_key: None,
+        };
+        assert!(!is_configured(&progress, &creds));
+    }
+
+    #[test]
+    fn is_configured_false_when_llm_model_is_none() {
+        let progress = OnboardingProgress {
+            current_step: OnboardingStep::Complete,
+            llm_provider: Some(LlmProvider::Anthropic),
+            llm_model: None,
+            strategy_configured: true,
+        };
+        let creds = CredentialsConfig {
+            anthropic_api_key: Some("sk-ant-test-key".to_string()),
+            google_api_key: None,
+            openai_api_key: None,
+        };
+        assert!(!is_configured(&progress, &creds));
+    }
+
+    #[test]
+    fn is_configured_false_when_llm_model_is_empty() {
+        let progress = OnboardingProgress {
+            current_step: OnboardingStep::Complete,
+            llm_provider: Some(LlmProvider::Anthropic),
+            llm_model: Some(String::new()),
+            strategy_configured: true,
+        };
+        let creds = CredentialsConfig {
+            anthropic_api_key: Some("sk-ant-test-key".to_string()),
+            google_api_key: None,
+            openai_api_key: None,
+        };
+        assert!(!is_configured(&progress, &creds));
+    }
+
+    #[test]
+    fn is_configured_false_when_llm_model_is_whitespace() {
+        let progress = OnboardingProgress {
+            current_step: OnboardingStep::Complete,
+            llm_provider: Some(LlmProvider::Anthropic),
+            llm_model: Some("   ".to_string()),
             strategy_configured: true,
         };
         let creds = CredentialsConfig {
