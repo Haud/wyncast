@@ -379,16 +379,79 @@ fn handle_llm_setup_key(
 
 /// Handle keyboard input on the settings screen.
 ///
-/// Placeholder implementation: Esc returns to draft mode.
-/// Real settings input handling will be implemented in Task 6.
+/// Dispatches to the same input handlers used by onboarding (LLM setup or
+/// strategy setup) depending on the active settings tab. Tab/1/2 switch
+/// between settings tabs; Esc returns to draft mode; `s`/`S` saves.
 fn handle_settings_key(
     key_event: KeyEvent,
-    _view_state: &mut ViewState,
+    view_state: &mut ViewState,
 ) -> Option<UserCommand> {
+    use crate::protocol::SettingsSection;
+
+    let active_tab = view_state.settings_tab;
+
+    // Check if we're in an editing sub-mode. If so, delegate fully to the
+    // appropriate onboarding handler (it handles its own Esc/Enter).
+    let is_editing = match active_tab {
+        SettingsSection::LlmConfig => view_state.llm_setup.api_key_editing,
+        SettingsSection::StrategyConfig => view_state.strategy_setup.is_editing(),
+    };
+
+    if is_editing {
+        // Delegate to onboarding handler for editing input. However, we need
+        // to intercept the commands it returns and translate onboarding-specific
+        // ones (GoBack, GoNext, Skip) since those make no sense in settings.
+        let cmd = match active_tab {
+            SettingsSection::LlmConfig => handle_llm_setup_key(key_event, view_state),
+            SettingsSection::StrategyConfig => handle_strategy_setup_key(key_event, view_state),
+        };
+        return filter_onboarding_commands(cmd);
+    }
+
+    // Not editing: handle settings-level keys first, then delegate
     match key_event.code {
+        // Tab switching between LLM and Strategy tabs
+        KeyCode::Char('1') => {
+            view_state.settings_tab = SettingsSection::LlmConfig;
+            None
+        }
+        KeyCode::Char('2') => {
+            view_state.settings_tab = SettingsSection::StrategyConfig;
+            None
+        }
+
+        // Esc: exit settings and return to draft mode
         KeyCode::Esc => Some(UserCommand::ExitSettings),
+
+        // q: quit the application
         KeyCode::Char('q') => Some(UserCommand::Quit),
-        _ => None,
+
+        // For all other keys, delegate to the active tab's onboarding handler
+        _ => {
+            let cmd = match active_tab {
+                SettingsSection::LlmConfig => handle_llm_setup_key(key_event, view_state),
+                SettingsSection::StrategyConfig => handle_strategy_setup_key(key_event, view_state),
+            };
+            filter_onboarding_commands(cmd)
+        }
+    }
+}
+
+/// Filter out onboarding-specific commands that don't apply in settings mode.
+///
+/// In settings mode, GoBack/GoNext/Skip make no sense. `n` in LLM setup
+/// normally maps to GoNext, but in settings we suppress it. Esc in the
+/// onboarding handlers normally maps to GoBack, but we handle Esc at the
+/// settings level (exit settings). This function strips those commands.
+fn filter_onboarding_commands(cmd: Option<UserCommand>) -> Option<UserCommand> {
+    use crate::protocol::OnboardingAction;
+
+    match &cmd {
+        Some(UserCommand::OnboardingAction(action)) => match action {
+            OnboardingAction::GoBack | OnboardingAction::GoNext | OnboardingAction::Skip => None,
+            _ => cmd,
+        },
+        _ => cmd,
     }
 }
 
@@ -496,6 +559,9 @@ fn handle_draft_key(
 
         // Request a full keyframe (FULL_STATE_SYNC) from the extension
         KeyCode::Char('r') => Some(UserCommand::RequestKeyframe),
+
+        // Open settings screen
+        KeyCode::Char(',') => Some(UserCommand::OpenSettings),
 
         // Quit: enter confirmation mode instead of quitting immediately
         KeyCode::Char('q') => {
@@ -1814,13 +1880,32 @@ mod tests {
     }
 
     #[test]
-    fn settings_mode_ignores_draft_keys() {
+    fn settings_mode_1_2_switch_tabs() {
         use crate::protocol::SettingsSection;
 
         let mut state = ViewState::default();
         state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
-        // Tab switching should not work in settings mode
+        state.settings_tab = SettingsSection::LlmConfig;
+
+        // Press '2' to switch to Strategy tab
+        let result = handle_key(key(KeyCode::Char('2')), &mut state);
+        assert!(result.is_none());
+        assert_eq!(state.settings_tab, SettingsSection::StrategyConfig);
+
+        // Press '1' to switch back to LLM tab
         let result = handle_key(key(KeyCode::Char('1')), &mut state);
+        assert!(result.is_none());
+        assert_eq!(state.settings_tab, SettingsSection::LlmConfig);
+    }
+
+    #[test]
+    fn settings_mode_ignores_draft_specific_keys() {
+        use crate::protocol::SettingsSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        // Draft-specific keys like 'r' (resync) should not produce commands
+        let result = handle_key(key(KeyCode::Char('r')), &mut state);
         assert!(result.is_none());
     }
 
@@ -1854,5 +1939,127 @@ mod tests {
         state.app_mode = AppMode::Draft;
         let result = handle_key(ctrl_key(KeyCode::Char('c')), &mut state);
         assert_eq!(result, Some(UserCommand::Quit));
+    }
+
+    // -- Settings mode (Task 6) --
+
+    #[test]
+    fn draft_mode_comma_opens_settings() {
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Draft;
+        let result = handle_key(key(KeyCode::Char(',')), &mut state);
+        assert_eq!(result, Some(UserCommand::OpenSettings));
+    }
+
+    #[test]
+    fn settings_llm_tab_delegates_to_llm_setup_handler() {
+        use crate::protocol::SettingsSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        state.settings_tab = SettingsSection::LlmConfig;
+
+        // Up/Down arrow in provider section should navigate
+        state.llm_setup.active_section = crate::tui::onboarding::llm_setup::LlmSetupSection::Provider;
+        let initial_idx = state.llm_setup.selected_provider_idx;
+        let result = handle_key(key(KeyCode::Down), &mut state);
+        // The command should be a SetProvider action (filtered through)
+        assert!(
+            matches!(result, Some(UserCommand::OnboardingAction(crate::protocol::OnboardingAction::SetProvider(_)))),
+            "expected SetProvider, got {:?}",
+            result,
+        );
+        assert_ne!(state.llm_setup.selected_provider_idx, initial_idx);
+    }
+
+    #[test]
+    fn settings_strategy_tab_delegates_to_strategy_handler() {
+        use crate::protocol::SettingsSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::StrategyConfig);
+        state.settings_tab = SettingsSection::StrategyConfig;
+
+        // 's' in strategy tab should dispatch SaveStrategyConfig
+        let result = handle_key(key(KeyCode::Char('s')), &mut state);
+        assert!(
+            matches!(
+                result,
+                Some(UserCommand::OnboardingAction(
+                    crate::protocol::OnboardingAction::SaveStrategyConfig { .. }
+                ))
+            ),
+            "expected SaveStrategyConfig, got {:?}",
+            result,
+        );
+    }
+
+    #[test]
+    fn settings_filters_out_go_back_from_onboarding_handler() {
+        use crate::protocol::SettingsSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        state.settings_tab = SettingsSection::LlmConfig;
+
+        // In onboarding LLM setup, Esc maps to GoBack. In settings mode,
+        // the settings handler intercepts Esc before it reaches the
+        // onboarding handler, dispatching ExitSettings instead.
+        let result = handle_key(key(KeyCode::Esc), &mut state);
+        assert_eq!(
+            result,
+            Some(UserCommand::ExitSettings),
+            "Esc in settings should dispatch ExitSettings, not GoBack",
+        );
+    }
+
+    #[test]
+    fn settings_filters_out_go_next_from_onboarding_handler() {
+        use crate::protocol::SettingsSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        state.settings_tab = SettingsSection::LlmConfig;
+
+        // 'n' in onboarding LLM setup maps to GoNext. In settings mode,
+        // it should be filtered out (GoNext makes no sense in settings).
+        // 'n' reaches the onboarding handler which returns GoNext,
+        // then filter_onboarding_commands strips it.
+        let result = handle_key(key(KeyCode::Char('n')), &mut state);
+        assert!(
+            result.is_none(),
+            "'n' in settings should not dispatch GoNext, got {:?}",
+            result,
+        );
+    }
+
+    #[test]
+    fn settings_api_key_editing_delegates_correctly() {
+        use crate::protocol::SettingsSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        state.settings_tab = SettingsSection::LlmConfig;
+        state.llm_setup.api_key_editing = true;
+        state.llm_setup.api_key_input = "sk-".to_string();
+
+        // Typing a character should append to the API key
+        let result = handle_key(key(KeyCode::Char('a')), &mut state);
+        assert!(result.is_none());
+        assert_eq!(state.llm_setup.api_key_input, "sk-a");
+
+        // Enter should confirm and dispatch SetApiKey
+        let result = handle_key(key(KeyCode::Enter), &mut state);
+        assert!(
+            matches!(
+                result,
+                Some(UserCommand::OnboardingAction(
+                    crate::protocol::OnboardingAction::SetApiKey(_)
+                ))
+            ),
+            "Enter should dispatch SetApiKey, got {:?}",
+            result,
+        );
+        assert!(!state.llm_setup.api_key_editing);
     }
 }
