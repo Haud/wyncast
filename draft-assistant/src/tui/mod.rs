@@ -1636,4 +1636,76 @@ mod tests {
         apply_ui_update(&mut state, UiUpdate::ModeChanged(AppMode::Draft));
         assert_eq!(state.app_mode, AppMode::Draft);
     }
+
+    // -- OnboardingUpdate::Strategy* variants --
+
+    #[test]
+    fn apply_ui_update_strategy_llm_token() {
+        use crate::protocol::OnboardingUpdate;
+
+        let mut state = ViewState::default();
+        assert!(state.strategy_setup.generation_output.is_empty());
+
+        apply_ui_update(
+            &mut state,
+            UiUpdate::OnboardingUpdate(OnboardingUpdate::StrategyLlmToken("Hello ".to_string())),
+        );
+        assert_eq!(state.strategy_setup.generation_output, "Hello ");
+
+        apply_ui_update(
+            &mut state,
+            UiUpdate::OnboardingUpdate(OnboardingUpdate::StrategyLlmToken("World".to_string())),
+        );
+        assert_eq!(state.strategy_setup.generation_output, "Hello World");
+    }
+
+    #[test]
+    fn apply_ui_update_strategy_llm_complete() {
+        use crate::protocol::OnboardingUpdate;
+        use crate::tui::onboarding::strategy_setup::CategoryWeights;
+
+        let mut state = ViewState::default();
+        state.strategy_setup.generating = true;
+        state.strategy_setup.generation_error = Some("old error".to_string());
+
+        let weights = CategoryWeights {
+            r: 1.0, hr: 1.1, rbi: 1.0, bb: 1.3, sb: 1.0, avg: 1.0,
+            k: 1.0, w: 1.0, sv: 0.3, hd: 1.2, era: 1.0, whip: 1.0,
+        };
+
+        apply_ui_update(
+            &mut state,
+            UiUpdate::OnboardingUpdate(OnboardingUpdate::StrategyLlmComplete {
+                hitting_budget_pct: 70,
+                category_weights: weights.clone(),
+            }),
+        );
+
+        assert!(!state.strategy_setup.generating);
+        assert!(state.strategy_setup.generation_error.is_none());
+        assert_eq!(state.strategy_setup.hitting_budget_pct, 70);
+        assert!((state.strategy_setup.category_weights.bb - 1.3).abs() < f32::EPSILON);
+        assert!((state.strategy_setup.category_weights.sv - 0.3).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn apply_ui_update_strategy_llm_error() {
+        use crate::protocol::OnboardingUpdate;
+
+        let mut state = ViewState::default();
+        state.strategy_setup.generating = true;
+
+        apply_ui_update(
+            &mut state,
+            UiUpdate::OnboardingUpdate(OnboardingUpdate::StrategyLlmError(
+                "API rate limit exceeded".to_string(),
+            )),
+        );
+
+        assert!(!state.strategy_setup.generating);
+        assert_eq!(
+            state.strategy_setup.generation_error.as_deref(),
+            Some("API rate limit exceeded")
+        );
+    }
 }

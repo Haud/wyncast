@@ -1500,9 +1500,11 @@ async fn handle_onboarding_action(
                         .await;
                 }
                 LlmClient::Active(_) => {
-                    let tx = ui_tx.clone();
+                    // Increment generation counter BEFORE spawning the task
+                    // to prevent race conditions with stale events.
+                    state.llm_generation += 1;
                     let generation = state.llm_generation;
-                    let _llm_tx = state.llm_tx.clone();
+                    let tx = ui_tx.clone();
 
                     // Build the prompt for strategy configuration
                     let system = "You are a fantasy baseball strategy advisor. Given the user's \
@@ -1510,7 +1512,7 @@ async fn handle_onboarding_action(
                         explanation) with exactly these fields:\n\
                         - \"hitting_budget_pct\": integer 0-100 (percentage of budget for hitting)\n\
                         - \"category_weights\": object with keys R, HR, RBI, BB, SB, AVG, K, W, SV, HD, ERA, WHIP, \
-                        each a float where 1.0 = normal importance, >1.0 = overweight, <1.0 = underweight (min 0.1, max 3.0)\n\n\
+                        each a float where 1.0 = normal importance, >1.0 = overweight, <1.0 = underweight (min 0.0, max 5.0)\n\n\
                         League: 10-team H2H Most Categories, salary cap $260, 26 keepers.\n\
                         Categories: R, HR, RBI, BB, SB, AVG (hitting) | K, W, SV, HD, ERA, WHIP (pitching)\n\
                         Key edges: BB (walks) and HD (holds) are non-standard and undervalued.";
@@ -1750,13 +1752,23 @@ fn parse_strategy_json(
 ) -> Result<(u8, crate::tui::onboarding::strategy_setup::CategoryWeights), String> {
     use crate::tui::onboarding::strategy_setup::CategoryWeights;
 
-    // Strip markdown code fences if present
+    // Strip markdown code fences if present.
+    // Use safe string operations to avoid panics on edge cases.
     let trimmed = text.trim();
     let json_str = if trimmed.starts_with("```") {
-        // Find the content between ``` markers
-        let start = trimmed.find('\n').map(|i| i + 1).unwrap_or(3);
-        let end = trimmed.rfind("```").unwrap_or(trimmed.len());
-        &trimmed[start..end]
+        // Find end of the opening fence line (e.g. "```json\n")
+        let after_fence = if let Some(newline_pos) = trimmed.find('\n') {
+            &trimmed[newline_pos + 1..]
+        } else {
+            // Opening fence with no newline — strip the leading ```
+            &trimmed[3..]
+        };
+        // Strip the closing ``` if present
+        if let Some(close_pos) = after_fence.rfind("```") {
+            &after_fence[..close_pos]
+        } else {
+            after_fence
+        }
     } else {
         trimmed
     };
@@ -1780,24 +1792,10 @@ fn parse_strategy_json(
     let mut weights = CategoryWeights::default();
 
     if let Some(cw) = parsed.get("category_weights").and_then(|v| v.as_object()) {
-        let cats = [
-            ("R", 0),
-            ("HR", 1),
-            ("RBI", 2),
-            ("BB", 3),
-            ("SB", 4),
-            ("AVG", 5),
-            ("K", 6),
-            ("W", 7),
-            ("SV", 8),
-            ("HD", 9),
-            ("ERA", 10),
-            ("WHIP", 11),
-        ];
-        for (name, idx) in &cats {
+        for (idx, name) in crate::tui::onboarding::strategy_setup::CATEGORIES.iter().enumerate() {
             if let Some(val) = cw.get(*name).and_then(|v| v.as_f64()) {
-                let clamped = val.max(0.1).min(3.0) as f32;
-                weights.set(*idx, clamped);
+                let clamped = val.max(0.0).min(5.0) as f32;
+                weights.set(idx, clamped);
             }
         }
     }
@@ -4504,6 +4502,70 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn save_strategy_config_updates_state_and_transitions_to_draft() {
+        use crate::onboarding::OnboardingStep;
+        use crate::tui::onboarding::strategy_setup::CategoryWeights;
+
+        let mut state = create_test_app_state();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
+
+        let weights = CategoryWeights {
+            r: 1.0, hr: 1.1, rbi: 1.0, bb: 1.3, sb: 1.0, avg: 1.0,
+            k: 1.0, w: 1.0, sv: 0.3, hd: 1.2, era: 1.0, whip: 1.0,
+        };
+
+        let (ui_tx, mut ui_rx) = mpsc::channel(16);
+
+        handle_user_command(
+            &mut state,
+            UserCommand::OnboardingAction(OnboardingAction::SaveStrategyConfig {
+                hitting_budget_pct: 70,
+                category_weights: weights,
+            }),
+            &ui_tx,
+        )
+        .await;
+
+        // In-memory config should be updated
+        assert!(
+            (state.config.strategy.hitting_budget_fraction - 0.70).abs() < f64::EPSILON,
+            "budget fraction should be 0.70, got {}",
+            state.config.strategy.hitting_budget_fraction,
+        );
+        assert!(
+            (state.config.strategy.weights.BB - 1.3).abs() < 0.001,
+            "BB weight should be 1.3",
+        );
+        assert!(
+            (state.config.strategy.weights.SV - 0.3).abs() < 0.001,
+            "SV weight should be 0.3",
+        );
+
+        // Onboarding progress should be marked as strategy configured
+        assert!(state.onboarding_progress.strategy_configured);
+        assert_eq!(state.onboarding_progress.current_step, OnboardingStep::Complete);
+
+        // AppState should now be in Draft mode
+        assert_eq!(state.app_mode, AppMode::Draft);
+
+        // UI channel should have received ModeChanged(Draft)
+        let update = ui_rx.recv().await.expect("expected ModeChanged update");
+        assert!(
+            matches!(update, UiUpdate::ModeChanged(AppMode::Draft)),
+            "first update should be ModeChanged(Draft), got {:?}",
+            update,
+        );
+
+        // UI channel should also have received a StateSnapshot
+        let snapshot_update = ui_rx.recv().await.expect("expected StateSnapshot update");
+        assert!(
+            matches!(snapshot_update, UiUpdate::StateSnapshot(_)),
+            "second update should be StateSnapshot, got {:?}",
+            snapshot_update,
+        );
+    }
+
     // -- parse_strategy_json tests --
 
     #[test]
@@ -4526,11 +4588,11 @@ mod tests {
 
     #[test]
     fn parse_strategy_json_clamps_values() {
-        let json = r#"{"hitting_budget_pct": 200, "category_weights": {"SV": 0.0, "BB": 5.0}}"#;
+        let json = r#"{"hitting_budget_pct": 200, "category_weights": {"SV": -1.0, "BB": 7.0}}"#;
         let (pct, weights) = parse_strategy_json(json).unwrap();
         assert_eq!(pct, 100); // clamped to 100
-        assert!((weights.sv - 0.1).abs() < f32::EPSILON); // clamped to 0.1
-        assert!((weights.bb - 3.0).abs() < f32::EPSILON); // clamped to 3.0
+        assert!((weights.sv - 0.0).abs() < f32::EPSILON); // clamped to 0.0
+        assert!((weights.bb - 5.0).abs() < f32::EPSILON); // clamped to 5.0
     }
 
     #[test]

@@ -328,9 +328,10 @@ impl StrategySetupState {
     /// Confirm the current field edit and apply the value.
     ///
     /// Returns `true` if the edit was applied, `false` if the value was invalid.
+    /// On invalid input the editing state is preserved so the user can retry.
     pub fn confirm_edit(&mut self) -> bool {
-        let field = match self.editing_field.take() {
-            Some(f) => f,
+        let field = match &self.editing_field {
+            Some(f) => f.clone(),
             None => return false,
         };
 
@@ -338,25 +339,27 @@ impl StrategySetupState {
             if let Ok(val) = self.field_input.parse::<u8>() {
                 if val <= 100 {
                     self.hitting_budget_pct = val;
+                    self.editing_field = None;
                     self.field_input.clear();
                     return true;
                 }
             }
-            self.field_input.clear();
+            // Invalid input: preserve editing state so user can retry
             return false;
         }
 
         // Category weight field
         if let Ok(val) = self.field_input.parse::<f32>() {
-            if val > 0.0 && val <= 5.0 {
+            if val >= 0.0 && val <= 5.0 {
                 if let Some(idx) = CATEGORIES.iter().position(|&c| c == field) {
                     self.category_weights.set(idx, val);
+                    self.editing_field = None;
                     self.field_input.clear();
                     return true;
                 }
             }
         }
-        self.field_input.clear();
+        // Invalid input: preserve editing state so user can retry
         false
     }
 
@@ -977,6 +980,9 @@ mod tests {
         s.field_input = "101".to_string();
         assert!(!s.confirm_edit());
         assert_eq!(s.hitting_budget_pct, 65); // unchanged
+        // Editing state should be preserved so user can retry
+        assert_eq!(s.editing_field.as_deref(), Some("budget"));
+        assert_eq!(s.field_input, "101");
     }
 
     #[test]
@@ -989,12 +995,23 @@ mod tests {
     }
 
     #[test]
-    fn edit_weight_rejects_zero() {
+    fn edit_weight_accepts_zero() {
         let mut s = StrategySetupState::default();
         s.start_editing("SV", "0.7");
         s.field_input = "0.0".to_string();
+        assert!(s.confirm_edit());
+        assert!((s.category_weights.sv - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn edit_weight_rejects_negative() {
+        let mut s = StrategySetupState::default();
+        s.start_editing("SV", "0.7");
+        s.field_input = "-0.1".to_string();
         assert!(!s.confirm_edit());
         assert!((s.category_weights.sv - 0.7).abs() < f32::EPSILON);
+        // Editing state should be preserved so user can retry
+        assert_eq!(s.editing_field.as_deref(), Some("SV"));
     }
 
     #[test]
@@ -1003,6 +1020,8 @@ mod tests {
         s.start_editing("R", "1.0");
         s.field_input = "5.1".to_string();
         assert!(!s.confirm_edit());
+        // Editing state should be preserved so user can retry
+        assert_eq!(s.editing_field.as_deref(), Some("R"));
     }
 
     #[test]
