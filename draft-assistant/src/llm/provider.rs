@@ -96,27 +96,27 @@ pub const SUPPORTED_MODELS: &[ModelOption] = &[
     // Google
     ModelOption {
         provider: LlmProvider::Google,
-        model_id: "gemini-3.1-pro",
-        display_name: "Gemini 3.1 Pro",
+        model_id: "gemini-2.5-pro",
+        display_name: "Gemini 2.5 Pro",
         tier: ModelTier::Thinking,
     },
     ModelOption {
         provider: LlmProvider::Google,
-        model_id: "gemini-3-flash",
-        display_name: "Gemini 3 Flash",
+        model_id: "gemini-2.0-flash",
+        display_name: "Gemini 2.0 Flash",
         tier: ModelTier::Fast,
     },
     // OpenAI
     ModelOption {
         provider: LlmProvider::OpenAI,
-        model_id: "gpt-5.2",
-        display_name: "GPT-5.2",
+        model_id: "gpt-4.1",
+        display_name: "GPT-4.1",
         tier: ModelTier::Thinking,
     },
     ModelOption {
         provider: LlmProvider::OpenAI,
-        model_id: "gpt-5.2-chat-latest",
-        display_name: "GPT-5.2 Chat Latest",
+        model_id: "gpt-4o",
+        display_name: "GPT-4o",
         tier: ModelTier::Fast,
     },
 ];
@@ -189,5 +189,21 @@ mod tests {
         assert_eq!(json, r#""anthropic""#);
         let back: LlmProvider = serde_json::from_str(&json).unwrap();
         assert_eq!(back, LlmProvider::Anthropic);
+    }
+
+    #[test]
+    fn provider_serde_roundtrip_google() {
+        let json = serde_json::to_string(&LlmProvider::Google).unwrap();
+        assert_eq!(json, r#""google""#);
+        let back: LlmProvider = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, LlmProvider::Google);
+    }
+
+    #[test]
+    fn provider_serde_roundtrip_openai() {
+        let json = serde_json::to_string(&LlmProvider::OpenAI).unwrap();
+        assert_eq!(json, r#""openai""#);
+        let back: LlmProvider = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, LlmProvider::OpenAI);
     }
 }

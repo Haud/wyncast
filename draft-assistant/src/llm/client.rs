@@ -22,188 +22,6 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 const OPENAI_API_URL: &str = "https://api.openai.com/v1/chat/completions";
 
 // ---------------------------------------------------------------------------
-// ClaudeClient
-// ---------------------------------------------------------------------------
-
-/// Low-level Claude API streaming client.
-pub struct ClaudeClient {
-    http: reqwest::Client,
-    api_key: String,
-    model: String,
-}
-
-impl ClaudeClient {
-    /// Create a new client with the given API key and model identifier.
-    pub fn new(api_key: String, model: String) -> Self {
-        Self {
-            http: reqwest::Client::new(),
-            api_key,
-            model,
-        }
-    }
-
-    /// Send a message to the Claude API and stream the response as `LlmEvent`s
-    /// over `tx`.
-    ///
-    /// The `generation` counter is threaded through every emitted event so that
-    /// the receiving side can discard stale events from cancelled tasks.
-    ///
-    /// The method returns when the stream is complete, an error occurs, or the
-    /// receiver is dropped.
-    pub async fn stream_message(
-        &self,
-        system: &str,
-        user_content: &str,
-        max_tokens: u32,
-        tx: mpsc::Sender<LlmEvent>,
-        generation: u64,
-    ) -> anyhow::Result<()> {
-        if self.api_key.is_empty() {
-            let _ = tx
-                .send(LlmEvent::Error {
-                    message: "API key not configured".to_string(),
-                    generation,
-                })
-                .await;
-            return Ok(());
-        }
-
-        let body = serde_json::json!({
-            "model": self.model,
-            "max_tokens": max_tokens,
-            "stream": true,
-            "system": system,
-            "messages": [{ "role": "user", "content": user_content }]
-        });
-
-        let request = self
-            .http
-            .post(ANTHROPIC_API_URL)
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("content-type", "application/json")
-            .json(&body);
-
-        let mut es = match request.eventsource() {
-            Ok(es) => es,
-            Err(e) => {
-                let _ = tx
-                    .send(LlmEvent::Error {
-                        message: format!("Failed to create event source: {e}"),
-                        generation,
-                    })
-                    .await;
-                return Ok(());
-            }
-        };
-
-        let mut full_text = String::new();
-        let mut input_tokens: u32 = 0;
-        let mut output_tokens: u32 = 0;
-        let mut stop_reason: Option<String> = None;
-
-        while let Some(event) = es.next().await {
-            match event {
-                Ok(Event::Open) => {
-                    debug!("SSE connection opened");
-                }
-                Ok(Event::Message(msg)) => {
-                    let event_type = msg.event.as_str();
-                    let data = &msg.data;
-
-                    match event_type {
-                        "message_start" => {
-                            match parse_input_tokens(data) {
-                                Some(n) => input_tokens = n,
-                                None => warn!("failed to parse input_tokens from message_start"),
-                            }
-                            debug!(input_tokens, "message_start");
-                        }
-                        "content_block_delta" => {
-                            if let Some(text) = parse_delta_text(data) {
-                                full_text.push_str(&text);
-                                if tx
-                                    .send(LlmEvent::Token {
-                                        text,
-                                        generation,
-                                    })
-                                    .await
-                                    .is_err()
-                                {
-                                    // Receiver dropped — abort stream.
-                                    es.close();
-                                    return Ok(());
-                                }
-                            }
-                        }
-                        "message_delta" => {
-                            match parse_output_tokens(data) {
-                                Some(n) => output_tokens = n,
-                                None => warn!("failed to parse output_tokens from message_delta"),
-                            }
-                            stop_reason = parse_stop_reason(data);
-                            debug!(output_tokens, ?stop_reason, "message_delta");
-                        }
-                        "message_stop" => {
-                            debug!(?stop_reason, "message_stop — streaming complete");
-                            let _ = tx
-                                .send(LlmEvent::Complete {
-                                    full_text,
-                                    input_tokens,
-                                    output_tokens,
-                                    stop_reason,
-                                    generation,
-                                })
-                                .await;
-                            es.close();
-                            return Ok(());
-                        }
-                        // Ignore ping, content_block_start, content_block_stop, etc.
-                        _ => {
-                            debug!(event_type, "ignoring SSE event");
-                        }
-                    }
-                }
-                Err(err) => {
-                    warn!(?err, "SSE stream error");
-                    let error_message = extract_error_message(&err);
-                    let _ = tx
-                        .send(LlmEvent::Error {
-                            message: error_message,
-                            generation,
-                        })
-                        .await;
-                    es.close();
-                    return Ok(());
-                }
-            }
-        }
-
-        // Stream ended without message_stop (shouldn't normally happen).
-        if full_text.is_empty() {
-            let _ = tx
-                .send(LlmEvent::Error {
-                    message: "Stream ended unexpectedly without any content".to_string(),
-                    generation,
-                })
-                .await;
-        } else {
-            let _ = tx
-                .send(LlmEvent::Complete {
-                    full_text,
-                    input_tokens,
-                    output_tokens,
-                    stop_reason,
-                    generation,
-                })
-                .await;
-        }
-
-        Ok(())
-    }
-}
-
-// ---------------------------------------------------------------------------
 // LlmClient wrapper
 // ---------------------------------------------------------------------------
 
@@ -459,7 +277,7 @@ impl GenericLlmClient {
 
         let request = self
             .http
-            .post(OPENAI_API_URL)
+            .post(&self.cfg.base_url)
             .header("authorization", format!("Bearer {}", self.cfg.api_key))
             .header("content-type", "application/json")
             .json(&body);
@@ -684,13 +502,15 @@ async fn stream_google_sse(
                         }
                     }
 
-                    // Detect stream completion: finishReason present in last chunk
+                    // Detect stream completion: finishReason present in last chunk.
+                    // Use the same filter as stop_reason assignment above: exclude
+                    // "UNSPECIFIED" and "OTHER" (both indicate no meaningful stop).
                     let is_done = v
                         .get("candidates")
                         .and_then(|c| c.get(0))
                         .and_then(|c| c.get("finishReason"))
                         .and_then(|r| r.as_str())
-                        .map(|r| r != "UNSPECIFIED" && !r.is_empty())
+                        .map(|r| r != "UNSPECIFIED" && r != "OTHER" && !r.is_empty())
                         .unwrap_or(false);
 
                     if is_done {
@@ -710,8 +530,8 @@ async fn stream_google_sse(
                 }
             }
             Err(err) => {
-                warn!(?err, "SSE stream error (Google)");
                 let error_message = extract_error_message(&err);
+                warn!("SSE stream error (Google): {}", error_message);
                 let _ = tx
                     .send(LlmEvent::Error {
                         message: error_message,
@@ -1178,7 +998,7 @@ mod tests {
 
     #[test]
     fn generic_client_google_url_contains_model() {
-        let model = "gemini-3.1-pro";
+        let model = "gemini-2.5-pro";
         let client = GenericLlmClient::new(
             LlmProvider::Google,
             "key".to_string(),
@@ -1193,7 +1013,7 @@ mod tests {
         let client = GenericLlmClient::new(
             LlmProvider::OpenAI,
             "key".to_string(),
-            "gpt-5.2".to_string(),
+            "gpt-4o".to_string(),
         );
         assert_eq!(client.cfg.base_url, OPENAI_API_URL);
     }
@@ -1601,6 +1421,261 @@ mod tests {
         let _ = processor.await;
     }
 
+    // -- Additional from_config tests for Google and OpenAI providers --
+
+    #[test]
+    fn from_config_google_with_key_returns_active() {
+        let config = make_test_config_for_provider(
+            LlmProvider::Google,
+            "gemini-2.5-pro".to_string(),
+            Some("google-api-key".to_string()),
+            None,
+        );
+        let client = LlmClient::from_config(&config);
+        assert!(matches!(client, LlmClient::Active(_)));
+    }
+
+    #[test]
+    fn from_config_google_without_key_returns_disabled() {
+        let config = make_test_config_for_provider(
+            LlmProvider::Google,
+            "gemini-2.5-pro".to_string(),
+            None,
+            None,
+        );
+        let client = LlmClient::from_config(&config);
+        assert!(matches!(client, LlmClient::Disabled));
+    }
+
+    #[test]
+    fn from_config_google_empty_key_returns_disabled() {
+        let config = make_test_config_for_provider(
+            LlmProvider::Google,
+            "gemini-2.5-pro".to_string(),
+            Some(String::new()),
+            None,
+        );
+        let client = LlmClient::from_config(&config);
+        assert!(matches!(client, LlmClient::Disabled));
+    }
+
+    #[test]
+    fn from_config_openai_with_key_returns_active() {
+        let config = make_test_config_for_provider(
+            LlmProvider::OpenAI,
+            "gpt-4o".to_string(),
+            None,
+            Some("openai-api-key".to_string()),
+        );
+        let client = LlmClient::from_config(&config);
+        assert!(matches!(client, LlmClient::Active(_)));
+    }
+
+    // -- Google SSE parsing tests --
+
+    #[test]
+    fn parse_google_chunk_extracts_text() {
+        // A typical streamGenerateContent SSE chunk from the Gemini API.
+        let data = r#"{
+            "candidates": [{
+                "content": {
+                    "parts": [{ "text": "Hello from Gemini" }],
+                    "role": "model"
+                },
+                "finishReason": "UNSPECIFIED",
+                "index": 0
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 10,
+                "candidatesTokenCount": 4
+            }
+        }"#;
+        let v: serde_json::Value = serde_json::from_str(data).unwrap();
+        let text = v
+            .get("candidates")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("content"))
+            .and_then(|c| c.get("parts"))
+            .and_then(|p| p.get(0))
+            .and_then(|p| p.get("text"))
+            .and_then(|t| t.as_str());
+        assert_eq!(text, Some("Hello from Gemini"));
+    }
+
+    #[test]
+    fn parse_google_chunk_finish_reason_stop_is_done() {
+        // A final chunk with finishReason "STOP" should trigger stream completion.
+        let data = r#"{
+            "candidates": [{
+                "content": {
+                    "parts": [{ "text": "last token" }],
+                    "role": "model"
+                },
+                "finishReason": "STOP",
+                "index": 0
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 20,
+                "candidatesTokenCount": 10
+            }
+        }"#;
+        let v: serde_json::Value = serde_json::from_str(data).unwrap();
+        let reason = v
+            .get("candidates")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("finishReason"))
+            .and_then(|r| r.as_str());
+        // stop_reason assignment: exclude "UNSPECIFIED" and "OTHER"
+        let stop_reason: Option<String> = reason
+            .filter(|r| *r != "UNSPECIFIED" && *r != "OTHER")
+            .map(|r| r.to_string());
+        assert_eq!(stop_reason, Some("STOP".to_string()));
+        // is_done check: same filter
+        let is_done = reason
+            .map(|r| r != "UNSPECIFIED" && r != "OTHER" && !r.is_empty())
+            .unwrap_or(false);
+        assert!(is_done);
+    }
+
+    #[test]
+    fn parse_google_chunk_finish_reason_unspecified_not_done() {
+        // "UNSPECIFIED" should not trigger is_done and should not set stop_reason.
+        let data = r#"{
+            "candidates": [{
+                "content": {
+                    "parts": [{ "text": "mid token" }],
+                    "role": "model"
+                },
+                "finishReason": "UNSPECIFIED",
+                "index": 0
+            }]
+        }"#;
+        let v: serde_json::Value = serde_json::from_str(data).unwrap();
+        let reason = v
+            .get("candidates")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("finishReason"))
+            .and_then(|r| r.as_str());
+        let stop_reason: Option<String> = reason
+            .filter(|r| *r != "UNSPECIFIED" && *r != "OTHER")
+            .map(|r| r.to_string());
+        assert_eq!(stop_reason, None);
+        let is_done = reason
+            .map(|r| r != "UNSPECIFIED" && r != "OTHER" && !r.is_empty())
+            .unwrap_or(false);
+        assert!(!is_done);
+    }
+
+    #[test]
+    fn parse_google_chunk_finish_reason_other_not_done() {
+        // "OTHER" should also not trigger is_done and should not set stop_reason.
+        let data = r#"{
+            "candidates": [{
+                "content": {
+                    "parts": [{ "text": "" }],
+                    "role": "model"
+                },
+                "finishReason": "OTHER",
+                "index": 0
+            }]
+        }"#;
+        let v: serde_json::Value = serde_json::from_str(data).unwrap();
+        let reason = v
+            .get("candidates")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("finishReason"))
+            .and_then(|r| r.as_str());
+        let stop_reason: Option<String> = reason
+            .filter(|r| *r != "UNSPECIFIED" && *r != "OTHER")
+            .map(|r| r.to_string());
+        assert_eq!(stop_reason, None);
+        let is_done = reason
+            .map(|r| r != "UNSPECIFIED" && r != "OTHER" && !r.is_empty())
+            .unwrap_or(false);
+        assert!(!is_done);
+    }
+
+    // -- OpenAI SSE parsing tests --
+
+    #[test]
+    fn parse_openai_chunk_extracts_text() {
+        // A typical chat completion chunk from the OpenAI API.
+        let data = r#"{
+            "id": "chatcmpl-abc123",
+            "object": "chat.completion.chunk",
+            "created": 1699123456,
+            "model": "gpt-4o",
+            "choices": [{
+                "index": 0,
+                "delta": { "content": "Hello from GPT" },
+                "finish_reason": null
+            }]
+        }"#;
+        let v: serde_json::Value = serde_json::from_str(data).unwrap();
+        let text = v
+            .get("choices")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("delta"))
+            .and_then(|d| d.get("content"))
+            .and_then(|t| t.as_str());
+        assert_eq!(text, Some("Hello from GPT"));
+    }
+
+    #[test]
+    fn parse_openai_done_sentinel_detected() {
+        // The [DONE] sentinel signals end-of-stream.
+        let data = "[DONE]";
+        assert_eq!(data.trim(), "[DONE]");
+    }
+
+    #[test]
+    fn parse_openai_chunk_finish_reason_stop() {
+        // A final chunk has finish_reason set to "stop".
+        let data = r#"{
+            "id": "chatcmpl-abc123",
+            "object": "chat.completion.chunk",
+            "created": 1699123456,
+            "model": "gpt-4o",
+            "choices": [{
+                "index": 0,
+                "delta": {},
+                "finish_reason": "stop"
+            }]
+        }"#;
+        let v: serde_json::Value = serde_json::from_str(data).unwrap();
+        let reason = v
+            .get("choices")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("finish_reason"))
+            .and_then(|r| r.as_str());
+        let stop_reason: Option<String> = reason
+            .filter(|r| !r.is_empty())
+            .map(|r| r.to_string());
+        assert_eq!(stop_reason, Some("stop".to_string()));
+    }
+
+    #[test]
+    fn parse_openai_chunk_null_finish_reason() {
+        // Mid-stream chunks have null finish_reason which should not set stop_reason.
+        let data = r#"{
+            "id": "chatcmpl-abc123",
+            "object": "chat.completion.chunk",
+            "choices": [{
+                "index": 0,
+                "delta": { "content": "mid" },
+                "finish_reason": null
+            }]
+        }"#;
+        let v: serde_json::Value = serde_json::from_str(data).unwrap();
+        // null as_str() returns None, so stop_reason stays None
+        let reason = v
+            .get("choices")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("finish_reason"))
+            .and_then(|r| r.as_str());
+        assert_eq!(reason, None);
+    }
+
     // -- Helper to build a minimal Config for testing --
 
     fn make_test_config(api_key: Option<String>) -> Config {
@@ -1667,6 +1742,85 @@ mod tests {
                 anthropic_api_key: api_key,
                 google_api_key: None,
                 openai_api_key: None,
+            },
+            ws_port: 9001,
+            data_paths: DataPaths {
+                hitters: "data/hitters.csv".to_string(),
+                pitchers: "data/pitchers.csv".to_string(),
+            },
+        }
+    }
+
+    /// Build a Config for a specific provider with separate key slots.
+    /// `google_key` is used when provider is Google; `openai_key` when OpenAI.
+    fn make_test_config_for_provider(
+        provider: LlmProvider,
+        model: String,
+        google_key: Option<String>,
+        openai_key: Option<String>,
+    ) -> Config {
+        use crate::config::*;
+        use std::collections::HashMap;
+
+        Config {
+            league: LeagueConfig {
+                name: "Test".to_string(),
+                platform: "espn".to_string(),
+                num_teams: 10,
+                scoring_type: "h2h".to_string(),
+                salary_cap: 260,
+                batting_categories: CategoriesSection {
+                    categories: vec!["R".to_string()],
+                },
+                pitching_categories: CategoriesSection {
+                    categories: vec!["K".to_string()],
+                },
+                roster: HashMap::new(),
+                roster_limits: RosterLimits {
+                    max_sp: 7,
+                    max_rp: 7,
+                    gs_per_week: 7,
+                },
+                teams: HashMap::new(),
+                my_team: None,
+            },
+            strategy: StrategyConfig {
+                hitting_budget_fraction: 0.65,
+                weights: CategoryWeights {
+                    R: 1.0,
+                    HR: 1.0,
+                    RBI: 1.0,
+                    BB: 1.2,
+                    SB: 1.0,
+                    AVG: 1.0,
+                    K: 1.0,
+                    W: 1.0,
+                    SV: 0.7,
+                    HD: 1.3,
+                    ERA: 1.0,
+                    WHIP: 1.0,
+                },
+                pool: PoolConfig {
+                    min_pa: 400,
+                    min_ip_sp: 100.0,
+                    min_g_rp: 40,
+                    hitter_pool_size: 150,
+                    sp_pool_size: 70,
+                    rp_pool_size: 80,
+                },
+                llm: LlmConfig {
+                    provider,
+                    model,
+                    analysis_max_tokens: 2048,
+                    planning_max_tokens: 2048,
+                    analysis_trigger: "nomination".to_string(),
+                    prefire_planning: true,
+                },
+            },
+            credentials: CredentialsConfig {
+                anthropic_api_key: None,
+                google_api_key: google_key,
+                openai_api_key: openai_key,
             },
             ws_port: 9001,
             data_paths: DataPaths {
