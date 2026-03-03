@@ -775,6 +775,7 @@ mod tests {
                     rp_pool_size: 80,
                 },
                 llm: LlmConfig {
+                    provider: crate::llm::provider::LlmProvider::Anthropic,
                     model: "test".into(),
                     analysis_max_tokens: 2048,
                     planning_max_tokens: 2048,
@@ -782,9 +783,7 @@ mod tests {
                     prefire_planning: true,
                 },
             },
-            credentials: CredentialsConfig {
-                anthropic_api_key: None,
-            },
+            credentials: CredentialsConfig::default(),
             ws_port: 9001,
             data_paths: DataPaths {
                 hitters: "data/projections/hitters.csv".into(),

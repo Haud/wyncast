@@ -183,7 +183,11 @@ fn strategy_toml_has_correct_settings() {
     let llm = config.get("llm").expect("llm section should exist");
     assert_eq!(
         llm.get("model").unwrap().as_str().unwrap(),
-        "claude-sonnet-4-5-20250929"
+        "claude-sonnet-4-6"
+    );
+    assert_eq!(
+        llm.get("provider").unwrap().as_str().unwrap(),
+        "anthropic"
     );
     assert_eq!(llm.get("analysis_max_tokens").unwrap().as_integer().unwrap(), 2048);
     assert_eq!(llm.get("planning_max_tokens").unwrap().as_integer().unwrap(), 2048);
