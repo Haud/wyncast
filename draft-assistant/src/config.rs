@@ -180,11 +180,21 @@ pub struct DataPaths {
 // credentials.toml structs
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Clone, Deserialize, serde::Serialize, Default)]
 pub struct CredentialsConfig {
     pub anthropic_api_key: Option<String>,
     pub google_api_key: Option<String>,
     pub openai_api_key: Option<String>,
+}
+
+impl std::fmt::Debug for CredentialsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CredentialsConfig")
+            .field("anthropic_api_key", &self.anthropic_api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("google_api_key", &self.google_api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("openai_api_key", &self.openai_api_key.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -43,22 +43,169 @@ pub fn handle_key(
 
 /// Handle keyboard input during the onboarding wizard.
 ///
-/// Placeholder implementation: supports basic navigation (GoNext, GoBack, Skip).
-/// Real onboarding input handling will be implemented in Task 4.
+/// Dispatches to step-specific handlers based on the current onboarding step.
 fn handle_onboarding_key(
     key_event: KeyEvent,
-    _view_state: &mut ViewState,
+    view_state: &mut ViewState,
 ) -> Option<UserCommand> {
+    use crate::onboarding::OnboardingStep;
+
+    match &view_state.app_mode {
+        AppMode::Onboarding(OnboardingStep::LlmSetup) => {
+            handle_llm_setup_key(key_event, view_state)
+        }
+        AppMode::Onboarding(_) => {
+            // StrategySetup and Complete use basic navigation (placeholder for Task 5)
+            handle_onboarding_basic_key(key_event)
+        }
+        _ => None,
+    }
+}
+
+/// Basic onboarding navigation keys for steps without full UI (StrategySetup placeholder).
+fn handle_onboarding_basic_key(key_event: KeyEvent) -> Option<UserCommand> {
     match key_event.code {
-        KeyCode::Enter | KeyCode::Right => {
+        KeyCode::Char('n') | KeyCode::Enter => {
             Some(UserCommand::OnboardingAction(OnboardingAction::GoNext))
         }
-        KeyCode::Left => {
+        KeyCode::Esc | KeyCode::Left => {
             Some(UserCommand::OnboardingAction(OnboardingAction::GoBack))
         }
         KeyCode::Char('s') => {
             Some(UserCommand::OnboardingAction(OnboardingAction::Skip))
         }
+        KeyCode::Char('q') => Some(UserCommand::Quit),
+        _ => None,
+    }
+}
+
+/// Handle keyboard input on the LLM setup screen (onboarding step 1).
+///
+/// Input handling depends on whether the API key text input is active:
+/// - When editing: captures typed characters, Enter confirms, Esc cancels
+/// - When not editing: Tab/Shift+Tab cycle sections, Up/Down select within
+///   lists, Enter activates API key editing or test button, n advances to next
+///
+/// Provider and model selections dispatch `SetProvider`/`SetModel` commands to
+/// the app orchestrator immediately on each arrow key press. This keeps
+/// `OnboardingProgress` in sync so that when `GoNext` fires, the app already
+/// has the correct values and only needs to persist the API key and advance.
+fn handle_llm_setup_key(
+    key_event: KeyEvent,
+    view_state: &mut ViewState,
+) -> Option<UserCommand> {
+    use super::onboarding::llm_setup::{LlmConnectionStatus, LlmSetupSection};
+
+    let state = &mut view_state.llm_setup;
+
+    // --- API key editing mode ---
+    if state.api_key_editing {
+        return match key_event.code {
+            KeyCode::Enter => {
+                state.api_key_editing = false;
+                // Sync the key to the app on confirm
+                let key = state.api_key_input.clone();
+                Some(UserCommand::OnboardingAction(OnboardingAction::SetApiKey(key)))
+            }
+            KeyCode::Esc => {
+                state.api_key_input = state.api_key_backup.clone();
+                state.api_key_editing = false;
+                None
+            }
+            KeyCode::Backspace => {
+                state.api_key_input.pop();
+                None
+            }
+            KeyCode::Char(c) => {
+                state.api_key_input.push(c);
+                None
+            }
+            _ => None,
+        };
+    }
+
+    // --- Normal navigation mode ---
+    match key_event.code {
+        // Tab: cycle forward through sections
+        KeyCode::Tab => {
+            state.active_section = state.active_section.next();
+            None
+        }
+        // Shift+Tab (BackTab): cycle backward through sections
+        KeyCode::BackTab => {
+            state.active_section = state.active_section.prev();
+            None
+        }
+        // Up/Down: select within the active list section
+        KeyCode::Up | KeyCode::Char('k') => {
+            match state.active_section {
+                LlmSetupSection::Provider => {
+                    state.provider_up();
+                    let provider = state.selected_provider().clone();
+                    return Some(UserCommand::OnboardingAction(
+                        OnboardingAction::SetProvider(provider),
+                    ));
+                }
+                LlmSetupSection::Model => {
+                    state.model_up();
+                    if let Some(model) = state.selected_model() {
+                        return Some(UserCommand::OnboardingAction(
+                            OnboardingAction::SetModel(model.model_id.to_string()),
+                        ));
+                    }
+                }
+                _ => {}
+            }
+            None
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            match state.active_section {
+                LlmSetupSection::Provider => {
+                    state.provider_down();
+                    let provider = state.selected_provider().clone();
+                    return Some(UserCommand::OnboardingAction(
+                        OnboardingAction::SetProvider(provider),
+                    ));
+                }
+                LlmSetupSection::Model => {
+                    state.model_down();
+                    if let Some(model) = state.selected_model() {
+                        return Some(UserCommand::OnboardingAction(
+                            OnboardingAction::SetModel(model.model_id.to_string()),
+                        ));
+                    }
+                }
+                _ => {}
+            }
+            None
+        }
+        // Enter: context-dependent activation
+        KeyCode::Enter => {
+            match state.active_section {
+                LlmSetupSection::ApiKey => {
+                    state.api_key_backup = state.api_key_input.clone();
+                    state.api_key_editing = true;
+                    None
+                }
+                LlmSetupSection::TestButton => {
+                    state.connection_status = LlmConnectionStatus::Testing;
+                    Some(UserCommand::OnboardingAction(OnboardingAction::TestConnection))
+                }
+                _ => None,
+            }
+        }
+        // n: advance to next step
+        // OnboardingProgress should already be in sync from real-time
+        // SetProvider/SetModel/SetApiKey dispatches. GoNext persists
+        // and advances to the next onboarding step.
+        KeyCode::Char('n') => {
+            Some(UserCommand::OnboardingAction(OnboardingAction::GoNext))
+        }
+        // Esc: go back (from LLM setup, this is a no-op since it's the first step)
+        KeyCode::Esc => {
+            Some(UserCommand::OnboardingAction(OnboardingAction::GoBack))
+        }
+        // q: quit
         KeyCode::Char('q') => Some(UserCommand::Quit),
         _ => None,
     }
@@ -1260,12 +1407,177 @@ mod tests {
 
     // -- AppMode-aware input dispatch --
 
+    // -- LLM Setup screen input tests --
+
     #[test]
-    fn onboarding_mode_enter_sends_go_next() {
+    fn llm_setup_n_sends_go_next() {
         use crate::onboarding::OnboardingStep;
 
         let mut state = ViewState::default();
         state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+        let result = handle_key(key(KeyCode::Char('n')), &mut state);
+        assert!(matches!(
+            result,
+            Some(UserCommand::OnboardingAction(OnboardingAction::GoNext))
+        ));
+    }
+
+    #[test]
+    fn llm_setup_esc_sends_go_back() {
+        use crate::onboarding::OnboardingStep;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+        let result = handle_key(key(KeyCode::Esc), &mut state);
+        assert!(matches!(
+            result,
+            Some(UserCommand::OnboardingAction(OnboardingAction::GoBack))
+        ));
+    }
+
+    #[test]
+    fn llm_setup_tab_cycles_sections() {
+        use crate::onboarding::OnboardingStep;
+        use crate::tui::onboarding::llm_setup::LlmSetupSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+        assert_eq!(state.llm_setup.active_section, LlmSetupSection::Provider);
+
+        let result = handle_key(key(KeyCode::Tab), &mut state);
+        assert!(result.is_none()); // local state mutation
+        assert_eq!(state.llm_setup.active_section, LlmSetupSection::Model);
+
+        let result = handle_key(key(KeyCode::Tab), &mut state);
+        assert!(result.is_none());
+        assert_eq!(state.llm_setup.active_section, LlmSetupSection::ApiKey);
+
+        let result = handle_key(key(KeyCode::Tab), &mut state);
+        assert!(result.is_none());
+        assert_eq!(state.llm_setup.active_section, LlmSetupSection::TestButton);
+
+        // Wraps back to Provider
+        let result = handle_key(key(KeyCode::Tab), &mut state);
+        assert!(result.is_none());
+        assert_eq!(state.llm_setup.active_section, LlmSetupSection::Provider);
+    }
+
+    #[test]
+    fn llm_setup_down_changes_provider() {
+        use crate::onboarding::OnboardingStep;
+        use crate::llm::provider::LlmProvider;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+
+        let result = handle_key(key(KeyCode::Down), &mut state);
+        assert!(matches!(
+            result,
+            Some(UserCommand::OnboardingAction(OnboardingAction::SetProvider(LlmProvider::Google)))
+        ));
+        assert_eq!(state.llm_setup.selected_provider_idx, 1);
+    }
+
+    #[test]
+    fn llm_setup_enter_on_api_key_starts_editing() {
+        use crate::onboarding::OnboardingStep;
+        use crate::tui::onboarding::llm_setup::LlmSetupSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+        state.llm_setup.active_section = LlmSetupSection::ApiKey;
+
+        let result = handle_key(key(KeyCode::Enter), &mut state);
+        assert!(result.is_none());
+        assert!(state.llm_setup.api_key_editing);
+    }
+
+    #[test]
+    fn llm_setup_api_key_editing_captures_chars() {
+        use crate::onboarding::OnboardingStep;
+        use crate::tui::onboarding::llm_setup::LlmSetupSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+        state.llm_setup.active_section = LlmSetupSection::ApiKey;
+        state.llm_setup.api_key_editing = true;
+
+        handle_key(key(KeyCode::Char('a')), &mut state);
+        handle_key(key(KeyCode::Char('b')), &mut state);
+        handle_key(key(KeyCode::Char('c')), &mut state);
+        assert_eq!(state.llm_setup.api_key_input, "abc");
+
+        handle_key(key(KeyCode::Backspace), &mut state);
+        assert_eq!(state.llm_setup.api_key_input, "ab");
+    }
+
+    #[test]
+    fn llm_setup_api_key_enter_confirms_and_sends_set_api_key() {
+        use crate::onboarding::OnboardingStep;
+        use crate::tui::onboarding::llm_setup::LlmSetupSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+        state.llm_setup.active_section = LlmSetupSection::ApiKey;
+        state.llm_setup.api_key_editing = true;
+        state.llm_setup.api_key_input = "sk-test-key".to_string();
+
+        let result = handle_key(key(KeyCode::Enter), &mut state);
+        assert!(!state.llm_setup.api_key_editing);
+        assert!(matches!(
+            result,
+            Some(UserCommand::OnboardingAction(OnboardingAction::SetApiKey(_)))
+        ));
+    }
+
+    #[test]
+    fn llm_setup_api_key_esc_cancels_editing() {
+        use crate::onboarding::OnboardingStep;
+        use crate::tui::onboarding::llm_setup::LlmSetupSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+        state.llm_setup.api_key_editing = true;
+
+        let result = handle_key(key(KeyCode::Esc), &mut state);
+        assert!(!state.llm_setup.api_key_editing);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn llm_setup_enter_on_test_button_sends_test_connection() {
+        use crate::onboarding::OnboardingStep;
+        use crate::tui::onboarding::llm_setup::LlmSetupSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+        state.llm_setup.active_section = LlmSetupSection::TestButton;
+
+        let result = handle_key(key(KeyCode::Enter), &mut state);
+        assert!(matches!(
+            result,
+            Some(UserCommand::OnboardingAction(OnboardingAction::TestConnection))
+        ));
+    }
+
+    #[test]
+    fn llm_setup_q_quits() {
+        use crate::onboarding::OnboardingStep;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+        let result = handle_key(key(KeyCode::Char('q')), &mut state);
+        assert_eq!(result, Some(UserCommand::Quit));
+    }
+
+    // -- Strategy setup placeholder input tests --
+
+    #[test]
+    fn strategy_setup_enter_sends_go_next() {
+        use crate::onboarding::OnboardingStep;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
         let result = handle_key(key(KeyCode::Enter), &mut state);
         assert!(matches!(
             result,
@@ -1274,25 +1586,12 @@ mod tests {
     }
 
     #[test]
-    fn onboarding_mode_right_sends_go_next() {
-        use crate::onboarding::OnboardingStep;
-
-        let mut state = ViewState::default();
-        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
-        let result = handle_key(key(KeyCode::Right), &mut state);
-        assert!(matches!(
-            result,
-            Some(UserCommand::OnboardingAction(OnboardingAction::GoNext))
-        ));
-    }
-
-    #[test]
-    fn onboarding_mode_left_sends_go_back() {
+    fn strategy_setup_esc_sends_go_back() {
         use crate::onboarding::OnboardingStep;
 
         let mut state = ViewState::default();
         state.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
-        let result = handle_key(key(KeyCode::Left), &mut state);
+        let result = handle_key(key(KeyCode::Esc), &mut state);
         assert!(matches!(
             result,
             Some(UserCommand::OnboardingAction(OnboardingAction::GoBack))
@@ -1300,26 +1599,16 @@ mod tests {
     }
 
     #[test]
-    fn onboarding_mode_s_sends_skip() {
+    fn strategy_setup_s_sends_skip() {
         use crate::onboarding::OnboardingStep;
 
         let mut state = ViewState::default();
-        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+        state.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
         let result = handle_key(key(KeyCode::Char('s')), &mut state);
         assert!(matches!(
             result,
             Some(UserCommand::OnboardingAction(OnboardingAction::Skip))
         ));
-    }
-
-    #[test]
-    fn onboarding_mode_q_quits() {
-        use crate::onboarding::OnboardingStep;
-
-        let mut state = ViewState::default();
-        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
-        let result = handle_key(key(KeyCode::Char('q')), &mut state);
-        assert_eq!(result, Some(UserCommand::Quit));
     }
 
     #[test]

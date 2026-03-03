@@ -201,8 +201,12 @@ pub enum OnboardingUpdate {
         success: bool,
         message: String,
     },
-    /// The onboarding step has changed (e.g. after GoNext/GoBack).
-    StepChanged(OnboardingStep),
+    /// Sync onboarding state back to the TUI (e.g. on GoBack to LlmSetup).
+    /// Carries the provider and model so the TUI can rebuild `LlmSetupState`.
+    ProgressSync {
+        provider: Option<LlmProvider>,
+        model: Option<String>,
+    },
 }
 
 // ---------------------------------------------------------------------------

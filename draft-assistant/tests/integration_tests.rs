@@ -186,7 +186,11 @@ fn create_test_app_state_from_fixtures() -> AppState {
     let llm_client = LlmClient::Disabled;
     let (llm_tx, _llm_rx) = mpsc::channel(16);
 
-    AppState::new(config, draft_state, available, projections, db, draft_id, llm_client, llm_tx, None, AppMode::Draft)
+    let onboarding_manager = draft_assistant::onboarding::OnboardingManager::new(
+        std::env::temp_dir().join(format!("wyncast_integ_test_{}", std::process::id())),
+        draft_assistant::onboarding::RealFileSystem,
+    );
+    AppState::new(config, draft_state, available, projections, db, draft_id, llm_client, llm_tx, None, AppMode::Draft, onboarding_manager)
 }
 
 // ===========================================================================
