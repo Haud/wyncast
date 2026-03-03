@@ -64,6 +64,9 @@ impl MigrationRunner {
                 continue;
             }
 
+            // `unchecked_transaction` is used because `run_pending` takes `&Connection`
+            // (required since it is called before the connection is moved into Mutex).
+            // No other transaction is active at this call site.
             let tx = conn.unchecked_transaction().with_context(|| {
                 format!(
                     "failed to begin transaction for migration v{}",
@@ -92,6 +95,11 @@ impl MigrationRunner {
     /// descending order.
     ///
     /// Returns an error if any migration to be rolled back has `down = None`.
+    /// Silently skips migrations in `MIGRATIONS` that are not recorded as applied
+    /// in `schema_migrations`. If no migrations qualify, returns `Ok(())`.
+    ///
+    /// Requires `run_pending` to have been called at least once on this connection
+    /// so that `schema_migrations` exists; errors with "no such table" otherwise.
     pub fn rollback_to(conn: &Connection, target_version: i64) -> Result<()> {
         let mut to_rollback: Vec<&'static Migration> = MIGRATIONS
             .iter()
@@ -125,6 +133,9 @@ impl MigrationRunner {
                 )
             })?;
 
+            // `unchecked_transaction` is used because `rollback_to` takes `&Connection`
+            // (required since it is called before the connection is moved into Mutex).
+            // No other transaction is active at this call site.
             let tx = conn.unchecked_transaction().with_context(|| {
                 format!(
                     "failed to begin rollback transaction for migration v{}",
@@ -157,7 +168,8 @@ impl MigrationRunner {
         Ok(())
     }
 
-    /// Return the highest applied migration version, or 0 if none have been applied.
+    /// Return the highest applied migration version, or 0 if none have been
+    /// applied. Requires `schema_migrations` to exist; call `run_pending` first.
     pub fn current_version(conn: &Connection) -> Result<i64> {
         conn.query_row(
             "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
@@ -221,33 +233,18 @@ mod tests {
     }
 
     #[test]
-    fn rollback_errors_on_irreversible() {
-        // Test the down=None error path via rollback_to on a synthetic entry
-        // inserted directly into schema_migrations (simulates a future migration
-        // added with down=None).
+    fn rollback_skips_unapplied_migration() {
+        // rollback_to should silently skip any migration that was never applied.
+        // This covers the `if !applied { continue; }` guard in rollback_to.
         let conn = in_memory();
         MigrationRunner::run_pending(&conn).expect("run_pending");
-        // Insert a fake applied migration with no corresponding MIGRATIONS entry.
-        // rollback_to won't touch it because it only iterates MIGRATIONS.
-        // To actually hit the None path we need a Migration in MIGRATIONS.
-        // Since MIGRATIONS is static, we test the error return directly:
-        let irreversible = Migration {
-            version: 99,
-            name: "irreversible",
-            up: "",
-            down: None,
-        };
-        let result = irreversible.down.ok_or_else(|| {
-            anyhow::anyhow!(
-                "migration v{} '{}' is irreversible (no down SQL)",
-                irreversible.version,
-                irreversible.name
-            )
-        });
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("irreversible"));
+
+        // Roll back from v1 to v0, then back to v0 again — second call is a no-op.
+        MigrationRunner::rollback_to(&conn, 0).expect("rollback_to 0 first time");
+        assert_eq!(MigrationRunner::current_version(&conn).unwrap(), 0);
+
+        // v1 is no longer applied; rollback_to should silently skip it.
+        MigrationRunner::rollback_to(&conn, 0).expect("rollback_to 0 second time (no-op)");
+        assert_eq!(MigrationRunner::current_version(&conn).unwrap(), 0);
     }
 }
