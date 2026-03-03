@@ -108,6 +108,7 @@ fn handle_llm_setup_key(
                 Some(UserCommand::OnboardingAction(OnboardingAction::SetApiKey(key)))
             }
             KeyCode::Esc => {
+                state.api_key_input = state.api_key_backup.clone();
                 state.api_key_editing = false;
                 None
             }
@@ -182,6 +183,7 @@ fn handle_llm_setup_key(
         KeyCode::Enter => {
             match state.active_section {
                 LlmSetupSection::ApiKey => {
+                    state.api_key_backup = state.api_key_input.clone();
                     state.api_key_editing = true;
                     None
                 }

@@ -466,6 +466,7 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
         }
         UiUpdate::OnboardingUpdate(update) => {
             use crate::protocol::OnboardingUpdate;
+            use crate::llm::provider::models_for_provider;
             use onboarding::llm_setup::LlmConnectionStatus;
 
             match update {
@@ -476,8 +477,19 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
                         LlmConnectionStatus::Failed(message)
                     };
                 }
-                OnboardingUpdate::StepChanged(step) => {
-                    state.app_mode = AppMode::Onboarding(step);
+                OnboardingUpdate::ProgressSync { provider, model } => {
+                    // Rebuild LlmSetupState indices from the saved progress.
+                    if let Some(ref p) = provider {
+                        if let Some(idx) = LlmSetupState::PROVIDERS.iter().position(|pp| pp == p) {
+                            state.llm_setup.selected_provider_idx = idx;
+                        }
+                        if let Some(ref model_id) = model {
+                            let models = models_for_provider(p);
+                            if let Some(midx) = models.iter().position(|m| m.model_id == model_id.as_str()) {
+                                state.llm_setup.selected_model_idx = midx;
+                            }
+                        }
+                    }
                 }
             }
         }

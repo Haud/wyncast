@@ -81,7 +81,10 @@ impl Default for LlmConnectionStatus {
 /// UI state for the LLM setup screen.
 ///
 /// Lives inside `ViewState` so the TUI can render it without any global state.
-#[derive(Debug, Clone)]
+///
+/// Note: custom `Debug` implementation redacts `api_key_input` and
+/// `api_key_backup` to avoid leaking secrets in log output.
+#[derive(Clone)]
 pub struct LlmSetupState {
     /// Which section currently has keyboard focus.
     pub active_section: LlmSetupSection,
@@ -91,10 +94,26 @@ pub struct LlmSetupState {
     pub selected_model_idx: usize,
     /// The API key text as entered by the user.
     pub api_key_input: String,
+    /// Backup of the API key before entering edit mode, restored on Esc cancel.
+    pub api_key_backup: String,
     /// Whether the API key text input is in edit mode.
     pub api_key_editing: bool,
     /// Result of the last connection test.
     pub connection_status: LlmConnectionStatus,
+}
+
+impl std::fmt::Debug for LlmSetupState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LlmSetupState")
+            .field("active_section", &self.active_section)
+            .field("selected_provider_idx", &self.selected_provider_idx)
+            .field("selected_model_idx", &self.selected_model_idx)
+            .field("api_key_input", &if self.api_key_input.is_empty() { "(empty)" } else { "[REDACTED]" })
+            .field("api_key_backup", &if self.api_key_backup.is_empty() { "(empty)" } else { "[REDACTED]" })
+            .field("api_key_editing", &self.api_key_editing)
+            .field("connection_status", &self.connection_status)
+            .finish()
+    }
 }
 
 impl Default for LlmSetupState {
@@ -104,6 +123,7 @@ impl Default for LlmSetupState {
             selected_provider_idx: 0,
             selected_model_idx: 0,
             api_key_input: String::new(),
+            api_key_backup: String::new(),
             api_key_editing: false,
             connection_status: LlmConnectionStatus::Untested,
         }
@@ -183,7 +203,7 @@ impl LlmSetupState {
         } else {
             // Show first 7 chars, then mask the rest
             let visible = self.api_key_input.chars().take(7).collect::<String>();
-            let mask_len = self.api_key_input.len().saturating_sub(7);
+            let mask_len = self.api_key_input.chars().count().saturating_sub(7);
             format!("{}{}", visible, "*".repeat(mask_len))
         }
     }

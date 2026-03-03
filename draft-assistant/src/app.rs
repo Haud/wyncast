@@ -1285,10 +1285,10 @@ async fn handle_onboarding_action(
         OnboardingAction::SetApiKey(key) => {
             // Persist the API key to credentials.toml for the current provider
             if let Some(ref provider) = state.onboarding_progress.llm_provider {
-                save_api_key_for_provider(provider, &key, &mut state.config);
+                save_api_key_for_provider(provider, &key, &mut state.config, &state.onboarding_manager);
             } else {
                 // Default to Anthropic if no provider selected yet
-                save_api_key_for_provider(&LlmProvider::Anthropic, &key, &mut state.config);
+                save_api_key_for_provider(&LlmProvider::Anthropic, &key, &mut state.config, &state.onboarding_manager);
             }
         }
         OnboardingAction::TestConnection => {
@@ -1357,11 +1357,6 @@ async fn handle_onboarding_action(
                     state.app_mode =
                         AppMode::Onboarding(OnboardingStep::StrategySetup);
                     let _ = ui_tx
-                        .send(UiUpdate::OnboardingUpdate(
-                            OnboardingUpdate::StepChanged(OnboardingStep::StrategySetup),
-                        ))
-                        .await;
-                    let _ = ui_tx
                         .send(UiUpdate::ModeChanged(AppMode::Onboarding(
                             OnboardingStep::StrategySetup,
                         )))
@@ -1416,7 +1411,10 @@ async fn handle_onboarding_action(
                     state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
                     let _ = ui_tx
                         .send(UiUpdate::OnboardingUpdate(
-                            OnboardingUpdate::StepChanged(OnboardingStep::LlmSetup),
+                            OnboardingUpdate::ProgressSync {
+                                provider: state.onboarding_progress.llm_provider.clone(),
+                                model: state.onboarding_progress.llm_model.clone(),
+                            },
                         ))
                         .await;
                     let _ = ui_tx
@@ -1428,6 +1426,12 @@ async fn handle_onboarding_action(
                 OnboardingStep::Complete => {
                     // Go back to strategy setup
                     state.onboarding_progress.current_step = OnboardingStep::StrategySetup;
+                    if let Err(e) = state
+                        .onboarding_manager
+                        .save_progress(&state.onboarding_progress)
+                    {
+                        warn!("Failed to save onboarding progress: {}", e);
+                    }
                     state.app_mode =
                         AppMode::Onboarding(OnboardingStep::StrategySetup);
                     let _ = ui_tx
@@ -1454,11 +1458,12 @@ async fn handle_onboarding_action(
 }
 
 /// Persist an API key for the given provider to both in-memory config and
-/// the `credentials.toml` file in the app data config directory.
+/// the `credentials.toml` file via the OnboardingManager's FileSystem trait.
 fn save_api_key_for_provider(
     provider: &crate::llm::provider::LlmProvider,
     key: &str,
     config: &mut Config,
+    onboarding_manager: &crate::onboarding::OnboardingManager<crate::onboarding::RealFileSystem>,
 ) {
     use crate::llm::provider::LlmProvider;
 
@@ -1474,24 +1479,10 @@ fn save_api_key_for_provider(
         }
     }
 
-    // Persist to disk
-    let config_dir = crate::app_dirs::config_dir();
-    let creds_path = config_dir.join("credentials.toml");
-    match toml::to_string_pretty(&config.credentials) {
-        Ok(text) => {
-            if let Err(e) = std::fs::create_dir_all(&config_dir) {
-                warn!("Failed to create config dir: {}", e);
-                return;
-            }
-            if let Err(e) = std::fs::write(&creds_path, text) {
-                warn!("Failed to write credentials.toml: {}", e);
-            } else {
-                info!("Saved API key for {} to credentials.toml", provider.display_name());
-            }
-        }
-        Err(e) => {
-            warn!("Failed to serialize credentials: {}", e);
-        }
+    if let Err(e) = onboarding_manager.save_credentials(&config.credentials) {
+        warn!("Failed to save credentials.toml: {}", e);
+    } else {
+        info!("Saved API key for {} to credentials.toml", provider.display_name());
     }
 }
 

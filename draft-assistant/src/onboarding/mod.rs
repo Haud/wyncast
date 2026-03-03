@@ -129,6 +129,17 @@ impl<F: FileSystem> OnboardingManager<F> {
         self.fs.rename(&tmp_path, &path)
     }
 
+    /// Save credentials to `credentials.toml` using atomic write-to-temp-then-rename.
+    pub fn save_credentials(&self, credentials: &CredentialsConfig) -> std::io::Result<()> {
+        self.fs.create_dir_all(&self.config_dir)?;
+        let path = self.config_dir.join("credentials.toml");
+        let text = toml::to_string_pretty(credentials)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let tmp_path = path.with_extension("toml.tmp");
+        self.fs.write(&tmp_path, &text)?;
+        self.fs.rename(&tmp_path, &path)
+    }
+
     /// Returns `true` when onboarding is complete and the app is ready to run.
     ///
     /// Loads the persisted progress internally, then checks:
