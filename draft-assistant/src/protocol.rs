@@ -173,7 +173,7 @@ pub enum SettingsSection {
 /// Actions the user can take during onboarding.
 ///
 /// Sent from the TUI to the app orchestrator via `UserCommand::OnboardingAction`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OnboardingAction {
     /// Select an LLM provider.
     SetProvider(LlmProvider),
@@ -194,7 +194,7 @@ pub enum OnboardingAction {
 }
 
 /// Updates pushed from the app orchestrator to the TUI during onboarding.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OnboardingUpdate {
     /// Result of an API connection test.
     ConnectionTestResult {
@@ -252,6 +252,8 @@ pub enum UserCommand {
     },
     /// User action during the onboarding wizard.
     OnboardingAction(OnboardingAction),
+    /// Exit the settings screen and return to draft mode.
+    ExitSettings,
     Quit,
 }
 

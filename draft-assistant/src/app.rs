@@ -21,7 +21,7 @@ use crate::llm::client::LlmClient;
 use crate::llm::prompt;
 use crate::protocol::{
     AppMode, AppSnapshot, ConnectionStatus, ExtensionMessage, LlmEvent, LlmStatus, NominationInfo,
-    TabId, TeamSnapshot, UiUpdate, UserCommand,
+    OnboardingAction, TabId, TeamSnapshot, UiUpdate, UserCommand,
 };
 use crate::valuation;
 use crate::valuation::analysis::{compute_instant_analysis, CategoryNeeds, InstantAnalysis};
@@ -1228,9 +1228,12 @@ async fn handle_user_command(
         UserCommand::OnboardingAction(action) => {
             // Placeholder: onboarding action handling will be implemented in Task 4.
             // For now, just log and handle Skip (transitions to Draft mode).
-            info!("Onboarding action received: {:?}", action);
+            match &action {
+                OnboardingAction::SetApiKey(_) => info!("Onboarding action received: SetApiKey(***)"),
+                _ => info!("Onboarding action received: {:?}", action),
+            }
             match action {
-                crate::protocol::OnboardingAction::Skip => {
+                OnboardingAction::Skip => {
                     state.app_mode = AppMode::Draft;
                     let _ = ui_tx.send(UiUpdate::ModeChanged(AppMode::Draft)).await;
                     let snapshot = state.build_snapshot();
@@ -1242,6 +1245,15 @@ async fn handle_user_command(
                     // Other actions will be implemented in Task 4
                 }
             }
+        }
+        UserCommand::ExitSettings => {
+            info!("Exiting settings, returning to draft mode");
+            state.app_mode = AppMode::Draft;
+            let _ = ui_tx.send(UiUpdate::ModeChanged(AppMode::Draft)).await;
+            let snapshot = state.build_snapshot();
+            let _ = ui_tx
+                .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
+                .await;
         }
         UserCommand::Quit => {
             // Handled in the main loop
@@ -3868,5 +3880,76 @@ mod tests {
         // Draft ID should NOT change across reconnect with same ESPN ID
         assert_eq!(state.draft_id, draft_id_after_first);
         assert_eq!(state.espn_draft_id, Some("espn_12345_2026".into()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: Onboarding action handling
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn onboarding_skip_transitions_to_draft_mode() {
+        use crate::onboarding::OnboardingStep;
+
+        let mut state = create_test_app_state();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+
+        let (ui_tx, mut ui_rx) = mpsc::channel(16);
+
+        handle_user_command(
+            &mut state,
+            UserCommand::OnboardingAction(OnboardingAction::Skip),
+            &ui_tx,
+        )
+        .await;
+
+        // AppState should now be in Draft mode
+        assert_eq!(state.app_mode, AppMode::Draft);
+
+        // UI channel should have received ModeChanged(Draft)
+        let update = ui_rx.recv().await.expect("expected ModeChanged update");
+        assert!(
+            matches!(update, UiUpdate::ModeChanged(AppMode::Draft)),
+            "first update should be ModeChanged(Draft), got {:?}",
+            update,
+        );
+
+        // UI channel should also have received a StateSnapshot
+        let snapshot_update = ui_rx.recv().await.expect("expected StateSnapshot update");
+        assert!(
+            matches!(snapshot_update, UiUpdate::StateSnapshot(_)),
+            "second update should be StateSnapshot, got {:?}",
+            snapshot_update,
+        );
+    }
+
+    #[tokio::test]
+    async fn exit_settings_transitions_to_draft_mode() {
+        use crate::protocol::SettingsSection;
+
+        let mut state = create_test_app_state();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+
+        let (ui_tx, mut ui_rx) = mpsc::channel(16);
+
+        handle_user_command(&mut state, UserCommand::ExitSettings, &ui_tx).await;
+
+        // AppState should now be in Draft mode
+        assert_eq!(state.app_mode, AppMode::Draft);
+
+        // UI channel should have received ModeChanged(Draft)
+        let update = ui_rx.recv().await.expect("expected ModeChanged update");
+        assert!(
+            matches!(update, UiUpdate::ModeChanged(AppMode::Draft)),
+            "first update should be ModeChanged(Draft), got {:?}",
+            update,
+        );
+
+        // UI channel should also have received a StateSnapshot
+        let snapshot_update = ui_rx.recv().await.expect("expected StateSnapshot update");
+        assert!(
+            matches!(snapshot_update, UiUpdate::StateSnapshot(_)),
+            "second update should be StateSnapshot, got {:?}",
+            snapshot_update,
+        );
     }
 }

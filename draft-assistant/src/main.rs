@@ -129,7 +129,7 @@ async fn main() -> anyhow::Result<()> {
         llm_client,
         llm_tx.clone(),
         Some(ws_outbound_tx),
-        initial_app_mode,
+        initial_app_mode.clone(),
     );
     info!("Starting fresh — waiting for first keyframe from extension");
 
@@ -163,7 +163,7 @@ async fn main() -> anyhow::Result<()> {
 
     // The TUI consumes ui_rx and sends commands through cmd_tx.
     // It blocks until the user presses 'q' or Ctrl+C.
-    if let Err(e) = tui::run(ui_rx, cmd_tx).await {
+    if let Err(e) = tui::run(ui_rx, cmd_tx, initial_app_mode).await {
         error!("TUI error: {}", e);
     }
 

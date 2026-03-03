@@ -582,10 +582,10 @@ fn compute_draft_keybinds(state: &ViewState) -> Vec<KeybindHint> {
 fn render_frame(frame: &mut Frame, state: &ViewState) {
     match &state.app_mode {
         AppMode::Onboarding(step) => {
-            render_placeholder(frame, &format!("Onboarding: {:?}", step));
+            render_placeholder(frame, &format!("Onboarding: {:?}", step), &state.active_keybinds);
         }
         AppMode::Settings(_section) => {
-            render_placeholder(frame, "Settings");
+            render_placeholder(frame, "Settings", &state.active_keybinds);
         }
         AppMode::Draft => {
             render_draft_frame(frame, state);
@@ -634,21 +634,28 @@ fn render_draft_frame(frame: &mut Frame, state: &ViewState) {
     }
 }
 
-/// Render a centered placeholder screen with the given message.
+/// Render a centered placeholder screen with the given message and a help bar.
 ///
 /// Used for Onboarding and Settings modes until their real UIs are implemented.
-fn render_placeholder(frame: &mut Frame, message: &str) {
+fn render_placeholder(frame: &mut Frame, message: &str, keybinds: &[KeybindHint]) {
     use ratatui::layout::{Alignment, Constraint, Layout};
 
     let area = frame.area();
 
-    // Vertically center the text block
+    // Split into main content area and a 1-line help bar at the bottom
+    let outer = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ])
+    .split(area);
+
+    // Vertically center the text block within the main content area
     let vertical = Layout::vertical([
         Constraint::Percentage(40),
         Constraint::Length(3),
         Constraint::Percentage(40),
     ])
-    .split(area);
+    .split(outer[0]);
 
     let paragraph = Paragraph::new(Line::from(vec![
         Span::styled(
@@ -662,6 +669,21 @@ fn render_placeholder(frame: &mut Frame, message: &str) {
     .style(Style::default().bg(Color::Black));
 
     frame.render_widget(paragraph, vertical[1]);
+
+    // Help bar: render keybind hints at the bottom
+    let mut spans: Vec<Span> = Vec::new();
+    for (i, hint) in keybinds.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+        }
+        spans.push(Span::styled(
+            format!(" {}:{}", hint.key, hint.description),
+            Style::default().fg(Color::Gray),
+        ));
+    }
+    let help_bar = Paragraph::new(Line::from(spans))
+        .style(Style::default().bg(Color::Black));
+    frame.render_widget(help_bar, outer[1]);
 }
 
 /// Render the help bar using the pre-computed keybind hints.
@@ -741,6 +763,7 @@ fn render_help_bar(
 pub async fn run(
     mut ui_rx: mpsc::Receiver<UiUpdate>,
     cmd_tx: mpsc::Sender<UserCommand>,
+    initial_mode: AppMode,
 ) -> anyhow::Result<()> {
     // 1. Initialize terminal
     let mut terminal = ratatui::init();
@@ -754,8 +777,13 @@ pub async fn run(
         original_hook(panic_info);
     }));
 
-    // 3. Create ViewState
-    let mut view_state = ViewState::default();
+    // 3. Create ViewState with the initial app mode so the first frame
+    //    renders the correct screen (avoids a flash of the draft UI when
+    //    the app starts in onboarding mode).
+    let mut view_state = ViewState {
+        app_mode: initial_mode,
+        ..ViewState::default()
+    };
 
     // 4. Create crossterm EventStream for async keyboard input
     let mut event_stream = EventStream::new();

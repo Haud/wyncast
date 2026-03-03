@@ -70,13 +70,10 @@ fn handle_onboarding_key(
 /// Real settings input handling will be implemented in Task 6.
 fn handle_settings_key(
     key_event: KeyEvent,
-    view_state: &mut ViewState,
+    _view_state: &mut ViewState,
 ) -> Option<UserCommand> {
     match key_event.code {
-        KeyCode::Esc => {
-            view_state.app_mode = AppMode::Draft;
-            None
-        }
+        KeyCode::Esc => Some(UserCommand::ExitSettings),
         KeyCode::Char('q') => Some(UserCommand::Quit),
         _ => None,
     }
@@ -1343,8 +1340,10 @@ mod tests {
         let mut state = ViewState::default();
         state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
         let result = handle_key(key(KeyCode::Esc), &mut state);
-        assert!(result.is_none());
-        assert_eq!(state.app_mode, AppMode::Draft);
+        // Esc now returns ExitSettings command instead of mutating view_state directly
+        assert_eq!(result, Some(UserCommand::ExitSettings));
+        // ViewState.app_mode should NOT be mutated; the app orchestrator handles the transition
+        assert_eq!(state.app_mode, AppMode::Settings(SettingsSection::LlmConfig));
     }
 
     #[test]
