@@ -31,6 +31,7 @@ use crate::valuation::zscore::PlayerValuation;
 
 use layout::{build_layout, AppLayout};
 pub use onboarding::llm_setup::LlmSetupState;
+pub use onboarding::strategy_setup::StrategySetupState;
 
 // ---------------------------------------------------------------------------
 // FocusPanel
@@ -311,6 +312,8 @@ pub struct ViewState {
     pub active_keybinds: Vec<KeybindHint>,
     /// State for the LLM setup onboarding screen.
     pub llm_setup: LlmSetupState,
+    /// State for the strategy setup onboarding screen.
+    pub strategy_setup: StrategySetupState,
 }
 
 impl Default for ViewState {
@@ -343,6 +346,7 @@ impl Default for ViewState {
             position_filter_modal: PositionFilterModal::default(),
             active_keybinds: Vec::new(),
             llm_setup: LlmSetupState::default(),
+            strategy_setup: StrategySetupState::default(),
         }
     }
 }
@@ -491,6 +495,19 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
                         }
                     }
                 }
+                OnboardingUpdate::StrategyLlmToken(token) => {
+                    state.strategy_setup.generation_output.push_str(&token);
+                }
+                OnboardingUpdate::StrategyLlmComplete { hitting_budget_pct, category_weights } => {
+                    state.strategy_setup.generating = false;
+                    state.strategy_setup.generation_error = None;
+                    state.strategy_setup.hitting_budget_pct = hitting_budget_pct;
+                    state.strategy_setup.category_weights = category_weights;
+                }
+                OnboardingUpdate::StrategyLlmError(msg) => {
+                    state.strategy_setup.generating = false;
+                    state.strategy_setup.generation_error = Some(msg);
+                }
             }
         }
         UiUpdate::ModeChanged(mode) => {
@@ -558,11 +575,44 @@ fn compute_onboarding_keybinds(state: &ViewState, step: &crate::onboarding::Onbo
             }
         }
         OnboardingStep::StrategySetup | OnboardingStep::Complete => {
-            vec![
-                KeybindHint::new("n", "Next"),
-                KeybindHint::new("Esc", "Back"),
-                KeybindHint::new("q", "Quit"),
-            ]
+            use onboarding::strategy_setup::StrategySection;
+            let ss = &state.strategy_setup;
+
+            if ss.ai_input_editing {
+                vec![
+                    KeybindHint::new("type", "Describe strategy"),
+                    KeybindHint::new("Enter", "Confirm"),
+                    KeybindHint::new("Esc", "Cancel"),
+                ]
+            } else if ss.editing_field.is_some() {
+                vec![
+                    KeybindHint::new("type", "Enter value"),
+                    KeybindHint::new("Enter", "Confirm"),
+                    KeybindHint::new("Esc", "Cancel"),
+                ]
+            } else {
+                let mut hints = vec![
+                    KeybindHint::new("Tab", "Section"),
+                    KeybindHint::new("^v", "Navigate"),
+                ];
+                match ss.active_section {
+                    StrategySection::ModeToggle => {
+                        hints.push(KeybindHint::new("Enter", "Toggle AI/Manual"));
+                    }
+                    StrategySection::AiInput => {
+                        hints.push(KeybindHint::new("Enter", "Edit text"));
+                    }
+                    StrategySection::GenerateButton => {
+                        hints.push(KeybindHint::new("Enter", "Generate"));
+                    }
+                    StrategySection::BudgetField | StrategySection::CategoryWeights => {
+                        hints.push(KeybindHint::new("Enter", "Edit value"));
+                    }
+                }
+                hints.push(KeybindHint::new("s", "Save"));
+                hints.push(KeybindHint::new("Esc", "Back"));
+                hints
+            }
         }
     }
 }
@@ -1479,16 +1529,44 @@ mod tests {
     }
 
     #[test]
-    fn compute_keybinds_strategy_setup_placeholder() {
+    fn compute_keybinds_strategy_setup_normal() {
         use crate::onboarding::OnboardingStep;
 
         let mut state = ViewState::default();
         state.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
         let hints = compute_keybinds(&state);
         let ks = keys(&hints);
-        assert!(ks.contains(&"n"), "strategy setup should show Next hint");
+        assert!(ks.contains(&"Tab"), "strategy setup should show Tab hint");
+        assert!(ks.contains(&"s"), "strategy setup should show Save hint");
         assert!(ks.contains(&"Esc"), "strategy setup should show Back hint");
-        assert!(ks.contains(&"q"), "strategy setup should show Quit hint");
+    }
+
+    #[test]
+    fn compute_keybinds_strategy_setup_editing() {
+        use crate::onboarding::OnboardingStep;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
+        state.strategy_setup.editing_field = Some("budget".to_string());
+        let hints = compute_keybinds(&state);
+        let ks = keys(&hints);
+        assert!(ks.contains(&"Enter"), "editing should show confirm hint");
+        assert!(ks.contains(&"Esc"), "editing should show cancel hint");
+        assert!(!ks.contains(&"s"), "editing should not show save hint");
+    }
+
+    #[test]
+    fn compute_keybinds_strategy_setup_ai_editing() {
+        use crate::onboarding::OnboardingStep;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
+        state.strategy_setup.ai_input_editing = true;
+        let hints = compute_keybinds(&state);
+        let ks = keys(&hints);
+        assert!(ks.contains(&"Enter"), "ai editing should show confirm hint");
+        assert!(ks.contains(&"Esc"), "ai editing should show cancel hint");
+        assert!(!ks.contains(&"s"), "ai editing should not show save hint");
     }
 
     #[test]

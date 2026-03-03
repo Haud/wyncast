@@ -54,26 +54,192 @@ fn handle_onboarding_key(
         AppMode::Onboarding(OnboardingStep::LlmSetup) => {
             handle_llm_setup_key(key_event, view_state)
         }
-        AppMode::Onboarding(_) => {
-            // StrategySetup and Complete use basic navigation (placeholder for Task 5)
-            handle_onboarding_basic_key(key_event)
+        AppMode::Onboarding(OnboardingStep::StrategySetup) |
+        AppMode::Onboarding(OnboardingStep::Complete) => {
+            handle_strategy_setup_key(key_event, view_state)
         }
         _ => None,
     }
 }
 
-/// Basic onboarding navigation keys for steps without full UI (StrategySetup placeholder).
-fn handle_onboarding_basic_key(key_event: KeyEvent) -> Option<UserCommand> {
+/// Handle keyboard input on the strategy setup screen (onboarding step 2).
+///
+/// Input handling depends on the current editing state:
+/// - When editing AI text: captures typed characters, Enter confirms, Esc cancels
+/// - When editing a numeric field: captures digits and '.', Enter confirms, Esc cancels
+/// - When not editing: Tab/Shift+Tab cycle sections, Up/Down navigate weights,
+///   Enter activates editing or triggers actions, s saves, Esc goes back
+fn handle_strategy_setup_key(
+    key_event: KeyEvent,
+    view_state: &mut ViewState,
+) -> Option<UserCommand> {
+    use super::onboarding::strategy_setup::{
+        StrategySection, StrategySetupMode, CATEGORIES,
+    };
+
+    let state = &mut view_state.strategy_setup;
+
+    // --- AI text input editing mode ---
+    if state.ai_input_editing {
+        return match key_event.code {
+            KeyCode::Enter => {
+                state.ai_input_editing = false;
+                None
+            }
+            KeyCode::Esc => {
+                state.ai_input_editing = false;
+                None
+            }
+            KeyCode::Backspace => {
+                state.ai_input.pop();
+                None
+            }
+            KeyCode::Char(c) => {
+                state.ai_input.push(c);
+                None
+            }
+            _ => None,
+        };
+    }
+
+    // --- Numeric field editing mode ---
+    if state.editing_field.is_some() {
+        return match key_event.code {
+            KeyCode::Enter => {
+                state.confirm_edit();
+                None
+            }
+            KeyCode::Esc => {
+                state.cancel_edit();
+                None
+            }
+            KeyCode::Backspace => {
+                state.field_input.pop();
+                None
+            }
+            KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => {
+                state.field_input.push(c);
+                None
+            }
+            _ => None,
+        };
+    }
+
+    // --- Normal navigation mode ---
     match key_event.code {
-        KeyCode::Char('n') | KeyCode::Enter => {
-            Some(UserCommand::OnboardingAction(OnboardingAction::GoNext))
+        // Tab: cycle forward through sections
+        KeyCode::Tab => {
+            state.active_section = state.active_section.next(state.mode);
+            None
         }
-        KeyCode::Esc | KeyCode::Left => {
+        // Shift+Tab: cycle backward
+        KeyCode::BackTab => {
+            state.active_section = state.active_section.prev(state.mode);
+            None
+        }
+        // Up/Down: navigate within the active section
+        KeyCode::Up | KeyCode::Char('k') => {
+            match state.active_section {
+                StrategySection::CategoryWeights => {
+                    state.weight_up();
+                }
+                _ => {}
+            }
+            None
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            match state.active_section {
+                StrategySection::CategoryWeights => {
+                    state.weight_down();
+                }
+                _ => {}
+            }
+            None
+        }
+        KeyCode::Left | KeyCode::Char('h') => {
+            match state.active_section {
+                StrategySection::CategoryWeights => {
+                    state.weight_left();
+                }
+                StrategySection::ModeToggle => {
+                    if state.mode == StrategySetupMode::Manual {
+                        state.toggle_mode();
+                    }
+                }
+                _ => {}
+            }
+            None
+        }
+        KeyCode::Right | KeyCode::Char('l') => {
+            match state.active_section {
+                StrategySection::CategoryWeights => {
+                    state.weight_right();
+                }
+                StrategySection::ModeToggle => {
+                    if state.mode == StrategySetupMode::Ai {
+                        state.toggle_mode();
+                    }
+                }
+                _ => {}
+            }
+            None
+        }
+        // Enter: context-dependent activation
+        KeyCode::Enter => {
+            match state.active_section {
+                StrategySection::ModeToggle => {
+                    state.toggle_mode();
+                    None
+                }
+                StrategySection::AiInput => {
+                    state.ai_input_editing = true;
+                    None
+                }
+                StrategySection::GenerateButton => {
+                    if !state.generating && !state.ai_input.trim().is_empty() {
+                        state.generating = true;
+                        state.generation_output.clear();
+                        state.generation_error = None;
+                        let text = state.ai_input.clone();
+                        Some(UserCommand::OnboardingAction(
+                            OnboardingAction::ConfigureStrategyWithLlm(text),
+                        ))
+                    } else {
+                        None
+                    }
+                }
+                StrategySection::BudgetField => {
+                    let current = format!("{}", state.hitting_budget_pct);
+                    state.start_editing("budget", &current);
+                    None
+                }
+                StrategySection::CategoryWeights => {
+                    let idx = state.selected_weight_idx;
+                    if idx < CATEGORIES.len() {
+                        let cat_name = CATEGORIES[idx];
+                        let current = format!("{:.1}", state.category_weights.get(idx));
+                        state.start_editing(cat_name, &current);
+                    }
+                    None
+                }
+            }
+        }
+        // s: save and continue
+        KeyCode::Char('s') => {
+            let weights = state.category_weights.clone();
+            let pct = state.hitting_budget_pct;
+            Some(UserCommand::OnboardingAction(
+                OnboardingAction::SaveStrategyConfig {
+                    hitting_budget_pct: pct,
+                    category_weights: weights,
+                },
+            ))
+        }
+        // Esc: go back
+        KeyCode::Esc => {
             Some(UserCommand::OnboardingAction(OnboardingAction::GoBack))
         }
-        KeyCode::Char('s') => {
-            Some(UserCommand::OnboardingAction(OnboardingAction::Skip))
-        }
+        // q: quit
         KeyCode::Char('q') => Some(UserCommand::Quit),
         _ => None,
     }
@@ -1573,16 +1739,16 @@ mod tests {
     // -- Strategy setup placeholder input tests --
 
     #[test]
-    fn strategy_setup_enter_sends_go_next() {
+    fn strategy_setup_enter_on_mode_toggle_toggles_mode() {
         use crate::onboarding::OnboardingStep;
+        use crate::tui::onboarding::strategy_setup::StrategySetupMode;
 
         let mut state = ViewState::default();
         state.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
+        // Default section is ModeToggle, default mode is Ai
         let result = handle_key(key(KeyCode::Enter), &mut state);
-        assert!(matches!(
-            result,
-            Some(UserCommand::OnboardingAction(OnboardingAction::GoNext))
-        ));
+        assert!(result.is_none()); // toggle is UI-only, no command
+        assert_eq!(state.strategy_setup.mode, StrategySetupMode::Manual);
     }
 
     #[test]
@@ -1599,7 +1765,7 @@ mod tests {
     }
 
     #[test]
-    fn strategy_setup_s_sends_skip() {
+    fn strategy_setup_s_sends_save_strategy_config() {
         use crate::onboarding::OnboardingStep;
 
         let mut state = ViewState::default();
@@ -1607,7 +1773,9 @@ mod tests {
         let result = handle_key(key(KeyCode::Char('s')), &mut state);
         assert!(matches!(
             result,
-            Some(UserCommand::OnboardingAction(OnboardingAction::Skip))
+            Some(UserCommand::OnboardingAction(
+                OnboardingAction::SaveStrategyConfig { .. }
+            ))
         ));
     }
 

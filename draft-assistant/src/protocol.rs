@@ -173,7 +173,7 @@ pub enum SettingsSection {
 /// Actions the user can take during onboarding.
 ///
 /// Sent from the TUI to the app orchestrator via `UserCommand::OnboardingAction`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum OnboardingAction {
     /// Select an LLM provider.
     SetProvider(LlmProvider),
@@ -183,8 +183,13 @@ pub enum OnboardingAction {
     SetApiKey(String),
     /// Request an API connection test.
     TestConnection,
-    /// Save the strategy configuration.
-    SaveStrategyConfig,
+    /// Save the strategy configuration with the given budget and weights.
+    SaveStrategyConfig {
+        hitting_budget_pct: u8,
+        category_weights: crate::tui::onboarding::strategy_setup::CategoryWeights,
+    },
+    /// Request LLM-assisted strategy configuration from a natural language description.
+    ConfigureStrategyWithLlm(String),
     /// Navigate back to the previous onboarding step.
     GoBack,
     /// Advance to the next onboarding step.
@@ -194,7 +199,7 @@ pub enum OnboardingAction {
 }
 
 /// Updates pushed from the app orchestrator to the TUI during onboarding.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum OnboardingUpdate {
     /// Result of an API connection test.
     ConnectionTestResult {
@@ -207,6 +212,15 @@ pub enum OnboardingUpdate {
         provider: Option<LlmProvider>,
         model: Option<String>,
     },
+    /// A streamed token from the strategy LLM generation.
+    StrategyLlmToken(String),
+    /// Strategy LLM generation completed successfully with parsed config.
+    StrategyLlmComplete {
+        hitting_budget_pct: u8,
+        category_weights: crate::tui::onboarding::strategy_setup::CategoryWeights,
+    },
+    /// Strategy LLM generation failed.
+    StrategyLlmError(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -1087,7 +1101,11 @@ mod tests {
         let _set_model = OnboardingAction::SetModel("claude-sonnet-4-6".to_string());
         let _set_key = OnboardingAction::SetApiKey("sk-test".to_string());
         let _test_conn = OnboardingAction::TestConnection;
-        let _save_strategy = OnboardingAction::SaveStrategyConfig;
+        let _save_strategy = OnboardingAction::SaveStrategyConfig {
+            hitting_budget_pct: 65,
+            category_weights: crate::tui::onboarding::strategy_setup::CategoryWeights::default(),
+        };
+        let _configure_llm = OnboardingAction::ConfigureStrategyWithLlm("punt saves".to_string());
         let _go_back = OnboardingAction::GoBack;
         let _go_next = OnboardingAction::GoNext;
         let _skip = OnboardingAction::Skip;
