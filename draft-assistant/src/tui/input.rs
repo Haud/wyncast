@@ -319,13 +319,16 @@ fn handle_llm_setup_key(
         return match key_event.code {
             KeyCode::Enter => {
                 state.api_key_editing = false;
-                // Sync the key to the backend on confirm. The user will press
-                // Enter again (in non-editing mode) to trigger the connection
-                // test, which sets Testing status and dispatches TestConnection.
+                // Sync the key to the backend on confirm. The backend will
+                // automatically trigger a connection test after receiving
+                // SetApiKey, so we set Testing status here for immediate
+                // visual feedback.
                 let key = state.api_key_input.value().to_string();
                 if key.is_empty() {
                     None
                 } else {
+                    state.confirmed_through = Some(LlmSetupSection::ApiKey);
+                    state.connection_status = LlmConnectionStatus::Testing;
                     Some(UserCommand::OnboardingAction(OnboardingAction::SetApiKey(key)))
                 }
             }
@@ -1975,7 +1978,7 @@ mod tests {
     #[test]
     fn llm_setup_api_key_enter_confirms_and_sends_set_api_key() {
         use crate::onboarding::OnboardingStep;
-        use crate::tui::onboarding::llm_setup::LlmSetupSection;
+        use crate::tui::onboarding::llm_setup::{LlmConnectionStatus, LlmSetupSection};
 
         let mut state = ViewState::default();
         state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
@@ -1989,6 +1992,16 @@ mod tests {
             result,
             Some(UserCommand::OnboardingAction(OnboardingAction::SetApiKey(_)))
         ));
+        // Confirming the API key should immediately set Testing status
+        // so the spinner is visible while the backend runs the test.
+        assert_eq!(
+            state.llm_setup.connection_status,
+            LlmConnectionStatus::Testing,
+        );
+        assert_eq!(
+            state.llm_setup.confirmed_through,
+            Some(LlmSetupSection::ApiKey),
+        );
     }
 
     #[test]
@@ -2325,6 +2338,7 @@ mod tests {
     #[test]
     fn settings_api_key_editing_delegates_correctly() {
         use crate::protocol::SettingsSection;
+        use crate::tui::onboarding::llm_setup::{LlmConnectionStatus, LlmSetupSection};
 
         let mut state = ViewState::default();
         state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
@@ -2337,7 +2351,7 @@ mod tests {
         assert!(result.is_none());
         assert_eq!(state.llm_setup.api_key_input.value(), "sk-a");
 
-        // Enter should confirm and dispatch SetApiKey
+        // Enter should confirm and dispatch SetApiKey, with Testing status
         let result = handle_key(key(KeyCode::Enter), &mut state);
         assert!(
             matches!(
@@ -2350,5 +2364,13 @@ mod tests {
             result,
         );
         assert!(!state.llm_setup.api_key_editing);
+        assert_eq!(
+            state.llm_setup.connection_status,
+            LlmConnectionStatus::Testing,
+        );
+        assert_eq!(
+            state.llm_setup.confirmed_through,
+            Some(LlmSetupSection::ApiKey),
+        );
     }
 }

@@ -389,6 +389,10 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LlmSetupState) {
         if !matches!(state.connection_status, LlmConnectionStatus::Untested) {
             constraints.push(Constraint::Length(2)); // connection status
         }
+        // "Press Enter to continue..." prompt (only after successful test)
+        if matches!(state.connection_status, LlmConnectionStatus::Success(_)) {
+            constraints.push(Constraint::Length(2)); // continue prompt
+        }
     }
 
     constraints.push(Constraint::Min(0)); // flexible space
@@ -396,8 +400,10 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LlmSetupState) {
 
     let sections = Layout::vertical(constraints).split(inner);
 
-    // Horizontal centering
-    let content_width = 50u16.min(inner.width);
+    // Horizontal centering — use most of the available width so long
+    // API keys are not truncated, but cap at 80 for readability on very
+    // wide terminals.  Leave at least 2 columns of padding on each side.
+    let content_width = 80u16.min(inner.width.saturating_sub(4));
     let h_offset = (inner.width.saturating_sub(content_width)) / 2;
     let content_rect = |row: Rect| -> Rect {
         Rect {
@@ -608,6 +614,21 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LlmSetupState) {
                 ]),
             };
             frame.render_widget(Paragraph::new(status_line), status_area);
+            slot += 1;
+        }
+
+        // "Press Enter to continue..." prompt (only after successful test)
+        if matches!(state.connection_status, LlmConnectionStatus::Success(_)) {
+            let continue_area = content_rect(sections[slot]);
+            let continue_line = Line::from(vec![Span::styled(
+                "  Press Enter to continue...",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )]);
+            frame.render_widget(Paragraph::new(continue_line), continue_area);
+            #[allow(unused_assignments)]
+            { slot += 1; }
         }
     }
 
@@ -648,7 +669,7 @@ fn build_help_bar(state: &LlmSetupState) -> Vec<Span<'static>> {
         return vec![
             hint("Type key"),
             sep(),
-            hint("Enter:confirm"),
+            hint("Enter:confirm & test"),
             sep(),
             hint("Esc:back"),
         ];
@@ -663,8 +684,12 @@ fn build_help_bar(state: &LlmSetupState) -> Vec<Span<'static>> {
             spans.push(hint("Enter:confirm"));
         }
         LlmSetupSection::ApiKey => {
-            if state.api_key_input.is_empty() {
+            if state.connection_tested_ok() {
+                spans.push(hint("Enter:continue"));
+            } else if state.api_key_input.is_empty() {
                 spans.push(hint("Enter:input key"));
+            } else if matches!(state.connection_status, LlmConnectionStatus::Failed(_)) {
+                spans.push(hint("Enter:edit key"));
             } else {
                 spans.push(hint("Enter:test connection"));
             }
@@ -675,17 +700,6 @@ fn build_help_bar(state: &LlmSetupState) -> Vec<Span<'static>> {
     if state.active_section != LlmSetupSection::Provider {
         spans.push(sep());
         spans.push(hint("Esc:back"));
-    }
-
-    // Next step hint (only after connection test passes)
-    if state.connection_tested_ok() {
-        spans.push(sep());
-        spans.push(Span::styled(
-            "Press Enter to continue ->".to_string(),
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        ));
     }
 
     // Skip is always available
