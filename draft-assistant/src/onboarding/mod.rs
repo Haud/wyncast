@@ -143,18 +143,6 @@ impl<F: FileSystem> OnboardingManager<F> {
         self.save_strategy_full(hitting_budget_pct, weights, None, None, None)
     }
 
-    /// Save strategy configuration to `strategy.toml`, optionally including
-    /// updated LLM provider and model in the `[llm]` section.
-    pub fn save_strategy_with_llm(
-        &self,
-        hitting_budget_pct: u8,
-        weights: &crate::tui::onboarding::strategy_setup::CategoryWeights,
-        provider: Option<&LlmProvider>,
-        model: Option<&str>,
-    ) -> std::io::Result<()> {
-        self.save_strategy_full(hitting_budget_pct, weights, provider, model, None)
-    }
-
     /// Save strategy configuration to `strategy.toml` with all optional fields.
     ///
     /// This is the full-featured save method that supports LLM provider/model

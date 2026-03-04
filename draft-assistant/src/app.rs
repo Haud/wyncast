@@ -1303,6 +1303,25 @@ async fn handle_user_command(
             let _ = ui_tx
                 .send(UiUpdate::ModeChanged(AppMode::Settings(section)))
                 .await;
+            // When switching to the StrategyConfig tab, send current saved
+            // config so the TUI initializes the strategy wizard at the
+            // Review step with the correct values (including strategy_overview).
+            if section == crate::protocol::SettingsSection::StrategyConfig {
+                let pct = (state.config.strategy.hitting_budget_fraction * 100.0).round() as u8;
+                let weights = crate::tui::onboarding::strategy_setup::CategoryWeights::from_config_weights(
+                    &state.config.strategy.weights,
+                );
+                let overview = state.config.strategy.strategy_overview.clone().unwrap_or_default();
+                let _ = ui_tx
+                    .send(UiUpdate::OnboardingUpdate(
+                        crate::protocol::OnboardingUpdate::StrategyLlmComplete {
+                            hitting_budget_pct: pct,
+                            category_weights: weights,
+                            strategy_overview: overview,
+                        },
+                    ))
+                    .await;
+            }
         }
         UserCommand::Quit => {
             // Handled in the main loop
@@ -5346,6 +5365,18 @@ mod tests {
             ),
             "expected ModeChanged(Settings(StrategyConfig)), got {:?}",
             update,
+        );
+
+        // Switching to StrategyConfig should also send a StrategyLlmComplete
+        // with the current saved config so the wizard opens at the Review step.
+        let update2 = ui_rx.recv().await.expect("expected StrategyLlmComplete update");
+        assert!(
+            matches!(
+                update2,
+                UiUpdate::OnboardingUpdate(crate::protocol::OnboardingUpdate::StrategyLlmComplete { .. })
+            ),
+            "expected StrategyLlmComplete, got {:?}",
+            update2,
         );
     }
 }

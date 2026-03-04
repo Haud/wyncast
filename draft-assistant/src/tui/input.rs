@@ -360,8 +360,8 @@ fn handle_strategy_setup_key(
                     state.confirm_yes = !state.confirm_yes;
                     None
                 }
-                KeyCode::Enter | KeyCode::Char('y') if state.confirm_yes => {
-                    // Save and enter draft mode
+                // 'y' is an absolute shortcut: always confirms regardless of button selection
+                KeyCode::Char('y') => {
                     let weights = state.category_weights.clone();
                     let pct = state.hitting_budget_pct;
                     let overview = if state.strategy_overview.is_empty() {
@@ -377,7 +377,29 @@ fn handle_strategy_setup_key(
                         },
                     ))
                 }
-                KeyCode::Enter | KeyCode::Char('n') if !state.confirm_yes => {
+                // 'n' is an absolute shortcut: always goes back regardless of button selection
+                KeyCode::Char('n') => {
+                    state.step = StrategyWizardStep::Review;
+                    None
+                }
+                // Enter confirms whichever button is currently selected
+                KeyCode::Enter if state.confirm_yes => {
+                    let weights = state.category_weights.clone();
+                    let pct = state.hitting_budget_pct;
+                    let overview = if state.strategy_overview.is_empty() {
+                        None
+                    } else {
+                        Some(state.strategy_overview.clone())
+                    };
+                    Some(UserCommand::OnboardingAction(
+                        OnboardingAction::SaveStrategyConfig {
+                            hitting_budget_pct: pct,
+                            category_weights: weights,
+                            strategy_overview: overview,
+                        },
+                    ))
+                }
+                KeyCode::Enter if !state.confirm_yes => {
                     // Go back to review
                     state.step = StrategyWizardStep::Review;
                     None

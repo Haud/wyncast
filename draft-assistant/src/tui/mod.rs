@@ -665,7 +665,7 @@ fn compute_onboarding_keybinds(state: &ViewState, step: &crate::onboarding::Onbo
                 StrategyWizardStep::Generating => {
                     if ss.generation_error.is_some() {
                         vec![
-                            KeybindHint::new("r", "Retry"),
+                            KeybindHint::new("Enter", "Retry"),
                             KeybindHint::new("Esc", "Back"),
                         ]
                     } else {
