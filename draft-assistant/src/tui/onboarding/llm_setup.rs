@@ -166,17 +166,19 @@ impl LlmSetupState {
         models.get(self.selected_model_idx).copied()
     }
 
-    /// Move provider selection up.
+    /// Move provider selection up. Invalidates downstream state if provider changes.
     pub fn provider_up(&mut self) {
         if self.selected_provider_idx > 0 {
             self.selected_provider_idx -= 1;
+            self.invalidate_past_provider();
         }
     }
 
-    /// Move provider selection down.
+    /// Move provider selection down. Invalidates downstream state if provider changes.
     pub fn provider_down(&mut self) {
         if self.selected_provider_idx + 1 < Self::PROVIDERS.len() {
             self.selected_provider_idx += 1;
+            self.invalidate_past_provider();
         }
     }
 
@@ -194,6 +196,17 @@ impl LlmSetupState {
         if self.selected_model_idx + 1 < count {
             self.selected_model_idx += 1;
             self.invalidate_past_model();
+        }
+    }
+
+    /// If the user has confirmed past Provider (i.e. Model or ApiKey is confirmed),
+    /// reset confirmed_through to at most Provider, reset model selection,
+    /// and clear connection status, since the provider just changed.
+    fn invalidate_past_provider(&mut self) {
+        if self.confirmed_through > Some(LlmSetupSection::Provider) {
+            self.selected_model_idx = 0;
+            self.connection_status = LlmConnectionStatus::Untested;
+            self.confirmed_through = Some(LlmSetupSection::Provider);
         }
     }
 
@@ -295,9 +308,8 @@ impl LlmSetupState {
                 self.connection_status = LlmConnectionStatus::Untested;
             }
             LlmSetupSection::ApiKey => {
-                // Going back from ApiKey to Model: clear API key and connection
-                self.api_key_input = crate::tui::TextInput::new();
-                self.api_key_backup = String::new();
+                // Going back from ApiKey to Model: preserve the API key,
+                // only clear editing state and connection status
                 self.api_key_editing = false;
                 self.connection_status = LlmConnectionStatus::Untested;
             }

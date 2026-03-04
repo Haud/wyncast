@@ -598,8 +598,8 @@ fn compute_onboarding_keybinds(state: &ViewState, step: &crate::onboarding::Onbo
             if state.llm_setup.api_key_editing {
                 vec![
                     KeybindHint::new("type", "Input key"),
-                    KeybindHint::new("Enter", "Confirm"),
-                    KeybindHint::new("Esc", "Cancel"),
+                    KeybindHint::new("Enter", "Confirm & test"),
+                    KeybindHint::new("Esc", "Back"),
                 ]
             } else {
                 let mut hints = Vec::new();
@@ -609,8 +609,20 @@ fn compute_onboarding_keybinds(state: &ViewState, step: &crate::onboarding::Onbo
                         hints.push(KeybindHint::new("Enter", "Confirm"));
                     }
                     LlmSetupSection::ApiKey => {
-                        if state.llm_setup.api_key_input.is_empty() {
+                        if state.llm_setup.connection_tested_ok() {
+                            hints.push(KeybindHint::new("Enter", "Continue"));
+                        } else if state.llm_setup.api_key_input.is_empty() {
                             hints.push(KeybindHint::new("Enter", "Input key"));
+                        } else if matches!(
+                            state.llm_setup.connection_status,
+                            onboarding::llm_setup::LlmConnectionStatus::Failed(_)
+                        ) {
+                            hints.push(KeybindHint::new("Enter", "Edit key"));
+                        } else if matches!(
+                            state.llm_setup.connection_status,
+                            onboarding::llm_setup::LlmConnectionStatus::Testing
+                        ) {
+                            hints.push(KeybindHint::new("...", "Testing"));
                         } else {
                             hints.push(KeybindHint::new("Enter", "Test connection"));
                         }
@@ -620,7 +632,7 @@ fn compute_onboarding_keybinds(state: &ViewState, step: &crate::onboarding::Onbo
                     hints.push(KeybindHint::new("Esc", "Back"));
                 }
                 if state.llm_setup.connection_tested_ok() {
-                    hints.push(KeybindHint::new("N", "Continue ->"));
+                    hints.push(KeybindHint::new("n", "Continue ->"));
                 }
                 hints.push(KeybindHint::new("s", "Skip"));
                 hints
@@ -1544,7 +1556,7 @@ mod tests {
         assert!(ks.contains(&"Enter"), "LLM setup should show confirm hint");
         assert!(ks.contains(&"s"), "LLM setup should show skip hint");
         assert!(!ks.contains(&"Esc"), "Esc should not appear on first section (Provider)");
-        assert!(!ks.contains(&"N"), "N should not appear until connection tested");
+        assert!(!ks.contains(&"n"), "n should not appear until connection tested");
         // Draft-specific hints should NOT appear
         assert!(!ks.contains(&"1-4"), "tab hints should not appear in onboarding");
 
@@ -1555,11 +1567,11 @@ mod tests {
         let ks = keys(&hints);
         assert!(ks.contains(&"Esc"), "Esc should appear when not on first section");
 
-        // After successful connection test: N should appear
+        // After successful connection test: n should appear
         state.llm_setup.connection_status = LlmConnectionStatus::Success("ok".to_string());
         let hints = compute_keybinds(&state);
         let ks = keys(&hints);
-        assert!(ks.contains(&"N"), "N should appear after successful connection test");
+        assert!(ks.contains(&"n"), "n should appear after successful connection test");
     }
 
     #[test]

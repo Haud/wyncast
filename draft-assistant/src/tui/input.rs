@@ -296,10 +296,15 @@ fn handle_strategy_setup_key(
 
 /// Handle keyboard input on the LLM setup screen (onboarding step 1).
 ///
-/// Input handling depends on whether the API key text input is active:
-/// - When editing: captures typed characters, Enter confirms, Esc cancels
-/// - When not editing: Tab/Shift+Tab cycle sections, Up/Down select within
-///   lists, Enter activates API key editing or test button, n advances to next
+/// Uses progressive disclosure: sections are revealed one at a time as each
+/// is confirmed via Enter. Input handling depends on the active section and
+/// whether the API key text input is in edit mode:
+/// - When editing API key: captures typed characters, Enter confirms and
+///   triggers a connection test, Esc restores the backup and navigates back
+/// - Provider/Model sections: Up/Down select within lists, Enter confirms
+///   the current section and reveals the next
+/// - ApiKey section (not editing): Enter behavior is context-sensitive based
+///   on connection status (input key / test / edit key / continue)
 ///
 /// Provider and model selections dispatch `SetProvider`/`SetModel` commands to
 /// the app orchestrator immediately on each arrow key press. This keeps
