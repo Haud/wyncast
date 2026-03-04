@@ -107,7 +107,7 @@ fn handle_onboarding_key(
 
     match &view_state.app_mode {
         AppMode::Onboarding(OnboardingStep::LlmSetup) => {
-            handle_llm_setup_key(key_event, view_state)
+            handle_llm_setup_key(key_event, view_state, false)
         }
         AppMode::Onboarding(OnboardingStep::StrategySetup) |
         AppMode::Onboarding(OnboardingStep::Complete) => {
@@ -308,6 +308,7 @@ fn handle_strategy_setup_key(
 fn handle_llm_setup_key(
     key_event: KeyEvent,
     view_state: &mut ViewState,
+    settings_mode: bool,
 ) -> Option<UserCommand> {
     use super::onboarding::llm_setup::{LlmConnectionStatus, LlmSetupSection};
 
@@ -318,21 +319,13 @@ fn handle_llm_setup_key(
         return match key_event.code {
             KeyCode::Enter => {
                 state.api_key_editing = false;
-                // Sync the key to the app on confirm
+                // Sync the key to the backend on confirm. The user will press
+                // Enter again (in non-editing mode) to trigger the connection
+                // test, which sets Testing status and dispatches TestConnection.
                 let key = state.api_key_input.value().to_string();
                 if key.is_empty() {
-                    // Don't fire test if key is empty
                     None
                 } else {
-                    // Confirm the API key, mark it confirmed, and auto-trigger test
-                    state.confirmed_through = Some(LlmSetupSection::ApiKey);
-                    state.connection_status = LlmConnectionStatus::Testing;
-                    // Send both SetApiKey and TestConnection
-                    // We send SetApiKey first (handled in the return), then
-                    // the test will be triggered by the connection test flow.
-                    // Since we can only return one command, send SetApiKey and
-                    // let the test be triggered on the next Enter press.
-                    // Actually, let's just send the key and trigger test together.
                     Some(UserCommand::OnboardingAction(OnboardingAction::SetApiKey(key)))
                 }
             }
@@ -419,6 +412,14 @@ fn handle_llm_setup_key(
                         state.api_key_backup = state.api_key_input.value().to_string();
                         state.api_key_editing = true;
                         None
+                    } else if matches!(state.connection_status, LlmConnectionStatus::Failed(_)) {
+                        // Connection test failed — re-enter editing so the user
+                        // can fix their key rather than re-triggering the same
+                        // failing test.
+                        state.api_key_backup = state.api_key_input.value().to_string();
+                        state.api_key_editing = true;
+                        state.connection_status = LlmConnectionStatus::Untested;
+                        None
                     } else {
                         // Key already entered — trigger connection test
                         state.confirmed_through = Some(LlmSetupSection::ApiKey);
@@ -444,7 +445,15 @@ fn handle_llm_setup_key(
         }
         // Esc: go back to previous section, or go back in onboarding if at first section
         KeyCode::Esc => {
-            if state.active_section == LlmSetupSection::Provider {
+            if settings_mode {
+                // In settings mode, all sections are always visible.
+                // Esc just moves focus to the previous section without
+                // un-confirming anything (preserves the "all visible" invariant).
+                if state.active_section != LlmSetupSection::Provider {
+                    state.active_section = state.active_section.prev();
+                }
+                None
+            } else if state.active_section == LlmSetupSection::Provider {
                 // At the first section — propagate GoBack to onboarding flow
                 Some(UserCommand::OnboardingAction(OnboardingAction::GoBack))
             } else {
@@ -498,7 +507,7 @@ fn handle_settings_key(
         // to intercept the commands it returns and translate onboarding-specific
         // ones (GoBack, GoNext, Skip) since those make no sense in settings.
         let cmd = match active_tab {
-            SettingsSection::LlmConfig => handle_llm_setup_key(key_event, view_state),
+            SettingsSection::LlmConfig => handle_llm_setup_key(key_event, view_state, true),
             SettingsSection::StrategyConfig => handle_strategy_setup_key(key_event, view_state),
         };
         return filter_onboarding_commands(cmd);
@@ -529,7 +538,7 @@ fn handle_settings_key(
         // For all other keys, delegate to the active tab's onboarding handler
         _ => {
             let cmd = match active_tab {
-                SettingsSection::LlmConfig => handle_llm_setup_key(key_event, view_state),
+                SettingsSection::LlmConfig => handle_llm_setup_key(key_event, view_state, true),
                 SettingsSection::StrategyConfig => handle_strategy_setup_key(key_event, view_state),
             };
             filter_onboarding_commands(cmd)

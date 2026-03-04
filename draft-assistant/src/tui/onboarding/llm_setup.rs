@@ -173,6 +173,13 @@ impl LlmSetupState {
             self.selected_provider_idx = idx;
             self.selected_model_idx = 0;
             self.connection_status = LlmConnectionStatus::Untested;
+            // Invalidate downstream: provider changed, so Model and ApiKey
+            // are no longer confirmed. Keep confirmed_through at most Provider.
+            if self.confirmed_through > Some(LlmSetupSection::Provider) {
+                self.confirmed_through = Some(LlmSetupSection::Provider);
+            }
+            // Move focus to Model since provider is already confirmed
+            self.active_section = LlmSetupSection::Model;
         }
     }
 
@@ -190,18 +197,30 @@ impl LlmSetupState {
         }
     }
 
-    /// Move model selection up.
+    /// Move model selection up. Invalidates downstream confirmations if model changes.
     pub fn model_up(&mut self) {
         if self.selected_model_idx > 0 {
             self.selected_model_idx -= 1;
+            self.invalidate_past_model();
         }
     }
 
-    /// Move model selection down.
+    /// Move model selection down. Invalidates downstream confirmations if model changes.
     pub fn model_down(&mut self) {
         let count = self.available_models().len();
         if self.selected_model_idx + 1 < count {
             self.selected_model_idx += 1;
+            self.invalidate_past_model();
+        }
+    }
+
+    /// If the user has confirmed past Model (i.e. ApiKey is confirmed),
+    /// reset confirmed_through to Provider and clear connection status,
+    /// since the model just changed.
+    fn invalidate_past_model(&mut self) {
+        if self.confirmed_through > Some(LlmSetupSection::Model) {
+            self.confirmed_through = Some(LlmSetupSection::Provider);
+            self.connection_status = LlmConnectionStatus::Untested;
         }
     }
 
@@ -331,7 +350,6 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LlmSetupState) {
     let model_visible = state.is_section_visible(LlmSetupSection::Model);
     let model_confirmed = state.is_section_confirmed(LlmSetupSection::Model);
     let apikey_visible = state.is_section_visible(LlmSetupSection::ApiKey);
-    let _apikey_confirmed = state.is_section_confirmed(LlmSetupSection::ApiKey);
 
     // Build dynamic layout constraints based on visibility
     let mut constraints: Vec<Constraint> = Vec::new();
