@@ -8,34 +8,42 @@ fn project_compiles() {
     assert!(true);
 }
 
-/// Verify that defaults/league.toml is valid TOML.
+/// Verify that the in-code default league config serializes to valid TOML
+/// and contains the expected settings.
 #[test]
-fn league_toml_is_valid() {
-    let content = std::fs::read_to_string("defaults/league.toml").expect("defaults/league.toml should exist");
-    let parsed: Result<toml::Value, _> = toml::from_str(&content);
-    assert!(parsed.is_ok(), "defaults/league.toml is not valid TOML: {:?}", parsed.err());
-}
-
-/// Verify that defaults/strategy.toml is valid TOML.
-#[test]
-fn strategy_toml_is_valid() {
-    let content =
-        std::fs::read_to_string("defaults/strategy.toml").expect("defaults/strategy.toml should exist");
-    let parsed: Result<toml::Value, _> = toml::from_str(&content);
-    assert!(parsed.is_ok(), "defaults/strategy.toml is not valid TOML: {:?}", parsed.err());
-}
-
-/// Verify that defaults/credentials.toml.example is valid TOML.
-#[test]
-fn credentials_example_is_valid_toml() {
-    let content = std::fs::read_to_string("defaults/credentials.toml.example")
-        .expect("defaults/credentials.toml.example should exist");
-    let parsed: Result<toml::Value, _> = toml::from_str(&content);
-    assert!(
-        parsed.is_ok(),
-        "defaults/credentials.toml.example is not valid TOML: {:?}",
-        parsed.err()
+fn default_league_config_is_valid() {
+    let config = draft_assistant::config::LeagueConfig::default();
+    assert_eq!(config.num_teams, 10);
+    assert_eq!(config.salary_cap, 260);
+    assert_eq!(config.scoring_type, "h2h_most_categories");
+    assert_eq!(
+        config.batting_categories.categories,
+        vec!["R", "HR", "RBI", "BB", "SB", "AVG"]
     );
+    assert_eq!(
+        config.pitching_categories.categories,
+        vec!["K", "W", "SV", "HD", "ERA", "WHIP"]
+    );
+}
+
+/// Verify that the in-code default strategy config contains the expected settings.
+#[test]
+fn default_strategy_config_is_valid() {
+    let config = draft_assistant::config::StrategyConfig::default();
+    assert!((config.hitting_budget_fraction - 0.65).abs() < f64::EPSILON);
+    assert!((config.weights.SV - 0.7).abs() < f64::EPSILON);
+    assert_eq!(config.llm.model, "claude-sonnet-4-6");
+    assert_eq!(config.llm.analysis_max_tokens, 2048);
+    assert_eq!(config.llm.planning_max_tokens, 2048);
+}
+
+/// Verify that the default credentials config has no keys set.
+#[test]
+fn default_credentials_config_is_empty() {
+    let config = draft_assistant::config::CredentialsConfig::default();
+    assert!(config.anthropic_api_key.is_none());
+    assert!(config.google_api_key.is_none());
+    assert!(config.openai_api_key.is_none());
 }
 
 /// Verify that extension/manifest.json is valid JSON.
@@ -61,7 +69,6 @@ fn directory_structure_exists() {
         "src/llm",
         "src/tui",
         "src/tui/widgets",
-        "defaults",
         "data",
         "data/projections",
         "extension",
@@ -119,76 +126,39 @@ fn source_files_exist() {
     }
 }
 
-/// Verify league.toml contains expected league settings.
+/// Verify that the in-code default league config has correct settings
+/// (replaces the old test that read defaults/league.toml directly).
 #[test]
-fn league_toml_has_correct_settings() {
-    let content = std::fs::read_to_string("defaults/league.toml").unwrap();
-    let config: toml::Value = toml::from_str(&content).unwrap();
+fn league_config_has_correct_settings() {
+    let config = draft_assistant::config::LeagueConfig::default();
 
-    let league = config.get("league").expect("league section should exist");
-    assert_eq!(league.get("num_teams").unwrap().as_integer().unwrap(), 10);
-    assert_eq!(league.get("salary_cap").unwrap().as_integer().unwrap(), 260);
+    assert_eq!(config.num_teams, 10);
+    assert_eq!(config.salary_cap, 260);
+    assert_eq!(config.scoring_type, "h2h_most_categories");
+
     assert_eq!(
-        league.get("scoring_type").unwrap().as_str().unwrap(),
-        "h2h_most_categories"
+        config.batting_categories.categories,
+        vec!["R", "HR", "RBI", "BB", "SB", "AVG"]
     );
-
-    let batting = league
-        .get("batting_categories")
-        .expect("batting_categories should exist");
-    let batting_cats: Vec<&str> = batting
-        .get("categories")
-        .unwrap()
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_str().unwrap())
-        .collect();
-    assert_eq!(batting_cats, vec!["R", "HR", "RBI", "BB", "SB", "AVG"]);
-
-    let pitching = league
-        .get("pitching_categories")
-        .expect("pitching_categories should exist");
-    let pitching_cats: Vec<&str> = pitching
-        .get("categories")
-        .unwrap()
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_str().unwrap())
-        .collect();
-    assert_eq!(pitching_cats, vec!["K", "W", "SV", "HD", "ERA", "WHIP"]);
+    assert_eq!(
+        config.pitching_categories.categories,
+        vec!["K", "W", "SV", "HD", "ERA", "WHIP"]
+    );
 }
 
-/// Verify strategy.toml contains expected strategy settings.
+/// Verify that the in-code default strategy config has correct settings
+/// (replaces the old test that read defaults/strategy.toml directly).
 #[test]
-fn strategy_toml_has_correct_settings() {
-    let content = std::fs::read_to_string("defaults/strategy.toml").unwrap();
-    let config: toml::Value = toml::from_str(&content).unwrap();
+fn strategy_config_has_correct_settings() {
+    let config = draft_assistant::config::StrategyConfig::default();
 
-    let budget = config.get("budget").expect("budget section should exist");
-    let hitting_frac = budget
-        .get("hitting_budget_fraction")
-        .unwrap()
-        .as_float()
-        .unwrap();
-    assert!((hitting_frac - 0.65).abs() < f64::EPSILON);
-
-    let weights = config
-        .get("category_weights")
-        .expect("category_weights should exist");
-    let sv_weight = weights.get("SV").unwrap().as_float().unwrap();
-    assert!((sv_weight - 0.7).abs() < f64::EPSILON);
-
-    let llm = config.get("llm").expect("llm section should exist");
+    assert!((config.hitting_budget_fraction - 0.65).abs() < f64::EPSILON);
+    assert!((config.weights.SV - 0.7).abs() < f64::EPSILON);
+    assert_eq!(config.llm.model, "claude-sonnet-4-6");
     assert_eq!(
-        llm.get("model").unwrap().as_str().unwrap(),
-        "claude-sonnet-4-6"
+        config.llm.provider,
+        draft_assistant::llm::provider::LlmProvider::Anthropic
     );
-    assert_eq!(
-        llm.get("provider").unwrap().as_str().unwrap(),
-        "anthropic"
-    );
-    assert_eq!(llm.get("analysis_max_tokens").unwrap().as_integer().unwrap(), 2048);
-    assert_eq!(llm.get("planning_max_tokens").unwrap().as_integer().unwrap(), 2048);
+    assert_eq!(config.llm.analysis_max_tokens, 2048);
+    assert_eq!(config.llm.planning_max_tokens, 2048);
 }
