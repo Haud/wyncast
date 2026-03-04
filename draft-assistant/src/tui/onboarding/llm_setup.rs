@@ -166,34 +166,17 @@ impl LlmSetupState {
         models.get(self.selected_model_idx).copied()
     }
 
-    /// Change the selected provider by index. Resets model selection to 0,
-    /// clears connection test status, and invalidates downstream confirmations.
-    pub fn set_provider_idx(&mut self, idx: usize) {
-        if idx < Self::PROVIDERS.len() && idx != self.selected_provider_idx {
-            self.selected_provider_idx = idx;
-            self.selected_model_idx = 0;
-            self.connection_status = LlmConnectionStatus::Untested;
-            // Invalidate downstream: provider changed, so Model and ApiKey
-            // are no longer confirmed. Keep confirmed_through at most Provider.
-            if self.confirmed_through > Some(LlmSetupSection::Provider) {
-                self.confirmed_through = Some(LlmSetupSection::Provider);
-            }
-            // Move focus to Model since provider is already confirmed
-            self.active_section = LlmSetupSection::Model;
-        }
-    }
-
     /// Move provider selection up.
     pub fn provider_up(&mut self) {
         if self.selected_provider_idx > 0 {
-            self.set_provider_idx(self.selected_provider_idx - 1);
+            self.selected_provider_idx -= 1;
         }
     }
 
     /// Move provider selection down.
     pub fn provider_down(&mut self) {
         if self.selected_provider_idx + 1 < Self::PROVIDERS.len() {
-            self.set_provider_idx(self.selected_provider_idx + 1);
+            self.selected_provider_idx += 1;
         }
     }
 
@@ -270,13 +253,19 @@ impl LlmSetupState {
         let sections = LlmSetupSection::CYCLE;
         if current_idx + 1 < sections.len() {
             self.active_section = sections[current_idx + 1];
+            // Auto-focus API key text input when reaching ApiKey step
+            if self.active_section == LlmSetupSection::ApiKey {
+                self.api_key_backup = self.api_key_input.value().to_string();
+                self.api_key_editing = true;
+            }
             true
         } else {
             false
         }
     }
 
-    /// Go back to the previous section, un-confirming the current one.
+    /// Go back to the previous section, un-confirming the current one
+    /// and clearing all downstream state.
     ///
     /// Returns `true` if the step changed.
     pub fn go_back_section(&mut self) -> bool {
@@ -298,8 +287,25 @@ impl LlmSetupState {
             self.confirmed_through = None;
         }
 
-        // Reset connection status when going back since selections may change
-        self.connection_status = LlmConnectionStatus::Untested;
+        // Clear downstream state depending on where we're going back from
+        match current {
+            LlmSetupSection::Model => {
+                // Going back from Model to Provider: reset model selection
+                self.selected_model_idx = 0;
+                self.connection_status = LlmConnectionStatus::Untested;
+            }
+            LlmSetupSection::ApiKey => {
+                // Going back from ApiKey to Model: clear API key and connection
+                self.api_key_input = crate::tui::TextInput::new();
+                self.api_key_backup = String::new();
+                self.api_key_editing = false;
+                self.connection_status = LlmConnectionStatus::Untested;
+            }
+            LlmSetupSection::Provider => {
+                // Can't go back from Provider (handled above), but for completeness
+            }
+        }
+
         true
     }
 
@@ -644,7 +650,7 @@ fn build_help_bar(state: &LlmSetupState) -> Vec<Span<'static>> {
             sep(),
             hint("Enter:confirm"),
             sep(),
-            hint("Esc:cancel"),
+            hint("Esc:back"),
         ];
     }
 
@@ -675,7 +681,7 @@ fn build_help_bar(state: &LlmSetupState) -> Vec<Span<'static>> {
     if state.connection_tested_ok() {
         spans.push(sep());
         spans.push(Span::styled(
-            "Press N to continue ->".to_string(),
+            "Press Enter to continue ->".to_string(),
             Style::default()
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD),
@@ -712,7 +718,6 @@ mod tests {
         let mut state = LlmSetupState::default();
         state.provider_down();
         assert_eq!(*state.selected_provider(), LlmProvider::Google);
-        assert_eq!(state.selected_model_idx, 0); // reset on change
 
         state.provider_down();
         assert_eq!(*state.selected_provider(), LlmProvider::OpenAI);
@@ -733,13 +738,17 @@ mod tests {
     }
 
     #[test]
-    fn model_selection_resets_on_provider_change() {
+    fn model_selection_resets_on_go_back_from_model() {
         let mut state = LlmSetupState::default();
-        state.model_down(); // select second model
+        // Confirm provider, advance to Model
+        state.confirm_current_section();
+        // Select second model
+        state.model_down();
         assert_eq!(state.selected_model_idx, 1);
 
-        state.provider_down(); // change provider
-        assert_eq!(state.selected_model_idx, 0); // reset
+        // Go back from Model to Provider resets model selection
+        state.go_back_section();
+        assert_eq!(state.selected_model_idx, 0);
     }
 
     #[test]
