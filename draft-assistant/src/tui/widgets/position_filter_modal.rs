@@ -69,7 +69,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
         ),
         Span::raw(" "),
         Span::styled(
-            modal.search_text.as_str(),
+            modal.search_text.value(),
             Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
@@ -188,7 +188,7 @@ mod tests {
     fn render_does_not_panic_with_search_text() {
         let mut state = crate::tui::ViewState::default();
         state.position_filter_modal.open = true;
-        state.position_filter_modal.search_text = "1".to_string();
+        state.position_filter_modal.search_text.set_value("1");
         let backend = ratatui::backend::TestBackend::new(80, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
@@ -200,7 +200,7 @@ mod tests {
     fn render_does_not_panic_with_no_matches() {
         let mut state = crate::tui::ViewState::default();
         state.position_filter_modal.open = true;
-        state.position_filter_modal.search_text = "ZZZZ".to_string();
+        state.position_filter_modal.search_text.set_value("ZZZZ");
         let backend = ratatui::backend::TestBackend::new(80, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal

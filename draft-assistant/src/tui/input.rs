@@ -26,6 +26,16 @@ pub fn handle_key(
         return None;
     }
 
+    // Suppress a stray `[` that some terminals emit as the CSI introducer
+    // byte after an escape sequence is partially parsed. The flag is set
+    // when entering a text-editing mode and cleared on the next key event.
+    if std::mem::take(&mut view_state.suppress_next_bracket)
+        && key_event.code == KeyCode::Char('[')
+        && key_event.modifiers == KeyModifiers::NONE
+    {
+        return None;
+    }
+
     // Ctrl+C always quits immediately regardless of mode (escape hatch)
     if key_event.modifiers.contains(KeyModifiers::CONTROL)
         && key_event.code == KeyCode::Char('c')
@@ -33,11 +43,56 @@ pub fn handle_key(
         return Some(UserCommand::Quit);
     }
 
+    // Snapshot which text-editing sub-modes are active *before* handling the
+    // key. After the handler returns we compare: if a text-editing mode was
+    // just activated (wasn't active before, is active now) we set the bracket
+    // suppression flag so that a stray `[` CSI byte on the *next* key event
+    // is silently discarded instead of being inserted into the text buffer.
+    let was_editing = is_text_editing_active(view_state);
+
     // Dispatch to mode-specific input handlers
-    match &view_state.app_mode {
+    let result = match &view_state.app_mode {
         AppMode::Onboarding(_) => handle_onboarding_key(key_event, view_state),
         AppMode::Settings(_) => handle_settings_key(key_event, view_state),
         AppMode::Draft => handle_draft_key(key_event, view_state),
+    };
+
+    if !was_editing && is_text_editing_active(view_state) {
+        view_state.suppress_next_bracket = true;
+    }
+
+    result
+}
+
+/// Return `true` if any text-editing sub-mode is currently active.
+///
+/// Used to detect transitions *into* editing mode so we can suppress a
+/// potential stray `[` character from a partially-parsed CSI escape sequence.
+fn is_text_editing_active(view_state: &ViewState) -> bool {
+    view_state.filter_mode
+        || view_state.llm_setup.api_key_editing
+        || view_state.strategy_setup.ai_input_editing
+        || view_state.strategy_setup.editing_field.is_some()
+        || view_state.position_filter_modal.open
+}
+
+/// Dispatches common text editing keys to a [`TextInput`]. Returns `true` if
+/// the key was handled.
+///
+/// Handles: Backspace, Delete, Left, Right, Home, End, Insert, Char.
+/// Does **not** handle Enter or Esc — callers should match those before
+/// falling through to this helper.
+fn dispatch_text_input_key(key: &KeyEvent, input: &mut super::TextInput) -> bool {
+    match key.code {
+        KeyCode::Backspace => { input.backspace(); true }
+        KeyCode::Delete => { input.delete(); true }
+        KeyCode::Left => { input.move_left(); true }
+        KeyCode::Right => { input.move_right(); true }
+        KeyCode::Home => { input.move_home(); true }
+        KeyCode::End => { input.move_end(); true }
+        KeyCode::Insert => { input.toggle_overwrite(); true }
+        KeyCode::Char(c) => { input.insert_char(c); true }
+        _ => false,
     }
 }
 
@@ -82,22 +137,11 @@ fn handle_strategy_setup_key(
     // --- AI text input editing mode ---
     if state.ai_input_editing {
         return match key_event.code {
-            KeyCode::Enter => {
+            KeyCode::Enter | KeyCode::Esc => {
                 state.ai_input_editing = false;
                 None
             }
-            KeyCode::Esc => {
-                state.ai_input_editing = false;
-                None
-            }
-            KeyCode::Backspace => {
-                state.ai_input.pop();
-                None
-            }
-            KeyCode::Char(c) => {
-                state.ai_input.push(c);
-                None
-            }
+            _ if dispatch_text_input_key(&key_event, &mut state.ai_input) => None,
             _ => None,
         };
     }
@@ -113,14 +157,15 @@ fn handle_strategy_setup_key(
                 state.cancel_edit();
                 None
             }
-            KeyCode::Backspace => {
-                state.field_input.pop();
-                None
-            }
+            // Only allow digits and '.' for numeric input; other chars
+            // are silently dropped. Navigation keys (Backspace, Delete,
+            // arrows, etc.) are handled by the shared helper below.
             KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => {
-                state.field_input.push(c);
+                state.field_input.insert_char(c);
                 None
             }
+            KeyCode::Char(_) => None,
+            _ if dispatch_text_input_key(&key_event, &mut state.field_input) => None,
             _ => None,
         };
     }
@@ -196,11 +241,11 @@ fn handle_strategy_setup_key(
                     None
                 }
                 StrategySection::GenerateButton => {
-                    if !state.generating && !state.ai_input.trim().is_empty() {
+                    if !state.generating && !state.ai_input.value().trim().is_empty() {
                         state.generating = true;
                         state.generation_output.clear();
                         state.generation_error = None;
-                        let text = state.ai_input.clone();
+                        let text = state.ai_input.value().to_string();
                         Some(UserCommand::OnboardingAction(
                             OnboardingAction::ConfigureStrategyWithLlm(text),
                         ))
@@ -274,22 +319,15 @@ fn handle_llm_setup_key(
             KeyCode::Enter => {
                 state.api_key_editing = false;
                 // Sync the key to the app on confirm
-                let key = state.api_key_input.clone();
+                let key = state.api_key_input.value().to_string();
                 Some(UserCommand::OnboardingAction(OnboardingAction::SetApiKey(key)))
             }
             KeyCode::Esc => {
-                state.api_key_input = state.api_key_backup.clone();
+                state.api_key_input.set_value(&state.api_key_backup.clone());
                 state.api_key_editing = false;
                 None
             }
-            KeyCode::Backspace => {
-                state.api_key_input.pop();
-                None
-            }
-            KeyCode::Char(c) => {
-                state.api_key_input.push(c);
-                None
-            }
+            _ if dispatch_text_input_key(&key_event, &mut state.api_key_input) => None,
             _ => None,
         };
     }
@@ -353,7 +391,7 @@ fn handle_llm_setup_key(
         KeyCode::Enter => {
             match state.active_section {
                 LlmSetupSection::ApiKey => {
-                    state.api_key_backup = state.api_key_input.clone();
+                    state.api_key_backup = state.api_key_input.value().to_string();
                     state.api_key_editing = true;
                     None
                 }
@@ -606,9 +644,13 @@ fn handle_confirm_quit(
 /// Handle key events while in filter mode.
 ///
 /// In filter mode:
-/// - Printable characters are appended to filter_text
-/// - Backspace removes the last character
-/// - Enter or Esc exits filter mode
+/// - Printable characters are inserted at the cursor position
+/// - Backspace removes the character before the cursor
+/// - Delete removes the character at the cursor
+/// - Left/Right move the cursor; Home/End jump to start/end
+/// - Insert toggles overwrite mode
+/// - Enter exits filter mode (keeping the filter text)
+/// - Esc exits filter mode and clears the filter text
 fn handle_filter_mode(
     key_event: KeyEvent,
     view_state: &mut ViewState,
@@ -616,7 +658,6 @@ fn handle_filter_mode(
     match key_event.code {
         KeyCode::Esc => {
             view_state.filter_mode = false;
-            // Clear filter text on Esc
             view_state.filter_text.clear();
             None
         }
@@ -625,15 +666,10 @@ fn handle_filter_mode(
             // Keep the filter text on Enter
             None
         }
-        KeyCode::Backspace => {
-            view_state.filter_text.pop();
+        _ => {
+            dispatch_text_input_key(&key_event, &mut view_state.filter_text);
             None
         }
-        KeyCode::Char(c) => {
-            view_state.filter_text.push(c);
-            None
-        }
-        _ => None,
     }
 }
 
@@ -658,8 +694,11 @@ fn open_position_filter_modal(view_state: &mut ViewState) {
 /// - Up/Down arrow: move selection
 /// - Enter: apply the selected option and close
 /// - Escape: close without applying
-/// - Backspace: delete last character in search text
-/// - Printable char: append to search text and reset selection to 0
+/// - Backspace: delete the character before the cursor in search text
+/// - Delete: delete the character at the cursor in search text
+/// - Left/Right: move cursor within search text
+/// - Home/End: jump to start/end of search text
+/// - Printable char: insert at cursor and reset selection to 0
 fn handle_position_filter_modal(
     key_event: KeyEvent,
     view_state: &mut ViewState,
@@ -697,19 +736,22 @@ fn handle_position_filter_modal(
             }
             None
         }
-        KeyCode::Backspace => {
-            view_state.position_filter_modal.search_text.pop();
-            // Reset selection to 0 after search text change
-            view_state.position_filter_modal.selected_index = 0;
+        _ => {
+            let modifies_text = matches!(
+                key_event.code,
+                KeyCode::Backspace | KeyCode::Delete | KeyCode::Char(_)
+            );
+            dispatch_text_input_key(
+                &key_event,
+                &mut view_state.position_filter_modal.search_text,
+            );
+            if modifies_text {
+                // Reset selection so the user starts at the top of the
+                // (potentially changed) filtered list.
+                view_state.position_filter_modal.selected_index = 0;
+            }
             None
         }
-        KeyCode::Char(c) => {
-            view_state.position_filter_modal.search_text.push(c);
-            // Reset selection to 0 so the user starts at the top of the new list
-            view_state.position_filter_modal.selected_index = 0;
-            None
-        }
-        _ => None,
     }
 }
 
@@ -1159,7 +1201,7 @@ mod tests {
         handle_key(key(KeyCode::Char('o')), &mut state);
         handle_key(key(KeyCode::Char('u')), &mut state);
         handle_key(key(KeyCode::Char('t')), &mut state);
-        assert_eq!(state.filter_text, "trout");
+        assert_eq!(state.filter_text.value(), "trout");
         assert!(state.filter_mode);
     }
 
@@ -1167,9 +1209,9 @@ mod tests {
     fn filter_mode_backspace_removes_char() {
         let mut state = ViewState::default();
         state.filter_mode = true;
-        state.filter_text = "test".to_string();
+        state.filter_text.set_value("test");
         handle_key(key(KeyCode::Backspace), &mut state);
-        assert_eq!(state.filter_text, "tes");
+        assert_eq!(state.filter_text.value(), "tes");
     }
 
     #[test]
@@ -1184,18 +1226,18 @@ mod tests {
     fn filter_mode_enter_exits_keeps_text() {
         let mut state = ViewState::default();
         state.filter_mode = true;
-        state.filter_text = "trout".to_string();
+        state.filter_text.set_value("trout");
         let result = handle_key(key(KeyCode::Enter), &mut state);
         assert!(result.is_none());
         assert!(!state.filter_mode);
-        assert_eq!(state.filter_text, "trout");
+        assert_eq!(state.filter_text.value(), "trout");
     }
 
     #[test]
     fn filter_mode_esc_exits_clears_text() {
         let mut state = ViewState::default();
         state.filter_mode = true;
-        state.filter_text = "trout".to_string();
+        state.filter_text.set_value("trout");
         let result = handle_key(key(KeyCode::Esc), &mut state);
         assert!(result.is_none());
         assert!(!state.filter_mode);
@@ -1209,7 +1251,7 @@ mod tests {
         state.active_tab = TabId::Analysis;
         handle_key(key(KeyCode::Char('3')), &mut state);
         // Should add '3' to filter text, not switch tabs
-        assert_eq!(state.filter_text, "3");
+        assert_eq!(state.filter_text.value(), "3");
         assert_eq!(state.active_tab, TabId::Analysis);
     }
 
@@ -1253,7 +1295,7 @@ mod tests {
         state.position_filter = Some(Position::Catcher);
         state.position_filter_modal.open = true;
         state.position_filter_modal.selected_index = 2; // e.g. "1B"
-        state.position_filter_modal.search_text = "1".to_string();
+        state.position_filter_modal.search_text.set_value("1");
 
         handle_key(key(KeyCode::Esc), &mut state);
 
@@ -1354,7 +1396,7 @@ mod tests {
         state.position_filter_modal.selected_index = 3;
 
         handle_key(key(KeyCode::Char('s')), &mut state);
-        assert_eq!(state.position_filter_modal.search_text, "s");
+        assert_eq!(state.position_filter_modal.search_text.value(), "s");
         assert_eq!(state.position_filter_modal.selected_index, 0, "Typing resets selection");
     }
 
@@ -1362,11 +1404,11 @@ mod tests {
     fn modal_backspace_removes_char_and_resets_selection() {
         let mut state = ViewState::default();
         state.position_filter_modal.open = true;
-        state.position_filter_modal.search_text = "SP".to_string();
+        state.position_filter_modal.search_text.set_value("SP");
         state.position_filter_modal.selected_index = 2;
 
         handle_key(key(KeyCode::Backspace), &mut state);
-        assert_eq!(state.position_filter_modal.search_text, "S");
+        assert_eq!(state.position_filter_modal.search_text.value(), "S");
         assert_eq!(state.position_filter_modal.selected_index, 0);
     }
 
@@ -1376,7 +1418,7 @@ mod tests {
         state.position_filter_modal.open = true;
         // Type "S" to filter: options with "S" -> SS, SP (and "ALL"? no, ALL doesn't contain S)
         // Actually: SS contains S, SP contains S
-        state.position_filter_modal.search_text = "SP".to_string();
+        state.position_filter_modal.search_text.set_value("SP");
         state.position_filter_modal.selected_index = 0; // first match
 
         handle_key(key(KeyCode::Enter), &mut state);
@@ -1418,7 +1460,7 @@ mod tests {
         // '2' should NOT switch tabs while modal is open
         handle_key(key(KeyCode::Char('2')), &mut state);
         // It should have been treated as search text, not tab switch
-        assert_eq!(state.position_filter_modal.search_text, "2");
+        assert_eq!(state.position_filter_modal.search_text.value(), "2");
         assert_eq!(state.active_tab, TabId::Available);
     }
 
@@ -1547,10 +1589,10 @@ mod tests {
     fn q_in_filter_mode_appends_to_filter_text() {
         let mut state = ViewState::default();
         state.filter_mode = true;
-        state.filter_text = "test".to_string();
+        state.filter_text.set_value("test");
         let result = handle_key(key(KeyCode::Char('q')), &mut state);
         assert!(result.is_none(), "q in filter mode should not produce a command");
-        assert_eq!(state.filter_text, "testq", "q should be appended to filter text");
+        assert_eq!(state.filter_text.value(), "testq", "q should be appended to filter text");
         assert!(!state.confirm_quit, "q in filter mode should not set confirm_quit");
     }
 
@@ -1573,7 +1615,7 @@ mod tests {
     #[test]
     fn esc_clears_filter_text_position_and_focus() {
         let mut state = ViewState::default();
-        state.filter_text = "test".to_string();
+        state.filter_text.set_value("test");
         state.position_filter = Some(Position::Catcher);
         state.focused_panel = Some(FocusPanel::Roster);
         let result = handle_key(key(KeyCode::Esc), &mut state);
@@ -1621,6 +1663,83 @@ mod tests {
         assert!(
             state.scroll_offset.get("analysis").is_none(),
             "Repeat event should not modify scroll state"
+        );
+    }
+
+    // -- Bracket suppression mechanism --
+
+    #[test]
+    fn entering_filter_mode_sets_suppress_next_bracket() {
+        let mut state = ViewState::default();
+        state.active_tab = TabId::Available;
+        assert!(!state.suppress_next_bracket);
+
+        // '/' enters filter mode, which transitions into text editing,
+        // so the post-handler check should set suppress_next_bracket.
+        handle_key(key(KeyCode::Char('/')), &mut state);
+        assert!(state.filter_mode);
+        assert!(
+            state.suppress_next_bracket,
+            "Entering filter mode should set suppress_next_bracket"
+        );
+    }
+
+    #[test]
+    fn bracket_immediately_after_entering_text_mode_is_suppressed() {
+        let mut state = ViewState::default();
+        state.active_tab = TabId::Available;
+
+        // Enter filter mode (sets the suppression flag)
+        handle_key(key(KeyCode::Char('/')), &mut state);
+        assert!(state.suppress_next_bracket);
+
+        // The very next key is '[' — it should be silently suppressed
+        let result = handle_key(key(KeyCode::Char('[')), &mut state);
+        assert!(result.is_none(), "Stray '[' should be suppressed");
+        assert!(
+            state.filter_text.is_empty(),
+            "'[' should not be inserted into filter text"
+        );
+        assert!(
+            !state.suppress_next_bracket,
+            "Flag should be consumed after suppression"
+        );
+    }
+
+    #[test]
+    fn suppress_flag_consumed_even_when_next_key_is_not_bracket() {
+        let mut state = ViewState::default();
+        state.active_tab = TabId::Available;
+
+        // Enter filter mode (sets the suppression flag)
+        handle_key(key(KeyCode::Char('/')), &mut state);
+        assert!(state.suppress_next_bracket);
+
+        // Next key is 'a', not '[' — flag should still be consumed
+        handle_key(key(KeyCode::Char('a')), &mut state);
+        assert!(
+            !state.suppress_next_bracket,
+            "Flag should be consumed even when the key is not '['"
+        );
+        assert_eq!(
+            state.filter_text.value(),
+            "a",
+            "'a' should be inserted normally"
+        );
+    }
+
+    #[test]
+    fn bracket_not_suppressed_when_flag_is_not_set() {
+        let mut state = ViewState::default();
+        state.filter_mode = true;
+        assert!(!state.suppress_next_bracket);
+
+        // '[' without the suppression flag should be inserted normally
+        handle_key(key(KeyCode::Char('[')), &mut state);
+        assert_eq!(
+            state.filter_text.value(),
+            "[",
+            "Normal '[' should be inserted when flag is not set"
         );
     }
 
@@ -1745,10 +1864,10 @@ mod tests {
         handle_key(key(KeyCode::Char('a')), &mut state);
         handle_key(key(KeyCode::Char('b')), &mut state);
         handle_key(key(KeyCode::Char('c')), &mut state);
-        assert_eq!(state.llm_setup.api_key_input, "abc");
+        assert_eq!(state.llm_setup.api_key_input.value(), "abc");
 
         handle_key(key(KeyCode::Backspace), &mut state);
-        assert_eq!(state.llm_setup.api_key_input, "ab");
+        assert_eq!(state.llm_setup.api_key_input.value(), "ab");
     }
 
     #[test]
@@ -1760,7 +1879,7 @@ mod tests {
         state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
         state.llm_setup.active_section = LlmSetupSection::ApiKey;
         state.llm_setup.api_key_editing = true;
-        state.llm_setup.api_key_input = "sk-test-key".to_string();
+        state.llm_setup.api_key_input.set_value("sk-test-key");
 
         let result = handle_key(key(KeyCode::Enter), &mut state);
         assert!(!state.llm_setup.api_key_editing);
@@ -1773,7 +1892,6 @@ mod tests {
     #[test]
     fn llm_setup_api_key_esc_cancels_editing() {
         use crate::onboarding::OnboardingStep;
-        use crate::tui::onboarding::llm_setup::LlmSetupSection;
 
         let mut state = ViewState::default();
         state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
@@ -2082,12 +2200,12 @@ mod tests {
         state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
         state.settings_tab = SettingsSection::LlmConfig;
         state.llm_setup.api_key_editing = true;
-        state.llm_setup.api_key_input = "sk-".to_string();
+        state.llm_setup.api_key_input.set_value("sk-");
 
         // Typing a character should append to the API key
         let result = handle_key(key(KeyCode::Char('a')), &mut state);
         assert!(result.is_none());
-        assert_eq!(state.llm_setup.api_key_input, "sk-a");
+        assert_eq!(state.llm_setup.api_key_input.value(), "sk-a");
 
         // Enter should confirm and dispatch SetApiKey
         let result = handle_key(key(KeyCode::Enter), &mut state);

@@ -24,7 +24,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState, focused: bool) {
     let filtered = filter_players(
         &state.available_players,
         state.position_filter.as_ref(),
-        &state.filter_text,
+        state.filter_text.value(),
     );
 
     let nominated_name = state
@@ -191,7 +191,7 @@ fn build_title(state: &ViewState, filtered_count: usize) -> Line<'static> {
         title.push_str(&format!(" [{}]", pos.display_str()));
     }
     if !state.filter_text.is_empty() {
-        title.push_str(&format!(" \"{}\"", state.filter_text));
+        title.push_str(&format!(" \"{}\"", state.filter_text.value()));
     }
     title.push_str(&format!(" ({})", filtered_count));
     Line::from(title)

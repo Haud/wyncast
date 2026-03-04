@@ -11,6 +11,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
 use crate::llm::provider::{models_for_provider, LlmProvider, ModelOption, SUPPORTED_MODELS};
+use crate::tui::TextInput;
 
 // ---------------------------------------------------------------------------
 // LlmSetupSection
@@ -92,8 +93,8 @@ pub struct LlmSetupState {
     pub selected_provider_idx: usize,
     /// Index into the model list for the currently selected provider.
     pub selected_model_idx: usize,
-    /// The API key text as entered by the user.
-    pub api_key_input: String,
+    /// The API key text as entered by the user (with cursor tracking).
+    pub api_key_input: TextInput,
     /// Backup of the API key before entering edit mode, restored on Esc cancel.
     pub api_key_backup: String,
     /// Whether the API key text input is in edit mode.
@@ -122,7 +123,7 @@ impl Default for LlmSetupState {
             active_section: LlmSetupSection::Provider,
             selected_provider_idx: 0,
             selected_model_idx: 0,
-            api_key_input: String::new(),
+            api_key_input: TextInput::new(),
             api_key_backup: String::new(),
             api_key_editing: false,
             connection_status: LlmConnectionStatus::Untested,
@@ -195,15 +196,16 @@ impl LlmSetupState {
 
     /// Return the API key display text: masked when not editing, raw when editing.
     pub fn api_key_display(&self) -> String {
-        if self.api_key_input.is_empty() {
+        let raw = self.api_key_input.value();
+        if raw.is_empty() {
             return String::new();
         }
         if self.api_key_editing {
-            self.api_key_input.clone()
+            raw.to_string()
         } else {
             // Show first 7 chars, then mask the rest
-            let visible = self.api_key_input.chars().take(7).collect::<String>();
-            let mask_len = self.api_key_input.chars().count().saturating_sub(7);
+            let visible = raw.chars().take(7).collect::<String>();
+            let mask_len = raw.chars().count().saturating_sub(7);
             format!("{}{}", visible, "*".repeat(mask_len))
         }
     }
@@ -364,36 +366,42 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LlmSetupState) {
     let key_area = content_rect(sections[6]);
     let display_text = state.api_key_display();
     let is_empty = display_text.is_empty();
-    let key_text = if is_empty {
-        if state.api_key_editing {
-            String::new()
-        } else {
-            "(press Enter to input)".to_string()
-        }
-    } else {
-        display_text
-    };
 
-    let key_style = if state.api_key_editing {
-        Style::default()
+    let key_para = if state.api_key_editing {
+        // When editing, split the displayed text at the cursor and render
+        // an inline `|` cursor so the user can see exactly where they are.
+        let cursor_char = state.api_key_input.cursor_pos();
+        let before: String = display_text.chars().take(cursor_char).collect();
+        let after: String = display_text.chars().skip(cursor_char).collect();
+        let text_style = Style::default()
             .fg(Color::White)
-            .add_modifier(Modifier::BOLD)
-    } else if is_empty {
-        Style::default().fg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD);
+        let cursor_style = Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan);
+        Paragraph::new(Line::from(vec![
+            Span::styled("  [", Style::default()),
+            Span::styled(before, text_style),
+            Span::styled("|", cursor_style),
+            Span::styled(after, text_style),
+            Span::styled("]", Style::default()),
+        ]))
     } else {
-        Style::default().fg(Color::Gray)
+        let key_text = if is_empty {
+            "(press Enter to input)".to_string()
+        } else {
+            display_text
+        };
+        let key_style = if is_empty {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        Paragraph::new(Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(format!("[{}]", key_text), key_style),
+        ]))
     };
-
-    let mut key_spans = vec![
-        Span::styled("  ", Style::default()),
-        Span::styled(format!("[{}]", key_text), key_style),
-    ];
-
-    if state.api_key_editing {
-        key_spans.push(Span::styled("|", Style::default().fg(Color::Cyan)));
-    }
-
-    let key_para = Paragraph::new(Line::from(key_spans));
     frame.render_widget(key_para, key_area);
 
     // --- Test Connection button ---
@@ -546,23 +554,23 @@ mod tests {
     #[test]
     fn api_key_display_masked_when_not_editing() {
         let mut state = LlmSetupState::default();
-        state.api_key_input = "sk-ant-api03-abcdef123456789".to_string();
+        state.api_key_input.set_value("sk-ant-api03-abcdef123456789");
         state.api_key_editing = false;
 
         let display = state.api_key_display();
         assert!(display.starts_with("sk-ant-"));
         assert!(display.contains('*'));
-        assert_eq!(display.len(), state.api_key_input.len());
+        assert_eq!(display.len(), state.api_key_input.value().len());
     }
 
     #[test]
     fn api_key_display_visible_when_editing() {
         let mut state = LlmSetupState::default();
-        state.api_key_input = "sk-ant-api03-abcdef123456789".to_string();
+        state.api_key_input.set_value("sk-ant-api03-abcdef123456789");
         state.api_key_editing = true;
 
         let display = state.api_key_display();
-        assert_eq!(display, state.api_key_input);
+        assert_eq!(display, state.api_key_input.value());
     }
 
     #[test]
@@ -615,7 +623,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let mut state = LlmSetupState::default();
         state.api_key_editing = true;
-        state.api_key_input = "sk-test".to_string();
+        state.api_key_input.set_value("sk-test");
         state.active_section = LlmSetupSection::ApiKey;
         terminal
             .draw(|frame| render(frame, frame.area(), &state))

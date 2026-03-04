@@ -11,6 +11,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
+use crate::tui::TextInput;
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -226,8 +228,8 @@ pub struct StrategySetupState {
     pub mode: StrategySetupMode,
     /// Which section currently has keyboard focus.
     pub active_section: StrategySection,
-    /// Text area content for AI strategy description.
-    pub ai_input: String,
+    /// Text area content for AI strategy description (with cursor tracking).
+    pub ai_input: TextInput,
     /// Whether the AI text input is in edit mode.
     pub ai_input_editing: bool,
     /// Whether the LLM is currently generating.
@@ -243,8 +245,8 @@ pub struct StrategySetupState {
     /// Which field is being edited (None = not editing, Some("budget") or
     /// Some(category name)).
     pub editing_field: Option<String>,
-    /// Current text being typed in an editable numeric field.
-    pub field_input: String,
+    /// Current text being typed in an editable numeric field (with cursor tracking).
+    pub field_input: TextInput,
     /// Which category weight is highlighted (0-11).
     pub selected_weight_idx: usize,
 }
@@ -254,7 +256,7 @@ impl Default for StrategySetupState {
         StrategySetupState {
             mode: StrategySetupMode::Ai,
             active_section: StrategySection::ModeToggle,
-            ai_input: String::new(),
+            ai_input: TextInput::new(),
             ai_input_editing: false,
             generating: false,
             generation_output: String::new(),
@@ -262,7 +264,7 @@ impl Default for StrategySetupState {
             hitting_budget_pct: 65,
             category_weights: CategoryWeights::default(),
             editing_field: None,
-            field_input: String::new(),
+            field_input: TextInput::new(),
             selected_weight_idx: 0,
         }
     }
@@ -322,7 +324,7 @@ impl StrategySetupState {
     /// Start editing a numeric field.
     pub fn start_editing(&mut self, field_name: &str, current_value: &str) {
         self.editing_field = Some(field_name.to_string());
-        self.field_input = current_value.to_string();
+        self.field_input.set_value(current_value);
     }
 
     /// Confirm the current field edit and apply the value.
@@ -336,7 +338,7 @@ impl StrategySetupState {
         };
 
         if field == "budget" {
-            if let Ok(val) = self.field_input.parse::<u8>() {
+            if let Ok(val) = self.field_input.value().parse::<u8>() {
                 if val <= 100 {
                     self.hitting_budget_pct = val;
                     self.editing_field = None;
@@ -349,7 +351,7 @@ impl StrategySetupState {
         }
 
         // Category weight field
-        if let Ok(val) = self.field_input.parse::<f32>() {
+        if let Ok(val) = self.field_input.value().parse::<f32>() {
             if val >= 0.0 && val <= 5.0 {
                 if let Some(idx) = CATEGORIES.iter().position(|&c| c == field) {
                     self.category_weights.set(idx, val);
@@ -555,25 +557,40 @@ fn render_ai_section(frame: &mut Frame, area: Rect, state: &StrategySetupState) 
         Style::default().fg(Color::DarkGray)
     };
 
-    let text_content = if state.ai_input.is_empty() && !state.ai_input_editing {
-        "Press Enter to type your strategy description..."
-    } else {
-        &state.ai_input
-    };
-
-    let text_style = if state.ai_input.is_empty() && !state.ai_input_editing {
-        Style::default().fg(Color::DarkGray)
-    } else {
-        Style::default().fg(Color::White)
-    };
-
+    let ai_value = state.ai_input.value();
     let text_block = Block::default()
         .borders(Borders::ALL)
         .border_style(border_style);
 
-    let text_para = Paragraph::new(Line::from(Span::styled(text_content, text_style)))
+    let text_para = if state.ai_input_editing {
+        // Show the cursor inline at the current cursor position.
+        let cursor_char = state.ai_input.cursor_pos();
+        let before: String = ai_value.chars().take(cursor_char).collect();
+        let after: String = ai_value.chars().skip(cursor_char).collect();
+        let text_style = Style::default().fg(Color::White);
+        let cursor_style = Style::default().fg(Color::Black).bg(Color::Cyan);
+        Paragraph::new(Line::from(vec![
+            Span::styled(before, text_style),
+            Span::styled("|", cursor_style),
+            Span::styled(after, text_style),
+        ]))
         .block(text_block)
-        .wrap(Wrap { trim: false });
+        .wrap(Wrap { trim: false })
+    } else if ai_value.is_empty() {
+        Paragraph::new(Line::from(Span::styled(
+            "Press Enter to type your strategy description...",
+            Style::default().fg(Color::DarkGray),
+        )))
+        .block(text_block)
+        .wrap(Wrap { trim: false })
+    } else {
+        Paragraph::new(Line::from(Span::styled(
+            ai_value,
+            Style::default().fg(Color::White),
+        )))
+        .block(text_block)
+        .wrap(Wrap { trim: false })
+    };
 
     frame.render_widget(text_para, rows[1]);
 
@@ -635,12 +652,6 @@ fn render_budget_field(frame: &mut Frame, area: Rect, state: &StrategySetupState
         Style::default().fg(Color::White)
     };
 
-    let value_str = if editing {
-        format!("{}|", state.field_input)
-    } else {
-        format!("{}", state.hitting_budget_pct)
-    };
-
     let value_style = if editing {
         Style::default()
             .fg(Color::White)
@@ -651,10 +662,27 @@ fn render_budget_field(frame: &mut Frame, area: Rect, state: &StrategySetupState
         Style::default().fg(Color::Gray)
     };
 
-    let line = Line::from(vec![
-        Span::styled("  Budget (hitting %):     ", label_style),
-        Span::styled(format!("[ {} ]", value_str), value_style),
-    ]);
+    let line = if editing {
+        // Show the cursor inline at the cursor position.
+        let cursor_char = state.field_input.cursor_pos();
+        let field_val = state.field_input.value();
+        let before: String = field_val.chars().take(cursor_char).collect();
+        let after: String = field_val.chars().skip(cursor_char).collect();
+        let cursor_style = Style::default().fg(Color::Black).bg(Color::Cyan);
+        Line::from(vec![
+            Span::styled("  Budget (hitting %):     ", label_style),
+            Span::styled("[ ", value_style),
+            Span::styled(before, value_style),
+            Span::styled("|", cursor_style),
+            Span::styled(after, value_style),
+            Span::styled(" ]", value_style),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("  Budget (hitting %):     ", label_style),
+            Span::styled(format!("[ {} ]", state.hitting_budget_pct), value_style),
+        ])
+    };
     frame.render_widget(Paragraph::new(line), area);
 }
 
@@ -696,7 +724,11 @@ fn render_weight_grid(frame: &mut Frame, area: Rect, state: &StrategySetupState)
             };
 
             let value_str = if is_editing {
-                format!("{}|", state.field_input)
+                let cursor_char = state.field_input.cursor_pos();
+                let field_val = state.field_input.value();
+                let before: String = field_val.chars().take(cursor_char).collect();
+                let after: String = field_val.chars().skip(cursor_char).collect();
+                format!("{}|{}", before, after)
             } else {
                 format!("{:.1}", state.category_weights.get(idx))
             };
@@ -965,9 +997,9 @@ mod tests {
         let mut s = StrategySetupState::default();
         s.start_editing("budget", "65");
         assert_eq!(s.editing_field.as_deref(), Some("budget"));
-        assert_eq!(s.field_input, "65");
+        assert_eq!(s.field_input.value(), "65");
 
-        s.field_input = "70".to_string();
+        s.field_input.set_value("70");
         assert!(s.confirm_edit());
         assert_eq!(s.hitting_budget_pct, 70);
         assert!(s.editing_field.is_none());
@@ -977,19 +1009,19 @@ mod tests {
     fn edit_budget_rejects_over_100() {
         let mut s = StrategySetupState::default();
         s.start_editing("budget", "65");
-        s.field_input = "101".to_string();
+        s.field_input.set_value("101");
         assert!(!s.confirm_edit());
         assert_eq!(s.hitting_budget_pct, 65); // unchanged
         // Editing state should be preserved so user can retry
         assert_eq!(s.editing_field.as_deref(), Some("budget"));
-        assert_eq!(s.field_input, "101");
+        assert_eq!(s.field_input.value(), "101");
     }
 
     #[test]
     fn edit_weight_field() {
         let mut s = StrategySetupState::default();
         s.start_editing("BB", "1.0");
-        s.field_input = "1.3".to_string();
+        s.field_input.set_value("1.3");
         assert!(s.confirm_edit());
         assert!((s.category_weights.bb - 1.3).abs() < f32::EPSILON);
     }
@@ -998,7 +1030,7 @@ mod tests {
     fn edit_weight_accepts_zero() {
         let mut s = StrategySetupState::default();
         s.start_editing("SV", "0.7");
-        s.field_input = "0.0".to_string();
+        s.field_input.set_value("0.0");
         assert!(s.confirm_edit());
         assert!((s.category_weights.sv - 0.0).abs() < f32::EPSILON);
     }
@@ -1007,7 +1039,7 @@ mod tests {
     fn edit_weight_rejects_negative() {
         let mut s = StrategySetupState::default();
         s.start_editing("SV", "0.7");
-        s.field_input = "-0.1".to_string();
+        s.field_input.set_value("-0.1");
         assert!(!s.confirm_edit());
         assert!((s.category_weights.sv - 0.7).abs() < f32::EPSILON);
         // Editing state should be preserved so user can retry
@@ -1018,7 +1050,7 @@ mod tests {
     fn edit_weight_rejects_over_5() {
         let mut s = StrategySetupState::default();
         s.start_editing("R", "1.0");
-        s.field_input = "5.1".to_string();
+        s.field_input.set_value("5.1");
         assert!(!s.confirm_edit());
         // Editing state should be preserved so user can retry
         assert_eq!(s.editing_field.as_deref(), Some("R"));
@@ -1028,7 +1060,7 @@ mod tests {
     fn cancel_edit() {
         let mut s = StrategySetupState::default();
         s.start_editing("budget", "65");
-        s.field_input = "99".to_string();
+        s.field_input.set_value("99");
         s.cancel_edit();
         assert!(s.editing_field.is_none());
         assert_eq!(s.hitting_budget_pct, 65); // unchanged
@@ -1078,7 +1110,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let mut state = StrategySetupState::default();
         state.editing_field = Some("budget".to_string());
-        state.field_input = "70".to_string();
+        state.field_input.set_value("70");
         state.active_section = StrategySection::BudgetField;
         terminal
             .draw(|frame| render(frame, frame.area(), &state))
@@ -1103,7 +1135,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let mut state = StrategySetupState::default();
         state.ai_input_editing = true;
-        state.ai_input = "punt saves, go heavy K and BB".to_string();
+        state.ai_input.set_value("punt saves, go heavy K and BB");
         state.active_section = StrategySection::AiInput;
         terminal
             .draw(|frame| render(frame, frame.area(), &state))

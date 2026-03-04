@@ -8,6 +8,7 @@ pub mod input;
 pub mod layout;
 pub mod onboarding;
 pub mod settings;
+pub mod text_input;
 pub mod widgets;
 
 use std::collections::HashMap;
@@ -33,6 +34,7 @@ use crate::valuation::zscore::PlayerValuation;
 use layout::{build_layout, AppLayout};
 pub use onboarding::llm_setup::LlmSetupState;
 pub use onboarding::strategy_setup::StrategySetupState;
+pub use text_input::TextInput;
 
 // ---------------------------------------------------------------------------
 // FocusPanel
@@ -202,7 +204,7 @@ pub struct PositionFilterModal {
     /// Whether the modal is currently visible.
     pub open: bool,
     /// Incremental search text typed by the user while the modal is open.
-    pub search_text: String,
+    pub search_text: TextInput,
     /// Index into the *filtered* list of options that is currently highlighted.
     pub selected_index: usize,
 }
@@ -237,7 +239,7 @@ impl PositionFilterModal {
     /// Return the subset of options that match the current search text
     /// (case-insensitive prefix or substring match).
     pub fn filtered_options(&self) -> Vec<Option<Position>> {
-        let search = self.search_text.to_uppercase();
+        let search = self.search_text.value().to_uppercase();
         Self::OPTIONS
             .iter()
             .copied()
@@ -287,7 +289,7 @@ pub struct ViewState {
     /// Per-widget scroll offsets (keyed by widget name).
     pub scroll_offset: HashMap<String, usize>,
     /// Current filter/search text.
-    pub filter_text: String,
+    pub filter_text: TextInput,
     /// Whether the filter input is active.
     pub filter_mode: bool,
     /// Position filter for the available players table.
@@ -320,6 +322,11 @@ pub struct ViewState {
     /// Whether the LLM client is configured (has a valid API key).
     /// Used by the status bar to show a "No LLM configured" hint.
     pub llm_configured: bool,
+    /// When `true`, the next `KeyCode::Char('[')` event is silently
+    /// discarded.  Set when transitioning into a text-editing mode so
+    /// that a stray CSI introducer byte (`[`) leaked by the terminal
+    /// as a separate key event is not inserted into the input buffer.
+    pub suppress_next_bracket: bool,
 }
 
 impl Default for ViewState {
@@ -341,7 +348,7 @@ impl Default for ViewState {
             total_picks: 0,
             active_tab: TabId::Analysis,
             scroll_offset: HashMap::new(),
-            filter_text: String::new(),
+            filter_text: TextInput::new(),
             filter_mode: false,
             position_filter: None,
             confirm_quit: false,
@@ -355,6 +362,7 @@ impl Default for ViewState {
             strategy_setup: StrategySetupState::default(),
             settings_tab: SettingsSection::LlmConfig,
             llm_configured: true,
+            suppress_next_bracket: false,
         }
     }
 }
@@ -718,7 +726,7 @@ fn compute_draft_keybinds(state: &ViewState) -> Vec<KeybindHint> {
     // has a non-empty filter so the user knows results are currently filtered.
     if !state.filter_text.is_empty() && state.active_tab == TabId::Available {
         hints.push(KeybindHint::new(
-            format!("filter:\"{}\"", state.filter_text),
+            format!("filter:\"{}\"", state.filter_text.value()),
             "active",
         ));
     }
@@ -824,7 +832,7 @@ fn render_help_bar(
             ),
             Span::styled(" ", Style::default()),
             Span::styled(
-                &state.filter_text,
+                state.filter_text.value().to_string(),
                 Style::default()
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD),
@@ -1450,7 +1458,7 @@ mod tests {
     fn compute_keybinds_active_filter_reminder_on_available_tab() {
         let mut state = ViewState::default();
         state.active_tab = TabId::Available;
-        state.filter_text = "trout".to_string();
+        state.filter_text.set_value("trout");
         let hints = compute_keybinds(&state);
         // There should be a hint whose key contains the filter text
         let has_reminder = hints.iter().any(|h| h.key.contains("trout"));
@@ -1461,7 +1469,7 @@ mod tests {
     fn compute_keybinds_no_filter_reminder_on_analysis_tab() {
         let mut state = ViewState::default();
         state.active_tab = TabId::Analysis;
-        state.filter_text = "trout".to_string();
+        state.filter_text.set_value("trout");
         let hints = compute_keybinds(&state);
         // Filter reminder should only appear on Available tab
         let has_reminder = hints.iter().any(|h| h.key.contains("trout"));
