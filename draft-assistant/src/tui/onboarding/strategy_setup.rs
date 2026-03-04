@@ -1,9 +1,14 @@
-// Strategy setup screen: budget split, category weights, and LLM-assisted configuration.
+// Strategy setup screen: linear wizard flow for draft strategy configuration.
 //
-// This is Step 2 of the onboarding wizard. The user can either describe their
-// strategy in natural language (AI mode) or manually edit the budget split and
-// category weights (Manual mode). AI-generated configs populate the manual
-// fields for review before saving.
+// This is Step 2 of the onboarding wizard. The wizard proceeds through four
+// steps:
+//   1. Input: large text area for natural language strategy description
+//   2. Generating: LLM streams output while processing the description
+//   3. Review: shows LLM-generated overview + budget/weights for inline editing
+//   4. Confirm: "Save this draft strategy?" Yes/No prompt
+//
+// When accessed from the Settings screen (after onboarding is complete), the
+// wizard shows the Review step directly with all values editable.
 
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -27,71 +32,61 @@ pub const CATEGORIES: &[&str] = &[
 ];
 
 /// Number of columns in the category weight grid.
-const WEIGHT_COLS: usize = 3;
+pub const WEIGHT_COLS: usize = 3;
 
 // ---------------------------------------------------------------------------
-// StrategySetupMode
+// StrategyWizardStep
 // ---------------------------------------------------------------------------
 
-/// Whether the user is configuring via AI or manual input.
+/// Which step of the strategy wizard is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StrategySetupMode {
-    Ai,
-    Manual,
+pub enum StrategyWizardStep {
+    /// Step 1: user describes strategy in a large text input.
+    Input,
+    /// Step 2: LLM is generating config from the description.
+    Generating,
+    /// Step 3: review generated values (overview + budget + weights).
+    Review,
+    /// Step 4: "Save this draft strategy?" confirmation.
+    Confirm,
 }
 
 // ---------------------------------------------------------------------------
-// StrategySection
+// ReviewSection
 // ---------------------------------------------------------------------------
 
-/// Which section of the strategy screen currently has focus.
+/// Which part of the review step has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StrategySection {
-    ModeToggle,
-    AiInput,
-    GenerateButton,
+pub enum ReviewSection {
+    /// Strategy overview text (read-only, scrollable).
+    Overview,
+    /// Hitting budget percentage field.
     BudgetField,
+    /// Category weight grid.
     CategoryWeights,
 }
 
-impl StrategySection {
-    /// Ordered list of sections for Tab cycling in AI mode.
-    const AI_CYCLE: &[StrategySection] = &[
-        StrategySection::ModeToggle,
-        StrategySection::AiInput,
-        StrategySection::GenerateButton,
-        StrategySection::BudgetField,
-        StrategySection::CategoryWeights,
-    ];
-
-    /// Ordered list of sections for Tab cycling in Manual mode.
-    const MANUAL_CYCLE: &[StrategySection] = &[
-        StrategySection::ModeToggle,
-        StrategySection::BudgetField,
-        StrategySection::CategoryWeights,
+impl ReviewSection {
+    /// Ordered list of sections for Tab cycling in review mode.
+    const CYCLE: &[ReviewSection] = &[
+        ReviewSection::Overview,
+        ReviewSection::BudgetField,
+        ReviewSection::CategoryWeights,
     ];
 
     /// Advance to the next section (wraps around).
-    pub fn next(self, mode: StrategySetupMode) -> StrategySection {
-        let cycle = match mode {
-            StrategySetupMode::Ai => Self::AI_CYCLE,
-            StrategySetupMode::Manual => Self::MANUAL_CYCLE,
-        };
-        let idx = cycle.iter().position(|&s| s == self).unwrap_or(0);
-        cycle[(idx + 1) % cycle.len()]
+    pub fn next(self) -> ReviewSection {
+        let idx = Self::CYCLE.iter().position(|&s| s == self).unwrap_or(0);
+        Self::CYCLE[(idx + 1) % Self::CYCLE.len()]
     }
 
     /// Go to the previous section (wraps around).
-    pub fn prev(self, mode: StrategySetupMode) -> StrategySection {
-        let cycle = match mode {
-            StrategySetupMode::Ai => Self::AI_CYCLE,
-            StrategySetupMode::Manual => Self::MANUAL_CYCLE,
-        };
-        let idx = cycle.iter().position(|&s| s == self).unwrap_or(0);
+    pub fn prev(self) -> ReviewSection {
+        let idx = Self::CYCLE.iter().position(|&s| s == self).unwrap_or(0);
         if idx == 0 {
-            cycle[cycle.len() - 1]
+            Self::CYCLE[Self::CYCLE.len() - 1]
         } else {
-            cycle[idx - 1]
+            Self::CYCLE[idx - 1]
         }
     }
 }
@@ -219,22 +214,20 @@ impl CategoryWeights {
 // StrategySetupState
 // ---------------------------------------------------------------------------
 
-/// UI state for the strategy setup screen.
+/// UI state for the strategy setup wizard.
 ///
 /// Lives inside `ViewState` so the TUI can render it without any global state.
 #[derive(Debug, Clone)]
 pub struct StrategySetupState {
-    /// AI or Manual mode.
-    pub mode: StrategySetupMode,
-    /// Which section currently has keyboard focus.
-    pub active_section: StrategySection,
-    /// Text area content for AI strategy description (with cursor tracking).
-    pub ai_input: TextInput,
-    /// Whether the AI text input is in edit mode.
-    pub ai_input_editing: bool,
+    /// Current wizard step.
+    pub step: StrategyWizardStep,
+    /// Text area content for strategy description (with cursor tracking).
+    pub strategy_input: TextInput,
+    /// Whether the strategy text input is in edit mode (cursor active).
+    pub input_editing: bool,
     /// Whether the LLM is currently generating.
     pub generating: bool,
-    /// Streamed LLM output text.
+    /// Streamed LLM output text (shown during Generating step).
     pub generation_output: String,
     /// Error message from LLM generation, if any.
     pub generation_error: Option<String>,
@@ -242,56 +235,43 @@ pub struct StrategySetupState {
     pub hitting_budget_pct: u8,
     /// Category weight values.
     pub category_weights: CategoryWeights,
-    /// Which field is being edited (None = not editing, Some("budget") or
-    /// Some(category name)).
+    /// LLM-generated prose overview of the strategy.
+    pub strategy_overview: String,
+    /// Which field is being edited in Review step (None = not editing,
+    /// Some("budget") or Some(category name)).
     pub editing_field: Option<String>,
     /// Current text being typed in an editable numeric field (with cursor tracking).
     pub field_input: TextInput,
     /// Which category weight is highlighted (0-11).
     pub selected_weight_idx: usize,
+    /// Which part of the Review step has focus.
+    pub review_section: ReviewSection,
+    /// Whether the confirm prompt is selecting "Yes" (true) or "No" (false).
+    pub confirm_yes: bool,
 }
 
 impl Default for StrategySetupState {
     fn default() -> Self {
         StrategySetupState {
-            mode: StrategySetupMode::Ai,
-            active_section: StrategySection::ModeToggle,
-            ai_input: TextInput::new(),
-            ai_input_editing: false,
+            step: StrategyWizardStep::Input,
+            strategy_input: TextInput::new(),
+            input_editing: true, // auto-focused in edit mode
             generating: false,
             generation_output: String::new(),
             generation_error: None,
             hitting_budget_pct: 65,
             category_weights: CategoryWeights::default(),
+            strategy_overview: String::new(),
             editing_field: None,
             field_input: TextInput::new(),
             selected_weight_idx: 0,
+            review_section: ReviewSection::Overview,
+            confirm_yes: true,
         }
     }
 }
 
 impl StrategySetupState {
-    /// Toggle between AI and Manual mode.
-    pub fn toggle_mode(&mut self) {
-        self.mode = match self.mode {
-            StrategySetupMode::Ai => StrategySetupMode::Manual,
-            StrategySetupMode::Manual => StrategySetupMode::Ai,
-        };
-        // Adjust active section if it doesn't exist in the new mode
-        match self.mode {
-            StrategySetupMode::Manual => {
-                if self.active_section == StrategySection::AiInput
-                    || self.active_section == StrategySection::GenerateButton
-                {
-                    self.active_section = StrategySection::BudgetField;
-                }
-            }
-            StrategySetupMode::Ai => {
-                // All sections are valid in AI mode
-            }
-        }
-    }
-
     /// Move the selected weight index up (wraps).
     pub fn weight_up(&mut self) {
         if self.selected_weight_idx >= WEIGHT_COLS {
@@ -373,7 +353,7 @@ impl StrategySetupState {
 
     /// Check if any field is currently being edited.
     pub fn is_editing(&self) -> bool {
-        self.editing_field.is_some() || self.ai_input_editing
+        self.editing_field.is_some() || self.input_editing
     }
 }
 
@@ -381,9 +361,151 @@ impl StrategySetupState {
 // Render
 // ---------------------------------------------------------------------------
 
-/// Render the strategy setup screen into the given area.
+/// Render the strategy setup wizard into the given area.
 pub fn render(frame: &mut Frame, area: Rect, state: &StrategySetupState) {
-    // Outer block with title
+    match state.step {
+        StrategyWizardStep::Input => render_input_step(frame, area, state),
+        StrategyWizardStep::Generating => render_generating_step(frame, area, state),
+        StrategyWizardStep::Review => render_review_step(frame, area, state),
+        StrategyWizardStep::Confirm => render_confirm_step(frame, area, state),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Step 1: Input
+// ---------------------------------------------------------------------------
+
+fn render_input_step(frame: &mut Frame, area: Rect, state: &StrategySetupState) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(Line::from(vec![Span::styled(
+            " Describe Your Draft Strategy ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]))
+        .title_alignment(Alignment::Center);
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let sections = Layout::vertical([
+        Constraint::Length(1), // top padding
+        Constraint::Length(2), // instructions
+        Constraint::Length(1), // spacer
+        Constraint::Min(6),   // text area (fills remaining space)
+        Constraint::Length(1), // spacer
+        Constraint::Length(1), // help bar
+    ])
+    .split(inner);
+
+    // Horizontal centering
+    let content_width = 70u16.min(inner.width);
+    let h_offset = (inner.width.saturating_sub(content_width)) / 2;
+    let content_rect = |row: Rect| -> Rect {
+        Rect {
+            x: row.x + h_offset,
+            y: row.y,
+            width: content_width.min(row.width.saturating_sub(h_offset)),
+            height: row.height,
+        }
+    };
+
+    // Instructions
+    let instructions = Paragraph::new(vec![
+        Line::from(Span::styled(
+            "Describe your draft strategy in plain English below.",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "The AI will generate budget split, category weights, and a strategy overview.",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ]);
+    frame.render_widget(instructions, content_rect(sections[1]));
+
+    // Text area
+    let border_style = if state.input_editing {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::White)
+    };
+
+    let input_value = state.strategy_input.value();
+    let text_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style);
+
+    let text_para = if state.input_editing {
+        let cursor_char = state.strategy_input.cursor_pos();
+        let before: String = input_value.chars().take(cursor_char).collect();
+        let after: String = input_value.chars().skip(cursor_char).collect();
+        let text_style = Style::default().fg(Color::White);
+        let cursor_style = Style::default().fg(Color::Black).bg(Color::Cyan);
+        Paragraph::new(Line::from(vec![
+            Span::styled(before, text_style),
+            Span::styled("|", cursor_style),
+            Span::styled(after, text_style),
+        ]))
+        .block(text_block)
+        .wrap(Wrap { trim: false })
+    } else if input_value.is_empty() {
+        Paragraph::new(Line::from(Span::styled(
+            "e.g. Stars-and-scrubs, punt saves, heavy on BB and HD...",
+            Style::default().fg(Color::DarkGray),
+        )))
+        .block(text_block)
+        .wrap(Wrap { trim: false })
+    } else {
+        Paragraph::new(Line::from(Span::styled(
+            input_value,
+            Style::default().fg(Color::White),
+        )))
+        .block(text_block)
+        .wrap(Wrap { trim: false })
+    };
+
+    frame.render_widget(text_para, content_rect(sections[3]));
+
+    // Error message if present (from a previous failed generation)
+    if let Some(ref err) = state.generation_error {
+        // Overlay error on the last line of the text area
+        let err_line = Line::from(Span::styled(
+            format!("  Error: {}", err),
+            Style::default().fg(Color::Red),
+        ));
+        let err_area = content_rect(sections[4]);
+        frame.render_widget(Paragraph::new(err_line), err_area);
+    }
+
+    // Help bar
+    let help_spans = if state.input_editing {
+        vec![
+            Span::styled("Type strategy", Style::default().fg(Color::Gray)),
+            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Esc:stop editing", Style::default().fg(Color::Gray)),
+        ]
+    } else {
+        vec![
+            Span::styled("Enter:generate", Style::default().fg(Color::Gray)),
+            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
+            Span::styled("e:edit", Style::default().fg(Color::Gray)),
+            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Esc:back", Style::default().fg(Color::Gray)),
+        ]
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(help_spans)).alignment(Alignment::Center),
+        content_rect(sections[5]),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Step 2: Generating
+// ---------------------------------------------------------------------------
+
+fn render_generating_step(frame: &mut Frame, area: Rect, state: &StrategySetupState) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray))
@@ -398,26 +520,148 @@ pub fn render(frame: &mut Frame, area: Rect, state: &StrategySetupState) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Vertical layout sections
+    if state.generation_error.is_some() {
+        // Error state: show error message centered with retry/back options
+        let sections = Layout::vertical([
+            Constraint::Min(1),    // top spacer
+            Constraint::Length(1), // error icon
+            Constraint::Length(1), // spacer
+            Constraint::Length(2), // error message
+            Constraint::Min(1),    // bottom spacer
+            Constraint::Length(1), // help bar
+        ])
+        .split(inner);
+
+        let content_width = 60u16.min(inner.width);
+        let h_offset = (inner.width.saturating_sub(content_width)) / 2;
+        let content_rect = |row: Rect| -> Rect {
+            Rect {
+                x: row.x + h_offset,
+                y: row.y,
+                width: content_width.min(row.width.saturating_sub(h_offset)),
+                height: row.height,
+            }
+        };
+
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "Generation failed",
+                Style::default()
+                    .fg(Color::Red)
+                    .add_modifier(Modifier::BOLD),
+            )))
+            .alignment(Alignment::Center),
+            content_rect(sections[1]),
+        );
+
+        if let Some(ref err) = state.generation_error {
+            frame.render_widget(
+                Paragraph::new(Span::styled(err.as_str(), Style::default().fg(Color::Red)))
+                    .alignment(Alignment::Center)
+                    .wrap(Wrap { trim: false }),
+                content_rect(sections[3]),
+            );
+        }
+
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("Enter:retry", Style::default().fg(Color::Gray)),
+                Span::styled(" | ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Esc:back to input", Style::default().fg(Color::Gray)),
+            ]))
+            .alignment(Alignment::Center),
+            content_rect(sections[5]),
+        );
+    } else {
+        // Generating: centered "Thinking..." with a simple animation
+        let sections = Layout::vertical([
+            Constraint::Min(1),    // top spacer
+            Constraint::Length(1), // thinking text
+            Constraint::Length(1), // dots
+            Constraint::Min(1),    // bottom spacer
+            Constraint::Length(1), // help bar
+        ])
+        .split(inner);
+
+        let content_width = 40u16.min(inner.width);
+        let h_offset = (inner.width.saturating_sub(content_width)) / 2;
+        let content_rect = |row: Rect| -> Rect {
+            Rect {
+                x: row.x + h_offset,
+                y: row.y,
+                width: content_width.min(row.width.saturating_sub(h_offset)),
+                height: row.height,
+            }
+        };
+
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "Thinking...",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )))
+            .alignment(Alignment::Center),
+            content_rect(sections[1]),
+        );
+
+        // Subtle animated dots based on output length (each token advances the animation)
+        let dot_count = (state.generation_output.len() / 20) % 4;
+        let dots = ".".repeat(dot_count);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                dots,
+                Style::default().fg(Color::DarkGray),
+            )))
+            .alignment(Alignment::Center),
+            content_rect(sections[2]),
+        );
+
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "Please wait...",
+                Style::default().fg(Color::DarkGray),
+            )))
+            .alignment(Alignment::Center),
+            content_rect(sections[4]),
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Step 3: Review
+// ---------------------------------------------------------------------------
+
+fn render_review_step(frame: &mut Frame, area: Rect, state: &StrategySetupState) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(Line::from(vec![Span::styled(
+            " Review Your Strategy ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]))
+        .title_alignment(Alignment::Center);
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
     let sections = Layout::vertical([
-        Constraint::Length(1), // top padding
-        Constraint::Length(1), // mode toggle
-        Constraint::Length(1), // spacer
-        Constraint::Length(6), // AI section (text area + button + status)
-        Constraint::Length(1), // spacer
-        Constraint::Length(1), // "Config Preview / Manual Edit" label
-        Constraint::Length(1), // spacer
-        Constraint::Length(1), // budget field
-        Constraint::Length(1), // spacer
-        Constraint::Length(1), // "Category Weights:" label
-        Constraint::Length(4), // weight grid (4 rows of 3)
-        Constraint::Min(0),   // flexible space
-        Constraint::Length(1), // help bar
+        Constraint::Length(1),  // top padding
+        Constraint::Length(1),  // "Strategy Overview:" label
+        Constraint::Min(6),    // overview text (fills available space)
+        Constraint::Length(1),  // spacer
+        Constraint::Length(1),  // budget field
+        Constraint::Length(1),  // spacer
+        Constraint::Length(1),  // "Category Weights:" label
+        Constraint::Length(4),  // weight grid (4 rows of 3)
+        Constraint::Length(1),  // spacer
+        Constraint::Length(1),  // help bar
     ])
     .split(inner);
 
-    // Horizontal centering
-    let content_width = 56u16.min(inner.width);
+    let content_width = 70u16.min(inner.width);
     let h_offset = (inner.width.saturating_sub(content_width)) / 2;
     let content_rect = |row: Rect| -> Rect {
         Rect {
@@ -428,31 +672,50 @@ pub fn render(frame: &mut Frame, area: Rect, state: &StrategySetupState) {
         }
     };
 
-    // --- Mode toggle ---
-    render_mode_toggle(frame, content_rect(sections[1]), state);
-
-    // --- AI section ---
-    if state.mode == StrategySetupMode::Ai {
-        render_ai_section(frame, content_rect(sections[3]), state);
-    }
-
-    // --- Config preview label ---
-    let label_text = if state.mode == StrategySetupMode::Ai {
-        "Config Preview:"
+    // --- Strategy Overview ---
+    let overview_active = state.review_section == ReviewSection::Overview;
+    let overview_label_style = if overview_active {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
     } else {
-        "Manual Configuration:"
+        Style::default().fg(Color::White)
     };
-    let label_style = Style::default().fg(Color::White);
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(label_text, label_style))),
-        content_rect(sections[5]),
+        Paragraph::new(Line::from(Span::styled(
+            "Strategy Overview:",
+            overview_label_style,
+        ))),
+        content_rect(sections[1]),
     );
 
+    let overview_border = if overview_active {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let overview_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(overview_border);
+
+    let overview_text = if state.strategy_overview.is_empty() {
+        "(No overview generated)"
+    } else {
+        &state.strategy_overview
+    };
+    let overview_para = Paragraph::new(Span::styled(
+        overview_text,
+        Style::default().fg(Color::White),
+    ))
+    .block(overview_block)
+    .wrap(Wrap { trim: false });
+    frame.render_widget(overview_para, content_rect(sections[2]));
+
     // --- Budget field ---
-    render_budget_field(frame, content_rect(sections[7]), state);
+    render_budget_field(frame, content_rect(sections[4]), state);
 
     // --- Category weights label ---
-    let weights_active = state.active_section == StrategySection::CategoryWeights;
+    let weights_active = state.review_section == ReviewSection::CategoryWeights;
     let weights_label_style = if weights_active {
         Style::default()
             .fg(Color::Cyan)
@@ -465,183 +728,118 @@ pub fn render(frame: &mut Frame, area: Rect, state: &StrategySetupState) {
             "Category Weights:",
             weights_label_style,
         ))),
-        content_rect(sections[9]),
+        content_rect(sections[6]),
     );
 
     // --- Weight grid ---
-    render_weight_grid(frame, content_rect(sections[10]), state);
+    render_weight_grid(frame, content_rect(sections[7]), state);
 
     // --- Help bar ---
-    render_help_bar(frame, content_rect(sections[12]), state);
+    render_review_help_bar(frame, content_rect(sections[9]), state);
 }
 
 // ---------------------------------------------------------------------------
-// Render helpers
+// Step 4: Confirm
 // ---------------------------------------------------------------------------
 
-/// Render the AI / Manual mode toggle.
-fn render_mode_toggle(frame: &mut Frame, area: Rect, state: &StrategySetupState) {
-    let active = state.active_section == StrategySection::ModeToggle;
+fn render_confirm_step(frame: &mut Frame, area: Rect, state: &StrategySetupState) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(Line::from(vec![Span::styled(
+            " Save Strategy ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]))
+        .title_alignment(Alignment::Center);
 
-    let ai_style = if state.mode == StrategySetupMode::Ai && active {
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else if state.mode == StrategySetupMode::Ai {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else if active {
-        Style::default().fg(Color::White)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
-    let manual_style = if state.mode == StrategySetupMode::Manual && active {
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else if state.mode == StrategySetupMode::Manual {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else if active {
-        Style::default().fg(Color::White)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-
-    let line = Line::from(vec![
-        Span::styled("  [ Use AI to configure ]", ai_style),
-        Span::styled("  ", Style::default()),
-        Span::styled("[ Manual ]", manual_style),
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
-}
-
-/// Render the AI input section (text area + generate button + status).
-fn render_ai_section(frame: &mut Frame, area: Rect, state: &StrategySetupState) {
-    let rows = Layout::vertical([
-        Constraint::Length(1), // "Describe your strategy:" label
-        Constraint::Length(3), // text area
-        Constraint::Length(1), // generate button + status
-        Constraint::Min(0),   // remaining
+    let sections = Layout::vertical([
+        Constraint::Min(1),    // centering space
+        Constraint::Length(1), // question
+        Constraint::Length(2), // spacer
+        Constraint::Length(1), // yes/no buttons
+        Constraint::Min(1),    // centering space
+        Constraint::Length(1), // help bar
     ])
-    .split(area);
+    .split(inner);
 
-    // Label
-    let input_active = state.active_section == StrategySection::AiInput;
-    let label_style = if input_active {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::White)
+    let content_width = 50u16.min(inner.width);
+    let h_offset = (inner.width.saturating_sub(content_width)) / 2;
+    let content_rect = |row: Rect| -> Rect {
+        Rect {
+            x: row.x + h_offset,
+            y: row.y,
+            width: content_width.min(row.width.saturating_sub(h_offset)),
+            height: row.height,
+        }
     };
+
+    // Question
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "Describe your strategy:",
-            label_style,
-        ))),
-        rows[0],
+            "Save this draft strategy?",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .alignment(Alignment::Center),
+        content_rect(sections[1]),
     );
 
-    // Text area
-    let border_style = if state.ai_input_editing {
-        Style::default().fg(Color::Cyan)
-    } else if input_active {
-        Style::default().fg(Color::White)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-
-    let ai_value = state.ai_input.value();
-    let text_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_style);
-
-    let text_para = if state.ai_input_editing {
-        // Show the cursor inline at the current cursor position.
-        let cursor_char = state.ai_input.cursor_pos();
-        let before: String = ai_value.chars().take(cursor_char).collect();
-        let after: String = ai_value.chars().skip(cursor_char).collect();
-        let text_style = Style::default().fg(Color::White);
-        let cursor_style = Style::default().fg(Color::Black).bg(Color::Cyan);
-        Paragraph::new(Line::from(vec![
-            Span::styled(before, text_style),
-            Span::styled("|", cursor_style),
-            Span::styled(after, text_style),
-        ]))
-        .block(text_block)
-        .wrap(Wrap { trim: false })
-    } else if ai_value.is_empty() {
-        Paragraph::new(Line::from(Span::styled(
-            "Press Enter to type your strategy description...",
-            Style::default().fg(Color::DarkGray),
-        )))
-        .block(text_block)
-        .wrap(Wrap { trim: false })
-    } else {
-        Paragraph::new(Line::from(Span::styled(
-            ai_value,
-            Style::default().fg(Color::White),
-        )))
-        .block(text_block)
-        .wrap(Wrap { trim: false })
-    };
-
-    frame.render_widget(text_para, rows[1]);
-
-    // Generate button + status
-    let btn_active = state.active_section == StrategySection::GenerateButton;
-    let btn_style = if state.generating {
-        Style::default().fg(Color::Yellow)
-    } else if btn_active {
+    // Yes/No buttons
+    let yes_style = if state.confirm_yes {
         Style::default()
             .fg(Color::Black)
-            .bg(Color::Cyan)
+            .bg(Color::Green)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::White)
+        Style::default().fg(Color::Green)
     };
 
-    let btn_text = if state.generating {
-        "[ Generating... ]"
+    let no_style = if !state.confirm_yes {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Red)
+            .add_modifier(Modifier::BOLD)
     } else {
-        "[ Generate Config ]"
+        Style::default().fg(Color::Red)
     };
 
-    let mut spans = vec![
-        Span::styled("  ", Style::default()),
-        Span::styled(btn_text, btn_style),
+    let buttons = Line::from(vec![
+        Span::styled("  [ Yes, save and enter draft ]", yes_style),
+        Span::styled("    ", Style::default()),
+        Span::styled("[ No, go back ]", no_style),
+    ]);
+    frame.render_widget(
+        Paragraph::new(buttons).alignment(Alignment::Center),
+        content_rect(sections[3]),
+    );
+
+    // Help bar
+    let help_spans = vec![
+        Span::styled("<>:select", Style::default().fg(Color::Gray)),
+        Span::styled(" | ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Enter:confirm", Style::default().fg(Color::Gray)),
+        Span::styled(" | ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Esc:back", Style::default().fg(Color::Gray)),
     ];
-
-    // Status indicator
-    if state.generating {
-        spans.push(Span::styled(
-            "  * Working...",
-            Style::default().fg(Color::Yellow),
-        ));
-    } else if let Some(ref err) = state.generation_error {
-        spans.push(Span::styled(
-            format!("  x {}", err),
-            Style::default().fg(Color::Red),
-        ));
-    } else if !state.generation_output.is_empty() {
-        spans.push(Span::styled(
-            "  * Config generated",
-            Style::default().fg(Color::Green),
-        ));
-    }
-
-    frame.render_widget(Paragraph::new(Line::from(spans)), rows[2]);
+    frame.render_widget(
+        Paragraph::new(Line::from(help_spans)).alignment(Alignment::Center),
+        content_rect(sections[5]),
+    );
 }
+
+// ---------------------------------------------------------------------------
+// Render helpers (shared across steps)
+// ---------------------------------------------------------------------------
 
 /// Render the budget field.
 fn render_budget_field(frame: &mut Frame, area: Rect, state: &StrategySetupState) {
-    let active = state.active_section == StrategySection::BudgetField;
+    let active = state.review_section == ReviewSection::BudgetField;
     let editing = state.editing_field.as_deref() == Some("budget");
 
     let label_style = if active {
@@ -663,7 +861,6 @@ fn render_budget_field(frame: &mut Frame, area: Rect, state: &StrategySetupState
     };
 
     let line = if editing {
-        // Show the cursor inline at the cursor position.
         let cursor_char = state.field_input.cursor_pos();
         let field_val = state.field_input.value();
         let before: String = field_val.chars().take(cursor_char).collect();
@@ -688,7 +885,7 @@ fn render_budget_field(frame: &mut Frame, area: Rect, state: &StrategySetupState
 
 /// Render the 4x3 category weight grid.
 fn render_weight_grid(frame: &mut Frame, area: Rect, state: &StrategySetupState) {
-    let weights_active = state.active_section == StrategySection::CategoryWeights;
+    let weights_active = state.review_section == ReviewSection::CategoryWeights;
     let num_rows = (CATEGORIES.len() + WEIGHT_COLS - 1) / WEIGHT_COLS;
 
     for row in 0..num_rows {
@@ -763,17 +960,9 @@ fn render_weight_grid(frame: &mut Frame, area: Rect, state: &StrategySetupState)
     }
 }
 
-/// Render the help bar at the bottom of the screen.
-fn render_help_bar(frame: &mut Frame, area: Rect, state: &StrategySetupState) {
-    let help_spans = if state.ai_input_editing {
-        vec![
-            Span::styled("Type strategy", Style::default().fg(Color::Gray)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Enter:confirm", Style::default().fg(Color::Gray)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc:cancel", Style::default().fg(Color::Gray)),
-        ]
-    } else if state.editing_field.is_some() {
+/// Render the help bar for the review step.
+fn render_review_help_bar(frame: &mut Frame, area: Rect, state: &StrategySetupState) {
+    let help_spans = if state.editing_field.is_some() {
         vec![
             Span::styled("Type value", Style::default().fg(Color::Gray)),
             Span::styled(" | ", Style::default().fg(Color::DarkGray)),
@@ -783,10 +972,6 @@ fn render_help_bar(frame: &mut Frame, area: Rect, state: &StrategySetupState) {
         ]
     } else {
         vec![
-            Span::styled("Tab:section", Style::default().fg(Color::Gray)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-            Span::styled("^v:navigate", Style::default().fg(Color::Gray)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
             Span::styled("Enter:edit", Style::default().fg(Color::Gray)),
             Span::styled(" | ", Style::default().fg(Color::DarkGray)),
             Span::styled("s:save", Style::default().fg(Color::Gray)),
@@ -880,81 +1065,32 @@ mod tests {
     #[test]
     fn default_state() {
         let s = StrategySetupState::default();
-        assert_eq!(s.mode, StrategySetupMode::Ai);
-        assert_eq!(s.active_section, StrategySection::ModeToggle);
+        assert_eq!(s.step, StrategyWizardStep::Input);
         assert_eq!(s.hitting_budget_pct, 65);
         assert!(!s.generating);
-        assert!(!s.ai_input_editing);
+        assert!(s.input_editing); // auto-focused
         assert!(s.editing_field.is_none());
+        assert_eq!(s.review_section, ReviewSection::Overview);
+        assert!(s.confirm_yes);
     }
 
     #[test]
-    fn toggle_mode() {
-        let mut s = StrategySetupState::default();
-        s.toggle_mode();
-        assert_eq!(s.mode, StrategySetupMode::Manual);
-        s.toggle_mode();
-        assert_eq!(s.mode, StrategySetupMode::Ai);
+    fn review_section_next_wraps() {
+        let s = ReviewSection::CategoryWeights;
+        assert_eq!(s.next(), ReviewSection::Overview);
     }
 
     #[test]
-    fn toggle_mode_adjusts_section() {
-        let mut s = StrategySetupState::default();
-        s.active_section = StrategySection::AiInput;
-        s.toggle_mode(); // to Manual
-        // AiInput is not in Manual cycle, should be adjusted
-        assert_eq!(s.active_section, StrategySection::BudgetField);
+    fn review_section_prev_wraps() {
+        let s = ReviewSection::Overview;
+        assert_eq!(s.prev(), ReviewSection::CategoryWeights);
     }
 
     #[test]
-    fn toggle_mode_preserves_valid_section() {
-        let mut s = StrategySetupState::default();
-        s.active_section = StrategySection::CategoryWeights;
-        s.toggle_mode(); // to Manual
-        assert_eq!(s.active_section, StrategySection::CategoryWeights);
-    }
-
-    #[test]
-    fn section_next_ai_mode() {
-        let s = StrategySection::ModeToggle;
-        assert_eq!(s.next(StrategySetupMode::Ai), StrategySection::AiInput);
-        assert_eq!(
-            s.next(StrategySetupMode::Ai)
-                .next(StrategySetupMode::Ai),
-            StrategySection::GenerateButton
-        );
-    }
-
-    #[test]
-    fn section_next_manual_mode() {
-        let s = StrategySection::ModeToggle;
-        assert_eq!(
-            s.next(StrategySetupMode::Manual),
-            StrategySection::BudgetField
-        );
-    }
-
-    #[test]
-    fn section_wraps() {
-        let s = StrategySection::CategoryWeights;
-        assert_eq!(s.next(StrategySetupMode::Ai), StrategySection::ModeToggle);
-        assert_eq!(
-            s.next(StrategySetupMode::Manual),
-            StrategySection::ModeToggle
-        );
-    }
-
-    #[test]
-    fn section_prev_wraps() {
-        let s = StrategySection::ModeToggle;
-        assert_eq!(
-            s.prev(StrategySetupMode::Ai),
-            StrategySection::CategoryWeights
-        );
-        assert_eq!(
-            s.prev(StrategySetupMode::Manual),
-            StrategySection::CategoryWeights
-        );
+    fn review_section_next_cycle() {
+        let s = ReviewSection::Overview;
+        assert_eq!(s.next(), ReviewSection::BudgetField);
+        assert_eq!(s.next().next(), ReviewSection::CategoryWeights);
     }
 
     #[test]
@@ -1069,12 +1205,12 @@ mod tests {
     #[test]
     fn is_editing_checks() {
         let mut s = StrategySetupState::default();
-        assert!(!s.is_editing());
-
-        s.ai_input_editing = true;
+        // Default has input_editing = true
         assert!(s.is_editing());
 
-        s.ai_input_editing = false;
+        s.input_editing = false;
+        assert!(!s.is_editing());
+
         s.editing_field = Some("budget".to_string());
         assert!(s.is_editing());
     }
@@ -1082,7 +1218,7 @@ mod tests {
     // -- Render tests --
 
     #[test]
-    fn render_default_does_not_panic() {
+    fn render_input_step_does_not_panic() {
         let backend = ratatui::backend::TestBackend::new(80, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let state = StrategySetupState::default();
@@ -1092,61 +1228,62 @@ mod tests {
     }
 
     #[test]
-    fn render_manual_mode_does_not_panic() {
+    fn render_generating_step_does_not_panic() {
         let backend = ratatui::backend::TestBackend::new(80, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let mut state = StrategySetupState::default();
-        state.mode = StrategySetupMode::Manual;
-        state.active_section = StrategySection::CategoryWeights;
-        state.selected_weight_idx = 5;
+        state.step = StrategyWizardStep::Generating;
+        state.generating = true;
+        state.generation_output = "Processing...".to_string();
         terminal
             .draw(|frame| render(frame, frame.area(), &state))
             .unwrap();
     }
 
     #[test]
-    fn render_editing_mode_does_not_panic() {
+    fn render_review_step_does_not_panic() {
         let backend = ratatui::backend::TestBackend::new(80, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let mut state = StrategySetupState::default();
+        state.step = StrategyWizardStep::Review;
+        state.strategy_overview = "Stars-and-scrubs approach.".to_string();
+        state.review_section = ReviewSection::BudgetField;
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state))
+            .unwrap();
+    }
+
+    #[test]
+    fn render_confirm_step_does_not_panic() {
+        let backend = ratatui::backend::TestBackend::new(80, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut state = StrategySetupState::default();
+        state.step = StrategyWizardStep::Confirm;
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state))
+            .unwrap();
+    }
+
+    #[test]
+    fn render_review_editing_does_not_panic() {
+        let backend = ratatui::backend::TestBackend::new(80, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut state = StrategySetupState::default();
+        state.step = StrategyWizardStep::Review;
         state.editing_field = Some("budget".to_string());
         state.field_input.set_value("70");
-        state.active_section = StrategySection::BudgetField;
+        state.review_section = ReviewSection::BudgetField;
         terminal
             .draw(|frame| render(frame, frame.area(), &state))
             .unwrap();
     }
 
     #[test]
-    fn render_ai_generating_does_not_panic() {
+    fn render_generating_error_does_not_panic() {
         let backend = ratatui::backend::TestBackend::new(80, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let mut state = StrategySetupState::default();
-        state.generating = true;
-        state.active_section = StrategySection::GenerateButton;
-        terminal
-            .draw(|frame| render(frame, frame.area(), &state))
-            .unwrap();
-    }
-
-    #[test]
-    fn render_ai_input_editing_does_not_panic() {
-        let backend = ratatui::backend::TestBackend::new(80, 40);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        let mut state = StrategySetupState::default();
-        state.ai_input_editing = true;
-        state.ai_input.set_value("punt saves, go heavy K and BB");
-        state.active_section = StrategySection::AiInput;
-        terminal
-            .draw(|frame| render(frame, frame.area(), &state))
-            .unwrap();
-    }
-
-    #[test]
-    fn render_with_generation_error() {
-        let backend = ratatui::backend::TestBackend::new(80, 40);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        let mut state = StrategySetupState::default();
+        state.step = StrategyWizardStep::Generating;
         state.generation_error = Some("LLM disabled".to_string());
         terminal
             .draw(|frame| render(frame, frame.area(), &state))

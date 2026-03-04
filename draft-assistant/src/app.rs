@@ -477,7 +477,7 @@ impl AppState {
             eligible_slots: nomination.eligible_slots.clone(),
         };
 
-        let system = prompt::system_prompt();
+        let system = prompt::system_prompt(self.config.strategy.strategy_overview.as_deref());
         let user_content = prompt::build_nomination_analysis_prompt(
             &player,
             &nom_info,
@@ -546,7 +546,7 @@ impl AppState {
         self.nomination_plan_text.clear();
         self.nomination_plan_status = LlmStatus::Streaming;
 
-        let system = prompt::system_prompt();
+        let system = prompt::system_prompt(self.config.strategy.strategy_overview.as_deref());
         let user_content = prompt::build_nomination_planning_prompt(
             &my_team.roster,
             &self.category_needs,
@@ -1432,6 +1432,9 @@ async fn handle_onboarding_action(
                         state.config.strategy.llm.model = model.clone();
                     }
 
+                    // Reload LLM client so strategy step can use it
+                    state.reload_llm_client();
+
                     // Advance to next step
                     state.onboarding_progress.current_step = OnboardingStep::StrategySetup;
                     if let Err(e) = state
@@ -1581,15 +1584,19 @@ async fn handle_onboarding_action(
                 }
             }
         }
-        OnboardingAction::SaveStrategyConfig { hitting_budget_pct, category_weights } => {
+        OnboardingAction::SaveStrategyConfig { hitting_budget_pct, category_weights, strategy_overview } => {
             // Update in-memory config
             state.config.strategy.hitting_budget_fraction = hitting_budget_pct as f64 / 100.0;
             state.config.strategy.weights = category_weights.to_config_weights();
+            state.config.strategy.strategy_overview = strategy_overview.clone();
 
-            // Persist to strategy.toml
-            if let Err(e) = state.onboarding_manager.save_strategy(
+            // Persist to strategy.toml (including strategy overview)
+            if let Err(e) = state.onboarding_manager.save_strategy_full(
                 hitting_budget_pct,
                 &category_weights,
+                None,
+                None,
+                strategy_overview.as_deref(),
             ) {
                 warn!("Failed to save strategy.toml: {}", e);
             } else {
@@ -1643,7 +1650,10 @@ async fn handle_onboarding_action(
                         explanation) with exactly these fields:\n\
                         - \"hitting_budget_pct\": integer 0-100 (percentage of budget for hitting)\n\
                         - \"category_weights\": object with keys R, HR, RBI, BB, SB, AVG, K, W, SV, HD, ERA, WHIP, \
-                        each a float where 1.0 = normal importance, >1.0 = overweight, <1.0 = underweight (min 0.0, max 5.0)\n\n\
+                        each a float where 1.0 = normal importance, >1.0 = overweight, <1.0 = underweight (min 0.0, max 5.0)\n\
+                        - \"strategy_overview\": a 2-3 sentence prose summary of the strategy that captures the key \
+                        decisions (budget split, punt categories, target player profiles, market edges). This will be \
+                        fed to the draft-time AI advisor for context.\n\n\
                         League: 10-team H2H Most Categories, salary cap $260, 26 keepers.\n\
                         Categories: R, HR, RBI, BB, SB, AVG (hitting) | K, W, SV, HD, ERA, WHIP (pitching)\n\
                         Key edges: BB (walks) and HD (holds) are non-standard and undervalued.";
@@ -1700,12 +1710,13 @@ async fn handle_onboarding_action(
 
                         // Parse JSON from the response
                         match parse_strategy_json(&full_text) {
-                            Ok((pct, weights)) => {
+                            Ok((pct, weights, overview)) => {
                                 let _ = tx
                                     .send(UiUpdate::OnboardingUpdate(
                                         OnboardingUpdate::StrategyLlmComplete {
                                             hitting_budget_pct: pct,
                                             category_weights: weights,
+                                            strategy_overview: overview,
                                         },
                                     ))
                                     .await;
@@ -1826,18 +1837,20 @@ async fn handle_settings_action(
                     .await;
             });
         }
-        OnboardingAction::SaveStrategyConfig { hitting_budget_pct, category_weights } => {
+        OnboardingAction::SaveStrategyConfig { hitting_budget_pct, category_weights, strategy_overview } => {
             // Update in-memory config
             state.config.strategy.hitting_budget_fraction = hitting_budget_pct as f64 / 100.0;
             state.config.strategy.weights = category_weights.to_config_weights();
+            state.config.strategy.strategy_overview = strategy_overview.clone();
 
             // Persist to strategy.toml (including current LLM provider/model
             // in case they were changed on the LLM tab)
-            if let Err(e) = state.onboarding_manager.save_strategy_with_llm(
+            if let Err(e) = state.onboarding_manager.save_strategy_full(
                 hitting_budget_pct,
                 &category_weights,
                 Some(&state.config.strategy.llm.provider),
                 Some(&state.config.strategy.llm.model),
+                strategy_overview.as_deref(),
             ) {
                 warn!("Failed to save strategy.toml: {}", e);
             } else {
@@ -2058,14 +2071,16 @@ async fn test_api_connection(
     }
 }
 
-/// Parse the LLM's JSON response into a hitting budget percentage and category weights.
+/// Parse the LLM's JSON response into a hitting budget percentage, category weights,
+/// and strategy overview.
 ///
-/// The LLM is prompted to return a JSON object with `hitting_budget_pct` (int 0-100) and
-/// `category_weights` (map of category name to float). This function extracts the JSON
-/// from the response (stripping any surrounding text/markdown fences) and parses it.
+/// The LLM is prompted to return a JSON object with `hitting_budget_pct` (int 0-100),
+/// `category_weights` (map of category name to float), and `strategy_overview` (string).
+/// This function extracts the JSON from the response (stripping any surrounding
+/// text/markdown fences) and parses it.
 fn parse_strategy_json(
     text: &str,
-) -> Result<(u8, crate::tui::onboarding::strategy_setup::CategoryWeights), String> {
+) -> Result<(u8, crate::tui::onboarding::strategy_setup::CategoryWeights, String), String> {
     use crate::tui::onboarding::strategy_setup::CategoryWeights;
 
     // Strip markdown code fences if present.
@@ -2116,7 +2131,13 @@ fn parse_strategy_json(
         }
     }
 
-    Ok((pct, weights))
+    let overview = parsed
+        .get("strategy_overview")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    Ok((pct, weights, overview))
 }
 
 // ---------------------------------------------------------------------------
@@ -2228,6 +2249,7 @@ mod tests {
                 analysis_trigger: "nomination".into(),
                 prefire_planning: true,
             },
+            strategy_overview: None,
         }
     }
 
@@ -5043,6 +5065,7 @@ mod tests {
             UserCommand::OnboardingAction(OnboardingAction::SaveStrategyConfig {
                 hitting_budget_pct: 70,
                 category_weights: weights,
+                strategy_overview: Some("Test overview".to_string()),
             }),
             &ui_tx,
         )
@@ -5091,26 +5114,28 @@ mod tests {
 
     #[test]
     fn parse_strategy_json_valid() {
-        let json = r#"{"hitting_budget_pct": 70, "category_weights": {"R": 1.0, "HR": 1.1, "RBI": 1.0, "BB": 1.3, "SB": 0.8, "AVG": 1.0, "K": 1.0, "W": 1.0, "SV": 0.3, "HD": 1.2, "ERA": 1.0, "WHIP": 1.0}}"#;
-        let (pct, weights) = parse_strategy_json(json).unwrap();
+        let json = r#"{"hitting_budget_pct": 70, "category_weights": {"R": 1.0, "HR": 1.1, "RBI": 1.0, "BB": 1.3, "SB": 0.8, "AVG": 1.0, "K": 1.0, "W": 1.0, "SV": 0.3, "HD": 1.2, "ERA": 1.0, "WHIP": 1.0}, "strategy_overview": "Test overview"}"#;
+        let (pct, weights, overview) = parse_strategy_json(json).unwrap();
         assert_eq!(pct, 70);
         assert!((weights.bb - 1.3).abs() < f32::EPSILON);
         assert!((weights.sv - 0.3).abs() < f32::EPSILON);
         assert!((weights.hd - 1.2).abs() < f32::EPSILON);
+        assert_eq!(overview, "Test overview");
     }
 
     #[test]
     fn parse_strategy_json_with_markdown_fences() {
         let json = "```json\n{\"hitting_budget_pct\": 65, \"category_weights\": {\"R\": 1.0, \"HR\": 1.0, \"RBI\": 1.0, \"BB\": 1.0, \"SB\": 1.0, \"AVG\": 1.0, \"K\": 1.0, \"W\": 1.0, \"SV\": 0.7, \"HD\": 1.0, \"ERA\": 1.0, \"WHIP\": 1.0}}\n```";
-        let (pct, weights) = parse_strategy_json(json).unwrap();
+        let (pct, weights, overview) = parse_strategy_json(json).unwrap();
         assert_eq!(pct, 65);
         assert!((weights.sv - 0.7).abs() < f32::EPSILON);
+        assert_eq!(overview, ""); // no overview in this JSON
     }
 
     #[test]
     fn parse_strategy_json_clamps_values() {
         let json = r#"{"hitting_budget_pct": 200, "category_weights": {"SV": -1.0, "BB": 7.0}}"#;
-        let (pct, weights) = parse_strategy_json(json).unwrap();
+        let (pct, weights, _overview) = parse_strategy_json(json).unwrap();
         assert_eq!(pct, 100); // clamped to 100
         assert!((weights.sv - 0.0).abs() < f32::EPSILON); // clamped to 0.0
         assert!((weights.bb - 5.0).abs() < f32::EPSILON); // clamped to 5.0
@@ -5119,10 +5144,11 @@ mod tests {
     #[test]
     fn parse_strategy_json_missing_fields_uses_defaults() {
         let json = r#"{"category_weights": {"BB": 1.3}}"#;
-        let (pct, weights) = parse_strategy_json(json).unwrap();
+        let (pct, weights, overview) = parse_strategy_json(json).unwrap();
         assert_eq!(pct, 65); // default
         assert!((weights.bb - 1.3).abs() < f32::EPSILON);
         assert!((weights.r - 1.0).abs() < f32::EPSILON); // default
+        assert_eq!(overview, ""); // default
     }
 
     #[test]
@@ -5134,7 +5160,7 @@ mod tests {
     #[test]
     fn parse_strategy_json_with_surrounding_text() {
         let text = "Here is the configuration:\n{\"hitting_budget_pct\": 60, \"category_weights\": {}}\nEnjoy!";
-        let (pct, _) = parse_strategy_json(text).unwrap();
+        let (pct, _, _) = parse_strategy_json(text).unwrap();
         assert_eq!(pct, 60);
     }
 
@@ -5227,6 +5253,7 @@ mod tests {
             UserCommand::OnboardingAction(OnboardingAction::SaveStrategyConfig {
                 hitting_budget_pct: 70,
                 category_weights: weights,
+                strategy_overview: None,
             }),
             &ui_tx,
         )

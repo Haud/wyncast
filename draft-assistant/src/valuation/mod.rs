@@ -488,6 +488,7 @@ mod tests {
                 ERA: 1.0,
                 WHIP: 1.0,
             },
+            strategy_overview: None,
             pool: PoolConfig {
                 min_pa: 300,
                 min_ip_sp: 80.0,

@@ -1737,6 +1737,7 @@ mod tests {
                     analysis_trigger: "nomination".to_string(),
                     prefire_planning: true,
                 },
+                strategy_overview: None,
             },
             credentials: CredentialsConfig {
                 anthropic_api_key: api_key,
@@ -1816,6 +1817,7 @@ mod tests {
                     analysis_trigger: "nomination".to_string(),
                     prefire_planning: true,
                 },
+                strategy_overview: None,
             },
             credentials: CredentialsConfig {
                 anthropic_api_key: None,

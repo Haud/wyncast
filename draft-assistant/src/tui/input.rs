@@ -69,10 +69,17 @@ pub fn handle_key(
 /// Used to detect transitions *into* editing mode so we can suppress a
 /// potential stray `[` character from a partially-parsed CSI escape sequence.
 fn is_text_editing_active(view_state: &ViewState) -> bool {
+    let strategy_editing = matches!(
+        view_state.app_mode,
+        AppMode::Onboarding(crate::onboarding::OnboardingStep::StrategySetup)
+            | AppMode::Onboarding(crate::onboarding::OnboardingStep::Complete)
+            | AppMode::Settings(crate::protocol::SettingsSection::StrategyConfig)
+    ) && (view_state.strategy_setup.input_editing
+        || view_state.strategy_setup.editing_field.is_some());
+
     view_state.filter_mode
         || view_state.llm_setup.api_key_editing
-        || view_state.strategy_setup.ai_input_editing
-        || view_state.strategy_setup.editing_field.is_some()
+        || strategy_editing
         || view_state.position_filter_modal.open
 }
 
@@ -117,180 +124,273 @@ fn handle_onboarding_key(
     }
 }
 
-/// Handle keyboard input on the strategy setup screen (onboarding step 2).
+/// Handle keyboard input on the strategy setup wizard (onboarding step 2).
 ///
-/// Input handling depends on the current editing state:
-/// - When editing AI text: captures typed characters, Enter confirms, Esc cancels
-/// - When editing a numeric field: captures digits and '.', Enter confirms, Esc cancels
-/// - When not editing: Tab/Shift+Tab cycle sections, Up/Down navigate weights,
-///   Enter activates editing or triggers actions, s saves, Esc goes back
+/// Dispatches to step-specific handlers based on the current wizard step:
+/// - Input: text editing for strategy description
+/// - Generating: wait for LLM, handle errors
+/// - Review: navigate/edit budget and category weights
+/// - Confirm: Yes/No selection
 fn handle_strategy_setup_key(
     key_event: KeyEvent,
     view_state: &mut ViewState,
 ) -> Option<UserCommand> {
     use super::onboarding::strategy_setup::{
-        StrategySection, StrategySetupMode, CATEGORIES,
+        ReviewSection, StrategyWizardStep, CATEGORIES, WEIGHT_COLS,
     };
 
     let state = &mut view_state.strategy_setup;
 
-    // --- AI text input editing mode ---
-    if state.ai_input_editing {
-        return match key_event.code {
-            KeyCode::Enter | KeyCode::Esc => {
-                state.ai_input_editing = false;
-                None
-            }
-            _ if dispatch_text_input_key(&key_event, &mut state.ai_input) => None,
-            _ => None,
-        };
-    }
-
-    // --- Numeric field editing mode ---
-    if state.editing_field.is_some() {
-        return match key_event.code {
-            KeyCode::Enter => {
-                state.confirm_edit();
-                None
-            }
-            KeyCode::Esc => {
-                state.cancel_edit();
-                None
-            }
-            // Only allow digits and '.' for numeric input; other chars
-            // are silently dropped. Navigation keys (Backspace, Delete,
-            // arrows, etc.) are handled by the shared helper below.
-            KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => {
-                state.field_input.insert_char(c);
-                None
-            }
-            KeyCode::Char(_) => None,
-            _ if dispatch_text_input_key(&key_event, &mut state.field_input) => None,
-            _ => None,
-        };
-    }
-
-    // --- Normal navigation mode ---
-    match key_event.code {
-        // Tab: cycle forward through sections
-        KeyCode::Tab => {
-            state.active_section = state.active_section.next(state.mode);
-            None
-        }
-        // Shift+Tab: cycle backward
-        KeyCode::BackTab => {
-            state.active_section = state.active_section.prev(state.mode);
-            None
-        }
-        // Up/Down: navigate within the active section
-        KeyCode::Up | KeyCode::Char('k') => {
-            match state.active_section {
-                StrategySection::CategoryWeights => {
-                    state.weight_up();
-                }
-                _ => {}
-            }
-            None
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            match state.active_section {
-                StrategySection::CategoryWeights => {
-                    state.weight_down();
-                }
-                _ => {}
-            }
-            None
-        }
-        KeyCode::Left | KeyCode::Char('h') => {
-            match state.active_section {
-                StrategySection::CategoryWeights => {
-                    state.weight_left();
-                }
-                StrategySection::ModeToggle => {
-                    if state.mode == StrategySetupMode::Manual {
-                        state.toggle_mode();
+    match state.step {
+        // ----- Step 1: Input -----
+        StrategyWizardStep::Input => {
+            if state.input_editing {
+                // Text editing mode
+                return match key_event.code {
+                    KeyCode::Esc => {
+                        state.input_editing = false;
+                        None
                     }
-                }
-                _ => {}
-            }
-            None
-        }
-        KeyCode::Right | KeyCode::Char('l') => {
-            match state.active_section {
-                StrategySection::CategoryWeights => {
-                    state.weight_right();
-                }
-                StrategySection::ModeToggle => {
-                    if state.mode == StrategySetupMode::Ai {
-                        state.toggle_mode();
+                    KeyCode::Enter => {
+                        // Submit text to LLM if non-empty
+                        if !state.strategy_input.value().trim().is_empty() {
+                            state.input_editing = false;
+                            state.step = StrategyWizardStep::Generating;
+                            state.generating = true;
+                            state.generation_output.clear();
+                            state.generation_error = None;
+                            let text = state.strategy_input.value().to_string();
+                            Some(UserCommand::OnboardingAction(
+                                OnboardingAction::ConfigureStrategyWithLlm(text),
+                            ))
+                        } else {
+                            None
+                        }
                     }
-                }
-                _ => {}
+                    _ if dispatch_text_input_key(&key_event, &mut state.strategy_input) => None,
+                    _ => None,
+                };
             }
-            None
-        }
-        // Enter: context-dependent activation
-        KeyCode::Enter => {
-            match state.active_section {
-                StrategySection::ModeToggle => {
-                    state.toggle_mode();
-                    None
-                }
-                StrategySection::AiInput => {
-                    state.ai_input_editing = true;
-                    None
-                }
-                StrategySection::GenerateButton => {
-                    if !state.generating && !state.ai_input.value().trim().is_empty() {
+
+            // Not editing text
+            match key_event.code {
+                KeyCode::Enter => {
+                    // Send to LLM if there's text
+                    if !state.strategy_input.value().trim().is_empty() {
+                        state.step = StrategyWizardStep::Generating;
                         state.generating = true;
                         state.generation_output.clear();
                         state.generation_error = None;
-                        let text = state.ai_input.value().to_string();
+                        let text = state.strategy_input.value().to_string();
                         Some(UserCommand::OnboardingAction(
                             OnboardingAction::ConfigureStrategyWithLlm(text),
                         ))
                     } else {
+                        // No text, enter edit mode
+                        state.input_editing = true;
                         None
                     }
                 }
-                StrategySection::BudgetField => {
-                    let current = format!("{}", state.hitting_budget_pct);
-                    state.start_editing("budget", &current);
+                KeyCode::Char('e') => {
+                    state.input_editing = true;
                     None
                 }
-                StrategySection::CategoryWeights => {
-                    let idx = state.selected_weight_idx;
-                    if idx < CATEGORIES.len() {
-                        let cat_name = CATEGORIES[idx];
-                        let current = format!("{:.1}", state.category_weights.get(idx));
-                        state.start_editing(cat_name, &current);
+                KeyCode::Esc => {
+                    Some(UserCommand::OnboardingAction(OnboardingAction::GoBack))
+                }
+                KeyCode::Char('q') => Some(UserCommand::Quit),
+                _ => None,
+            }
+        }
+
+        // ----- Step 2: Generating -----
+        StrategyWizardStep::Generating => {
+            // If there's an error, allow retry or go back
+            if state.generation_error.is_some() {
+                match key_event.code {
+                    KeyCode::Enter => {
+                        // Retry
+                        state.generating = true;
+                        state.generation_output.clear();
+                        state.generation_error = None;
+                        let text = state.strategy_input.value().to_string();
+                        Some(UserCommand::OnboardingAction(
+                            OnboardingAction::ConfigureStrategyWithLlm(text),
+                        ))
                     }
-                    None
+                    KeyCode::Esc => {
+                        // Go back to input
+                        state.step = StrategyWizardStep::Input;
+                        state.input_editing = true;
+                        state.generating = false;
+                        state.generation_error = None;
+                        None
+                    }
+                    KeyCode::Char('q') => Some(UserCommand::Quit),
+                    _ => None,
+                }
+            } else {
+                // Still generating, no input allowed except quit
+                match key_event.code {
+                    KeyCode::Char('q') => Some(UserCommand::Quit),
+                    _ => None,
                 }
             }
         }
-        // s: save and continue
-        KeyCode::Char('s') => {
-            let weights = state.category_weights.clone();
-            let pct = state.hitting_budget_pct;
-            Some(UserCommand::OnboardingAction(
-                OnboardingAction::SaveStrategyConfig {
-                    hitting_budget_pct: pct,
-                    category_weights: weights,
-                },
-            ))
+
+        // ----- Step 3: Review -----
+        StrategyWizardStep::Review => {
+            // Numeric field editing mode
+            if state.editing_field.is_some() {
+                return match key_event.code {
+                    KeyCode::Enter => {
+                        state.confirm_edit();
+                        None
+                    }
+                    KeyCode::Esc => {
+                        state.cancel_edit();
+                        None
+                    }
+                    KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => {
+                        state.field_input.insert_char(c);
+                        None
+                    }
+                    KeyCode::Char(_) => None,
+                    _ if dispatch_text_input_key(&key_event, &mut state.field_input) => None,
+                    _ => None,
+                };
+            }
+
+            // Normal review navigation
+            match key_event.code {
+                // Up/Down: move between sections naturally
+                KeyCode::Up | KeyCode::Char('k') => {
+                    match state.review_section {
+                        ReviewSection::Overview => {} // already at top
+                        ReviewSection::BudgetField => {
+                            state.review_section = ReviewSection::Overview;
+                        }
+                        ReviewSection::CategoryWeights => {
+                            // If in top row of grid, move up to budget
+                            if state.selected_weight_idx < WEIGHT_COLS {
+                                state.review_section = ReviewSection::BudgetField;
+                            } else {
+                                state.weight_up();
+                            }
+                        }
+                    }
+                    None
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    match state.review_section {
+                        ReviewSection::Overview => {
+                            state.review_section = ReviewSection::BudgetField;
+                        }
+                        ReviewSection::BudgetField => {
+                            state.review_section = ReviewSection::CategoryWeights;
+                        }
+                        ReviewSection::CategoryWeights => {
+                            state.weight_down();
+                        }
+                    }
+                    None
+                }
+                KeyCode::Left | KeyCode::Char('h') => {
+                    if state.review_section == ReviewSection::CategoryWeights {
+                        state.weight_left();
+                    }
+                    None
+                }
+                KeyCode::Right | KeyCode::Char('l') => {
+                    if state.review_section == ReviewSection::CategoryWeights {
+                        state.weight_right();
+                    }
+                    None
+                }
+                // Enter: edit field or advance to confirm
+                KeyCode::Enter => {
+                    match state.review_section {
+                        ReviewSection::Overview => {
+                            // Overview is read-only; advance to confirm
+                            state.step = StrategyWizardStep::Confirm;
+                            state.confirm_yes = true;
+                            None
+                        }
+                        ReviewSection::BudgetField => {
+                            let current = format!("{}", state.hitting_budget_pct);
+                            state.start_editing("budget", &current);
+                            None
+                        }
+                        ReviewSection::CategoryWeights => {
+                            let idx = state.selected_weight_idx;
+                            if idx < CATEGORIES.len() {
+                                let cat_name = CATEGORIES[idx];
+                                let current = format!("{:.1}", state.category_weights.get(idx));
+                                state.start_editing(cat_name, &current);
+                            }
+                            None
+                        }
+                    }
+                }
+                // s: save (advance to confirm)
+                KeyCode::Char('s') => {
+                    state.step = StrategyWizardStep::Confirm;
+                    state.confirm_yes = true;
+                    None
+                }
+                // S: skip this step
+                KeyCode::Char('S') => {
+                    Some(UserCommand::OnboardingAction(OnboardingAction::Skip))
+                }
+                // Esc: go back to Input step (keep values)
+                KeyCode::Esc => {
+                    state.step = StrategyWizardStep::Input;
+                    state.input_editing = true;
+                    None
+                }
+                KeyCode::Char('q') => Some(UserCommand::Quit),
+                _ => None,
+            }
         }
-        // S: skip this step (go to draft without saving strategy)
-        KeyCode::Char('S') => {
-            Some(UserCommand::OnboardingAction(OnboardingAction::Skip))
+
+        // ----- Step 4: Confirm -----
+        StrategyWizardStep::Confirm => {
+            match key_event.code {
+                KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l') => {
+                    state.confirm_yes = !state.confirm_yes;
+                    None
+                }
+                KeyCode::Enter | KeyCode::Char('y') if state.confirm_yes => {
+                    // Save and enter draft mode
+                    let weights = state.category_weights.clone();
+                    let pct = state.hitting_budget_pct;
+                    let overview = if state.strategy_overview.is_empty() {
+                        None
+                    } else {
+                        Some(state.strategy_overview.clone())
+                    };
+                    Some(UserCommand::OnboardingAction(
+                        OnboardingAction::SaveStrategyConfig {
+                            hitting_budget_pct: pct,
+                            category_weights: weights,
+                            strategy_overview: overview,
+                        },
+                    ))
+                }
+                KeyCode::Enter | KeyCode::Char('n') if !state.confirm_yes => {
+                    // Go back to review
+                    state.step = StrategyWizardStep::Review;
+                    None
+                }
+                KeyCode::Esc => {
+                    // Go back to review
+                    state.step = StrategyWizardStep::Review;
+                    None
+                }
+                KeyCode::Char('q') => Some(UserCommand::Quit),
+                _ => None,
+            }
         }
-        // Esc: go back
-        KeyCode::Esc => {
-            Some(UserCommand::OnboardingAction(OnboardingAction::GoBack))
-        }
-        // q: quit
-        KeyCode::Char('q') => Some(UserCommand::Quit),
-        _ => None,
     }
 }
 
@@ -2092,9 +2192,13 @@ mod tests {
     #[test]
     fn strategy_setup_shift_s_sends_skip() {
         use crate::onboarding::OnboardingStep;
+        use crate::tui::onboarding::strategy_setup::StrategyWizardStep;
 
         let mut state = ViewState::default();
         state.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
+        // Shift-S (Skip) only works in the Review step
+        state.strategy_setup.step = StrategyWizardStep::Review;
+        state.strategy_setup.input_editing = false;
         let result = handle_key(key(KeyCode::Char('S')), &mut state);
         assert_eq!(
             result,
@@ -2105,24 +2209,33 @@ mod tests {
     // -- Strategy setup placeholder input tests --
 
     #[test]
-    fn strategy_setup_enter_on_mode_toggle_toggles_mode() {
+    fn strategy_setup_input_step_enter_generates() {
         use crate::onboarding::OnboardingStep;
-        use crate::tui::onboarding::strategy_setup::StrategySetupMode;
+        use crate::tui::onboarding::strategy_setup::StrategyWizardStep;
 
         let mut state = ViewState::default();
         state.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
-        // Default section is ModeToggle, default mode is Ai
+        // Default step is Input with input_editing = true
+        // Type some text first, then Enter while editing triggers generation
+        state.strategy_setup.strategy_input.set_value("My strategy");
         let result = handle_key(key(KeyCode::Enter), &mut state);
-        assert!(result.is_none()); // toggle is UI-only, no command
-        assert_eq!(state.strategy_setup.mode, StrategySetupMode::Manual);
+        // Enter on Input step with text should send ConfigureStrategyWithLlm
+        assert!(result.is_some());
+        assert_eq!(state.strategy_setup.step, StrategyWizardStep::Generating);
     }
 
     #[test]
-    fn strategy_setup_esc_sends_go_back() {
+    fn strategy_setup_esc_stops_editing_then_goes_back() {
         use crate::onboarding::OnboardingStep;
 
         let mut state = ViewState::default();
         state.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
+        // Default state has input_editing = true; first Esc stops editing
+        let result = handle_key(key(KeyCode::Esc), &mut state);
+        assert!(result.is_none());
+        assert!(!state.strategy_setup.input_editing);
+
+        // Second Esc (not editing) sends GoBack
         let result = handle_key(key(KeyCode::Esc), &mut state);
         assert!(matches!(
             result,
@@ -2131,12 +2244,16 @@ mod tests {
     }
 
     #[test]
-    fn strategy_setup_s_sends_save_strategy_config() {
+    fn strategy_setup_confirm_yes_sends_save_strategy_config() {
         use crate::onboarding::OnboardingStep;
+        use crate::tui::onboarding::strategy_setup::StrategyWizardStep;
 
         let mut state = ViewState::default();
         state.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
-        let result = handle_key(key(KeyCode::Char('s')), &mut state);
+        // Put state in Confirm step with confirm_yes = true
+        state.strategy_setup.step = StrategyWizardStep::Confirm;
+        state.strategy_setup.confirm_yes = true;
+        let result = handle_key(key(KeyCode::Enter), &mut state);
         assert!(matches!(
             result,
             Some(UserCommand::OnboardingAction(
@@ -2282,13 +2399,24 @@ mod tests {
     #[test]
     fn settings_strategy_tab_delegates_to_strategy_handler() {
         use crate::protocol::SettingsSection;
+        use crate::tui::onboarding::strategy_setup::StrategyWizardStep;
 
         let mut state = ViewState::default();
         state.app_mode = AppMode::Settings(SettingsSection::StrategyConfig);
         state.settings_tab = SettingsSection::StrategyConfig;
+        // In settings, the user has already completed the wizard;
+        // strategy setup should be in Review step.
+        state.strategy_setup.step = StrategyWizardStep::Review;
+        state.strategy_setup.input_editing = false;
 
-        // 's' in strategy tab should dispatch SaveStrategyConfig
+        // 's' in strategy Review step advances to Confirm
         let result = handle_key(key(KeyCode::Char('s')), &mut state);
+        assert!(result.is_none(), "'s' advances to Confirm step, no command emitted");
+        assert_eq!(state.strategy_setup.step, StrategyWizardStep::Confirm);
+
+        // Confirm with Enter saves
+        state.strategy_setup.confirm_yes = true;
+        let result = handle_key(key(KeyCode::Enter), &mut state);
         assert!(
             matches!(
                 result,

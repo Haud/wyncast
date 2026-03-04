@@ -377,6 +377,7 @@ mod tests {
                 analysis_trigger: "nomination".into(),
                 prefire_planning: true,
             },
+            strategy_overview: None,
         }
     }
 
