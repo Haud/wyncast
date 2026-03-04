@@ -31,9 +31,9 @@ The binary is output to `target/release/draft-assistant` (or `draft-assistant.ex
 
 ## Configuration
 
-All config lives in `draft-assistant/config/`. Three TOML files:
+Config files are auto-generated on first run in the OS-standard app data directory (e.g. `~/.local/share/wyncast/config/` on Linux). Three TOML files:
 
-### 1. `config/league.toml` (required)
+### 1. `league.toml` (required)
 
 League structure — teams, roster slots, scoring categories. This file ships pre-configured for the Wyndham league with all required sections filled in. The only sections you need to customize before draft day are the team names and your team ID:
 
@@ -50,7 +50,7 @@ team_2 = "Opponent 2"
 team_id = "team_1"  # Must match your key in [league.teams]
 ```
 
-### 2. `config/strategy.toml` (required)
+### 2. `strategy.toml` (required)
 
 Valuation weights, budget split, LLM settings, data paths. Ships with sensible defaults. Key knobs:
 
@@ -64,15 +64,9 @@ Valuation weights, budget split, LLM settings, data paths. Ships with sensible d
 | `[websocket]` | `port` | `9001` | WebSocket port (must match extension) |
 | `[data_paths]` | various | `data/...` | Paths to projection CSVs (relative to cwd) |
 
-### 3. `config/credentials.toml` (optional)
+### 3. `credentials.toml` (optional)
 
-API key for Claude-powered analysis. **Not checked into git.**
-
-```bash
-cp config/credentials.toml.example config/credentials.toml
-```
-
-Then edit it:
+API key for Claude-powered analysis. Credentials are configured via the onboarding wizard or settings screen. You can also edit the file directly:
 
 ```toml
 anthropic_api_key = "sk-ant-your-key-here"
@@ -143,7 +137,7 @@ cargo run --release
 ```
 
 On startup the app will:
-1. Load config from `config/`
+1. Load config from the app data directory (auto-generating defaults if missing)
 2. Load projections and compute valuations (z-scores → VOR → auction dollars)
 3. Open/create SQLite database (path from `[database].path` in `strategy.toml`, default: `draft-assistant.db`)
 4. Start WebSocket server on `127.0.0.1:9001`
@@ -193,7 +187,7 @@ RUST_LOG=debug cargo run --release
 ## Troubleshooting
 
 **App won't start — "config file not found"**
-Run from the `draft-assistant/` directory so relative paths resolve correctly.
+Config files are auto-generated on first run. If they are missing, check the app data directory (e.g. `~/.local/share/wyncast/config/` on Linux).
 
 **"failed to load projections"**
 Verify CSV files exist at the paths in `strategy.toml` and have the correct column headers.
@@ -205,7 +199,7 @@ Verify CSV files exist at the paths in `strategy.toml` and have the correct colu
 - Check browser console for WebSocket errors
 
 **LLM analysis not appearing**
-- Verify `config/credentials.toml` exists with a valid API key
+- Verify `credentials.toml` exists in the app data directory with a valid API key, or configure via the onboarding wizard
 - Check `logs/draft-assistant.log` for API errors
 
 **Database locked**
@@ -241,10 +235,6 @@ draft-assistant/
 │       ├── state.rs         #   DraftState tracking
 │       ├── pick.rs          #   DraftPick and Position types
 │       └── roster.rs        #   Roster slot tracking
-├── config/                  # Configuration files
-│   ├── league.toml
-│   ├── strategy.toml
-│   └── credentials.toml.example
 ├── data/                    # Projection data (not in git)
 │   ├── projections/
 │   │   ├── hitters.csv

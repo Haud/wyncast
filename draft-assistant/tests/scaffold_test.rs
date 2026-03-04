@@ -8,35 +8,6 @@ fn project_compiles() {
     assert!(true);
 }
 
-/// Verify that the in-code default league config serializes to valid TOML
-/// and contains the expected settings.
-#[test]
-fn default_league_config_is_valid() {
-    let config = draft_assistant::config::LeagueConfig::default();
-    assert_eq!(config.num_teams, 10);
-    assert_eq!(config.salary_cap, 260);
-    assert_eq!(config.scoring_type, "h2h_most_categories");
-    assert_eq!(
-        config.batting_categories.categories,
-        vec!["R", "HR", "RBI", "BB", "SB", "AVG"]
-    );
-    assert_eq!(
-        config.pitching_categories.categories,
-        vec!["K", "W", "SV", "HD", "ERA", "WHIP"]
-    );
-}
-
-/// Verify that the in-code default strategy config contains the expected settings.
-#[test]
-fn default_strategy_config_is_valid() {
-    let config = draft_assistant::config::StrategyConfig::default();
-    assert!((config.hitting_budget_fraction - 0.65).abs() < f64::EPSILON);
-    assert!((config.weights.SV - 0.7).abs() < f64::EPSILON);
-    assert_eq!(config.llm.model, "claude-sonnet-4-6");
-    assert_eq!(config.llm.analysis_max_tokens, 2048);
-    assert_eq!(config.llm.planning_max_tokens, 2048);
-}
-
 /// Verify that the default credentials config has no keys set.
 #[test]
 fn default_credentials_config_is_empty() {

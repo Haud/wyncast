@@ -435,7 +435,7 @@ pub fn ensure_default_config_files(base_dir: &Path) -> Result<Vec<PathBuf>, Conf
 
     // --- league.toml ---
     let league_path = config_dir.join("league.toml");
-    if !league_path.exists() {
+    {
         let league_file = LeagueFile {
             league: LeagueConfig::default(),
         };
@@ -444,25 +444,63 @@ pub fn ensure_default_config_files(base_dir: &Path) -> Result<Vec<PathBuf>, Conf
                 message: format!("failed to serialize default league config: {e}"),
             }
         })?;
-        std::fs::write(&league_path, text).map_err(|e| ConfigError::DefaultsWriteError {
-            message: format!("failed to write {}: {e}", league_path.display()),
-        })?;
-        created.push(league_path);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&league_path)
+        {
+            Ok(mut file) => {
+                use std::io::Write;
+                file.write_all(text.as_bytes()).map_err(|e| {
+                    ConfigError::DefaultsWriteError {
+                        message: format!("failed to write {}: {e}", league_path.display()),
+                    }
+                })?;
+                created.push(league_path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // File already exists — skip silently.
+            }
+            Err(e) => {
+                return Err(ConfigError::DefaultsWriteError {
+                    message: format!("failed to create {}: {e}", league_path.display()),
+                });
+            }
+        }
     }
 
     // --- strategy.toml ---
     let strategy_path = config_dir.join("strategy.toml");
-    if !strategy_path.exists() {
+    {
         let strategy_file = StrategyFile::default();
         let text = toml::to_string_pretty(&strategy_file).map_err(|e| {
             ConfigError::DefaultsWriteError {
                 message: format!("failed to serialize default strategy config: {e}"),
             }
         })?;
-        std::fs::write(&strategy_path, text).map_err(|e| ConfigError::DefaultsWriteError {
-            message: format!("failed to write {}: {e}", strategy_path.display()),
-        })?;
-        created.push(strategy_path);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&strategy_path)
+        {
+            Ok(mut file) => {
+                use std::io::Write;
+                file.write_all(text.as_bytes()).map_err(|e| {
+                    ConfigError::DefaultsWriteError {
+                        message: format!("failed to write {}: {e}", strategy_path.display()),
+                    }
+                })?;
+                created.push(strategy_path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // File already exists — skip silently.
+            }
+            Err(e) => {
+                return Err(ConfigError::DefaultsWriteError {
+                    message: format!("failed to create {}: {e}", strategy_path.display()),
+                });
+            }
+        }
     }
 
     Ok(created)
