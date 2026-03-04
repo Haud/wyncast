@@ -511,15 +511,27 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
                 }
                 OnboardingUpdate::ProgressSync { provider, model } => {
                     // Rebuild LlmSetupState indices from the saved progress.
+                    // Also advance confirmed_through so that previously
+                    // configured sections are visible.
                     if let Some(ref p) = provider {
                         if let Some(idx) = LlmSetupState::PROVIDERS.iter().position(|pp| pp == p) {
                             state.llm_setup.selected_provider_idx = idx;
                         }
+                        // Provider is synced, so it's confirmed
+                        state.llm_setup.confirmed_through =
+                            Some(onboarding::llm_setup::LlmSetupSection::Provider);
+                        state.llm_setup.active_section =
+                            onboarding::llm_setup::LlmSetupSection::Model;
                         if let Some(ref model_id) = model {
                             let models = models_for_provider(p);
                             if let Some(midx) = models.iter().position(|m| m.model_id == model_id.as_str()) {
                                 state.llm_setup.selected_model_idx = midx;
                             }
+                            // Model is synced, so it's confirmed too
+                            state.llm_setup.confirmed_through =
+                                Some(onboarding::llm_setup::LlmSetupSection::Model);
+                            state.llm_setup.active_section =
+                                onboarding::llm_setup::LlmSetupSection::ApiKey;
                         }
                     }
                 }
@@ -541,6 +553,10 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
         UiUpdate::ModeChanged(mode) => {
             if let AppMode::Settings(section) = &mode {
                 state.settings_tab = *section;
+                // In settings mode, all LLM sections should be visible
+                // (user has already completed onboarding).
+                state.llm_setup.confirmed_through =
+                    Some(onboarding::llm_setup::LlmSetupSection::ApiKey);
             }
             state.app_mode = mode;
         }
@@ -586,18 +602,27 @@ fn compute_onboarding_keybinds(state: &ViewState, step: &crate::onboarding::Onbo
                     KeybindHint::new("Esc", "Cancel"),
                 ]
             } else {
-                let mut hints = vec![
-                    KeybindHint::new("^v", "Select"),
-                    KeybindHint::new("Tab", "Section"),
-                ];
-                if state.llm_setup.active_section == LlmSetupSection::ApiKey {
-                    hints.push(KeybindHint::new("Enter", "Edit key"));
-                } else if state.llm_setup.active_section == LlmSetupSection::TestButton {
-                    hints.push(KeybindHint::new("Enter", "Test"));
+                let mut hints = Vec::new();
+                match state.llm_setup.active_section {
+                    LlmSetupSection::Provider | LlmSetupSection::Model => {
+                        hints.push(KeybindHint::new("^v", "Select"));
+                        hints.push(KeybindHint::new("Enter", "Confirm"));
+                    }
+                    LlmSetupSection::ApiKey => {
+                        if state.llm_setup.api_key_input.is_empty() {
+                            hints.push(KeybindHint::new("Enter", "Input key"));
+                        } else {
+                            hints.push(KeybindHint::new("Enter", "Test connection"));
+                        }
+                    }
                 }
-                hints.push(KeybindHint::new("n", "Next"));
+                if state.llm_setup.active_section != LlmSetupSection::Provider {
+                    hints.push(KeybindHint::new("Esc", "Back"));
+                }
+                if state.llm_setup.connection_tested_ok() {
+                    hints.push(KeybindHint::new("N", "Continue ->"));
+                }
                 hints.push(KeybindHint::new("s", "Skip"));
-                hints.push(KeybindHint::new("Esc", "Back"));
                 hints
             }
         }
@@ -1508,17 +1533,33 @@ mod tests {
     #[test]
     fn compute_keybinds_llm_setup_normal_mode() {
         use crate::onboarding::OnboardingStep;
+        use onboarding::llm_setup::{LlmConnectionStatus, LlmSetupSection};
 
+        // At Provider (default): show select, confirm, skip. No Esc (first step), no N (no test yet).
         let mut state = ViewState::default();
         state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
         let hints = compute_keybinds(&state);
         let ks = keys(&hints);
         assert!(ks.contains(&"^v"), "LLM setup should show select hint");
-        assert!(ks.contains(&"Tab"), "LLM setup should show Tab hint");
-        assert!(ks.contains(&"n"), "LLM setup should show Next hint");
-        assert!(ks.contains(&"Esc"), "LLM setup should show Back hint");
+        assert!(ks.contains(&"Enter"), "LLM setup should show confirm hint");
+        assert!(ks.contains(&"s"), "LLM setup should show skip hint");
+        assert!(!ks.contains(&"Esc"), "Esc should not appear on first section (Provider)");
+        assert!(!ks.contains(&"N"), "N should not appear until connection tested");
         // Draft-specific hints should NOT appear
         assert!(!ks.contains(&"1-4"), "tab hints should not appear in onboarding");
+
+        // At Model: should show Esc (can go back)
+        state.llm_setup.confirmed_through = Some(LlmSetupSection::Provider);
+        state.llm_setup.active_section = LlmSetupSection::Model;
+        let hints = compute_keybinds(&state);
+        let ks = keys(&hints);
+        assert!(ks.contains(&"Esc"), "Esc should appear when not on first section");
+
+        // After successful connection test: N should appear
+        state.llm_setup.connection_status = LlmConnectionStatus::Success("ok".to_string());
+        let hints = compute_keybinds(&state);
+        let ks = keys(&hints);
+        assert!(ks.contains(&"N"), "N should appear after successful connection test");
     }
 
     #[test]
