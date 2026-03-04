@@ -73,6 +73,27 @@ fn is_text_editing_active(view_state: &ViewState) -> bool {
         || view_state.llm_setup.api_key_editing
         || view_state.strategy_setup.ai_input_editing
         || view_state.strategy_setup.editing_field.is_some()
+        || view_state.position_filter_modal.open
+}
+
+/// Dispatches common text editing keys to a [`TextInput`]. Returns `true` if
+/// the key was handled.
+///
+/// Handles: Backspace, Delete, Left, Right, Home, End, Insert, Char.
+/// Does **not** handle Enter or Esc — callers should match those before
+/// falling through to this helper.
+fn dispatch_text_input_key(key: &KeyEvent, input: &mut super::TextInput) -> bool {
+    match key.code {
+        KeyCode::Backspace => { input.backspace(); true }
+        KeyCode::Delete => { input.delete(); true }
+        KeyCode::Left => { input.move_left(); true }
+        KeyCode::Right => { input.move_right(); true }
+        KeyCode::Home => { input.move_home(); true }
+        KeyCode::End => { input.move_end(); true }
+        KeyCode::Insert => { input.toggle_overwrite(); true }
+        KeyCode::Char(c) => { input.insert_char(c); true }
+        _ => false,
+    }
 }
 
 /// Handle keyboard input during the onboarding wizard.
@@ -116,46 +137,11 @@ fn handle_strategy_setup_key(
     // --- AI text input editing mode ---
     if state.ai_input_editing {
         return match key_event.code {
-            KeyCode::Enter => {
+            KeyCode::Enter | KeyCode::Esc => {
                 state.ai_input_editing = false;
                 None
             }
-            KeyCode::Esc => {
-                state.ai_input_editing = false;
-                None
-            }
-            KeyCode::Backspace => {
-                state.ai_input.backspace();
-                None
-            }
-            KeyCode::Delete => {
-                state.ai_input.delete();
-                None
-            }
-            KeyCode::Left => {
-                state.ai_input.move_left();
-                None
-            }
-            KeyCode::Right => {
-                state.ai_input.move_right();
-                None
-            }
-            KeyCode::Home => {
-                state.ai_input.move_home();
-                None
-            }
-            KeyCode::End => {
-                state.ai_input.move_end();
-                None
-            }
-            KeyCode::Insert => {
-                state.ai_input.toggle_overwrite();
-                None
-            }
-            KeyCode::Char(c) => {
-                state.ai_input.insert_char(c);
-                None
-            }
+            _ if dispatch_text_input_key(&key_event, &mut state.ai_input) => None,
             _ => None,
         };
     }
@@ -171,34 +157,15 @@ fn handle_strategy_setup_key(
                 state.cancel_edit();
                 None
             }
-            KeyCode::Backspace => {
-                state.field_input.backspace();
-                None
-            }
-            KeyCode::Delete => {
-                state.field_input.delete();
-                None
-            }
-            KeyCode::Left => {
-                state.field_input.move_left();
-                None
-            }
-            KeyCode::Right => {
-                state.field_input.move_right();
-                None
-            }
-            KeyCode::Home => {
-                state.field_input.move_home();
-                None
-            }
-            KeyCode::End => {
-                state.field_input.move_end();
-                None
-            }
+            // Only allow digits and '.' for numeric input; other chars
+            // are silently dropped. Navigation keys (Backspace, Delete,
+            // arrows, etc.) are handled by the shared helper below.
             KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => {
                 state.field_input.insert_char(c);
                 None
             }
+            KeyCode::Char(_) => None,
+            _ if dispatch_text_input_key(&key_event, &mut state.field_input) => None,
             _ => None,
         };
     }
@@ -360,38 +327,7 @@ fn handle_llm_setup_key(
                 state.api_key_editing = false;
                 None
             }
-            KeyCode::Backspace => {
-                state.api_key_input.backspace();
-                None
-            }
-            KeyCode::Delete => {
-                state.api_key_input.delete();
-                None
-            }
-            KeyCode::Left => {
-                state.api_key_input.move_left();
-                None
-            }
-            KeyCode::Right => {
-                state.api_key_input.move_right();
-                None
-            }
-            KeyCode::Home => {
-                state.api_key_input.move_home();
-                None
-            }
-            KeyCode::End => {
-                state.api_key_input.move_end();
-                None
-            }
-            KeyCode::Insert => {
-                state.api_key_input.toggle_overwrite();
-                None
-            }
-            KeyCode::Char(c) => {
-                state.api_key_input.insert_char(c);
-                None
-            }
+            _ if dispatch_text_input_key(&key_event, &mut state.api_key_input) => None,
             _ => None,
         };
     }
@@ -730,39 +666,10 @@ fn handle_filter_mode(
             // Keep the filter text on Enter
             None
         }
-        KeyCode::Backspace => {
-            view_state.filter_text.backspace();
+        _ => {
+            dispatch_text_input_key(&key_event, &mut view_state.filter_text);
             None
         }
-        KeyCode::Delete => {
-            view_state.filter_text.delete();
-            None
-        }
-        KeyCode::Left => {
-            view_state.filter_text.move_left();
-            None
-        }
-        KeyCode::Right => {
-            view_state.filter_text.move_right();
-            None
-        }
-        KeyCode::Home => {
-            view_state.filter_text.move_home();
-            None
-        }
-        KeyCode::End => {
-            view_state.filter_text.move_end();
-            None
-        }
-        KeyCode::Insert => {
-            view_state.filter_text.toggle_overwrite();
-            None
-        }
-        KeyCode::Char(c) => {
-            view_state.filter_text.insert_char(c);
-            None
-        }
-        _ => None,
     }
 }
 
@@ -829,40 +736,22 @@ fn handle_position_filter_modal(
             }
             None
         }
-        KeyCode::Backspace => {
-            view_state.position_filter_modal.search_text.backspace();
-            // Reset selection to 0 after search text change
-            view_state.position_filter_modal.selected_index = 0;
+        _ => {
+            let modifies_text = matches!(
+                key_event.code,
+                KeyCode::Backspace | KeyCode::Delete | KeyCode::Char(_)
+            );
+            dispatch_text_input_key(
+                &key_event,
+                &mut view_state.position_filter_modal.search_text,
+            );
+            if modifies_text {
+                // Reset selection so the user starts at the top of the
+                // (potentially changed) filtered list.
+                view_state.position_filter_modal.selected_index = 0;
+            }
             None
         }
-        KeyCode::Delete => {
-            view_state.position_filter_modal.search_text.delete();
-            view_state.position_filter_modal.selected_index = 0;
-            None
-        }
-        KeyCode::Left => {
-            view_state.position_filter_modal.search_text.move_left();
-            None
-        }
-        KeyCode::Right => {
-            view_state.position_filter_modal.search_text.move_right();
-            None
-        }
-        KeyCode::Home => {
-            view_state.position_filter_modal.search_text.move_home();
-            None
-        }
-        KeyCode::End => {
-            view_state.position_filter_modal.search_text.move_end();
-            None
-        }
-        KeyCode::Char(c) => {
-            view_state.position_filter_modal.search_text.insert_char(c);
-            // Reset selection to 0 so the user starts at the top of the new list
-            view_state.position_filter_modal.selected_index = 0;
-            None
-        }
-        _ => None,
     }
 }
 
@@ -1777,6 +1666,83 @@ mod tests {
         );
     }
 
+    // -- Bracket suppression mechanism --
+
+    #[test]
+    fn entering_filter_mode_sets_suppress_next_bracket() {
+        let mut state = ViewState::default();
+        state.active_tab = TabId::Available;
+        assert!(!state.suppress_next_bracket);
+
+        // '/' enters filter mode, which transitions into text editing,
+        // so the post-handler check should set suppress_next_bracket.
+        handle_key(key(KeyCode::Char('/')), &mut state);
+        assert!(state.filter_mode);
+        assert!(
+            state.suppress_next_bracket,
+            "Entering filter mode should set suppress_next_bracket"
+        );
+    }
+
+    #[test]
+    fn bracket_immediately_after_entering_text_mode_is_suppressed() {
+        let mut state = ViewState::default();
+        state.active_tab = TabId::Available;
+
+        // Enter filter mode (sets the suppression flag)
+        handle_key(key(KeyCode::Char('/')), &mut state);
+        assert!(state.suppress_next_bracket);
+
+        // The very next key is '[' — it should be silently suppressed
+        let result = handle_key(key(KeyCode::Char('[')), &mut state);
+        assert!(result.is_none(), "Stray '[' should be suppressed");
+        assert!(
+            state.filter_text.is_empty(),
+            "'[' should not be inserted into filter text"
+        );
+        assert!(
+            !state.suppress_next_bracket,
+            "Flag should be consumed after suppression"
+        );
+    }
+
+    #[test]
+    fn suppress_flag_consumed_even_when_next_key_is_not_bracket() {
+        let mut state = ViewState::default();
+        state.active_tab = TabId::Available;
+
+        // Enter filter mode (sets the suppression flag)
+        handle_key(key(KeyCode::Char('/')), &mut state);
+        assert!(state.suppress_next_bracket);
+
+        // Next key is 'a', not '[' — flag should still be consumed
+        handle_key(key(KeyCode::Char('a')), &mut state);
+        assert!(
+            !state.suppress_next_bracket,
+            "Flag should be consumed even when the key is not '['"
+        );
+        assert_eq!(
+            state.filter_text.value(),
+            "a",
+            "'a' should be inserted normally"
+        );
+    }
+
+    #[test]
+    fn bracket_not_suppressed_when_flag_is_not_set() {
+        let mut state = ViewState::default();
+        state.filter_mode = true;
+        assert!(!state.suppress_next_bracket);
+
+        // '[' without the suppression flag should be inserted normally
+        handle_key(key(KeyCode::Char('[')), &mut state);
+        assert_eq!(
+            state.filter_text.value(),
+            "[",
+            "Normal '[' should be inserted when flag is not set"
+        );
+    }
+
     // -- Individual panel scroll independence --
 
     #[test]
@@ -1926,7 +1892,6 @@ mod tests {
     #[test]
     fn llm_setup_api_key_esc_cancels_editing() {
         use crate::onboarding::OnboardingStep;
-        use crate::tui::onboarding::llm_setup::LlmSetupSection;
 
         let mut state = ViewState::default();
         state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
