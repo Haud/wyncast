@@ -196,6 +196,9 @@ pub enum OnboardingAction {
     GoNext,
     /// Skip onboarding entirely and go straight to draft mode.
     Skip,
+    /// Reset onboarding and re-run from the beginning.
+    /// Accessible from the Settings screen.
+    ResetOnboarding,
 }
 
 /// Updates pushed from the app orchestrator to the TUI during onboarding.
@@ -417,6 +420,9 @@ pub struct AppSnapshot {
     pub avg_per_slot: f64,
     /// Per-team summaries (name, budget, slots filled/total).
     pub team_snapshots: Vec<TeamSnapshot>,
+    /// Whether the LLM client is configured (has a valid API key).
+    /// Used by the status bar to show a "No LLM configured" hint.
+    pub llm_configured: bool,
 }
 
 /// Lightweight summary of a team's draft state for the snapshot.
@@ -804,6 +810,7 @@ mod tests {
             max_bid: 0,
             avg_per_slot: 0.0,
             team_snapshots: vec![],
+            llm_configured: true,
         };
         assert_eq!(snap.app_mode, AppMode::Draft);
         assert_eq!(snap.pick_count, 0);
@@ -1113,6 +1120,7 @@ mod tests {
         let _go_back = OnboardingAction::GoBack;
         let _go_next = OnboardingAction::GoNext;
         let _skip = OnboardingAction::Skip;
+        let _reset = OnboardingAction::ResetOnboarding;
     }
 
     #[test]
@@ -1156,6 +1164,7 @@ mod tests {
             max_bid: 0,
             avg_per_slot: 0.0,
             team_snapshots: vec![],
+            llm_configured: false,
         };
         assert_eq!(snap.app_mode, AppMode::Onboarding(OnboardingStep::StrategySetup));
     }

@@ -317,6 +317,9 @@ pub struct ViewState {
     pub strategy_setup: StrategySetupState,
     /// Which settings tab is currently active (LLM or Strategy).
     pub settings_tab: SettingsSection,
+    /// Whether the LLM client is configured (has a valid API key).
+    /// Used by the status bar to show a "No LLM configured" hint.
+    pub llm_configured: bool,
 }
 
 impl Default for ViewState {
@@ -351,6 +354,7 @@ impl Default for ViewState {
             llm_setup: LlmSetupState::default(),
             strategy_setup: StrategySetupState::default(),
             settings_tab: SettingsSection::LlmConfig,
+            llm_configured: true,
         }
     }
 }
@@ -402,6 +406,9 @@ impl ViewState {
                 total_slots: ts.total_slots,
             })
             .collect();
+
+        // LLM configured status
+        self.llm_configured = snapshot.llm_configured;
     }
 
     /// Returns `true` when the settings screen is in an editing sub-mode
@@ -581,6 +588,7 @@ fn compute_onboarding_keybinds(state: &ViewState, step: &crate::onboarding::Onbo
                     hints.push(KeybindHint::new("Enter", "Test"));
                 }
                 hints.push(KeybindHint::new("n", "Next"));
+                hints.push(KeybindHint::new("s", "Skip"));
                 hints.push(KeybindHint::new("Esc", "Back"));
                 hints
             }
@@ -621,6 +629,7 @@ fn compute_onboarding_keybinds(state: &ViewState, step: &crate::onboarding::Onbo
                     }
                 }
                 hints.push(KeybindHint::new("s", "Save"));
+                hints.push(KeybindHint::new("S", "Skip"));
                 hints.push(KeybindHint::new("Esc", "Back"));
                 hints
             }
@@ -650,6 +659,7 @@ fn compute_settings_keybinds(state: &ViewState) -> Vec<KeybindHint> {
                 hints.push(KeybindHint::new("Enter", "Test Connection"));
             }
         }
+        hints.push(KeybindHint::new("r", "Reset Onboarding"));
         hints.push(KeybindHint::new("Esc", "Back to Draft"));
         hints
     }
@@ -1050,6 +1060,7 @@ mod tests {
             max_bid: 0,
             avg_per_slot: 0.0,
             team_snapshots: vec![],
+            llm_configured: true,
         }
     }
 
@@ -1574,7 +1585,8 @@ mod tests {
         assert!(!ks.contains(&"s"), "LLM tab should not show save hint");
         // Draft-specific hints should NOT appear
         assert!(!ks.contains(&"1-4"), "draft tab hints should not appear in settings");
-        assert!(!ks.contains(&"r"), "resync hint should not appear in settings");
+        // 'r' in settings is now "Reset Onboarding", not the draft "Resync"
+        assert!(ks.contains(&"r"), "settings should show Reset Onboarding hint");
 
         // Strategy tab: should show "s: Save"
         state.settings_tab = SettingsSection::StrategyConfig;
@@ -1626,6 +1638,24 @@ mod tests {
         snapshot.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
         state.apply_snapshot(snapshot);
         assert_eq!(state.app_mode, AppMode::Onboarding(OnboardingStep::StrategySetup));
+    }
+
+    #[test]
+    fn apply_snapshot_updates_llm_configured() {
+        let mut state = ViewState::default();
+        // Default is true (optimistic) to avoid flashing "No LLM" before
+        // the first snapshot arrives.
+        assert!(state.llm_configured);
+
+        let mut snapshot = test_snapshot(0, 0, None);
+        snapshot.llm_configured = false;
+        state.apply_snapshot(snapshot);
+        assert!(!state.llm_configured);
+
+        let mut snapshot2 = test_snapshot(0, 0, None);
+        snapshot2.llm_configured = true;
+        state.apply_snapshot(snapshot2);
+        assert!(state.llm_configured);
     }
 
     #[test]

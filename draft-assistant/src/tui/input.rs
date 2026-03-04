@@ -235,6 +235,10 @@ fn handle_strategy_setup_key(
                 },
             ))
         }
+        // S: skip this step (go to draft without saving strategy)
+        KeyCode::Char('S') => {
+            Some(UserCommand::OnboardingAction(OnboardingAction::Skip))
+        }
         // Esc: go back
         KeyCode::Esc => {
             Some(UserCommand::OnboardingAction(OnboardingAction::GoBack))
@@ -367,6 +371,10 @@ fn handle_llm_setup_key(
         KeyCode::Char('n') => {
             Some(UserCommand::OnboardingAction(OnboardingAction::GoNext))
         }
+        // s: skip this step
+        KeyCode::Char('s') => {
+            Some(UserCommand::OnboardingAction(OnboardingAction::Skip))
+        }
         // Esc: go back (from LLM setup, this is a no-op since it's the first step)
         KeyCode::Esc => {
             Some(UserCommand::OnboardingAction(OnboardingAction::GoBack))
@@ -417,6 +425,11 @@ fn handle_settings_key(
 
         // Esc: exit settings and return to draft mode
         KeyCode::Esc => Some(UserCommand::ExitSettings),
+
+        // r: reset and re-run onboarding from the beginning
+        KeyCode::Char('r') => {
+            Some(UserCommand::OnboardingAction(OnboardingAction::ResetOnboarding))
+        }
 
         // q: quit the application
         KeyCode::Char('q') => Some(UserCommand::Quit),
@@ -1797,6 +1810,32 @@ mod tests {
         assert_eq!(result, Some(UserCommand::Quit));
     }
 
+    #[test]
+    fn llm_setup_s_sends_skip() {
+        use crate::onboarding::OnboardingStep;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+        let result = handle_key(key(KeyCode::Char('s')), &mut state);
+        assert_eq!(
+            result,
+            Some(UserCommand::OnboardingAction(OnboardingAction::Skip))
+        );
+    }
+
+    #[test]
+    fn strategy_setup_shift_s_sends_skip() {
+        use crate::onboarding::OnboardingStep;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
+        let result = handle_key(key(KeyCode::Char('S')), &mut state);
+        assert_eq!(
+            result,
+            Some(UserCommand::OnboardingAction(OnboardingAction::Skip))
+        );
+    }
+
     // -- Strategy setup placeholder input tests --
 
     #[test]
@@ -1898,14 +1937,17 @@ mod tests {
     }
 
     #[test]
-    fn settings_mode_ignores_draft_specific_keys() {
+    fn settings_mode_r_sends_reset_onboarding() {
         use crate::protocol::SettingsSection;
 
         let mut state = ViewState::default();
         state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
-        // Draft-specific keys like 'r' (resync) should not produce commands
+        // 'r' in settings mode now sends ResetOnboarding (not resync)
         let result = handle_key(key(KeyCode::Char('r')), &mut state);
-        assert!(result.is_none());
+        assert_eq!(
+            result,
+            Some(UserCommand::OnboardingAction(OnboardingAction::ResetOnboarding))
+        );
     }
 
     #[test]
