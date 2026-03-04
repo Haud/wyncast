@@ -140,17 +140,20 @@ impl<F: FileSystem> OnboardingManager<F> {
         hitting_budget_pct: u8,
         weights: &crate::tui::onboarding::strategy_setup::CategoryWeights,
     ) -> std::io::Result<()> {
-        self.save_strategy_with_llm(hitting_budget_pct, weights, None, None)
+        self.save_strategy_full(hitting_budget_pct, weights, None, None, None)
     }
 
-    /// Save strategy configuration to `strategy.toml`, optionally including
-    /// updated LLM provider and model in the `[llm]` section.
-    pub fn save_strategy_with_llm(
+    /// Save strategy configuration to `strategy.toml` with all optional fields.
+    ///
+    /// This is the full-featured save method that supports LLM provider/model
+    /// and strategy overview persistence.
+    pub fn save_strategy_full(
         &self,
         hitting_budget_pct: u8,
         weights: &crate::tui::onboarding::strategy_setup::CategoryWeights,
         provider: Option<&LlmProvider>,
         model: Option<&str>,
+        strategy_overview: Option<&str>,
     ) -> std::io::Result<()> {
         self.fs.create_dir_all(&self.config_dir)?;
         let path = self.config_dir.join("strategy.toml");
@@ -220,6 +223,14 @@ impl<F: FileSystem> OnboardingManager<F> {
                     );
                 }
             }
+        }
+
+        // Optionally update strategy_overview
+        if let Some(overview) = strategy_overview {
+            doc.insert(
+                "strategy_overview".to_string(),
+                toml::Value::String(overview.to_string()),
+            );
         }
 
         let text = toml::to_string_pretty(&doc)

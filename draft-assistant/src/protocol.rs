@@ -183,10 +183,11 @@ pub enum OnboardingAction {
     SetApiKey(String),
     /// Request an API connection test.
     TestConnection,
-    /// Save the strategy configuration with the given budget and weights.
+    /// Save the strategy configuration with the given budget, weights, and optional overview.
     SaveStrategyConfig {
         hitting_budget_pct: u8,
         category_weights: crate::tui::onboarding::strategy_setup::CategoryWeights,
+        strategy_overview: Option<String>,
     },
     /// Request LLM-assisted strategy configuration from a natural language description.
     ConfigureStrategyWithLlm(String),
@@ -221,6 +222,7 @@ pub enum OnboardingUpdate {
     StrategyLlmComplete {
         hitting_budget_pct: u8,
         category_weights: crate::tui::onboarding::strategy_setup::CategoryWeights,
+        strategy_overview: String,
     },
     /// Strategy LLM generation failed.
     StrategyLlmError(String),
@@ -1115,6 +1117,7 @@ mod tests {
         let _save_strategy = OnboardingAction::SaveStrategyConfig {
             hitting_budget_pct: 65,
             category_weights: crate::tui::onboarding::strategy_setup::CategoryWeights::default(),
+            strategy_overview: Some("Test overview".to_string()),
         };
         let _configure_llm = OnboardingAction::ConfigureStrategyWithLlm("punt saves".to_string());
         let _go_back = OnboardingAction::GoBack;

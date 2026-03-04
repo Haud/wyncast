@@ -538,11 +538,15 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
                 OnboardingUpdate::StrategyLlmToken(token) => {
                     state.strategy_setup.generation_output.push_str(&token);
                 }
-                OnboardingUpdate::StrategyLlmComplete { hitting_budget_pct, category_weights } => {
+                OnboardingUpdate::StrategyLlmComplete { hitting_budget_pct, category_weights, strategy_overview } => {
                     state.strategy_setup.generating = false;
                     state.strategy_setup.generation_error = None;
                     state.strategy_setup.hitting_budget_pct = hitting_budget_pct;
                     state.strategy_setup.category_weights = category_weights;
+                    state.strategy_setup.strategy_overview = strategy_overview;
+                    // Auto-advance to the Review step
+                    state.strategy_setup.step = onboarding::strategy_setup::StrategyWizardStep::Review;
+                    state.strategy_setup.review_section = onboarding::strategy_setup::ReviewSection::Overview;
                 }
                 OnboardingUpdate::StrategyLlmError(msg) => {
                     state.strategy_setup.generating = false;
@@ -639,44 +643,62 @@ fn compute_onboarding_keybinds(state: &ViewState, step: &crate::onboarding::Onbo
             }
         }
         OnboardingStep::StrategySetup | OnboardingStep::Complete => {
-            use onboarding::strategy_setup::StrategySection;
+            use onboarding::strategy_setup::{ReviewSection, StrategyWizardStep};
             let ss = &state.strategy_setup;
 
-            if ss.ai_input_editing {
-                vec![
-                    KeybindHint::new("type", "Describe strategy"),
-                    KeybindHint::new("Enter", "Confirm"),
-                    KeybindHint::new("Esc", "Cancel"),
-                ]
-            } else if ss.editing_field.is_some() {
-                vec![
-                    KeybindHint::new("type", "Enter value"),
-                    KeybindHint::new("Enter", "Confirm"),
-                    KeybindHint::new("Esc", "Cancel"),
-                ]
-            } else {
-                let mut hints = vec![
-                    KeybindHint::new("Tab", "Section"),
-                    KeybindHint::new("^v", "Navigate"),
-                ];
-                match ss.active_section {
-                    StrategySection::ModeToggle => {
-                        hints.push(KeybindHint::new("Enter", "Toggle AI/Manual"));
-                    }
-                    StrategySection::AiInput => {
-                        hints.push(KeybindHint::new("Enter", "Edit text"));
-                    }
-                    StrategySection::GenerateButton => {
-                        hints.push(KeybindHint::new("Enter", "Generate"));
-                    }
-                    StrategySection::BudgetField | StrategySection::CategoryWeights => {
-                        hints.push(KeybindHint::new("Enter", "Edit value"));
+            match ss.step {
+                StrategyWizardStep::Input => {
+                    if ss.input_editing {
+                        vec![
+                            KeybindHint::new("type", "Describe strategy"),
+                            KeybindHint::new("Enter", "Generate"),
+                            KeybindHint::new("Esc", "Stop editing"),
+                        ]
+                    } else {
+                        vec![
+                            KeybindHint::new("e", "Edit text"),
+                            KeybindHint::new("Enter", "Generate"),
+                            KeybindHint::new("Esc", "Back"),
+                        ]
                     }
                 }
-                hints.push(KeybindHint::new("s", "Save"));
-                hints.push(KeybindHint::new("S", "Skip"));
-                hints.push(KeybindHint::new("Esc", "Back"));
-                hints
+                StrategyWizardStep::Generating => {
+                    if ss.generation_error.is_some() {
+                        vec![
+                            KeybindHint::new("Enter", "Retry"),
+                            KeybindHint::new("Esc", "Back"),
+                        ]
+                    } else {
+                        vec![KeybindHint::new("", "Generating...")]
+                    }
+                }
+                StrategyWizardStep::Review => {
+                    if ss.editing_field.is_some() {
+                        vec![
+                            KeybindHint::new("type", "Enter value"),
+                            KeybindHint::new("Enter", "Confirm"),
+                            KeybindHint::new("Esc", "Cancel"),
+                        ]
+                    } else {
+                        let mut hints = Vec::new();
+                        match ss.review_section {
+                            ReviewSection::Overview => {}
+                            ReviewSection::BudgetField | ReviewSection::CategoryWeights => {
+                                hints.push(KeybindHint::new("Enter", "Edit"));
+                            }
+                        }
+                        hints.push(KeybindHint::new("s", "Save"));
+                        hints.push(KeybindHint::new("Esc", "Back"));
+                        hints
+                    }
+                }
+                StrategyWizardStep::Confirm => {
+                    vec![
+                        KeybindHint::new("<>", "Yes / No"),
+                        KeybindHint::new("Enter", "Confirm"),
+                        KeybindHint::new("Esc", "Back"),
+                    ]
+                }
             }
         }
     }
@@ -1589,16 +1611,31 @@ mod tests {
     }
 
     #[test]
-    fn compute_keybinds_strategy_setup_normal() {
+    fn compute_keybinds_strategy_setup_input_editing() {
         use crate::onboarding::OnboardingStep;
 
         let mut state = ViewState::default();
         state.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
+        // Default state: Input step, input_editing = true
         let hints = compute_keybinds(&state);
         let ks = keys(&hints);
-        assert!(ks.contains(&"Tab"), "strategy setup should show Tab hint");
-        assert!(ks.contains(&"s"), "strategy setup should show Save hint");
-        assert!(ks.contains(&"Esc"), "strategy setup should show Back hint");
+        assert!(ks.contains(&"Enter"), "input editing should show Generate hint");
+        assert!(ks.contains(&"Esc"), "input editing should show stop editing hint");
+    }
+
+    #[test]
+    fn compute_keybinds_strategy_setup_review() {
+        use crate::onboarding::OnboardingStep;
+        use crate::tui::onboarding::strategy_setup::StrategyWizardStep;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
+        state.strategy_setup.step = StrategyWizardStep::Review;
+        state.strategy_setup.input_editing = false;
+        let hints = compute_keybinds(&state);
+        let ks = keys(&hints);
+        assert!(ks.contains(&"s"), "review should show Save hint");
+        assert!(ks.contains(&"Esc"), "review should show Back hint");
     }
 
     #[test]
@@ -1621,7 +1658,7 @@ mod tests {
 
         let mut state = ViewState::default();
         state.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
-        state.strategy_setup.ai_input_editing = true;
+        state.strategy_setup.input_editing = true;
         let hints = compute_keybinds(&state);
         let ks = keys(&hints);
         assert!(ks.contains(&"Enter"), "ai editing should show confirm hint");
@@ -1649,8 +1686,10 @@ mod tests {
         // 'r' in settings is now "Reset Onboarding", not the draft "Resync"
         assert!(ks.contains(&"r"), "settings should show Reset Onboarding hint");
 
-        // Strategy tab: should show "s: Save"
+        // Strategy tab: should show "s: Save" when in Review step (non-editing)
         state.settings_tab = SettingsSection::StrategyConfig;
+        state.strategy_setup.step = onboarding::strategy_setup::StrategyWizardStep::Review;
+        state.strategy_setup.input_editing = false;
         let hints = compute_keybinds(&state);
         let ks = keys(&hints);
         assert!(ks.contains(&"s"), "Strategy tab should show save hint");
@@ -1785,6 +1824,7 @@ mod tests {
             UiUpdate::OnboardingUpdate(OnboardingUpdate::StrategyLlmComplete {
                 hitting_budget_pct: 70,
                 category_weights: weights.clone(),
+                strategy_overview: "Focus on elite hitters with high walk rates.".to_string(),
             }),
         );
 

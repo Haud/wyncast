@@ -50,9 +50,12 @@ pub struct SellCandidate {
 // System prompt
 // ---------------------------------------------------------------------------
 
-/// Return the static system prompt for all draft advisory LLM calls.
-pub fn system_prompt() -> String {
-    "You are a fantasy baseball auction draft advisor for a 10-team H2H Most Categories league.\n\
+/// Return the system prompt for all draft advisory LLM calls.
+///
+/// When a strategy overview is provided (from the strategy wizard), it is
+/// appended so the LLM understands the user's strategic intent.
+pub fn system_prompt(strategy_overview: Option<&str>) -> String {
+    let mut prompt = "You are a fantasy baseball auction draft advisor for a 10-team H2H Most Categories league.\n\
      \n\
      Categories: R, HR, RBI, BB, SB, AVG (hitting) | K, W, SV, HD, ERA, WHIP (pitching)\n\
      Format: Salary cap auction, $260 budget, 26-player rosters.\n\
@@ -66,7 +69,17 @@ pub fn system_prompt() -> String {
      4. STRATEGY: What to think about \u{2014} competing bidders, comparable players available later, draft position implications\n\
      \n\
      Be concise and direct. Use the pre-computed numbers I provide \u{2014} do NOT do arithmetic. Focus on trade-offs and context the numbers don't capture."
-        .to_string()
+        .to_string();
+
+    if let Some(overview) = strategy_overview {
+        let trimmed = overview.trim();
+        if !trimmed.is_empty() {
+            prompt.push_str("\n\n--- MY DRAFT STRATEGY ---\n");
+            prompt.push_str(trimmed);
+        }
+    }
+
+    prompt
 }
 
 // ---------------------------------------------------------------------------
@@ -1084,7 +1097,7 @@ mod tests {
 
     #[test]
     fn system_prompt_contains_key_elements() {
-        let sp = system_prompt();
+        let sp = system_prompt(None);
         assert!(
             sp.contains("10-team H2H Most Categories"),
             "should mention league format"
@@ -1095,6 +1108,28 @@ mod tests {
         assert!(sp.contains("VERDICT"), "should mention verdict");
         assert!(sp.contains("BID RANGE"), "should mention bid range");
         assert!(sp.contains("Soft-punt SV"), "should mention SV punt");
+    }
+
+    #[test]
+    fn system_prompt_includes_strategy_overview() {
+        let sp = system_prompt(Some("Target elite closers early, punt saves entirely."));
+        assert!(
+            sp.contains("--- MY DRAFT STRATEGY ---"),
+            "should include strategy header"
+        );
+        assert!(
+            sp.contains("Target elite closers early"),
+            "should include strategy text"
+        );
+    }
+
+    #[test]
+    fn system_prompt_skips_empty_overview() {
+        let sp = system_prompt(Some("   "));
+        assert!(
+            !sp.contains("MY DRAFT STRATEGY"),
+            "should not include strategy header for whitespace-only overview"
+        );
     }
 
     // ---- Nomination analysis prompt tests ----
