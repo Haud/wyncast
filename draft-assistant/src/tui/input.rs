@@ -107,7 +107,7 @@ fn handle_onboarding_key(
 
     match &view_state.app_mode {
         AppMode::Onboarding(OnboardingStep::LlmSetup) => {
-            handle_llm_setup_key(key_event, view_state)
+            handle_llm_setup_key(key_event, view_state, false)
         }
         AppMode::Onboarding(OnboardingStep::StrategySetup) |
         AppMode::Onboarding(OnboardingStep::Complete) => {
@@ -296,10 +296,15 @@ fn handle_strategy_setup_key(
 
 /// Handle keyboard input on the LLM setup screen (onboarding step 1).
 ///
-/// Input handling depends on whether the API key text input is active:
-/// - When editing: captures typed characters, Enter confirms, Esc cancels
-/// - When not editing: Tab/Shift+Tab cycle sections, Up/Down select within
-///   lists, Enter activates API key editing or test button, n advances to next
+/// Uses progressive disclosure: sections are revealed one at a time as each
+/// is confirmed via Enter. Input handling depends on the active section and
+/// whether the API key text input is in edit mode:
+/// - When editing API key: captures typed characters, Enter confirms and
+///   triggers a connection test, Esc restores the backup and navigates back
+/// - Provider/Model sections: Up/Down select within lists, Enter confirms
+///   the current section and reveals the next
+/// - ApiKey section (not editing): Enter behavior is context-sensitive based
+///   on connection status (input key / test / edit key / continue)
 ///
 /// Provider and model selections dispatch `SetProvider`/`SetModel` commands to
 /// the app orchestrator immediately on each arrow key press. This keeps
@@ -308,6 +313,7 @@ fn handle_strategy_setup_key(
 fn handle_llm_setup_key(
     key_event: KeyEvent,
     view_state: &mut ViewState,
+    settings_mode: bool,
 ) -> Option<UserCommand> {
     use super::onboarding::llm_setup::{LlmConnectionStatus, LlmSetupSection};
 
@@ -318,14 +324,30 @@ fn handle_llm_setup_key(
         return match key_event.code {
             KeyCode::Enter => {
                 state.api_key_editing = false;
-                // Sync the key to the app on confirm
+                // Sync the key to the backend on confirm. The backend will
+                // automatically trigger a connection test after receiving
+                // SetApiKey, so we set Testing status here for immediate
+                // visual feedback.
                 let key = state.api_key_input.value().to_string();
-                Some(UserCommand::OnboardingAction(OnboardingAction::SetApiKey(key)))
+                if key.is_empty() {
+                    None
+                } else {
+                    state.confirmed_through = Some(LlmSetupSection::ApiKey);
+                    state.connection_status = LlmConnectionStatus::Testing;
+                    Some(UserCommand::OnboardingAction(OnboardingAction::SetApiKey(key)))
+                }
             }
             KeyCode::Esc => {
+                // Esc while editing: go back to Model (linear back navigation)
                 state.api_key_input.set_value(&state.api_key_backup.clone());
                 state.api_key_editing = false;
-                None
+                if settings_mode {
+                    // In settings mode, just exit editing, don't navigate back
+                    None
+                } else {
+                    state.go_back_section();
+                    None
+                }
             }
             _ if dispatch_text_input_key(&key_event, &mut state.api_key_input) => None,
             _ => None,
@@ -334,16 +356,6 @@ fn handle_llm_setup_key(
 
     // --- Normal navigation mode ---
     match key_event.code {
-        // Tab: cycle forward through sections
-        KeyCode::Tab => {
-            state.active_section = state.active_section.next();
-            None
-        }
-        // Shift+Tab (BackTab): cycle backward through sections
-        KeyCode::BackTab => {
-            state.active_section = state.active_section.prev();
-            None
-        }
         // Up/Down: select within the active list section
         KeyCode::Up | KeyCode::Char('k') => {
             match state.active_section {
@@ -387,35 +399,105 @@ fn handle_llm_setup_key(
             }
             None
         }
-        // Enter: context-dependent activation
+        // Enter: progressive disclosure — confirm current section and reveal next
         KeyCode::Enter => {
             match state.active_section {
+                LlmSetupSection::Provider => {
+                    // Confirm provider, reveal model list
+                    let provider = state.selected_provider().clone();
+                    state.confirm_current_section();
+                    Some(UserCommand::OnboardingAction(
+                        OnboardingAction::SetProvider(provider),
+                    ))
+                }
+                LlmSetupSection::Model => {
+                    // Confirm model, reveal API key input
+                    let model_id = state
+                        .selected_model()
+                        .map(|m| m.model_id.to_string())
+                        .unwrap_or_default();
+                    state.confirm_current_section();
+                    Some(UserCommand::OnboardingAction(
+                        OnboardingAction::SetModel(model_id),
+                    ))
+                }
                 LlmSetupSection::ApiKey => {
-                    state.api_key_backup = state.api_key_input.value().to_string();
-                    state.api_key_editing = true;
-                    None
+                    if state.connection_tested_ok() {
+                        // Connection test passed — advance to next step
+                        Some(UserCommand::OnboardingAction(OnboardingAction::GoNext))
+                    } else if state.api_key_input.is_empty() {
+                        // Enter edit mode if no key entered yet
+                        state.api_key_backup = state.api_key_input.value().to_string();
+                        state.api_key_editing = true;
+                        None
+                    } else if matches!(state.connection_status, LlmConnectionStatus::Failed(_)) {
+                        // Connection test failed — re-enter editing so the user
+                        // can fix their key rather than re-triggering the same
+                        // failing test.
+                        state.api_key_backup = state.api_key_input.value().to_string();
+                        state.api_key_editing = true;
+                        state.connection_status = LlmConnectionStatus::Untested;
+                        None
+                    } else {
+                        // Key already entered — trigger connection test
+                        state.confirmed_through = Some(LlmSetupSection::ApiKey);
+                        state.connection_status = LlmConnectionStatus::Testing;
+                        Some(UserCommand::OnboardingAction(
+                            OnboardingAction::TestConnection,
+                        ))
+                    }
                 }
-                LlmSetupSection::TestButton => {
-                    state.connection_status = LlmConnectionStatus::Testing;
-                    Some(UserCommand::OnboardingAction(OnboardingAction::TestConnection))
-                }
-                _ => None,
             }
         }
-        // n: advance to next step
-        // OnboardingProgress should already be in sync from real-time
-        // SetProvider/SetModel/SetApiKey dispatches. GoNext persists
-        // and advances to the next onboarding step.
+        // n: no longer used for advancing (Enter handles it now), but keep
+        // for backward compatibility in case muscle memory persists
         KeyCode::Char('n') => {
-            Some(UserCommand::OnboardingAction(OnboardingAction::GoNext))
+            if state.connection_tested_ok() {
+                Some(UserCommand::OnboardingAction(OnboardingAction::GoNext))
+            } else {
+                None
+            }
         }
-        // s: skip this step
+        // s: skip this step (always available)
         KeyCode::Char('s') => {
             Some(UserCommand::OnboardingAction(OnboardingAction::Skip))
         }
-        // Esc: go back (from LLM setup, this is a no-op since it's the first step)
+        // Esc: go back to previous section, or go back in onboarding if at first section
         KeyCode::Esc => {
-            Some(UserCommand::OnboardingAction(OnboardingAction::GoBack))
+            if settings_mode {
+                // In settings mode, all sections are always visible.
+                // Esc just moves focus to the previous section without
+                // un-confirming anything (preserves the "all visible" invariant).
+                if state.active_section != LlmSetupSection::Provider {
+                    state.active_section = state.active_section.prev();
+                }
+                None
+            } else if state.active_section == LlmSetupSection::Provider {
+                // At the first section — propagate GoBack to onboarding flow
+                Some(UserCommand::OnboardingAction(OnboardingAction::GoBack))
+            } else {
+                // Go back to previous section within LLM setup
+                state.go_back_section();
+                None
+            }
+        }
+        // Tab: advance to next section (only within visible/confirmed sections)
+        KeyCode::Tab => {
+            let next = state.active_section.next();
+            if state.is_section_visible(next) {
+                state.active_section = next;
+            }
+            None
+        }
+        // Shift+Tab: go to previous section
+        KeyCode::BackTab => {
+            let prev = state.active_section.prev();
+            // Only go back if the prev section is visible (always true since
+            // we can only go to earlier sections which are always visible)
+            if state.is_section_visible(prev) && prev < state.active_section {
+                state.active_section = prev;
+            }
+            None
         }
         // q: quit
         KeyCode::Char('q') => Some(UserCommand::Quit),
@@ -444,7 +526,7 @@ fn handle_settings_key(
         // to intercept the commands it returns and translate onboarding-specific
         // ones (GoBack, GoNext, Skip) since those make no sense in settings.
         let cmd = match active_tab {
-            SettingsSection::LlmConfig => handle_llm_setup_key(key_event, view_state),
+            SettingsSection::LlmConfig => handle_llm_setup_key(key_event, view_state, true),
             SettingsSection::StrategyConfig => handle_strategy_setup_key(key_event, view_state),
         };
         return filter_onboarding_commands(cmd);
@@ -475,7 +557,7 @@ fn handle_settings_key(
         // For all other keys, delegate to the active tab's onboarding handler
         _ => {
             let cmd = match active_tab {
-                SettingsSection::LlmConfig => handle_llm_setup_key(key_event, view_state),
+                SettingsSection::LlmConfig => handle_llm_setup_key(key_event, view_state, true),
                 SettingsSection::StrategyConfig => handle_strategy_setup_key(key_event, view_state),
             };
             filter_onboarding_commands(cmd)
@@ -1769,11 +1851,29 @@ mod tests {
     // -- LLM Setup screen input tests --
 
     #[test]
-    fn llm_setup_n_sends_go_next() {
+    fn llm_setup_n_blocked_until_connection_tested() {
         use crate::onboarding::OnboardingStep;
+        use crate::tui::onboarding::llm_setup::LlmConnectionStatus;
 
         let mut state = ViewState::default();
         state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+
+        // 'n' should be blocked when connection hasn't been tested
+        let result = handle_key(key(KeyCode::Char('n')), &mut state);
+        assert!(result.is_none());
+
+        // 'n' should be blocked when test is in progress
+        state.llm_setup.connection_status = LlmConnectionStatus::Testing;
+        let result = handle_key(key(KeyCode::Char('n')), &mut state);
+        assert!(result.is_none());
+
+        // 'n' should be blocked when test failed
+        state.llm_setup.connection_status = LlmConnectionStatus::Failed("error".to_string());
+        let result = handle_key(key(KeyCode::Char('n')), &mut state);
+        assert!(result.is_none());
+
+        // 'n' should work after successful connection test
+        state.llm_setup.connection_status = LlmConnectionStatus::Success("ok".to_string());
         let result = handle_key(key(KeyCode::Char('n')), &mut state);
         assert!(matches!(
             result,
@@ -1795,7 +1895,7 @@ mod tests {
     }
 
     #[test]
-    fn llm_setup_tab_cycles_sections() {
+    fn llm_setup_tab_only_visits_visible_sections() {
         use crate::onboarding::OnboardingStep;
         use crate::tui::onboarding::llm_setup::LlmSetupSection;
 
@@ -1803,19 +1903,29 @@ mod tests {
         state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
         assert_eq!(state.llm_setup.active_section, LlmSetupSection::Provider);
 
+        // Tab does nothing when only Provider is visible (nothing confirmed yet)
         let result = handle_key(key(KeyCode::Tab), &mut state);
-        assert!(result.is_none()); // local state mutation
+        assert!(result.is_none());
+        // Model is not visible, so Tab shouldn't advance
+        assert_eq!(state.llm_setup.active_section, LlmSetupSection::Provider);
+
+        // Confirm provider, making model visible
+        state.llm_setup.confirm_current_section();
         assert_eq!(state.llm_setup.active_section, LlmSetupSection::Model);
 
+        // Tab from Model should not advance (ApiKey not visible yet)
         let result = handle_key(key(KeyCode::Tab), &mut state);
         assert!(result.is_none());
+        assert_eq!(state.llm_setup.active_section, LlmSetupSection::Model);
+
+        // Confirm model, making API key visible (auto-focuses API key editing)
+        state.llm_setup.confirm_current_section();
         assert_eq!(state.llm_setup.active_section, LlmSetupSection::ApiKey);
+        assert!(state.llm_setup.api_key_editing); // auto-focused
+        // Exit editing mode so Tab can navigate
+        state.llm_setup.api_key_editing = false;
 
-        let result = handle_key(key(KeyCode::Tab), &mut state);
-        assert!(result.is_none());
-        assert_eq!(state.llm_setup.active_section, LlmSetupSection::TestButton);
-
-        // Wraps back to Provider
+        // Tab from ApiKey wraps to Provider (Provider is always visible)
         let result = handle_key(key(KeyCode::Tab), &mut state);
         assert!(result.is_none());
         assert_eq!(state.llm_setup.active_section, LlmSetupSection::Provider);
@@ -1873,7 +1983,7 @@ mod tests {
     #[test]
     fn llm_setup_api_key_enter_confirms_and_sends_set_api_key() {
         use crate::onboarding::OnboardingStep;
-        use crate::tui::onboarding::llm_setup::LlmSetupSection;
+        use crate::tui::onboarding::llm_setup::{LlmConnectionStatus, LlmSetupSection};
 
         let mut state = ViewState::default();
         state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
@@ -1887,34 +1997,72 @@ mod tests {
             result,
             Some(UserCommand::OnboardingAction(OnboardingAction::SetApiKey(_)))
         ));
+        // Confirming the API key should immediately set Testing status
+        // so the spinner is visible while the backend runs the test.
+        assert_eq!(
+            state.llm_setup.connection_status,
+            LlmConnectionStatus::Testing,
+        );
+        assert_eq!(
+            state.llm_setup.confirmed_through,
+            Some(LlmSetupSection::ApiKey),
+        );
     }
 
     #[test]
-    fn llm_setup_api_key_esc_cancels_editing() {
-        use crate::onboarding::OnboardingStep;
-
-        let mut state = ViewState::default();
-        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
-        state.llm_setup.api_key_editing = true;
-
-        let result = handle_key(key(KeyCode::Esc), &mut state);
-        assert!(!state.llm_setup.api_key_editing);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn llm_setup_enter_on_test_button_sends_test_connection() {
+    fn llm_setup_api_key_esc_goes_back_to_model() {
         use crate::onboarding::OnboardingStep;
         use crate::tui::onboarding::llm_setup::LlmSetupSection;
 
         let mut state = ViewState::default();
         state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
-        state.llm_setup.active_section = LlmSetupSection::TestButton;
+        // Set up state as if user is on ApiKey step, editing
+        state.llm_setup.active_section = LlmSetupSection::ApiKey;
+        state.llm_setup.confirmed_through = Some(LlmSetupSection::Model);
+        state.llm_setup.api_key_editing = true;
+        state.llm_setup.api_key_input.set_value("partial-key");
+
+        let result = handle_key(key(KeyCode::Esc), &mut state);
+        assert!(!state.llm_setup.api_key_editing);
+        // Should have navigated back to Model
+        assert_eq!(state.llm_setup.active_section, LlmSetupSection::Model);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn llm_setup_enter_on_apikey_with_key_triggers_test() {
+        use crate::onboarding::OnboardingStep;
+        use crate::tui::onboarding::llm_setup::LlmSetupSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+        state.llm_setup.active_section = LlmSetupSection::ApiKey;
+        state.llm_setup.confirmed_through = Some(LlmSetupSection::Model);
+        state.llm_setup.api_key_input.set_value("sk-test-123");
 
         let result = handle_key(key(KeyCode::Enter), &mut state);
         assert!(matches!(
             result,
             Some(UserCommand::OnboardingAction(OnboardingAction::TestConnection))
+        ));
+    }
+
+    #[test]
+    fn llm_setup_enter_after_success_advances() {
+        use crate::onboarding::OnboardingStep;
+        use crate::tui::onboarding::llm_setup::{LlmConnectionStatus, LlmSetupSection};
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
+        state.llm_setup.active_section = LlmSetupSection::ApiKey;
+        state.llm_setup.confirmed_through = Some(LlmSetupSection::Model);
+        state.llm_setup.api_key_input.set_value("sk-test-123");
+        state.llm_setup.connection_status = LlmConnectionStatus::Success("ok".to_string());
+
+        let result = handle_key(key(KeyCode::Enter), &mut state);
+        assert!(matches!(
+            result,
+            Some(UserCommand::OnboardingAction(OnboardingAction::GoNext))
         ));
     }
 
@@ -2195,6 +2343,7 @@ mod tests {
     #[test]
     fn settings_api_key_editing_delegates_correctly() {
         use crate::protocol::SettingsSection;
+        use crate::tui::onboarding::llm_setup::{LlmConnectionStatus, LlmSetupSection};
 
         let mut state = ViewState::default();
         state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
@@ -2207,7 +2356,7 @@ mod tests {
         assert!(result.is_none());
         assert_eq!(state.llm_setup.api_key_input.value(), "sk-a");
 
-        // Enter should confirm and dispatch SetApiKey
+        // Enter should confirm and dispatch SetApiKey, with Testing status
         let result = handle_key(key(KeyCode::Enter), &mut state);
         assert!(
             matches!(
@@ -2220,5 +2369,13 @@ mod tests {
             result,
         );
         assert!(!state.llm_setup.api_key_editing);
+        assert_eq!(
+            state.llm_setup.connection_status,
+            LlmConnectionStatus::Testing,
+        );
+        assert_eq!(
+            state.llm_setup.confirmed_through,
+            Some(LlmSetupSection::ApiKey),
+        );
     }
 }

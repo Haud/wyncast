@@ -1343,6 +1343,9 @@ async fn handle_onboarding_action(
                 // Default to Anthropic if no provider selected yet
                 save_api_key_for_provider(&LlmProvider::Anthropic, &key, &mut state.config, &state.onboarding_manager);
             }
+            // Auto-trigger connection test so the user doesn't need a second Enter.
+            // Box::pin is used for the recursive async call.
+            Box::pin(handle_onboarding_action(state, OnboardingAction::TestConnection, ui_tx)).await;
         }
         OnboardingAction::TestConnection => {
             // Spawn an async task to test the API connection
@@ -1777,6 +1780,8 @@ async fn handle_settings_action(
             save_api_key_for_provider(&provider, &key, &mut state.config, &state.onboarding_manager);
             // Reload LLM client so the new key takes effect immediately
             state.reload_llm_client();
+            // Auto-trigger connection test so the user doesn't need a second Enter.
+            Box::pin(handle_settings_action(state, OnboardingAction::TestConnection, ui_tx)).await;
         }
         OnboardingAction::TestConnection => {
             // Same as onboarding: spawn async test

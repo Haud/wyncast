@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
-use crate::llm::provider::{models_for_provider, LlmProvider, ModelOption, SUPPORTED_MODELS};
+use crate::llm::provider::{models_for_provider, LlmProvider, ModelOption};
 use crate::tui::TextInput;
 
 // ---------------------------------------------------------------------------
@@ -18,21 +18,19 @@ use crate::tui::TextInput;
 // ---------------------------------------------------------------------------
 
 /// Which section of the LLM setup screen currently has focus.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LlmSetupSection {
     Provider,
     Model,
     ApiKey,
-    TestButton,
 }
 
 impl LlmSetupSection {
-    /// Ordered list of sections for Tab cycling.
+    /// Ordered list of sections for the progressive flow.
     const CYCLE: &[LlmSetupSection] = &[
         LlmSetupSection::Provider,
         LlmSetupSection::Model,
         LlmSetupSection::ApiKey,
-        LlmSetupSection::TestButton,
     ];
 
     /// Advance to the next section (wraps around).
@@ -49,6 +47,11 @@ impl LlmSetupSection {
         } else {
             Self::CYCLE[idx - 1]
         }
+    }
+
+    /// Return the step index (0-based) of this section.
+    pub fn step_index(self) -> usize {
+        Self::CYCLE.iter().position(|&s| s == self).unwrap_or(0)
     }
 }
 
@@ -89,6 +92,12 @@ impl Default for LlmConnectionStatus {
 pub struct LlmSetupState {
     /// Which section currently has keyboard focus.
     pub active_section: LlmSetupSection,
+    /// How far the user has confirmed in the progressive disclosure flow.
+    /// `None` means nothing confirmed yet (only Provider is visible).
+    /// `Some(Provider)` means provider is confirmed, model is now visible.
+    /// `Some(Model)` means model is confirmed, API key is now visible.
+    /// `Some(ApiKey)` means API key is confirmed and connection test has run.
+    pub confirmed_through: Option<LlmSetupSection>,
     /// Index into the provider list (Anthropic=0, Google=1, OpenAI=2).
     pub selected_provider_idx: usize,
     /// Index into the model list for the currently selected provider.
@@ -107,6 +116,7 @@ impl std::fmt::Debug for LlmSetupState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LlmSetupState")
             .field("active_section", &self.active_section)
+            .field("confirmed_through", &self.confirmed_through)
             .field("selected_provider_idx", &self.selected_provider_idx)
             .field("selected_model_idx", &self.selected_model_idx)
             .field("api_key_input", &if self.api_key_input.is_empty() { "(empty)" } else { "[REDACTED]" })
@@ -121,6 +131,7 @@ impl Default for LlmSetupState {
     fn default() -> Self {
         LlmSetupState {
             active_section: LlmSetupSection::Provider,
+            confirmed_through: None,
             selected_provider_idx: 0,
             selected_model_idx: 0,
             api_key_input: TextInput::new(),
@@ -155,43 +166,159 @@ impl LlmSetupState {
         models.get(self.selected_model_idx).copied()
     }
 
-    /// Change the selected provider by index. Resets model selection to 0
-    /// and clears connection test status.
-    pub fn set_provider_idx(&mut self, idx: usize) {
-        if idx < Self::PROVIDERS.len() && idx != self.selected_provider_idx {
-            self.selected_provider_idx = idx;
-            self.selected_model_idx = 0;
-            self.connection_status = LlmConnectionStatus::Untested;
-        }
-    }
-
-    /// Move provider selection up.
+    /// Move provider selection up. Invalidates downstream state if provider changes.
     pub fn provider_up(&mut self) {
         if self.selected_provider_idx > 0 {
-            self.set_provider_idx(self.selected_provider_idx - 1);
+            self.selected_provider_idx -= 1;
+            self.invalidate_past_provider();
         }
     }
 
-    /// Move provider selection down.
+    /// Move provider selection down. Invalidates downstream state if provider changes.
     pub fn provider_down(&mut self) {
         if self.selected_provider_idx + 1 < Self::PROVIDERS.len() {
-            self.set_provider_idx(self.selected_provider_idx + 1);
+            self.selected_provider_idx += 1;
+            self.invalidate_past_provider();
         }
     }
 
-    /// Move model selection up.
+    /// Move model selection up. Invalidates downstream confirmations if model changes.
     pub fn model_up(&mut self) {
         if self.selected_model_idx > 0 {
             self.selected_model_idx -= 1;
+            self.invalidate_past_model();
         }
     }
 
-    /// Move model selection down.
+    /// Move model selection down. Invalidates downstream confirmations if model changes.
     pub fn model_down(&mut self) {
         let count = self.available_models().len();
         if self.selected_model_idx + 1 < count {
             self.selected_model_idx += 1;
+            self.invalidate_past_model();
         }
+    }
+
+    /// If the user has confirmed past Provider (i.e. Model or ApiKey is confirmed),
+    /// reset confirmed_through to at most Provider, reset model selection,
+    /// and clear connection status, since the provider just changed.
+    fn invalidate_past_provider(&mut self) {
+        if self.confirmed_through > Some(LlmSetupSection::Provider) {
+            self.selected_model_idx = 0;
+            self.connection_status = LlmConnectionStatus::Untested;
+            self.confirmed_through = Some(LlmSetupSection::Provider);
+        }
+    }
+
+    /// If the user has confirmed past Model (i.e. ApiKey is confirmed),
+    /// reset confirmed_through to Provider and clear connection status,
+    /// since the model just changed.
+    fn invalidate_past_model(&mut self) {
+        if self.confirmed_through > Some(LlmSetupSection::Model) {
+            self.confirmed_through = Some(LlmSetupSection::Provider);
+            self.connection_status = LlmConnectionStatus::Untested;
+        }
+    }
+
+    /// Whether a given section is visible in the progressive disclosure flow.
+    ///
+    /// Provider is always visible. Each subsequent section is visible only if
+    /// the previous section has been confirmed.
+    pub fn is_section_visible(&self, section: LlmSetupSection) -> bool {
+        match section {
+            LlmSetupSection::Provider => true,
+            LlmSetupSection::Model => {
+                matches!(self.confirmed_through, Some(s) if s >= LlmSetupSection::Provider)
+            }
+            LlmSetupSection::ApiKey => {
+                matches!(self.confirmed_through, Some(s) if s >= LlmSetupSection::Model)
+            }
+        }
+    }
+
+    /// Whether a given section has been confirmed (locked in).
+    pub fn is_section_confirmed(&self, section: LlmSetupSection) -> bool {
+        matches!(self.confirmed_through, Some(s) if s >= section)
+    }
+
+    /// Whether the connection test has passed successfully.
+    pub fn connection_tested_ok(&self) -> bool {
+        matches!(self.connection_status, LlmConnectionStatus::Success(_))
+    }
+
+    /// Confirm the current section and advance focus to the next.
+    ///
+    /// Returns `true` if a new section was revealed.
+    pub fn confirm_current_section(&mut self) -> bool {
+        let current = self.active_section;
+        let current_idx = current.step_index();
+
+        // Update confirmed_through to at least the current section
+        let should_update = match self.confirmed_through {
+            None => true,
+            Some(s) => current > s,
+        };
+        if should_update {
+            self.confirmed_through = Some(current);
+        }
+
+        // Advance focus to the next section if there is one
+        let sections = LlmSetupSection::CYCLE;
+        if current_idx + 1 < sections.len() {
+            self.active_section = sections[current_idx + 1];
+            // Auto-focus API key text input when reaching ApiKey step
+            if self.active_section == LlmSetupSection::ApiKey {
+                self.api_key_backup = self.api_key_input.value().to_string();
+                self.api_key_editing = true;
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Go back to the previous section, un-confirming the current one
+    /// and clearing all downstream state.
+    ///
+    /// Returns `true` if the step changed.
+    pub fn go_back_section(&mut self) -> bool {
+        let current = self.active_section;
+        let current_idx = current.step_index();
+
+        if current_idx == 0 {
+            return false;
+        }
+
+        let prev_section = LlmSetupSection::CYCLE[current_idx - 1];
+        self.active_section = prev_section;
+
+        // Un-confirm: set confirmed_through to the section before the one
+        // we're now focused on (so the current focus section is "active" again)
+        if current_idx >= 2 {
+            self.confirmed_through = Some(LlmSetupSection::CYCLE[current_idx - 2]);
+        } else {
+            self.confirmed_through = None;
+        }
+
+        // Clear downstream state depending on where we're going back from
+        match current {
+            LlmSetupSection::Model => {
+                // Going back from Model to Provider: reset model selection
+                self.selected_model_idx = 0;
+                self.connection_status = LlmConnectionStatus::Untested;
+            }
+            LlmSetupSection::ApiKey => {
+                // Going back from ApiKey to Model: preserve the API key,
+                // only clear editing state and connection status
+                self.api_key_editing = false;
+                self.connection_status = LlmConnectionStatus::Untested;
+            }
+            LlmSetupSection::Provider => {
+                // Can't go back from Provider (handled above), but for completeness
+            }
+        }
+
+        true
     }
 
     /// Return the API key display text: masked when not editing, raw when editing.
@@ -216,42 +343,79 @@ impl LlmSetupState {
 // ---------------------------------------------------------------------------
 
 /// Render the LLM setup screen into the given area.
+///
+/// Uses progressive disclosure: sections appear one at a time as each is
+/// confirmed. Confirmed sections display in a compact "locked" state.
 pub fn render(frame: &mut Frame, area: Rect, state: &LlmSetupState) {
     // Outer block with title
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray))
-        .title(Line::from(vec![
-            Span::styled(
-                " Configure Your AI Assistant ",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]))
+        .title(Line::from(vec![Span::styled(
+            " Configure Your AI Assistant ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]))
         .title_alignment(Alignment::Center);
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Vertical layout: provider, model, api key, test button, help bar
-    let sections = Layout::vertical([
-        Constraint::Length(1),  // top padding
-        Constraint::Length(2),  // "Provider:" label + spacing
-        Constraint::Length(LlmSetupState::PROVIDERS.len() as u16 + 1), // provider list + spacing
-        Constraint::Length(2),  // "Model:" label + spacing
-        Constraint::Length(SUPPORTED_MODELS.len().min(4) as u16 + 1), // model list + spacing (max 4 visible)
-        Constraint::Length(2),  // "API Key:" label + spacing
-        Constraint::Length(2),  // api key input + spacing
-        Constraint::Length(2),  // test button + spacing
-        Constraint::Length(2),  // connection status
-        Constraint::Min(0),    // flexible space
-        Constraint::Length(1),  // help bar
-    ])
-    .split(inner);
+    // Determine which sections are visible / confirmed
+    let provider_visible = true; // always
+    let provider_confirmed = state.is_section_confirmed(LlmSetupSection::Provider);
+    let model_visible = state.is_section_visible(LlmSetupSection::Model);
+    let model_confirmed = state.is_section_confirmed(LlmSetupSection::Model);
+    let apikey_visible = state.is_section_visible(LlmSetupSection::ApiKey);
 
-    // Horizontal centering: add margin on both sides
-    let content_width = 50u16.min(inner.width);
+    // Build dynamic layout constraints based on visibility
+    let mut constraints: Vec<Constraint> = Vec::new();
+    constraints.push(Constraint::Length(1)); // [0] top padding
+
+    // Provider section (always visible)
+    if provider_confirmed && state.active_section != LlmSetupSection::Provider {
+        // Compact: label + confirmed value on one line
+        constraints.push(Constraint::Length(2)); // [1] "Provider: <value>"
+    } else {
+        constraints.push(Constraint::Length(1)); // [1] "Provider:" label
+        constraints.push(Constraint::Length(LlmSetupState::PROVIDERS.len() as u16 + 1)); // [2] provider list
+    }
+
+    // Model section (visible after provider confirmed)
+    if model_visible {
+        if model_confirmed && state.active_section != LlmSetupSection::Model {
+            constraints.push(Constraint::Length(2)); // compact
+        } else {
+            let models = state.available_models();
+            constraints.push(Constraint::Length(1)); // "Model:" label
+            constraints.push(Constraint::Length(models.len().min(4) as u16 + 1)); // model list
+        }
+    }
+
+    // API Key section (visible after model confirmed)
+    if apikey_visible {
+        constraints.push(Constraint::Length(1)); // "API Key:" label
+        constraints.push(Constraint::Length(2)); // api key input + spacing
+        // Connection status (always show if api key section is visible and test has been run)
+        if !matches!(state.connection_status, LlmConnectionStatus::Untested) {
+            constraints.push(Constraint::Length(2)); // connection status
+        }
+        // "Press Enter to continue..." prompt (only after successful test)
+        if matches!(state.connection_status, LlmConnectionStatus::Success(_)) {
+            constraints.push(Constraint::Length(2)); // continue prompt
+        }
+    }
+
+    constraints.push(Constraint::Min(0)); // flexible space
+    constraints.push(Constraint::Length(1)); // help bar
+
+    let sections = Layout::vertical(constraints).split(inner);
+
+    // Horizontal centering — use most of the available width so long
+    // API keys are not truncated, but cap at 80 for readability on very
+    // wide terminals.  Leave at least 2 columns of padding on each side.
+    let content_width = 80u16.min(inner.width.saturating_sub(4));
     let h_offset = (inner.width.saturating_sub(content_width)) / 2;
     let content_rect = |row: Rect| -> Rect {
         Rect {
@@ -262,215 +426,299 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LlmSetupState) {
         }
     };
 
-    // --- Provider section ---
-    let provider_active = state.active_section == LlmSetupSection::Provider;
-    let provider_label_style = if provider_active {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::White)
-    };
-    let provider_label = Paragraph::new(Line::from(vec![
-        Span::styled("Provider:", provider_label_style),
-    ]));
-    frame.render_widget(provider_label, content_rect(sections[1]));
+    let mut slot = 1usize; // current layout slot index (0 is top padding)
 
-    // Provider list
-    let provider_area = content_rect(sections[2]);
-    for (i, provider) in LlmSetupState::PROVIDERS.iter().enumerate() {
-        let is_selected = i == state.selected_provider_idx;
-        let prefix = if is_selected { "> " } else { "  " };
-        let style = if is_selected && provider_active {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
-        } else if is_selected {
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
+    // ---- Provider section ----
+    if provider_visible {
+        let provider_active = state.active_section == LlmSetupSection::Provider;
+        if provider_confirmed && !provider_active {
+            // Compact confirmed display
+            render_confirmed_line(
+                frame,
+                content_rect(sections[slot]),
+                "Provider",
+                state.selected_provider().display_name(),
+            );
+            slot += 1;
         } else {
-            Style::default().fg(Color::Gray)
-        };
-        let line = Paragraph::new(Line::from(vec![
-            Span::styled(format!("{}{}", prefix, provider.display_name()), style),
-        ]));
-        let row_rect = Rect {
-            x: provider_area.x,
-            y: provider_area.y + i as u16,
-            width: provider_area.width,
-            height: 1,
-        };
-        frame.render_widget(line, row_rect);
-    }
+            // Full interactive list
+            let label_style = if provider_active {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            let label = Paragraph::new(Line::from(vec![Span::styled(
+                "Provider:",
+                label_style,
+            )]));
+            frame.render_widget(label, content_rect(sections[slot]));
+            slot += 1;
 
-    // --- Model section ---
-    let model_active = state.active_section == LlmSetupSection::Model;
-    let model_label_style = if model_active {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::White)
-    };
-    let model_label = Paragraph::new(Line::from(vec![
-        Span::styled("Model:", model_label_style),
-    ]));
-    frame.render_widget(model_label, content_rect(sections[3]));
-
-    // Model list
-    let models = state.available_models();
-    let model_area = content_rect(sections[4]);
-    for (i, model) in models.iter().enumerate() {
-        let is_selected = i == state.selected_model_idx;
-        let prefix = if is_selected { "> " } else { "  " };
-        let style = if is_selected && model_active {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
-        } else if is_selected {
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Gray)
-        };
-
-        let tier_style = Style::default().fg(Color::DarkGray);
-        let line = Paragraph::new(Line::from(vec![
-            Span::styled(format!("{}{}", prefix, model.display_name), style),
-            Span::styled(format!("  {}", model.tier), tier_style),
-        ]));
-        let row_rect = Rect {
-            x: model_area.x,
-            y: model_area.y + i as u16,
-            width: model_area.width,
-            height: 1,
-        };
-        if row_rect.y < model_area.y + model_area.height {
-            frame.render_widget(line, row_rect);
+            let list_area = content_rect(sections[slot]);
+            for (i, provider) in LlmSetupState::PROVIDERS.iter().enumerate() {
+                let is_selected = i == state.selected_provider_idx;
+                let prefix = if is_selected { "> " } else { "  " };
+                let style = if is_selected && provider_active {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else if is_selected {
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Gray)
+                };
+                let line = Paragraph::new(Line::from(vec![Span::styled(
+                    format!("{}{}", prefix, provider.display_name()),
+                    style,
+                )]));
+                let row_rect = Rect {
+                    x: list_area.x,
+                    y: list_area.y + i as u16,
+                    width: list_area.width,
+                    height: 1,
+                };
+                frame.render_widget(line, row_rect);
+            }
+            slot += 1;
         }
     }
 
-    // --- API Key section ---
-    let key_active = state.active_section == LlmSetupSection::ApiKey;
-    let key_label_style = if key_active {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::White)
-    };
-    let key_label = Paragraph::new(Line::from(vec![
-        Span::styled("API Key:", key_label_style),
-    ]));
-    frame.render_widget(key_label, content_rect(sections[5]));
-
-    // API key input
-    let key_area = content_rect(sections[6]);
-    let display_text = state.api_key_display();
-    let is_empty = display_text.is_empty();
-
-    let key_para = if state.api_key_editing {
-        // When editing, split the displayed text at the cursor and render
-        // an inline `|` cursor so the user can see exactly where they are.
-        let cursor_char = state.api_key_input.cursor_pos();
-        let before: String = display_text.chars().take(cursor_char).collect();
-        let after: String = display_text.chars().skip(cursor_char).collect();
-        let text_style = Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD);
-        let cursor_style = Style::default()
-            .fg(Color::Black)
-            .bg(Color::Cyan);
-        Paragraph::new(Line::from(vec![
-            Span::styled("  [", Style::default()),
-            Span::styled(before, text_style),
-            Span::styled("|", cursor_style),
-            Span::styled(after, text_style),
-            Span::styled("]", Style::default()),
-        ]))
-    } else {
-        let key_text = if is_empty {
-            "(press Enter to input)".to_string()
+    // ---- Model section ----
+    if model_visible {
+        let model_active = state.active_section == LlmSetupSection::Model;
+        if model_confirmed && !model_active {
+            // Compact confirmed display
+            let model_name = state
+                .selected_model()
+                .map(|m| m.display_name)
+                .unwrap_or("(none)");
+            render_confirmed_line(frame, content_rect(sections[slot]), "Model", model_name);
+            slot += 1;
         } else {
-            display_text
-        };
-        let key_style = if is_empty {
-            Style::default().fg(Color::DarkGray)
+            // Full interactive list
+            let label_style = if model_active {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            let label = Paragraph::new(Line::from(vec![Span::styled("Model:", label_style)]));
+            frame.render_widget(label, content_rect(sections[slot]));
+            slot += 1;
+
+            let models = state.available_models();
+            let list_area = content_rect(sections[slot]);
+            for (i, model) in models.iter().enumerate() {
+                let is_selected = i == state.selected_model_idx;
+                let prefix = if is_selected { "> " } else { "  " };
+                let style = if is_selected && model_active {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else if is_selected {
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Gray)
+                };
+
+                let tier_style = Style::default().fg(Color::DarkGray);
+                let line = Paragraph::new(Line::from(vec![
+                    Span::styled(format!("{}{}", prefix, model.display_name), style),
+                    Span::styled(format!("  {}", model.tier), tier_style),
+                ]));
+                let row_rect = Rect {
+                    x: list_area.x,
+                    y: list_area.y + i as u16,
+                    width: list_area.width,
+                    height: 1,
+                };
+                if row_rect.y < list_area.y + list_area.height {
+                    frame.render_widget(line, row_rect);
+                }
+            }
+            slot += 1;
+        }
+    }
+
+    // ---- API Key section ----
+    if apikey_visible {
+        let key_active = state.active_section == LlmSetupSection::ApiKey;
+        let key_label_style = if key_active {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Gray)
+            Style::default().fg(Color::White)
         };
-        Paragraph::new(Line::from(vec![
-            Span::styled("  ", Style::default()),
-            Span::styled(format!("[{}]", key_text), key_style),
-        ]))
-    };
-    frame.render_widget(key_para, key_area);
+        let key_label = Paragraph::new(Line::from(vec![Span::styled(
+            "API Key:",
+            key_label_style,
+        )]));
+        frame.render_widget(key_label, content_rect(sections[slot]));
+        slot += 1;
 
-    // --- Test Connection button ---
-    let test_active = state.active_section == LlmSetupSection::TestButton;
-    let test_style = if test_active {
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::White)
-    };
-    let test_button = Paragraph::new(Line::from(vec![
-        Span::styled("  ", Style::default()),
-        Span::styled("[ Test Connection ]", test_style),
-    ]));
-    frame.render_widget(test_button, content_rect(sections[7]));
+        // API key input
+        let key_area = content_rect(sections[slot]);
+        let display_text = state.api_key_display();
+        let is_empty = display_text.is_empty();
 
-    // --- Connection status ---
-    let status_area = content_rect(sections[8]);
-    let status_line = match &state.connection_status {
-        LlmConnectionStatus::Untested => Line::from(vec![
-            Span::styled("  Status: ", Style::default().fg(Color::Gray)),
-            Span::styled("Not tested", Style::default().fg(Color::DarkGray)),
-        ]),
-        LlmConnectionStatus::Testing => Line::from(vec![
-            Span::styled("  Status: ", Style::default().fg(Color::Gray)),
-            Span::styled("Testing...", Style::default().fg(Color::Yellow)),
-        ]),
-        LlmConnectionStatus::Success(msg) => Line::from(vec![
-            Span::styled("  Status: ", Style::default().fg(Color::Gray)),
-            Span::styled("* ", Style::default().fg(Color::Green)),
-            Span::styled(msg.as_str(), Style::default().fg(Color::Green)),
-        ]),
-        LlmConnectionStatus::Failed(msg) => Line::from(vec![
-            Span::styled("  Status: ", Style::default().fg(Color::Gray)),
-            Span::styled("x ", Style::default().fg(Color::Red)),
-            Span::styled(msg.as_str(), Style::default().fg(Color::Red)),
-        ]),
-    };
-    frame.render_widget(Paragraph::new(status_line), status_area);
+        let key_para = if state.api_key_editing {
+            let cursor_char = state.api_key_input.cursor_pos();
+            let before: String = display_text.chars().take(cursor_char).collect();
+            let after: String = display_text.chars().skip(cursor_char).collect();
+            let text_style = Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD);
+            let cursor_style = Style::default().fg(Color::Black).bg(Color::Cyan);
+            Paragraph::new(Line::from(vec![
+                Span::styled("  [", Style::default()),
+                Span::styled(before, text_style),
+                Span::styled("|", cursor_style),
+                Span::styled(after, text_style),
+                Span::styled("]", Style::default()),
+            ]))
+        } else {
+            let key_text = if is_empty {
+                "(press Enter to input)".to_string()
+            } else {
+                display_text
+            };
+            let key_style = if is_empty {
+                Style::default().fg(Color::DarkGray)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            Paragraph::new(Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled(format!("[{}]", key_text), key_style),
+            ]))
+        };
+        frame.render_widget(key_para, key_area);
+        slot += 1;
 
-    // --- Help bar ---
-    let help_area = content_rect(sections[10]);
-    let help_spans = if state.api_key_editing {
-        vec![
-            Span::styled("Type key", Style::default().fg(Color::Gray)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Enter:confirm", Style::default().fg(Color::Gray)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc:cancel", Style::default().fg(Color::Gray)),
-        ]
-    } else {
-        vec![
-            Span::styled("^|v:select", Style::default().fg(Color::Gray)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Tab:section", Style::default().fg(Color::Gray)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Enter:confirm", Style::default().fg(Color::Gray)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-            Span::styled("n:next", Style::default().fg(Color::Gray)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc:back", Style::default().fg(Color::Gray)),
-        ]
-    };
+        // Connection status (only if a test has been run)
+        if !matches!(state.connection_status, LlmConnectionStatus::Untested) {
+            let status_area = content_rect(sections[slot]);
+            let status_line = match &state.connection_status {
+                LlmConnectionStatus::Untested => unreachable!(),
+                LlmConnectionStatus::Testing => Line::from(vec![
+                    Span::styled("  Status: ", Style::default().fg(Color::Gray)),
+                    Span::styled("Testing...", Style::default().fg(Color::Yellow)),
+                ]),
+                LlmConnectionStatus::Success(msg) => Line::from(vec![
+                    Span::styled("  Status: ", Style::default().fg(Color::Gray)),
+                    Span::styled("* ", Style::default().fg(Color::Green)),
+                    Span::styled(msg.as_str(), Style::default().fg(Color::Green)),
+                ]),
+                LlmConnectionStatus::Failed(msg) => Line::from(vec![
+                    Span::styled("  Status: ", Style::default().fg(Color::Gray)),
+                    Span::styled("x ", Style::default().fg(Color::Red)),
+                    Span::styled(msg.as_str(), Style::default().fg(Color::Red)),
+                ]),
+            };
+            frame.render_widget(Paragraph::new(status_line), status_area);
+            slot += 1;
+        }
+
+        // "Press Enter to continue..." prompt (only after successful test)
+        if matches!(state.connection_status, LlmConnectionStatus::Success(_)) {
+            let continue_area = content_rect(sections[slot]);
+            let continue_line = Line::from(vec![Span::styled(
+                "  Press Enter to continue...",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )]);
+            frame.render_widget(Paragraph::new(continue_line), continue_area);
+            #[allow(unused_assignments)]
+            { slot += 1; }
+        }
+    }
+
+    // ---- Help bar (always last slot) ----
+    let help_slot = sections.len() - 1;
+    let help_area = content_rect(sections[help_slot]);
+    let help_spans = build_help_bar(state);
     frame.render_widget(
         Paragraph::new(Line::from(help_spans)).alignment(Alignment::Center),
         help_area,
     );
+}
+
+/// Render a single-line confirmed section: "  label: value  [checkmark]"
+fn render_confirmed_line(frame: &mut Frame, area: Rect, label: &str, value: &str) {
+    let line = Paragraph::new(Line::from(vec![
+        Span::styled(
+            format!("{}: ", label),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            value.to_string(),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" *", Style::default().fg(Color::Green)),
+    ]));
+    frame.render_widget(line, area);
+}
+
+/// Build the context-sensitive help bar spans.
+fn build_help_bar(state: &LlmSetupState) -> Vec<Span<'static>> {
+    let sep = || Span::styled(" | ", Style::default().fg(Color::DarkGray));
+    let hint = |text: &str| Span::styled(text.to_string(), Style::default().fg(Color::Gray));
+
+    if state.api_key_editing {
+        return vec![
+            hint("Type key"),
+            sep(),
+            hint("Enter:confirm & test"),
+            sep(),
+            hint("Esc:back"),
+        ];
+    }
+
+    let mut spans = Vec::new();
+
+    match state.active_section {
+        LlmSetupSection::Provider | LlmSetupSection::Model => {
+            spans.push(hint("^v:select"));
+            spans.push(sep());
+            spans.push(hint("Enter:confirm"));
+        }
+        LlmSetupSection::ApiKey => {
+            if state.connection_tested_ok() {
+                spans.push(hint("Enter:continue"));
+            } else if state.api_key_input.is_empty() {
+                spans.push(hint("Enter:input key"));
+            } else if matches!(state.connection_status, LlmConnectionStatus::Failed(_)) {
+                spans.push(hint("Enter:edit key"));
+            } else {
+                spans.push(hint("Enter:test connection"));
+            }
+        }
+    }
+
+    // Back hint (only if not on the first section)
+    if state.active_section != LlmSetupSection::Provider {
+        spans.push(sep());
+        spans.push(hint("Esc:back"));
+    }
+
+    // Skip is always available
+    spans.push(sep());
+    spans.push(hint("s:skip"));
+
+    spans
 }
 
 // ---------------------------------------------------------------------------
@@ -496,7 +744,6 @@ mod tests {
         let mut state = LlmSetupState::default();
         state.provider_down();
         assert_eq!(*state.selected_provider(), LlmProvider::Google);
-        assert_eq!(state.selected_model_idx, 0); // reset on change
 
         state.provider_down();
         assert_eq!(*state.selected_provider(), LlmProvider::OpenAI);
@@ -517,13 +764,17 @@ mod tests {
     }
 
     #[test]
-    fn model_selection_resets_on_provider_change() {
+    fn model_selection_resets_on_go_back_from_model() {
         let mut state = LlmSetupState::default();
-        state.model_down(); // select second model
+        // Confirm provider, advance to Model
+        state.confirm_current_section();
+        // Select second model
+        state.model_down();
         assert_eq!(state.selected_model_idx, 1);
 
-        state.provider_down(); // change provider
-        assert_eq!(state.selected_model_idx, 0); // reset
+        // Go back from Model to Provider resets model selection
+        state.go_back_section();
+        assert_eq!(state.selected_model_idx, 0);
     }
 
     #[test]
@@ -584,15 +835,14 @@ mod tests {
         let s = LlmSetupSection::Provider;
         assert_eq!(s.next(), LlmSetupSection::Model);
         assert_eq!(s.next().next(), LlmSetupSection::ApiKey);
-        assert_eq!(s.next().next().next(), LlmSetupSection::TestButton);
-        assert_eq!(s.next().next().next().next(), LlmSetupSection::Provider);
+        assert_eq!(s.next().next().next(), LlmSetupSection::Provider); // wraps
     }
 
     #[test]
     fn section_prev_wraps() {
         let s = LlmSetupSection::Provider;
-        assert_eq!(s.prev(), LlmSetupSection::TestButton);
-        assert_eq!(s.prev().prev(), LlmSetupSection::ApiKey);
+        assert_eq!(s.prev(), LlmSetupSection::ApiKey); // wraps
+        assert_eq!(s.prev().prev(), LlmSetupSection::Model);
     }
 
     #[test]
@@ -622,6 +872,7 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(80, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let mut state = LlmSetupState::default();
+        state.confirmed_through = Some(LlmSetupSection::Model); // make ApiKey visible
         state.api_key_editing = true;
         state.api_key_input.set_value("sk-test");
         state.active_section = LlmSetupSection::ApiKey;
@@ -642,10 +893,110 @@ mod tests {
             LlmConnectionStatus::Failed("Invalid API key".to_string()),
         ] {
             let mut state = LlmSetupState::default();
+            state.confirmed_through = Some(LlmSetupSection::Model); // make ApiKey visible
+            state.active_section = LlmSetupSection::ApiKey;
             state.connection_status = status;
             terminal
                 .draw(|frame| render(frame, frame.area(), &state))
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn progressive_disclosure_visibility() {
+        // Initially only Provider is visible
+        let state = LlmSetupState::default();
+        assert!(state.is_section_visible(LlmSetupSection::Provider));
+        assert!(!state.is_section_visible(LlmSetupSection::Model));
+        assert!(!state.is_section_visible(LlmSetupSection::ApiKey));
+
+        // After confirming Provider, Model becomes visible
+        let mut state = LlmSetupState::default();
+        state.confirm_current_section();
+        assert!(state.is_section_visible(LlmSetupSection::Provider));
+        assert!(state.is_section_visible(LlmSetupSection::Model));
+        assert!(!state.is_section_visible(LlmSetupSection::ApiKey));
+        assert_eq!(state.active_section, LlmSetupSection::Model);
+
+        // After confirming Model, ApiKey becomes visible
+        state.confirm_current_section();
+        assert!(state.is_section_visible(LlmSetupSection::Provider));
+        assert!(state.is_section_visible(LlmSetupSection::Model));
+        assert!(state.is_section_visible(LlmSetupSection::ApiKey));
+        assert_eq!(state.active_section, LlmSetupSection::ApiKey);
+    }
+
+    #[test]
+    fn go_back_section() {
+        let mut state = LlmSetupState::default();
+        // Confirm through to ApiKey
+        state.confirm_current_section(); // Provider -> Model
+        state.confirm_current_section(); // Model -> ApiKey
+
+        // Go back to Model
+        assert!(state.go_back_section());
+        assert_eq!(state.active_section, LlmSetupSection::Model);
+        assert_eq!(state.confirmed_through, Some(LlmSetupSection::Provider));
+
+        // Go back to Provider
+        assert!(state.go_back_section());
+        assert_eq!(state.active_section, LlmSetupSection::Provider);
+        assert_eq!(state.confirmed_through, None);
+
+        // Can't go back further
+        assert!(!state.go_back_section());
+        assert_eq!(state.active_section, LlmSetupSection::Provider);
+    }
+
+    #[test]
+    fn connection_tested_ok() {
+        let mut state = LlmSetupState::default();
+        assert!(!state.connection_tested_ok());
+
+        state.connection_status = LlmConnectionStatus::Testing;
+        assert!(!state.connection_tested_ok());
+
+        state.connection_status = LlmConnectionStatus::Failed("error".to_string());
+        assert!(!state.connection_tested_ok());
+
+        state.connection_status = LlmConnectionStatus::Success("ok".to_string());
+        assert!(state.connection_tested_ok());
+    }
+
+    #[test]
+    fn render_progressive_all_stages() {
+        let backend = ratatui::backend::TestBackend::new(80, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        // Stage 1: only Provider visible
+        let state = LlmSetupState::default();
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state))
+            .unwrap();
+
+        // Stage 2: Provider confirmed, Model visible
+        let mut state = LlmSetupState::default();
+        state.confirm_current_section();
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state))
+            .unwrap();
+
+        // Stage 3: Model confirmed, ApiKey visible
+        let mut state = LlmSetupState::default();
+        state.confirm_current_section();
+        state.confirm_current_section();
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state))
+            .unwrap();
+
+        // Stage 4: Connection tested successfully
+        let mut state = LlmSetupState::default();
+        state.confirm_current_section();
+        state.confirm_current_section();
+        state.confirmed_through = Some(LlmSetupSection::ApiKey);
+        state.connection_status = LlmConnectionStatus::Success("Connected!".to_string());
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state))
+            .unwrap();
     }
 }
