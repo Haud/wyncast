@@ -1033,10 +1033,12 @@ pub(crate) fn render_help_bar(
         if i > 0 {
             spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
         }
-        spans.push(Span::styled(
-            format!(" {}:{}", hint.key, hint.description),
-            Style::default().fg(Color::Gray),
-        ));
+        let text = if hint.key.is_empty() {
+            format!(" {}", hint.description)
+        } else {
+            format!(" {}:{}", hint.key, hint.description)
+        };
+        spans.push(Span::styled(text, Style::default().fg(Color::Gray)));
     }
 
     let paragraph = Paragraph::new(Line::from(spans))

@@ -589,7 +589,6 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LlmSetupState) {
     }
 
     constraints.push(Constraint::Min(0)); // flexible space
-    constraints.push(Constraint::Length(1)); // help bar
 
     let sections = Layout::vertical(constraints).split(inner);
 
@@ -884,18 +883,6 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LlmSetupState) {
         } // end expanded API key else block
     }
 
-    // ---- Help bar (always last slot) ----
-    // In settings mode, suppress the inner onboarding help bar; the outer
-    // `compute_settings_keybinds` in tui/mod.rs handles settings hints.
-    if !is_settings_mode {
-        let help_slot = sections.len() - 1;
-        let help_area = content_rect(sections[help_slot]);
-        let help_spans = build_help_bar(state);
-        frame.render_widget(
-            Paragraph::new(Line::from(help_spans)).alignment(Alignment::Center),
-            help_area,
-        );
-    }
 }
 
 /// Render a single-line confirmed section: "  label: value  [checkmark]"
@@ -940,57 +927,6 @@ fn render_highlighted_line(frame: &mut Frame, area: Rect, label: &str, value: &s
         ),
     ]));
     frame.render_widget(line, area);
-}
-
-/// Build the context-sensitive help bar spans.
-fn build_help_bar(state: &LlmSetupState) -> Vec<Span<'static>> {
-    let sep = || Span::styled(" | ", Style::default().fg(Color::DarkGray));
-    let hint = |text: &str| Span::styled(text.to_string(), Style::default().fg(Color::Gray));
-
-    if state.api_key_editing {
-        return vec![
-            hint("Type key"),
-            sep(),
-            hint("Enter:confirm & test"),
-            sep(),
-            hint("Esc:back"),
-        ];
-    }
-
-    let mut spans = Vec::new();
-
-    match state.active_section {
-        LlmSetupSection::Provider | LlmSetupSection::Model => {
-            spans.push(hint("^v:select"));
-            spans.push(sep());
-            spans.push(hint("Enter:confirm"));
-        }
-        LlmSetupSection::ApiKey => {
-            if state.connection_tested_ok() {
-                spans.push(hint("Enter:continue"));
-            } else if state.api_key_input.is_empty() && !state.has_saved_api_key {
-                spans.push(hint("Enter:input key"));
-            } else if state.api_key_input.is_empty() && state.has_saved_api_key {
-                spans.push(hint("Enter:edit key"));
-            } else if matches!(state.connection_status, LlmConnectionStatus::Failed(_)) {
-                spans.push(hint("Enter:edit key"));
-            } else {
-                spans.push(hint("Enter:test connection"));
-            }
-        }
-    }
-
-    // Back hint (only if not on the first section)
-    if state.active_section != LlmSetupSection::Provider {
-        spans.push(sep());
-        spans.push(hint("Esc:back"));
-    }
-
-    // Skip is always available
-    spans.push(sep());
-    spans.push(hint("s:skip"));
-
-    spans
 }
 
 // ---------------------------------------------------------------------------
