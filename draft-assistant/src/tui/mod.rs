@@ -512,28 +512,37 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
                     };
                 }
                 OnboardingUpdate::ProgressSync { provider, model, api_key_mask } => {
+                    // In settings mode, only update provider/model indices and
+                    // API key mask without touching active_section or
+                    // confirmed_through, which would clobber navigation state.
+                    let in_settings = state.llm_setup.in_settings_mode;
+
                     // Rebuild LlmSetupState indices from the saved progress.
                     // Also advance confirmed_through so that previously
-                    // configured sections are visible.
+                    // configured sections are visible (unless in settings mode).
                     if let Some(ref p) = provider {
                         if let Some(idx) = LlmSetupState::PROVIDERS.iter().position(|pp| pp == p) {
                             state.llm_setup.selected_provider_idx = idx;
                         }
-                        // Provider is synced, so it's confirmed
-                        state.llm_setup.confirmed_through =
-                            Some(onboarding::llm_setup::LlmSetupSection::Provider);
-                        state.llm_setup.active_section =
-                            onboarding::llm_setup::LlmSetupSection::Model;
+                        if !in_settings {
+                            // Provider is synced, so it's confirmed
+                            state.llm_setup.confirmed_through =
+                                Some(onboarding::llm_setup::LlmSetupSection::Provider);
+                            state.llm_setup.active_section =
+                                onboarding::llm_setup::LlmSetupSection::Model;
+                        }
                         if let Some(ref model_id) = model {
                             let models = models_for_provider(p);
                             if let Some(midx) = models.iter().position(|m| m.model_id == model_id.as_str()) {
                                 state.llm_setup.selected_model_idx = midx;
                             }
-                            // Model is synced, so it's confirmed too
-                            state.llm_setup.confirmed_through =
-                                Some(onboarding::llm_setup::LlmSetupSection::Model);
-                            state.llm_setup.active_section =
-                                onboarding::llm_setup::LlmSetupSection::ApiKey;
+                            if !in_settings {
+                                // Model is synced, so it's confirmed too
+                                state.llm_setup.confirmed_through =
+                                    Some(onboarding::llm_setup::LlmSetupSection::Model);
+                                state.llm_setup.active_section =
+                                    onboarding::llm_setup::LlmSetupSection::ApiKey;
+                            }
                         }
                     }
                     // Populate saved API key mask for the Settings placeholder.
@@ -581,7 +590,11 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
                     onboarding::llm_setup::LlmSetupSection::Provider;
                 state.llm_setup.settings_editing_field = None;
                 state.llm_setup.settings_dirty = false;
+                state.llm_setup.in_settings_mode = true;
                 state.llm_setup.snapshot_settings();
+            } else {
+                // Leaving settings mode (switching to Draft or Onboarding).
+                state.llm_setup.in_settings_mode = false;
             }
             state.app_mode = mode;
         }

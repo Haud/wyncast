@@ -159,6 +159,12 @@ pub struct LlmSetupState {
     pub settings_saved_api_key: String,
     /// Whether the user has unsaved changes in settings mode.
     pub settings_dirty: bool,
+    /// Snapshot of `confirmed_through` before entering settings edit mode.
+    /// Used to restore on Escape.
+    pub settings_saved_confirmed_through: Option<LlmSetupSection>,
+    /// Explicit flag: true only when the app is in Settings mode (not onboarding).
+    /// Set by `ModeChanged` handler; cleared when leaving settings.
+    pub in_settings_mode: bool,
 }
 
 impl std::fmt::Debug for LlmSetupState {
@@ -198,6 +204,8 @@ impl Default for LlmSetupState {
             settings_saved_model_idx: 0,
             settings_saved_api_key: String::new(),
             settings_dirty: false,
+            settings_saved_confirmed_through: None,
+            in_settings_mode: false,
         }
     }
 }
@@ -262,7 +270,12 @@ impl LlmSetupState {
     /// If the user has confirmed past Provider (i.e. Model or ApiKey is confirmed),
     /// reset confirmed_through to at most Provider, reset model selection,
     /// and clear connection status, since the provider just changed.
+    ///
+    /// Skipped in settings mode (field-editing) to avoid corrupting navigation state.
     fn invalidate_past_provider(&mut self) {
+        if self.settings_editing_field.is_some() {
+            return;
+        }
         if self.confirmed_through > Some(LlmSetupSection::Provider) {
             self.selected_model_idx = 0;
             self.connection_status = LlmConnectionStatus::Untested;
@@ -273,7 +286,12 @@ impl LlmSetupState {
     /// If the user has confirmed past Model (i.e. ApiKey is confirmed),
     /// reset confirmed_through to Provider and clear connection status,
     /// since the model just changed.
+    ///
+    /// Skipped in settings mode (field-editing) to avoid corrupting navigation state.
     fn invalidate_past_model(&mut self) {
+        if self.settings_editing_field.is_some() {
+            return;
+        }
         if self.confirmed_through > Some(LlmSetupSection::Model) {
             self.confirmed_through = Some(LlmSetupSection::Provider);
             self.connection_status = LlmConnectionStatus::Untested;
@@ -386,6 +404,7 @@ impl LlmSetupState {
         self.settings_saved_provider_idx = self.selected_provider_idx;
         self.settings_saved_model_idx = self.selected_model_idx;
         self.settings_saved_api_key = self.api_key_input.value().to_string();
+        self.settings_saved_confirmed_through = self.confirmed_through;
     }
 
     /// Restore settings to the last saved snapshot (called on Escape).
@@ -393,6 +412,7 @@ impl LlmSetupState {
         self.selected_provider_idx = self.settings_saved_provider_idx;
         self.selected_model_idx = self.settings_saved_model_idx;
         self.api_key_input.set_value(&self.settings_saved_api_key.clone());
+        self.confirmed_through = self.settings_saved_confirmed_through;
         self.api_key_editing = false;
         self.settings_editing_field = None;
         self.settings_dirty = false;
@@ -461,10 +481,11 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LlmSetupState) {
     // In settings mode, determine which fields should be shown expanded vs compact.
     // - Overview mode (settings_editing_field == None): all compact, active highlighted
     // - Field editing mode: only the editing field is expanded
-    let is_settings_mode = state.confirmed_through == Some(LlmSetupSection::ApiKey)
-        && !state.api_key_editing
-        && state.settings_editing_field.is_none()
-        || state.settings_editing_field.is_some();
+    let is_settings_mode = state.in_settings_mode
+        && ((state.confirmed_through == Some(LlmSetupSection::ApiKey)
+            && !state.api_key_editing
+            && state.settings_editing_field.is_none())
+            || state.settings_editing_field.is_some());
 
     // A section should be shown expanded (full list) if:
     // - In onboarding: it's the active section and not yet confirmed past it
@@ -809,13 +830,17 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LlmSetupState) {
     }
 
     // ---- Help bar (always last slot) ----
-    let help_slot = sections.len() - 1;
-    let help_area = content_rect(sections[help_slot]);
-    let help_spans = build_help_bar(state);
-    frame.render_widget(
-        Paragraph::new(Line::from(help_spans)).alignment(Alignment::Center),
-        help_area,
-    );
+    // In settings mode, suppress the inner onboarding help bar; the outer
+    // `render_settings_help_bar` in settings/mod.rs handles settings hints.
+    if !is_settings_mode {
+        let help_slot = sections.len() - 1;
+        let help_area = content_rect(sections[help_slot]);
+        let help_spans = build_help_bar(state);
+        frame.render_widget(
+            Paragraph::new(Line::from(help_spans)).alignment(Alignment::Center),
+            help_area,
+        );
+    }
 }
 
 /// Render a single-line confirmed section: "  label: value  [checkmark]"

@@ -732,12 +732,18 @@ fn handle_llm_settings_key(
             KeyCode::Up | KeyCode::Char('k') => {
                 match editing {
                     LlmSetupSection::Provider => {
+                        let before = state.selected_provider_idx;
                         state.provider_up();
-                        state.settings_dirty = true;
+                        if state.selected_provider_idx != before {
+                            state.settings_dirty = true;
+                        }
                     }
                     LlmSetupSection::Model => {
+                        let before = state.selected_model_idx;
                         state.model_up();
-                        state.settings_dirty = true;
+                        if state.selected_model_idx != before {
+                            state.settings_dirty = true;
+                        }
                     }
                     LlmSetupSection::ApiKey => {
                         // Should not reach here; API key editing is handled above
@@ -748,12 +754,18 @@ fn handle_llm_settings_key(
             KeyCode::Down | KeyCode::Char('j') => {
                 match editing {
                     LlmSetupSection::Provider => {
+                        let before = state.selected_provider_idx;
                         state.provider_down();
-                        state.settings_dirty = true;
+                        if state.selected_provider_idx != before {
+                            state.settings_dirty = true;
+                        }
                     }
                     LlmSetupSection::Model => {
+                        let before = state.selected_model_idx;
                         state.model_down();
-                        state.settings_dirty = true;
+                        if state.selected_model_idx != before {
+                            state.settings_dirty = true;
+                        }
                     }
                     LlmSetupSection::ApiKey => {}
                 }
