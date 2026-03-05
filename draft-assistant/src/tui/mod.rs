@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use crossterm::event::{Event, EventStream};
 use futures_util::StreamExt;
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -31,7 +32,7 @@ use crate::protocol::{
 use crate::valuation::scarcity::ScarcityEntry;
 use crate::valuation::zscore::PlayerValuation;
 
-use layout::{build_layout, AppLayout};
+use layout::build_layout;
 pub use onboarding::llm_setup::LlmSetupState;
 pub use onboarding::strategy_setup::StrategySetupState;
 pub use text_input::TextInput;
@@ -782,6 +783,12 @@ fn compute_settings_keybinds(state: &ViewState) -> Vec<KeybindHint> {
                 ]
             };
         }
+        if ss.generation_error.is_some() {
+            return vec![
+                KeybindHint::new("Enter", "Retry"),
+                KeybindHint::new("Esc", "Back"),
+            ];
+        }
         if ss.overview_editing {
             return vec![
                 KeybindHint::new("type", "Edit overview"),
@@ -792,11 +799,29 @@ fn compute_settings_keybinds(state: &ViewState) -> Vec<KeybindHint> {
     }
 
     if state.settings_is_editing() {
-        vec![
-            KeybindHint::new("type", "Input"),
-            KeybindHint::new("Enter", "Confirm"),
-            KeybindHint::new("Esc", "Cancel"),
-        ]
+        // LLM Provider/Model are dropdown fields — show arrow-key hints instead
+        // of the generic "type:Input" hint used for text fields.
+        let is_llm_dropdown = state.settings_tab == SettingsSection::LlmConfig
+            && matches!(
+                state.llm_setup.settings_editing_field,
+                Some(
+                    crate::tui::onboarding::llm_setup::LlmSetupSection::Provider
+                        | crate::tui::onboarding::llm_setup::LlmSetupSection::Model
+                )
+            );
+        if is_llm_dropdown {
+            vec![
+                KeybindHint::new("\u{2191}\u{2193}", "Select"),
+                KeybindHint::new("Enter", "Confirm"),
+                KeybindHint::new("Esc", "Cancel"),
+            ]
+        } else {
+            vec![
+                KeybindHint::new("type", "Input"),
+                KeybindHint::new("Enter", "Confirm"),
+                KeybindHint::new("Esc", "Cancel"),
+            ]
+        }
     } else {
         let mut hints = vec![
             KeybindHint::new("1/2", "Tab"),
@@ -807,6 +832,9 @@ fn compute_settings_keybinds(state: &ViewState) -> Vec<KeybindHint> {
             SettingsSection::StrategyConfig => {
                 hints.push(KeybindHint::new("Enter", "Edit"));
                 hints.push(KeybindHint::new("s", "Save"));
+                if state.strategy_setup.settings_dirty {
+                    hints.push(KeybindHint::new("", "[unsaved]"));
+                }
             }
             SettingsSection::LlmConfig => {
                 hints.push(KeybindHint::new("Enter", "Edit"));
@@ -939,7 +967,7 @@ fn render_draft_frame(frame: &mut Frame, state: &ViewState) {
     widgets::nomination_plan::render(frame, layout.nomination_plan, state, nom_plan_focused);
 
     // Help bar: dumb renderer of the pre-synced active keybind hints
-    render_help_bar(frame, &layout, state, &state.active_keybinds);
+    render_help_bar(frame, layout.help_bar, state, &state.active_keybinds);
 
     // Position filter modal overlay
     if state.position_filter_modal.open {
@@ -960,9 +988,9 @@ fn render_draft_frame(frame: &mut Frame, state: &ViewState) {
 /// case for filter mode (showing an inline input bar) is still handled here
 /// because it requires displaying live `ViewState` data (the current filter
 /// text and cursor), not just static hint labels.
-fn render_help_bar(
+pub(crate) fn render_help_bar(
     frame: &mut Frame,
-    layout: &AppLayout,
+    area: Rect,
     state: &ViewState,
     keybinds: &[KeybindHint],
 ) {
@@ -994,7 +1022,7 @@ fn render_help_bar(
         ];
         let paragraph = Paragraph::new(Line::from(spans))
             .style(Style::default().bg(Color::Black));
-        frame.render_widget(paragraph, layout.help_bar);
+        frame.render_widget(paragraph, area);
         return;
     }
 
@@ -1005,15 +1033,17 @@ fn render_help_bar(
         if i > 0 {
             spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
         }
-        spans.push(Span::styled(
-            format!(" {}:{}", hint.key, hint.description),
-            Style::default().fg(Color::Gray),
-        ));
+        let text = if hint.key.is_empty() {
+            format!(" {}", hint.description)
+        } else {
+            format!(" {}:{}", hint.key, hint.description)
+        };
+        spans.push(Span::styled(text, Style::default().fg(Color::Gray)));
     }
 
     let paragraph = Paragraph::new(Line::from(spans))
         .style(Style::default().bg(Color::Black));
-    frame.render_widget(paragraph, layout.help_bar);
+    frame.render_widget(paragraph, area);
 }
 
 // ---------------------------------------------------------------------------

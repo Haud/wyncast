@@ -447,8 +447,7 @@ fn render_input_step(frame: &mut Frame, area: Rect, state: &StrategySetupState) 
         Constraint::Length(2), // instructions
         Constraint::Length(1), // spacer
         Constraint::Min(6),   // text area (fills remaining space)
-        Constraint::Length(1), // spacer
-        Constraint::Length(1), // help bar
+        Constraint::Length(1), // spacer / error overlay
     ])
     .split(inner);
 
@@ -531,26 +530,6 @@ fn render_input_step(frame: &mut Frame, area: Rect, state: &StrategySetupState) 
         frame.render_widget(Paragraph::new(err_line), err_area);
     }
 
-    // Help bar
-    let help_spans = if state.input_editing {
-        vec![
-            Span::styled("Type strategy", Style::default().fg(Color::Gray)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc:stop editing", Style::default().fg(Color::Gray)),
-        ]
-    } else {
-        vec![
-            Span::styled("Enter:generate", Style::default().fg(Color::Gray)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-            Span::styled("e:edit", Style::default().fg(Color::Gray)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc:back", Style::default().fg(Color::Gray)),
-        ]
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(help_spans)).alignment(Alignment::Center),
-        content_rect(sections[5]),
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -580,7 +559,6 @@ fn render_generating_step(frame: &mut Frame, area: Rect, state: &StrategySetupSt
             Constraint::Length(1), // spacer
             Constraint::Length(2), // error message
             Constraint::Min(1),    // bottom spacer
-            Constraint::Length(1), // help bar
         ])
         .split(inner);
 
@@ -615,15 +593,6 @@ fn render_generating_step(frame: &mut Frame, area: Rect, state: &StrategySetupSt
             );
         }
 
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("Enter:retry", Style::default().fg(Color::Gray)),
-                Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-                Span::styled("Esc:back to input", Style::default().fg(Color::Gray)),
-            ]))
-            .alignment(Alignment::Center),
-            content_rect(sections[5]),
-        );
     } else {
         // Generating: centered "Thinking..." with a simple animation
         let sections = Layout::vertical([
@@ -690,6 +659,8 @@ fn render_review_step(frame: &mut Frame, area: Rect, state: &StrategySetupState)
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    // Keybind hints are shown exclusively in the app-level bottom help bar
+    // (see compute_settings_keybinds / compute_onboarding_keybinds in tui/mod.rs).
     let sections = Layout::vertical([
         Constraint::Length(1),  // top padding
         Constraint::Length(1),  // "Strategy Overview:" label
@@ -699,8 +670,6 @@ fn render_review_step(frame: &mut Frame, area: Rect, state: &StrategySetupState)
         Constraint::Length(1),  // spacer
         Constraint::Length(1),  // "Category Weights:" label
         Constraint::Length(4),  // weight grid (4 rows of 3)
-        Constraint::Length(1),  // spacer
-        Constraint::Length(1),  // help bar
     ])
     .split(inner);
 
@@ -858,9 +827,6 @@ fn render_review_step(frame: &mut Frame, area: Rect, state: &StrategySetupState)
 
     // --- Weight grid ---
     render_weight_grid(frame, content_rect(sections[7]), state);
-
-    // --- Help bar ---
-    render_review_help_bar(frame, content_rect(sections[9]), state);
 }
 
 // ---------------------------------------------------------------------------
@@ -888,7 +854,6 @@ fn render_confirm_step(frame: &mut Frame, area: Rect, state: &StrategySetupState
         Constraint::Length(2), // spacer
         Constraint::Length(1), // yes/no buttons
         Constraint::Min(1),    // centering space
-        Constraint::Length(1), // help bar
     ])
     .split(inner);
 
@@ -944,18 +909,6 @@ fn render_confirm_step(frame: &mut Frame, area: Rect, state: &StrategySetupState
         content_rect(sections[3]),
     );
 
-    // Help bar
-    let help_spans = vec![
-        Span::styled("<>:select", Style::default().fg(Color::Gray)),
-        Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Enter:confirm", Style::default().fg(Color::Gray)),
-        Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Esc:back", Style::default().fg(Color::Gray)),
-    ];
-    frame.render_widget(
-        Paragraph::new(Line::from(help_spans)).alignment(Alignment::Center),
-        content_rect(sections[5]),
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1083,54 +1036,6 @@ fn render_weight_grid(frame: &mut Frame, area: Rect, state: &StrategySetupState)
 
         frame.render_widget(Paragraph::new(Line::from(spans)), row_rect);
     }
-}
-
-/// Render the help bar for the review step.
-fn render_review_help_bar(frame: &mut Frame, area: Rect, state: &StrategySetupState) {
-    let help_spans = if state.generating {
-        vec![
-            Span::styled("Generating...", Style::default().fg(Color::Yellow)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc:cancel", Style::default().fg(Color::Gray)),
-        ]
-    } else if state.generation_error.is_some() {
-        vec![
-            Span::styled("Error!", Style::default().fg(Color::Red)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Enter:retry", Style::default().fg(Color::Gray)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc:back to editing", Style::default().fg(Color::Gray)),
-        ]
-    } else if state.overview_editing {
-        vec![
-            Span::styled("Type text", Style::default().fg(Color::Gray)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Enter:submit to AI", Style::default().fg(Color::Gray)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc:cancel", Style::default().fg(Color::Gray)),
-        ]
-    } else if state.editing_field.is_some() {
-        vec![
-            Span::styled("Type value", Style::default().fg(Color::Gray)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Enter:confirm", Style::default().fg(Color::Gray)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc:cancel", Style::default().fg(Color::Gray)),
-        ]
-    } else {
-        vec![
-            Span::styled("Enter:edit", Style::default().fg(Color::Gray)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-            Span::styled("s:save", Style::default().fg(Color::Gray)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc:back", Style::default().fg(Color::Gray)),
-        ]
-    };
-
-    frame.render_widget(
-        Paragraph::new(Line::from(help_spans)).alignment(Alignment::Center),
-        area,
-    );
 }
 
 // ---------------------------------------------------------------------------
