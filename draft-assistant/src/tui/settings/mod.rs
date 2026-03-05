@@ -143,7 +143,21 @@ fn render_settings_help_bar(frame: &mut Frame, area: Rect, state: &ViewState) {
             }
         }
         SettingsSection::StrategyConfig => {
-            if state.settings_is_editing() {
+            if state.strategy_setup.generating {
+                vec![
+                    hint("Generating..."),
+                    sep(),
+                    hint("Esc:cancel"),
+                ]
+            } else if state.strategy_setup.overview_editing {
+                vec![
+                    hint("Type text"),
+                    sep(),
+                    hint("Enter:submit to AI"),
+                    sep(),
+                    hint("Esc:cancel"),
+                ]
+            } else if state.settings_is_editing() {
                 vec![
                     hint("Type value"),
                     sep(),
@@ -152,17 +166,25 @@ fn render_settings_help_bar(frame: &mut Frame, area: Rect, state: &ViewState) {
                     hint("Esc:cancel"),
                 ]
             } else {
-                vec![
+                let mut spans = vec![
                     hint("1/2:tab"),
                     sep(),
-                    hint("Tab:section"),
-                    sep(),
                     hint("^v:navigate"),
+                    sep(),
+                    hint("Enter:edit"),
                     sep(),
                     hint("s:save"),
                     sep(),
                     hint("Esc:back to draft"),
-                ]
+                ];
+                if state.strategy_setup.settings_dirty {
+                    spans.push(sep());
+                    spans.push(Span::styled(
+                        "[unsaved]",
+                        Style::default().fg(Color::Yellow),
+                    ));
+                }
+                spans
             }
         }
     };

@@ -75,7 +75,8 @@ fn is_text_editing_active(view_state: &ViewState) -> bool {
             | AppMode::Onboarding(crate::onboarding::OnboardingStep::Complete)
             | AppMode::Settings(crate::protocol::SettingsSection::StrategyConfig)
     ) && (view_state.strategy_setup.input_editing
-        || view_state.strategy_setup.editing_field.is_some());
+        || view_state.strategy_setup.editing_field.is_some()
+        || view_state.strategy_setup.overview_editing);
 
     view_state.filter_mode
         || view_state.llm_setup.api_key_editing
@@ -240,11 +241,89 @@ fn handle_strategy_setup_key(
 
         // ----- Step 3: Review -----
         StrategyWizardStep::Review => {
+            // Overview editing mode (text input for strategy overview)
+            if state.overview_editing {
+                return match key_event.code {
+                    KeyCode::Enter => {
+                        // Submit overview text to LLM for regeneration
+                        let text = state.overview_input.value().to_string();
+                        if !text.trim().is_empty() {
+                            state.overview_editing = false;
+                            state.generating = true;
+                            state.generation_output.clear();
+                            state.generation_error = None;
+                            // Copy the edited text as the strategy input for the LLM
+                            state.strategy_input.set_value(&text);
+                            Some(UserCommand::OnboardingAction(
+                                OnboardingAction::ConfigureStrategyWithLlm(text),
+                            ))
+                        } else {
+                            None
+                        }
+                    }
+                    KeyCode::Esc => {
+                        state.cancel_overview_editing();
+                        None
+                    }
+                    _ if dispatch_text_input_key(&key_event, &mut state.overview_input) => None,
+                    _ => None,
+                };
+            }
+
+            // Generating mode within review (LLM regenerating strategy)
+            if state.generating {
+                return match key_event.code {
+                    KeyCode::Esc => {
+                        state.generating = false;
+                        state.generation_error = None;
+                        state.start_overview_editing();
+                        None
+                    }
+                    KeyCode::Enter if state.generation_error.is_some() => {
+                        // Retry generation
+                        state.generating = true;
+                        state.generation_output.clear();
+                        state.generation_error = None;
+                        let text = state.strategy_input.value().to_string();
+                        Some(UserCommand::OnboardingAction(
+                            OnboardingAction::ConfigureStrategyWithLlm(text),
+                        ))
+                    }
+                    KeyCode::Char('q') => Some(UserCommand::Quit),
+                    _ => None,
+                };
+            }
+
+            // Error state: LLM generation failed (generating is false, but error is set)
+            if state.generation_error.is_some() {
+                return match key_event.code {
+                    KeyCode::Esc => {
+                        state.generation_error = None;
+                        state.start_overview_editing();
+                        None
+                    }
+                    KeyCode::Enter => {
+                        // Retry: resubmit the last input
+                        let text = state.strategy_input.value().to_string();
+                        state.generation_error = None;
+                        state.generating = true;
+                        state.generation_output.clear();
+                        Some(UserCommand::OnboardingAction(
+                            OnboardingAction::ConfigureStrategyWithLlm(text),
+                        ))
+                    }
+                    KeyCode::Char('q') => Some(UserCommand::Quit),
+                    _ => None,
+                };
+            }
+
             // Numeric field editing mode
             if state.editing_field.is_some() {
                 return match key_event.code {
                     KeyCode::Enter => {
-                        state.confirm_edit();
+                        if state.confirm_edit() {
+                            state.settings_dirty = true;
+                        }
                         None
                     }
                     KeyCode::Esc => {
@@ -311,9 +390,8 @@ fn handle_strategy_setup_key(
                 KeyCode::Enter => {
                     match state.review_section {
                         ReviewSection::Overview => {
-                            // Overview is read-only; advance to confirm
-                            state.step = StrategyWizardStep::Confirm;
-                            state.confirm_yes = true;
+                            // Enter editing mode for strategy overview
+                            state.start_overview_editing();
                             None
                         }
                         ReviewSection::BudgetField => {
@@ -647,8 +725,11 @@ fn handle_settings_key(
     }
 
     // --- Strategy tab: delegate to onboarding handler ---
-    // Check if we're in an editing sub-mode. If so, delegate fully.
-    if view_state.settings_is_editing() {
+    // Check if we're in an editing sub-mode (text input, overview editing,
+    // generating). If so, delegate fully to the strategy handler.
+    if view_state.settings_is_editing()
+        || view_state.strategy_setup.generating
+    {
         let cmd = handle_strategy_setup_key(key_event, view_state);
         return filter_onboarding_commands(cmd);
     }
@@ -663,8 +744,35 @@ fn handle_settings_key(
             Some(UserCommand::SwitchSettingsTab(SettingsSection::StrategyConfig))
         }
 
-        // Esc: exit settings and return to draft mode
-        KeyCode::Esc => Some(UserCommand::ExitSettings),
+        // s: save strategy settings
+        KeyCode::Char('s') => {
+            let state = &mut view_state.strategy_setup;
+            let weights = state.category_weights.clone();
+            let pct = state.hitting_budget_pct;
+            let overview = if state.strategy_overview.is_empty() {
+                None
+            } else {
+                Some(state.strategy_overview.clone())
+            };
+            state.settings_dirty = false;
+            // Update snapshot to reflect saved state
+            state.snapshot_settings();
+            Some(UserCommand::OnboardingAction(
+                OnboardingAction::SaveStrategyConfig {
+                    hitting_budget_pct: pct,
+                    category_weights: weights,
+                    strategy_overview: overview,
+                },
+            ))
+        }
+
+        // Esc: discard unsaved changes and exit settings
+        KeyCode::Esc => {
+            if view_state.strategy_setup.settings_dirty {
+                view_state.strategy_setup.restore_settings_snapshot();
+            }
+            Some(UserCommand::ExitSettings)
+        }
 
         // r: reset and re-run onboarding from the beginning
         KeyCode::Char('r') => {
@@ -2643,14 +2751,8 @@ mod tests {
         state.strategy_setup.step = StrategyWizardStep::Review;
         state.strategy_setup.input_editing = false;
 
-        // 's' in strategy Review step advances to Confirm
+        // 's' in settings strategy tab directly dispatches SaveStrategyConfig
         let result = handle_key(key(KeyCode::Char('s')), &mut state);
-        assert!(result.is_none(), "'s' advances to Confirm step, no command emitted");
-        assert_eq!(state.strategy_setup.step, StrategyWizardStep::Confirm);
-
-        // Confirm with Enter saves
-        state.strategy_setup.confirm_yes = true;
-        let result = handle_key(key(KeyCode::Enter), &mut state);
         assert!(
             matches!(
                 result,
@@ -2661,6 +2763,8 @@ mod tests {
             "expected SaveStrategyConfig, got {:?}",
             result,
         );
+        // settings_dirty should be cleared after save
+        assert!(!state.strategy_setup.settings_dirty);
     }
 
     #[test]
@@ -2733,5 +2837,137 @@ mod tests {
         assert!(state.llm_setup.settings_editing_field.is_none());
         // Dirty flag should still be set (unsaved)
         assert!(state.llm_setup.settings_dirty);
+    }
+
+    // -- Strategy overview editing tests --
+
+    #[test]
+    fn strategy_review_enter_on_overview_starts_editing() {
+        use crate::tui::onboarding::strategy_setup::{ReviewSection, StrategyWizardStep};
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(crate::protocol::SettingsSection::StrategyConfig);
+        state.settings_tab = crate::protocol::SettingsSection::StrategyConfig;
+        state.strategy_setup.step = StrategyWizardStep::Review;
+        state.strategy_setup.input_editing = false;
+        state.strategy_setup.review_section = ReviewSection::Overview;
+        state.strategy_setup.strategy_overview = "Stars-and-scrubs approach.".to_string();
+
+        let result = handle_key(key(KeyCode::Enter), &mut state);
+        assert!(result.is_none(), "Enter on overview starts editing, no command");
+        assert!(state.strategy_setup.overview_editing);
+        assert_eq!(state.strategy_setup.overview_input.value(), "Stars-and-scrubs approach.");
+    }
+
+    #[test]
+    fn strategy_overview_editing_esc_cancels() {
+        use crate::tui::onboarding::strategy_setup::{ReviewSection, StrategyWizardStep};
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(crate::protocol::SettingsSection::StrategyConfig);
+        state.settings_tab = crate::protocol::SettingsSection::StrategyConfig;
+        state.strategy_setup.step = StrategyWizardStep::Review;
+        state.strategy_setup.input_editing = false;
+        state.strategy_setup.review_section = ReviewSection::Overview;
+        state.strategy_setup.overview_editing = true;
+        state.strategy_setup.overview_input.set_value("Modified text");
+
+        let result = handle_key(key(KeyCode::Esc), &mut state);
+        assert!(result.is_none());
+        assert!(!state.strategy_setup.overview_editing);
+        assert!(state.strategy_setup.overview_input.is_empty());
+    }
+
+    #[test]
+    fn strategy_overview_editing_enter_submits_to_llm() {
+        use crate::tui::onboarding::strategy_setup::{ReviewSection, StrategyWizardStep};
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(crate::protocol::SettingsSection::StrategyConfig);
+        state.settings_tab = crate::protocol::SettingsSection::StrategyConfig;
+        state.strategy_setup.step = StrategyWizardStep::Review;
+        state.strategy_setup.input_editing = false;
+        state.strategy_setup.review_section = ReviewSection::Overview;
+        state.strategy_setup.overview_editing = true;
+        state.strategy_setup.overview_input.set_value("Punt saves, target BB and HD");
+
+        let result = handle_key(key(KeyCode::Enter), &mut state);
+        assert!(
+            matches!(
+                result,
+                Some(UserCommand::OnboardingAction(
+                    OnboardingAction::ConfigureStrategyWithLlm(_)
+                ))
+            ),
+            "Enter on overview editing submits to LLM, got {:?}",
+            result,
+        );
+        assert!(!state.strategy_setup.overview_editing);
+        assert!(state.strategy_setup.generating);
+    }
+
+    #[test]
+    fn strategy_generating_esc_cancels_back_to_overview_editing() {
+        use crate::tui::onboarding::strategy_setup::{ReviewSection, StrategyWizardStep};
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(crate::protocol::SettingsSection::StrategyConfig);
+        state.settings_tab = crate::protocol::SettingsSection::StrategyConfig;
+        state.strategy_setup.step = StrategyWizardStep::Review;
+        state.strategy_setup.input_editing = false;
+        state.strategy_setup.review_section = ReviewSection::Overview;
+        state.strategy_setup.generating = true;
+
+        let result = handle_key(key(KeyCode::Esc), &mut state);
+        assert!(result.is_none());
+        assert!(!state.strategy_setup.generating);
+        assert!(state.strategy_setup.overview_editing);
+    }
+
+    #[test]
+    fn strategy_settings_esc_restores_snapshot_when_dirty() {
+        use crate::protocol::SettingsSection;
+        use crate::tui::onboarding::strategy_setup::StrategyWizardStep;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::StrategyConfig);
+        state.settings_tab = SettingsSection::StrategyConfig;
+        state.strategy_setup.step = StrategyWizardStep::Review;
+        state.strategy_setup.input_editing = false;
+
+        // Snapshot original values
+        state.strategy_setup.strategy_overview = "Original".to_string();
+        state.strategy_setup.hitting_budget_pct = 65;
+        state.strategy_setup.snapshot_settings();
+
+        // Modify values
+        state.strategy_setup.strategy_overview = "Modified".to_string();
+        state.strategy_setup.hitting_budget_pct = 80;
+        state.strategy_setup.settings_dirty = true;
+
+        // Esc should restore and exit
+        let result = handle_key(key(KeyCode::Esc), &mut state);
+        assert_eq!(result, Some(UserCommand::ExitSettings));
+        assert_eq!(state.strategy_setup.strategy_overview, "Original");
+        assert_eq!(state.strategy_setup.hitting_budget_pct, 65);
+        assert!(!state.strategy_setup.settings_dirty);
+    }
+
+    #[test]
+    fn strategy_overview_editing_typing_appends() {
+        use crate::tui::onboarding::strategy_setup::{ReviewSection, StrategyWizardStep};
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(crate::protocol::SettingsSection::StrategyConfig);
+        state.settings_tab = crate::protocol::SettingsSection::StrategyConfig;
+        state.strategy_setup.step = StrategyWizardStep::Review;
+        state.strategy_setup.input_editing = false;
+        state.strategy_setup.review_section = ReviewSection::Overview;
+        state.strategy_setup.overview_editing = true;
+        state.strategy_setup.overview_input.set_value("Punt");
+
+        let result = handle_key(key(KeyCode::Char(' ')), &mut state);
+        assert!(result.is_none());
+        assert_eq!(state.strategy_setup.overview_input.value(), "Punt ");
     }
 }

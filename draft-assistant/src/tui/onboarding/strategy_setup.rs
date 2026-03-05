@@ -58,7 +58,7 @@ pub enum StrategyWizardStep {
 /// Which part of the review step has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewSection {
-    /// Strategy overview text (read-only, scrollable).
+    /// Strategy overview text (editable, scrollable).
     Overview,
     /// Hitting budget percentage field.
     BudgetField,
@@ -248,6 +248,18 @@ pub struct StrategySetupState {
     pub review_section: ReviewSection,
     /// Whether the confirm prompt is selecting "Yes" (true) or "No" (false).
     pub confirm_yes: bool,
+    /// Whether the strategy overview text box is being edited in review mode.
+    pub overview_editing: bool,
+    /// Text input buffer for editing the strategy overview.
+    pub overview_input: TextInput,
+    /// Whether strategy settings have been modified since last save.
+    pub settings_dirty: bool,
+    /// Snapshot of strategy overview for Esc restore in settings mode.
+    pub snapshot_overview: String,
+    /// Snapshot of hitting budget percentage for Esc restore in settings mode.
+    pub snapshot_budget: u8,
+    /// Snapshot of category weights for Esc restore in settings mode.
+    pub snapshot_weights: CategoryWeights,
 }
 
 impl Default for StrategySetupState {
@@ -267,6 +279,12 @@ impl Default for StrategySetupState {
             selected_weight_idx: 0,
             review_section: ReviewSection::Overview,
             confirm_yes: true,
+            overview_editing: false,
+            overview_input: TextInput::new(),
+            settings_dirty: false,
+            snapshot_overview: String::new(),
+            snapshot_budget: 65,
+            snapshot_weights: CategoryWeights::default(),
         }
     }
 }
@@ -353,7 +371,41 @@ impl StrategySetupState {
 
     /// Check if any field is currently being edited.
     pub fn is_editing(&self) -> bool {
-        self.editing_field.is_some() || self.input_editing
+        self.editing_field.is_some() || self.input_editing || self.overview_editing
+    }
+
+    /// Start editing the strategy overview text.
+    ///
+    /// Copies the current overview into the text input buffer and activates
+    /// editing mode.
+    pub fn start_overview_editing(&mut self) {
+        self.overview_input.set_value(&self.strategy_overview);
+        self.overview_editing = true;
+    }
+
+    /// Cancel overview editing and discard changes to the text input.
+    pub fn cancel_overview_editing(&mut self) {
+        self.overview_editing = false;
+        self.overview_input.clear();
+    }
+
+    /// Snapshot the current strategy values for Esc restoration in settings mode.
+    pub fn snapshot_settings(&mut self) {
+        self.snapshot_overview = self.strategy_overview.clone();
+        self.snapshot_budget = self.hitting_budget_pct;
+        self.snapshot_weights = self.category_weights.clone();
+    }
+
+    /// Restore strategy values from the last snapshot (undo unsaved changes).
+    pub fn restore_settings_snapshot(&mut self) {
+        self.strategy_overview = self.snapshot_overview.clone();
+        self.hitting_budget_pct = self.snapshot_budget;
+        self.category_weights = self.snapshot_weights.clone();
+        self.settings_dirty = false;
+        self.overview_editing = false;
+        self.overview_input.clear();
+        self.editing_field = None;
+        self.field_input.clear();
     }
 }
 
@@ -672,15 +724,47 @@ fn render_review_step(frame: &mut Frame, area: Rect, state: &StrategySetupState)
     } else {
         Style::default().fg(Color::White)
     };
+
+    // Show status badge next to label
+    let label_spans = if state.generating {
+        vec![
+            Span::styled("Strategy Overview:  ", overview_label_style),
+            Span::styled(
+                "Thinking...",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]
+    } else if state.generation_error.is_some() {
+        vec![
+            Span::styled("Strategy Overview:  ", overview_label_style),
+            Span::styled(
+                "[error]",
+                Style::default()
+                    .fg(Color::Red)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]
+    } else if state.overview_editing {
+        vec![
+            Span::styled("Strategy Overview:  ", overview_label_style),
+            Span::styled(
+                "[editing]",
+                Style::default().fg(Color::Cyan),
+            ),
+        ]
+    } else {
+        vec![Span::styled("Strategy Overview:", overview_label_style)]
+    };
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            "Strategy Overview:",
-            overview_label_style,
-        ))),
+        Paragraph::new(Line::from(label_spans)),
         content_rect(sections[1]),
     );
 
-    let overview_border = if overview_active {
+    let overview_border = if state.overview_editing {
+        Style::default().fg(Color::Yellow)
+    } else if overview_active {
         Style::default().fg(Color::Cyan)
     } else {
         Style::default().fg(Color::DarkGray)
@@ -689,18 +773,68 @@ fn render_review_step(frame: &mut Frame, area: Rect, state: &StrategySetupState)
         .borders(Borders::ALL)
         .border_style(overview_border);
 
-    let overview_text = if state.strategy_overview.is_empty() {
-        "(No overview generated)"
+    if state.overview_editing {
+        // Editable text input with cursor
+        let input_value = state.overview_input.value();
+        let cursor_char = state.overview_input.cursor_pos();
+        let before: String = input_value.chars().take(cursor_char).collect();
+        let after: String = input_value.chars().skip(cursor_char).collect();
+        let text_style = Style::default().fg(Color::White);
+        let cursor_style = Style::default().fg(Color::Black).bg(Color::Yellow);
+        let overview_para = Paragraph::new(Line::from(vec![
+            Span::styled(before, text_style),
+            Span::styled("|", cursor_style),
+            Span::styled(after, text_style),
+        ]))
+        .block(overview_block)
+        .wrap(Wrap { trim: false });
+        frame.render_widget(overview_para, content_rect(sections[2]));
+    } else if state.generating {
+        // Generating: show animated dots in the overview area
+        let dot_count = (state.generation_output.len() / 20) % 4;
+        let dots = ".".repeat(dot_count);
+        let overview_para = Paragraph::new(Span::styled(
+            dots,
+            Style::default().fg(Color::DarkGray),
+        ))
+        .block(overview_block)
+        .wrap(Wrap { trim: false });
+        frame.render_widget(overview_para, content_rect(sections[2]));
+    } else if let Some(ref err) = state.generation_error {
+        // Error state: show error message in red
+        let error_lines = vec![
+            Line::from(Span::styled(
+                format!("Error: {err}"),
+                Style::default().fg(Color::Red),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Esc: back to editing | Enter: retry",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ];
+        let overview_para = Paragraph::new(error_lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Red)),
+            )
+            .wrap(Wrap { trim: false });
+        frame.render_widget(overview_para, content_rect(sections[2]));
     } else {
-        &state.strategy_overview
+        let overview_text = if state.strategy_overview.is_empty() {
+            "(No overview generated)"
+        } else {
+            &state.strategy_overview
+        };
+        let overview_para = Paragraph::new(Span::styled(
+            overview_text,
+            Style::default().fg(Color::White),
+        ))
+        .block(overview_block)
+        .wrap(Wrap { trim: false });
+        frame.render_widget(overview_para, content_rect(sections[2]));
     };
-    let overview_para = Paragraph::new(Span::styled(
-        overview_text,
-        Style::default().fg(Color::White),
-    ))
-    .block(overview_block)
-    .wrap(Wrap { trim: false });
-    frame.render_widget(overview_para, content_rect(sections[2]));
 
     // --- Budget field ---
     render_budget_field(frame, content_rect(sections[4]), state);
@@ -953,7 +1087,29 @@ fn render_weight_grid(frame: &mut Frame, area: Rect, state: &StrategySetupState)
 
 /// Render the help bar for the review step.
 fn render_review_help_bar(frame: &mut Frame, area: Rect, state: &StrategySetupState) {
-    let help_spans = if state.editing_field.is_some() {
+    let help_spans = if state.generating {
+        vec![
+            Span::styled("Generating...", Style::default().fg(Color::Yellow)),
+            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Esc:cancel", Style::default().fg(Color::Gray)),
+        ]
+    } else if state.generation_error.is_some() {
+        vec![
+            Span::styled("Error!", Style::default().fg(Color::Red)),
+            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Enter:retry", Style::default().fg(Color::Gray)),
+            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Esc:back to editing", Style::default().fg(Color::Gray)),
+        ]
+    } else if state.overview_editing {
+        vec![
+            Span::styled("Type text", Style::default().fg(Color::Gray)),
+            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Enter:submit to AI", Style::default().fg(Color::Gray)),
+            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Esc:cancel", Style::default().fg(Color::Gray)),
+        ]
+    } else if state.editing_field.is_some() {
         vec![
             Span::styled("Type value", Style::default().fg(Color::Gray)),
             Span::styled(" | ", Style::default().fg(Color::DarkGray)),
@@ -1286,6 +1442,96 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(40, 15);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let state = StrategySetupState::default();
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state))
+            .unwrap();
+    }
+
+    // -- Overview editing tests --
+
+    #[test]
+    fn start_overview_editing_copies_text() {
+        let mut s = StrategySetupState::default();
+        s.strategy_overview = "Stars-and-scrubs approach.".to_string();
+        s.start_overview_editing();
+        assert!(s.overview_editing);
+        assert_eq!(s.overview_input.value(), "Stars-and-scrubs approach.");
+    }
+
+    #[test]
+    fn cancel_overview_editing_clears_input() {
+        let mut s = StrategySetupState::default();
+        s.strategy_overview = "Original overview.".to_string();
+        s.start_overview_editing();
+        s.overview_input.set_value("Modified text");
+        s.cancel_overview_editing();
+        assert!(!s.overview_editing);
+        assert!(s.overview_input.is_empty());
+        // Original overview is unchanged
+        assert_eq!(s.strategy_overview, "Original overview.");
+    }
+
+    #[test]
+    fn is_editing_includes_overview_editing() {
+        let mut s = StrategySetupState::default();
+        s.input_editing = false;
+        assert!(!s.is_editing());
+
+        s.overview_editing = true;
+        assert!(s.is_editing());
+    }
+
+    // -- Settings snapshot tests --
+
+    #[test]
+    fn snapshot_and_restore_settings() {
+        let mut s = StrategySetupState::default();
+        s.strategy_overview = "Original".to_string();
+        s.hitting_budget_pct = 65;
+        s.category_weights.bb = 1.3;
+        s.snapshot_settings();
+
+        // Modify values
+        s.strategy_overview = "Modified".to_string();
+        s.hitting_budget_pct = 80;
+        s.category_weights.bb = 2.0;
+        s.settings_dirty = true;
+        s.overview_editing = true;
+
+        // Restore
+        s.restore_settings_snapshot();
+        assert_eq!(s.strategy_overview, "Original");
+        assert_eq!(s.hitting_budget_pct, 65);
+        assert!((s.category_weights.bb - 1.3).abs() < f32::EPSILON);
+        assert!(!s.settings_dirty);
+        assert!(!s.overview_editing);
+    }
+
+    // -- Render tests for new states --
+
+    #[test]
+    fn render_review_overview_editing_does_not_panic() {
+        let backend = ratatui::backend::TestBackend::new(80, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut state = StrategySetupState::default();
+        state.step = StrategyWizardStep::Review;
+        state.overview_editing = true;
+        state.overview_input.set_value("Editing this strategy text");
+        state.review_section = ReviewSection::Overview;
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state))
+            .unwrap();
+    }
+
+    #[test]
+    fn render_review_generating_does_not_panic() {
+        let backend = ratatui::backend::TestBackend::new(80, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut state = StrategySetupState::default();
+        state.step = StrategyWizardStep::Review;
+        state.generating = true;
+        state.generation_output = "Processing tokens...".to_string();
+        state.review_section = ReviewSection::Overview;
         terminal
             .draw(|frame| render(frame, frame.area(), &state))
             .unwrap();
