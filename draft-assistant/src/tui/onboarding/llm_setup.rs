@@ -568,6 +568,12 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LlmSetupState) {
         if !apikey_expanded && !state.api_key_editing {
             // Compact display for API key in settings overview
             constraints.push(Constraint::Length(2)); // compact
+            // Inline connection status in settings overview (not Untested)
+            if is_settings_mode
+                && !matches!(state.connection_status, LlmConnectionStatus::Untested)
+            {
+                constraints.push(Constraint::Length(1)); // status line
+            }
         } else {
             constraints.push(Constraint::Length(1)); // "API Key:" label
             constraints.push(Constraint::Length(2)); // api key input + spacing
@@ -755,8 +761,34 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LlmSetupState) {
             } else {
                 render_confirmed_line(frame, content_rect(sections[slot]), "API Key", &value);
             }
-            #[allow(unused_assignments)]
-            { slot += 1; }
+            slot += 1;
+
+            // Inline connection status in settings overview
+            if is_settings_mode
+                && !matches!(state.connection_status, LlmConnectionStatus::Untested)
+            {
+                let status_area = content_rect(sections[slot]);
+                let status_line = match &state.connection_status {
+                    LlmConnectionStatus::Untested => unreachable!(),
+                    LlmConnectionStatus::Testing => Line::from(vec![
+                        Span::styled("  Status: ", Style::default().fg(Color::Gray)),
+                        Span::styled("Testing...", Style::default().fg(Color::Yellow)),
+                    ]),
+                    LlmConnectionStatus::Success(msg) => Line::from(vec![
+                        Span::styled("  Status: ", Style::default().fg(Color::Gray)),
+                        Span::styled("* ", Style::default().fg(Color::Green)),
+                        Span::styled(msg.as_str(), Style::default().fg(Color::Green)),
+                    ]),
+                    LlmConnectionStatus::Failed(msg) => Line::from(vec![
+                        Span::styled("  Status: ", Style::default().fg(Color::Gray)),
+                        Span::styled("x ", Style::default().fg(Color::Red)),
+                        Span::styled(msg.as_str(), Style::default().fg(Color::Red)),
+                    ]),
+                };
+                frame.render_widget(Paragraph::new(status_line), status_area);
+                #[allow(unused_assignments)]
+                { slot += 1; }
+            }
         } else {
         // Expanded display (original rendering)
         let key_label_style = if key_active {

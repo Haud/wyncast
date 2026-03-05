@@ -745,8 +745,6 @@ fn compute_onboarding_keybinds(state: &ViewState, step: &crate::onboarding::Onbo
 
 /// Compute keybind hints for settings mode.
 fn compute_settings_keybinds(state: &ViewState) -> Vec<KeybindHint> {
-    use onboarding::llm_setup::LlmConnectionStatus;
-
     if state.settings_is_editing() {
         vec![
             KeybindHint::new("type", "Input"),
@@ -764,22 +762,10 @@ fn compute_settings_keybinds(state: &ViewState) -> Vec<KeybindHint> {
                 hints.push(KeybindHint::new("s", "Save"));
             }
             SettingsSection::LlmConfig => {
-                if state.llm_setup.is_save_blocked() {
-                    match &state.llm_setup.connection_status {
-                        LlmConnectionStatus::Testing => {
-                            hints.push(KeybindHint::new("...", "Testing"));
-                        }
-                        LlmConnectionStatus::Failed(_) => {
-                            hints.push(KeybindHint::new("Enter", "Fix config"));
-                        }
-                        _ => {
-                            hints.push(KeybindHint::new("Enter", "Test required"));
-                        }
-                    }
-                } else if state.llm_setup.settings_dirty {
+                hints.push(KeybindHint::new("Enter", "Edit"));
+                // Only show Save when it is not blocked and there are unsaved changes
+                if !state.llm_setup.is_save_blocked() && state.llm_setup.settings_dirty {
                     hints.push(KeybindHint::new("s", "Save"));
-                } else {
-                    hints.push(KeybindHint::new("Enter", "Edit"));
                 }
             }
         }
