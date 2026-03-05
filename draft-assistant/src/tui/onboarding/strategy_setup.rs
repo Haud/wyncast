@@ -689,7 +689,9 @@ fn render_review_step(frame: &mut Frame, area: Rect, state: &StrategySetupState)
         content_rect(sections[1]),
     );
 
-    let overview_border = if overview_active {
+    let overview_border = if overview_active && state.input_editing {
+        Style::default().fg(Color::Green)
+    } else if overview_active {
         Style::default().fg(Color::Cyan)
     } else {
         Style::default().fg(Color::DarkGray)

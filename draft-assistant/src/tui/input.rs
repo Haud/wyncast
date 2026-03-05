@@ -240,6 +240,18 @@ fn handle_strategy_setup_key(
 
         // ----- Step 3: Review -----
         StrategyWizardStep::Review => {
+            // Overview text editing mode (input_editing on Review step)
+            if state.input_editing {
+                return match key_event.code {
+                    KeyCode::Esc => {
+                        state.input_editing = false;
+                        None
+                    }
+                    _ if dispatch_text_input_key(&key_event, &mut state.strategy_input) => None,
+                    _ => None,
+                };
+            }
+
             // Numeric field editing mode
             if state.editing_field.is_some() {
                 return match key_event.code {
@@ -676,8 +688,9 @@ fn handle_settings_key(
         // q: quit the application
         KeyCode::Char('q') => Some(UserCommand::Quit),
 
-        // Enter in Strategy Config Review: only manage focus, never advance
-        // to the Confirm/save step. Only 's' opens the save modal in Settings.
+        // Enter in Strategy Config Review: activate the focused element.
+        // Overview → activate text input; Budget/Weights → start editing.
+        // Never advance to the Confirm step. Only 's' opens the save modal.
         KeyCode::Enter
             if active_tab == SettingsSection::StrategyConfig
                 && view_state.strategy_setup.step
@@ -686,8 +699,10 @@ fn handle_settings_key(
         {
             use super::onboarding::strategy_setup::ReviewSection;
             match view_state.strategy_setup.review_section {
-                // Overview is read-only — Enter is a no-op
-                ReviewSection::Overview => None,
+                ReviewSection::Overview => {
+                    view_state.strategy_setup.input_editing = true;
+                    None
+                }
                 // BudgetField / CategoryWeights: delegate to strategy handler
                 // which enters edit mode on the focused field
                 _ => {
@@ -2473,7 +2488,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_enter_on_review_overview_is_noop() {
+    fn settings_enter_on_review_overview_activates_editing() {
         use crate::protocol::SettingsSection;
         use crate::tui::onboarding::strategy_setup::{ReviewSection, StrategyWizardStep};
 
@@ -2484,20 +2499,18 @@ mod tests {
         state.strategy_setup.input_editing = false;
         state.strategy_setup.review_section = ReviewSection::Overview;
 
-        // Enter on Overview in settings is a no-op: stays in Review,
-        // stays on Overview, emits no command.
+        // Enter on Overview activates text editing
         let result = handle_key(key(KeyCode::Enter), &mut state);
-        assert!(result.is_none(), "Enter on Overview should not emit a command");
-        assert_eq!(
-            state.strategy_setup.step,
-            StrategyWizardStep::Review,
-            "should stay in Review",
-        );
-        assert_eq!(
-            state.strategy_setup.review_section,
-            ReviewSection::Overview,
-            "should stay on Overview",
-        );
+        assert!(result.is_none());
+        assert_eq!(state.strategy_setup.step, StrategyWizardStep::Review);
+        assert_eq!(state.strategy_setup.review_section, ReviewSection::Overview);
+        assert!(state.strategy_setup.input_editing, "Enter should activate text editing");
+
+        // Esc deactivates editing
+        let result = handle_key(key(KeyCode::Esc), &mut state);
+        assert!(result.is_none());
+        assert!(!state.strategy_setup.input_editing, "Esc should deactivate text editing");
+        assert_eq!(state.strategy_setup.step, StrategyWizardStep::Review);
     }
 
     #[test]
