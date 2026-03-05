@@ -143,7 +143,7 @@ fn render_settings_help_bar(frame: &mut Frame, area: Rect, state: &ViewState) {
                         }
                         LlmConnectionStatus::Failed(_) => {
                             spans.push(Span::styled(
-                                "[test failed — fix key or Esc to revert]",
+                                "[test failed — fix config or Esc to revert]",
                                 Style::default().fg(Color::Red),
                             ));
                         }

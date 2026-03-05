@@ -508,7 +508,7 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
                     state.llm_setup.connection_status = if success {
                         // Connection test passed — allow saving if we were
                         // waiting on it.
-                        state.llm_setup.settings_api_key_changed = false;
+                        state.llm_setup.settings_needs_connection_test = false;
                         LlmConnectionStatus::Success(message)
                     } else {
                         LlmConnectionStatus::Failed(message)
@@ -770,7 +770,7 @@ fn compute_settings_keybinds(state: &ViewState) -> Vec<KeybindHint> {
                             hints.push(KeybindHint::new("...", "Testing"));
                         }
                         LlmConnectionStatus::Failed(_) => {
-                            hints.push(KeybindHint::new("Enter", "Edit key"));
+                            hints.push(KeybindHint::new("Enter", "Fix config"));
                         }
                         _ => {
                             hints.push(KeybindHint::new("Enter", "Test required"));
