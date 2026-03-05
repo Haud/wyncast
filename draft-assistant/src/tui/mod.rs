@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use crossterm::event::{Event, EventStream};
 use futures_util::StreamExt;
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -31,7 +32,7 @@ use crate::protocol::{
 use crate::valuation::scarcity::ScarcityEntry;
 use crate::valuation::zscore::PlayerValuation;
 
-use layout::{build_layout, AppLayout};
+use layout::build_layout;
 pub use onboarding::llm_setup::LlmSetupState;
 pub use onboarding::strategy_setup::StrategySetupState;
 pub use text_input::TextInput;
@@ -966,7 +967,7 @@ fn render_draft_frame(frame: &mut Frame, state: &ViewState) {
     widgets::nomination_plan::render(frame, layout.nomination_plan, state, nom_plan_focused);
 
     // Help bar: dumb renderer of the pre-synced active keybind hints
-    render_help_bar(frame, &layout, state, &state.active_keybinds);
+    render_help_bar(frame, layout.help_bar, state, &state.active_keybinds);
 
     // Position filter modal overlay
     if state.position_filter_modal.open {
@@ -987,9 +988,9 @@ fn render_draft_frame(frame: &mut Frame, state: &ViewState) {
 /// case for filter mode (showing an inline input bar) is still handled here
 /// because it requires displaying live `ViewState` data (the current filter
 /// text and cursor), not just static hint labels.
-fn render_help_bar(
+pub(crate) fn render_help_bar(
     frame: &mut Frame,
-    layout: &AppLayout,
+    area: Rect,
     state: &ViewState,
     keybinds: &[KeybindHint],
 ) {
@@ -1021,7 +1022,7 @@ fn render_help_bar(
         ];
         let paragraph = Paragraph::new(Line::from(spans))
             .style(Style::default().bg(Color::Black));
-        frame.render_widget(paragraph, layout.help_bar);
+        frame.render_widget(paragraph, area);
         return;
     }
 
@@ -1040,7 +1041,7 @@ fn render_help_bar(
 
     let paragraph = Paragraph::new(Line::from(spans))
         .style(Style::default().bg(Color::Black));
-    frame.render_widget(paragraph, layout.help_bar);
+    frame.render_widget(paragraph, area);
 }
 
 // ---------------------------------------------------------------------------

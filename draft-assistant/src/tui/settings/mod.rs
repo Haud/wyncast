@@ -21,12 +21,11 @@ use crate::tui::ViewState;
 pub fn render(frame: &mut Frame, state: &ViewState) {
     let area = frame.area();
 
-    // Split: header (2 lines) | content
-    // Keybind hints are shown exclusively in the app-level bottom help bar
-    // (see compute_settings_keybinds in tui/mod.rs).
+    // Split: header (2 lines) | content | help bar (1 line)
     let outer = Layout::vertical([
         Constraint::Length(2), // tab bar
         Constraint::Min(0),   // content area
+        Constraint::Length(1), // help bar
     ])
     .split(area);
 
@@ -42,6 +41,9 @@ pub fn render(frame: &mut Frame, state: &ViewState) {
             super::onboarding::strategy_setup::render(frame, outer[1], &state.strategy_setup);
         }
     }
+
+    // --- Help bar: render the pre-synced keybind hints ---
+    super::render_help_bar(frame, outer[2], state, &state.active_keybinds);
 }
 
 /// Render the settings tab bar with LLM and Strategy tabs.
