@@ -544,9 +544,13 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
                     state.strategy_setup.hitting_budget_pct = hitting_budget_pct;
                     state.strategy_setup.category_weights = category_weights;
                     state.strategy_setup.strategy_overview = strategy_overview;
-                    // Auto-advance to the Review step
+                    // Auto-advance to the Review step; deactivate text input so
+                    // arrow keys navigate instead of typing. This matters both
+                    // after LLM generation (onboarding) and when entering the
+                    // Strategy tab from Settings.
                     state.strategy_setup.step = onboarding::strategy_setup::StrategyWizardStep::Review;
                     state.strategy_setup.review_section = onboarding::strategy_setup::ReviewSection::Overview;
+                    state.strategy_setup.input_editing = false;
                 }
                 OnboardingUpdate::StrategyLlmError(msg) => {
                     state.strategy_setup.generating = false;
@@ -1833,6 +1837,43 @@ mod tests {
         assert_eq!(state.strategy_setup.hitting_budget_pct, 70);
         assert!((state.strategy_setup.category_weights.bb - 1.3).abs() < f32::EPSILON);
         assert!((state.strategy_setup.category_weights.sv - 0.3).abs() < f32::EPSILON);
+        // Text input should be deactivated when transitioning to Review
+        assert!(!state.strategy_setup.input_editing);
+    }
+
+    /// When entering Settings → StrategyConfig, the StrategyLlmComplete event
+    /// lands the user on the Review step with input_editing = false so that
+    /// arrow keys navigate instead of being captured by the text input.
+    #[test]
+    fn strategy_llm_complete_deactivates_input_for_settings() {
+        use crate::protocol::OnboardingUpdate;
+        use crate::tui::onboarding::strategy_setup::CategoryWeights;
+
+        let mut state = ViewState::default();
+        // Simulate having input_editing = true (the default)
+        assert!(state.strategy_setup.input_editing);
+
+        let weights = CategoryWeights::default();
+        apply_ui_update(
+            &mut state,
+            UiUpdate::OnboardingUpdate(OnboardingUpdate::StrategyLlmComplete {
+                hitting_budget_pct: 65,
+                category_weights: weights,
+                strategy_overview: "Test overview".to_string(),
+            }),
+        );
+
+        // After StrategyLlmComplete, input_editing must be false regardless
+        // of the prior state — we're now on the Review step, not Input.
+        assert!(!state.strategy_setup.input_editing);
+        assert_eq!(
+            state.strategy_setup.step,
+            crate::tui::onboarding::strategy_setup::StrategyWizardStep::Review,
+        );
+        assert_eq!(
+            state.strategy_setup.review_section,
+            crate::tui::onboarding::strategy_setup::ReviewSection::Overview,
+        );
     }
 
     #[test]
