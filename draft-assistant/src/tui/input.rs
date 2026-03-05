@@ -774,11 +774,6 @@ fn handle_settings_key(
             Some(UserCommand::ExitSettings)
         }
 
-        // r: reset and re-run onboarding from the beginning
-        KeyCode::Char('r') => {
-            Some(UserCommand::OnboardingAction(OnboardingAction::ResetOnboarding))
-        }
-
         // q: quit the application
         KeyCode::Char('q') => Some(UserCommand::Quit),
 
@@ -1045,11 +1040,6 @@ fn handle_llm_settings_key(
                 state.restore_settings_snapshot();
             }
             Some(UserCommand::ExitSettings)
-        }
-
-        // r: reset and re-run onboarding
-        KeyCode::Char('r') => {
-            Some(UserCommand::OnboardingAction(OnboardingAction::ResetOnboarding))
         }
 
         // q: quit
@@ -2710,20 +2700,6 @@ mod tests {
         assert_eq!(
             result,
             Some(UserCommand::SwitchSettingsTab(SettingsSection::LlmConfig)),
-        );
-    }
-
-    #[test]
-    fn settings_mode_r_sends_reset_onboarding() {
-        use crate::protocol::SettingsSection;
-
-        let mut state = ViewState::default();
-        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
-        // 'r' in settings mode now sends ResetOnboarding (not resync)
-        let result = handle_key(key(KeyCode::Char('r')), &mut state);
-        assert_eq!(
-            result,
-            Some(UserCommand::OnboardingAction(OnboardingAction::ResetOnboarding))
         );
     }
 
