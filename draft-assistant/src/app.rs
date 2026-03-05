@@ -1288,6 +1288,29 @@ async fn handle_user_command(
                     crate::protocol::SettingsSection::LlmConfig,
                 )))
                 .await;
+            // Send a ProgressSync so the TUI can show a masked placeholder
+            // for the saved API key (instead of showing a blank field).
+            let provider = state
+                .onboarding_progress
+                .llm_provider
+                .clone()
+                .unwrap_or(crate::llm::provider::LlmProvider::Anthropic);
+            let raw_key = get_api_key_for_provider(&provider, &state.config);
+            let mask = if raw_key.is_empty() {
+                None
+            } else {
+                let m = crate::tui::onboarding::llm_setup::mask_api_key(&raw_key);
+                if m.is_empty() { None } else { Some(m) }
+            };
+            let _ = ui_tx
+                .send(UiUpdate::OnboardingUpdate(
+                    OnboardingUpdate::ProgressSync {
+                        provider: state.onboarding_progress.llm_provider.clone(),
+                        model: state.onboarding_progress.llm_model.clone(),
+                        api_key_mask: mask,
+                    },
+                ))
+                .await;
         }
         UserCommand::ExitSettings => {
             info!("Exiting settings, returning to draft mode");
@@ -1526,6 +1549,7 @@ async fn handle_onboarding_action(
                             OnboardingUpdate::ProgressSync {
                                 provider: state.onboarding_progress.llm_provider.clone(),
                                 model: state.onboarding_progress.llm_model.clone(),
+                                api_key_mask: None,
                             },
                         ))
                         .await;
@@ -1934,6 +1958,7 @@ async fn handle_settings_action(
                     OnboardingUpdate::ProgressSync {
                         provider: None,
                         model: None,
+                        api_key_mask: None,
                     },
                 ))
                 .await;
