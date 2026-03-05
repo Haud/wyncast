@@ -886,7 +886,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LlmSetupState) {
 
     // ---- Help bar (always last slot) ----
     // In settings mode, suppress the inner onboarding help bar; the outer
-    // `render_settings_help_bar` in settings/mod.rs handles settings hints.
+    // `compute_settings_keybinds` in tui/mod.rs handles settings hints.
     if !is_settings_mode {
         let help_slot = sections.len() - 1;
         let help_area = content_rect(sections[help_slot]);

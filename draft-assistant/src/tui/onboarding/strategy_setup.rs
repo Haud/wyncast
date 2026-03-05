@@ -858,7 +858,6 @@ fn render_review_step(frame: &mut Frame, area: Rect, state: &StrategySetupState)
 
     // --- Weight grid ---
     render_weight_grid(frame, content_rect(sections[7]), state);
-
 }
 
 // ---------------------------------------------------------------------------

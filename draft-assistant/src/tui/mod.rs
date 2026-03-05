@@ -798,11 +798,29 @@ fn compute_settings_keybinds(state: &ViewState) -> Vec<KeybindHint> {
     }
 
     if state.settings_is_editing() {
-        vec![
-            KeybindHint::new("type", "Input"),
-            KeybindHint::new("Enter", "Confirm"),
-            KeybindHint::new("Esc", "Cancel"),
-        ]
+        // LLM Provider/Model are dropdown fields — show arrow-key hints instead
+        // of the generic "type:Input" hint used for text fields.
+        let is_llm_dropdown = state.settings_tab == SettingsSection::LlmConfig
+            && matches!(
+                state.llm_setup.settings_editing_field,
+                Some(
+                    crate::tui::onboarding::llm_setup::LlmSetupSection::Provider
+                        | crate::tui::onboarding::llm_setup::LlmSetupSection::Model
+                )
+            );
+        if is_llm_dropdown {
+            vec![
+                KeybindHint::new("\u{2191}\u{2193}", "Select"),
+                KeybindHint::new("Enter", "Confirm"),
+                KeybindHint::new("Esc", "Cancel"),
+            ]
+        } else {
+            vec![
+                KeybindHint::new("type", "Input"),
+                KeybindHint::new("Enter", "Confirm"),
+                KeybindHint::new("Esc", "Cancel"),
+            ]
+        }
     } else {
         let mut hints = vec![
             KeybindHint::new("1/2", "Tab"),
