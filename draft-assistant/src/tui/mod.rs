@@ -603,6 +603,7 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
             }
         }
         UiUpdate::ModeChanged(mode) => {
+            state.confirm_exit_settings = false;
             if let AppMode::Settings(section) = &mode {
                 state.settings_tab = *section;
                 // In settings mode, all LLM sections should be visible
@@ -1930,6 +1931,18 @@ mod tests {
 
         apply_ui_update(&mut state, UiUpdate::ModeChanged(AppMode::Draft));
         assert_eq!(state.app_mode, AppMode::Draft);
+    }
+
+    #[test]
+    fn apply_ui_update_mode_changed_resets_confirm_exit_settings() {
+        let mut state = ViewState::default();
+        state.confirm_exit_settings = true;
+
+        apply_ui_update(&mut state, UiUpdate::ModeChanged(AppMode::Draft));
+        assert!(
+            !state.confirm_exit_settings,
+            "ModeChanged should reset confirm_exit_settings to false"
+        );
     }
 
     // -- OnboardingUpdate::Strategy* variants --

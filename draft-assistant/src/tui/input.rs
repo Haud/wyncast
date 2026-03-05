@@ -809,9 +809,11 @@ fn handle_confirm_exit_settings(
         KeyCode::Char('y') | KeyCode::Char('Y') => {
             view_state.confirm_exit_settings = false;
 
-            // Gather save payloads for each dirty tab
+            // Gather save payloads for each dirty tab.
+            // Only save LLM config when dirty AND not blocked by a pending/failed
+            // connection test. If save is blocked, discard LLM changes instead.
             let llm_save = if view_state.llm_setup.settings_dirty
-                || view_state.llm_setup.settings_needs_connection_test
+                && !view_state.llm_setup.is_save_blocked()
             {
                 let provider = view_state.llm_setup.selected_provider().clone();
                 let model_id = view_state
@@ -830,6 +832,9 @@ fn handle_confirm_exit_settings(
                 view_state.llm_setup.snapshot_settings();
                 Some((provider, model_id, api_key))
             } else {
+                if view_state.llm_setup.is_save_blocked() {
+                    view_state.llm_setup.restore_settings_snapshot();
+                }
                 None
             };
 
@@ -3669,5 +3674,65 @@ mod tests {
 
         let result = handle_key(key(KeyCode::Char('N')), &mut state);
         assert_eq!(result, Some(UserCommand::ExitSettings));
+    }
+
+    #[test]
+    fn confirm_exit_settings_y_skips_llm_save_when_blocked() {
+        use crate::protocol::SettingsSection;
+        use crate::tui::onboarding::llm_setup::LlmSetupSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        state.settings_tab = SettingsSection::LlmConfig;
+        state.llm_setup.confirmed_through = Some(LlmSetupSection::ApiKey);
+        state.llm_setup.settings_dirty = true;
+        state.llm_setup.settings_needs_connection_test = true;
+        // connection_status defaults to Untested, so is_save_blocked() == true
+        state.llm_setup.api_key_input.set_value("sk-test");
+        state.confirm_exit_settings = true;
+
+        // Snapshot original values so restore has something to go back to
+        state.llm_setup.settings_saved_provider_idx = state.llm_setup.selected_provider_idx;
+        state.llm_setup.settings_saved_model_idx = state.llm_setup.selected_model_idx;
+
+        let result = handle_key(key(KeyCode::Char('y')), &mut state);
+        // LLM save should be skipped because save is blocked
+        assert!(
+            matches!(result, Some(UserCommand::SaveAndExitSettings { llm: None, strategy: None })),
+            "expected SaveAndExitSettings with no LLM save when blocked, got {:?}",
+            result,
+        );
+        assert!(!state.confirm_exit_settings);
+        // restore_settings_snapshot should have been called, clearing dirty flags
+        assert!(!state.llm_setup.settings_dirty);
+        assert!(!state.llm_setup.settings_needs_connection_test);
+    }
+
+    #[test]
+    fn confirm_exit_settings_y_saves_llm_when_dirty_and_not_blocked() {
+        use crate::protocol::SettingsSection;
+        use crate::tui::onboarding::llm_setup::{LlmConnectionStatus, LlmSetupSection};
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        state.settings_tab = SettingsSection::LlmConfig;
+        state.llm_setup.confirmed_through = Some(LlmSetupSection::ApiKey);
+        state.llm_setup.settings_dirty = true;
+        state.llm_setup.settings_needs_connection_test = true;
+        // Connection test passed, so is_save_blocked() == false
+        state.llm_setup.connection_status =
+            LlmConnectionStatus::Success("ok".to_string());
+        state.llm_setup.api_key_input.set_value("sk-test");
+        state.confirm_exit_settings = true;
+
+        let result = handle_key(key(KeyCode::Char('y')), &mut state);
+        // LLM save should proceed because connection test passed
+        assert!(
+            matches!(result, Some(UserCommand::SaveAndExitSettings { llm: Some(_), strategy: None })),
+            "expected SaveAndExitSettings with LLM save when not blocked, got {:?}",
+            result,
+        );
+        assert!(!state.confirm_exit_settings);
+        assert!(!state.llm_setup.settings_dirty);
     }
 }
