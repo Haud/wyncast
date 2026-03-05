@@ -677,9 +677,7 @@ fn handle_settings_key(
         KeyCode::Char('q') => Some(UserCommand::Quit),
 
         // Enter in Strategy Config Review: only manage focus, never advance
-        // to the Confirm/save step. In onboarding, Enter on the Overview
-        // section advances to Confirm, but in Settings the user must press
-        // 's' explicitly to reach the save modal.
+        // to the Confirm/save step. Only 's' opens the save modal in Settings.
         KeyCode::Enter
             if active_tab == SettingsSection::StrategyConfig
                 && view_state.strategy_setup.step
@@ -688,13 +686,10 @@ fn handle_settings_key(
         {
             use super::onboarding::strategy_setup::ReviewSection;
             match view_state.strategy_setup.review_section {
-                // Overview is read-only; move focus to the first editable field
-                ReviewSection::Overview => {
-                    view_state.strategy_setup.review_section = ReviewSection::BudgetField;
-                    None
-                }
+                // Overview is read-only — Enter is a no-op
+                ReviewSection::Overview => None,
                 // BudgetField / CategoryWeights: delegate to strategy handler
-                // which enters edit mode (never transitions to Confirm)
+                // which enters edit mode on the focused field
                 _ => {
                     let cmd = handle_strategy_setup_key(key_event, view_state);
                     filter_onboarding_commands(cmd)
@@ -2478,7 +2473,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_enter_on_review_overview_moves_focus_not_confirm() {
+    fn settings_enter_on_review_overview_is_noop() {
         use crate::protocol::SettingsSection;
         use crate::tui::onboarding::strategy_setup::{ReviewSection, StrategyWizardStep};
 
@@ -2489,19 +2484,19 @@ mod tests {
         state.strategy_setup.input_editing = false;
         state.strategy_setup.review_section = ReviewSection::Overview;
 
-        // Enter on Overview in settings should move focus to BudgetField,
-        // NOT advance to the Confirm step.
+        // Enter on Overview in settings is a no-op: stays in Review,
+        // stays on Overview, emits no command.
         let result = handle_key(key(KeyCode::Enter), &mut state);
         assert!(result.is_none(), "Enter on Overview should not emit a command");
         assert_eq!(
             state.strategy_setup.step,
             StrategyWizardStep::Review,
-            "Enter on Overview should stay in Review, not advance to Confirm",
+            "should stay in Review",
         );
         assert_eq!(
             state.strategy_setup.review_section,
-            ReviewSection::BudgetField,
-            "Enter on Overview should move focus to BudgetField",
+            ReviewSection::Overview,
+            "should stay on Overview",
         );
     }
 
