@@ -4,7 +4,7 @@
 // delegates to the same render functions used by the onboarding wizard, avoiding
 // code duplication.
 
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -21,11 +21,12 @@ use crate::tui::ViewState;
 pub fn render(frame: &mut Frame, state: &ViewState) {
     let area = frame.area();
 
-    // Split: header (2 lines) | content | footer (1 line)
+    // Split: header (2 lines) | content
+    // Keybind hints are shown exclusively in the app-level bottom help bar
+    // (see compute_settings_keybinds in tui/mod.rs).
     let outer = Layout::vertical([
         Constraint::Length(2), // tab bar
         Constraint::Min(0),   // content area
-        Constraint::Length(1), // help bar
     ])
     .split(area);
 
@@ -41,9 +42,6 @@ pub fn render(frame: &mut Frame, state: &ViewState) {
             super::onboarding::strategy_setup::render(frame, outer[1], &state.strategy_setup);
         }
     }
-
-    // --- Help bar ---
-    render_settings_help_bar(frame, outer[2], state);
 }
 
 /// Render the settings tab bar with LLM and Strategy tabs.
@@ -92,106 +90,6 @@ fn render_tab_bar(frame: &mut Frame, area: Rect, active_tab: SettingsSection) {
         Style::default().fg(Color::DarkGray),
     )));
     frame.render_widget(separator, rows[1]);
-}
-
-/// Render the settings help bar.
-fn render_settings_help_bar(frame: &mut Frame, area: Rect, state: &ViewState) {
-    let sep = || Span::styled(" | ", Style::default().fg(Color::DarkGray));
-    let hint = |text: &str| Span::styled(text.to_string(), Style::default().fg(Color::Gray));
-
-    let spans = match state.settings_tab {
-        SettingsSection::LlmConfig => {
-            if state.llm_setup.api_key_editing {
-                // Typing API key
-                vec![
-                    hint("Type key"),
-                    sep(),
-                    hint("Enter:confirm"),
-                    sep(),
-                    hint("Esc:cancel"),
-                ]
-            } else if state.llm_setup.is_settings_field_editing() {
-                // Dropdown open for Provider or Model
-                vec![
-                    hint("^v:select"),
-                    sep(),
-                    hint("Enter:confirm & next"),
-                    sep(),
-                    hint("Esc:cancel"),
-                ]
-            } else {
-                // Overview mode: navigating between fields.
-                // The inline status display (in the LLM setup widget) handles
-                // connection test feedback, so the help bar just shows keybinds.
-                let mut spans = vec![
-                    hint("1/2:tab"),
-                    sep(),
-                    hint("^v:navigate"),
-                    sep(),
-                    hint("Enter:edit"),
-                ];
-
-                if !state.llm_setup.is_save_blocked() && state.llm_setup.settings_dirty {
-                    spans.push(sep());
-                    spans.push(hint("s:save"));
-                }
-                spans.push(sep());
-                spans.push(hint("Esc:back to draft"));
-
-                spans
-            }
-        }
-        SettingsSection::StrategyConfig => {
-            if state.strategy_setup.generating {
-                vec![
-                    hint("Generating..."),
-                    sep(),
-                    hint("Esc:cancel"),
-                ]
-            } else if state.strategy_setup.overview_editing {
-                vec![
-                    hint("Type text"),
-                    sep(),
-                    hint("Enter:submit to AI"),
-                    sep(),
-                    hint("Esc:cancel"),
-                ]
-            } else if state.settings_is_editing() {
-                vec![
-                    hint("Type value"),
-                    sep(),
-                    hint("Enter:confirm"),
-                    sep(),
-                    hint("Esc:cancel"),
-                ]
-            } else {
-                let mut spans = vec![
-                    hint("1/2:tab"),
-                    sep(),
-                    hint("^v:navigate"),
-                    sep(),
-                    hint("Enter:edit"),
-                    sep(),
-                    hint("s:save"),
-                    sep(),
-                    hint("Esc:back to draft"),
-                ];
-                if state.strategy_setup.settings_dirty {
-                    spans.push(sep());
-                    spans.push(Span::styled(
-                        "[unsaved]",
-                        Style::default().fg(Color::Yellow),
-                    ));
-                }
-                spans
-            }
-        }
-    };
-
-    frame.render_widget(
-        Paragraph::new(Line::from(spans)).alignment(Alignment::Center),
-        area,
-    );
 }
 
 // ---------------------------------------------------------------------------

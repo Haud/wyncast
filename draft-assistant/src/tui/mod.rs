@@ -782,6 +782,12 @@ fn compute_settings_keybinds(state: &ViewState) -> Vec<KeybindHint> {
                 ]
             };
         }
+        if ss.generation_error.is_some() {
+            return vec![
+                KeybindHint::new("Enter", "Retry"),
+                KeybindHint::new("Esc", "Back"),
+            ];
+        }
         if ss.overview_editing {
             return vec![
                 KeybindHint::new("type", "Edit overview"),
@@ -807,6 +813,9 @@ fn compute_settings_keybinds(state: &ViewState) -> Vec<KeybindHint> {
             SettingsSection::StrategyConfig => {
                 hints.push(KeybindHint::new("Enter", "Edit"));
                 hints.push(KeybindHint::new("s", "Save"));
+                if state.strategy_setup.settings_dirty {
+                    hints.push(KeybindHint::new("", "[unsaved]"));
+                }
             }
             SettingsSection::LlmConfig => {
                 hints.push(KeybindHint::new("Enter", "Edit"));
