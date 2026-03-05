@@ -135,7 +135,7 @@ pub struct AppState {
     /// the result without routing through the event loop.
     pub connection_test_result: Arc<AtomicI8>,
     /// Generation counter for connection tests. Incremented when a new test
-    /// is triggered and when `ResetOnboarding` runs. Spawned test tasks
+    /// is triggered. Spawned test tasks
     /// capture the current generation and only write to `connection_test_result`
     /// if the generation hasn't changed, preventing stale writes.
     pub connection_test_generation: Arc<AtomicU64>,
@@ -1779,8 +1779,8 @@ async fn handle_onboarding_action(
             }
         }
         other => {
-            // ResetOnboarding and any other unexpected variants during
-            // onboarding are handled by the settings path or ignored.
+            // Any unexpected variants during onboarding are handled by the
+            // settings path or ignored.
             warn!("Unexpected onboarding action in onboarding handler: {:?}", other);
         }
     }
