@@ -4,6 +4,7 @@
 // state. The app orchestrator pushes `UiUpdate` messages over an mpsc channel;
 // the TUI applies them to `ViewState` and re-renders at ~30 fps.
 
+pub mod action;
 pub mod input;
 pub mod layout;
 pub mod onboarding;
