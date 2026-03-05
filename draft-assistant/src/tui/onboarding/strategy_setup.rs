@@ -579,7 +579,6 @@ fn render_generating_step(frame: &mut Frame, area: Rect, state: &StrategySetupSt
             Constraint::Length(1), // thinking text
             Constraint::Length(1), // dots
             Constraint::Min(1),    // bottom spacer
-            Constraint::Length(1), // help bar
         ])
         .split(inner);
 
@@ -617,14 +616,6 @@ fn render_generating_step(frame: &mut Frame, area: Rect, state: &StrategySetupSt
             content_rect(sections[2]),
         );
 
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                "Please wait...",
-                Style::default().fg(Color::DarkGray),
-            )))
-            .alignment(Alignment::Center),
-            content_rect(sections[4]),
-        );
     }
 }
 
