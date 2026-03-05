@@ -570,6 +570,8 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
                     state.strategy_setup.step = onboarding::strategy_setup::StrategyWizardStep::Review;
                     state.strategy_setup.review_section = onboarding::strategy_setup::ReviewSection::Overview;
                     state.strategy_setup.input_editing = false;
+                    // Mark dirty so the user knows to press 's' to save.
+                    state.strategy_setup.settings_dirty = true;
                 }
                 OnboardingUpdate::StrategyLlmError(msg) => {
                     state.strategy_setup.generating = false;
@@ -592,6 +594,12 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
                 state.llm_setup.settings_dirty = false;
                 state.llm_setup.in_settings_mode = true;
                 state.llm_setup.snapshot_settings();
+
+                // Snapshot strategy settings for Esc restore.
+                state.strategy_setup.settings_dirty = false;
+                state.strategy_setup.overview_editing = false;
+                state.strategy_setup.overview_input.clear();
+                state.strategy_setup.snapshot_settings();
             } else {
                 // Leaving settings mode (switching to Draft or Onboarding).
                 state.llm_setup.in_settings_mode = false;
@@ -679,7 +687,7 @@ fn compute_onboarding_keybinds(state: &ViewState, step: &crate::onboarding::Onbo
             }
         }
         OnboardingStep::StrategySetup | OnboardingStep::Complete => {
-            use onboarding::strategy_setup::{ReviewSection, StrategyWizardStep};
+            use onboarding::strategy_setup::StrategyWizardStep;
             let ss = &state.strategy_setup;
 
             match ss.step {
@@ -709,7 +717,25 @@ fn compute_onboarding_keybinds(state: &ViewState, step: &crate::onboarding::Onbo
                     }
                 }
                 StrategyWizardStep::Review => {
-                    if ss.editing_field.is_some() {
+                    if ss.generating {
+                        if ss.generation_error.is_some() {
+                            vec![
+                                KeybindHint::new("Enter", "Retry"),
+                                KeybindHint::new("Esc", "Cancel"),
+                            ]
+                        } else {
+                            vec![
+                                KeybindHint::new("", "Generating..."),
+                                KeybindHint::new("Esc", "Cancel"),
+                            ]
+                        }
+                    } else if ss.overview_editing {
+                        vec![
+                            KeybindHint::new("type", "Edit overview"),
+                            KeybindHint::new("Enter", "Submit to AI"),
+                            KeybindHint::new("Esc", "Cancel"),
+                        ]
+                    } else if ss.editing_field.is_some() {
                         vec![
                             KeybindHint::new("type", "Enter value"),
                             KeybindHint::new("Enter", "Confirm"),
@@ -717,12 +743,7 @@ fn compute_onboarding_keybinds(state: &ViewState, step: &crate::onboarding::Onbo
                         ]
                     } else {
                         let mut hints = Vec::new();
-                        match ss.review_section {
-                            ReviewSection::Overview => {}
-                            ReviewSection::BudgetField | ReviewSection::CategoryWeights => {
-                                hints.push(KeybindHint::new("Enter", "Edit"));
-                            }
-                        }
+                        hints.push(KeybindHint::new("Enter", "Edit"));
                         hints.push(KeybindHint::new("s", "Save"));
                         hints.push(KeybindHint::new("Esc", "Back"));
                         hints
@@ -742,6 +763,31 @@ fn compute_onboarding_keybinds(state: &ViewState, step: &crate::onboarding::Onbo
 
 /// Compute keybind hints for settings mode.
 fn compute_settings_keybinds(state: &ViewState) -> Vec<KeybindHint> {
+    // Strategy-specific sub-modes
+    if state.settings_tab == SettingsSection::StrategyConfig {
+        let ss = &state.strategy_setup;
+        if ss.generating {
+            return if ss.generation_error.is_some() {
+                vec![
+                    KeybindHint::new("Enter", "Retry"),
+                    KeybindHint::new("Esc", "Cancel"),
+                ]
+            } else {
+                vec![
+                    KeybindHint::new("", "Generating..."),
+                    KeybindHint::new("Esc", "Cancel"),
+                ]
+            };
+        }
+        if ss.overview_editing {
+            return vec![
+                KeybindHint::new("type", "Edit overview"),
+                KeybindHint::new("Enter", "Submit to AI"),
+                KeybindHint::new("Esc", "Cancel"),
+            ];
+        }
+    }
+
     if state.settings_is_editing() {
         vec![
             KeybindHint::new("type", "Input"),
@@ -756,6 +802,7 @@ fn compute_settings_keybinds(state: &ViewState) -> Vec<KeybindHint> {
         ];
         match state.settings_tab {
             SettingsSection::StrategyConfig => {
+                hints.push(KeybindHint::new("Enter", "Edit"));
                 hints.push(KeybindHint::new("s", "Save"));
             }
             SettingsSection::LlmConfig => {
@@ -1722,14 +1769,14 @@ mod tests {
         // 'r' in settings is now "Reset Onboarding", not the draft "Resync"
         assert!(ks.contains(&"r"), "settings should show Reset Onboarding hint");
 
-        // Strategy tab: should show "s: Save" when in Review step (non-editing)
+        // Strategy tab: should show "s: Save" and "Enter: Edit" when in Review step (non-editing)
         state.settings_tab = SettingsSection::StrategyConfig;
         state.strategy_setup.step = onboarding::strategy_setup::StrategyWizardStep::Review;
         state.strategy_setup.input_editing = false;
         let hints = compute_keybinds(&state);
         let ks = keys(&hints);
         assert!(ks.contains(&"s"), "Strategy tab should show save hint");
-        assert!(!ks.contains(&"Enter"), "Strategy tab should not show Enter hint in normal mode");
+        assert!(ks.contains(&"Enter"), "Strategy tab should show Edit hint in normal mode");
     }
 
     #[test]
