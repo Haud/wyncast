@@ -165,6 +165,12 @@ pub struct LlmSetupState {
     /// Explicit flag: true only when the app is in Settings mode (not onboarding).
     /// Set by `ModeChanged` handler; cleared when leaving settings.
     pub in_settings_mode: bool,
+    /// Whether any LLM config field (provider, model, or API key) was changed
+    /// in settings mode and a connection test is required before saving. Set
+    /// when a field is confirmed with a value different from the saved snapshot;
+    /// cleared when the connection test succeeds or on Esc (restore snapshot).
+    /// While `true`, the 's' (save) keybind is blocked.
+    pub settings_needs_connection_test: bool,
 }
 
 impl std::fmt::Debug for LlmSetupState {
@@ -182,6 +188,7 @@ impl std::fmt::Debug for LlmSetupState {
             .field("saved_api_key_mask", &if self.saved_api_key_mask.is_empty() { "(empty)" } else { "[REDACTED]" })
             .field("settings_editing_field", &self.settings_editing_field)
             .field("settings_dirty", &self.settings_dirty)
+            .field("settings_needs_connection_test", &self.settings_needs_connection_test)
             .finish()
     }
 }
@@ -206,6 +213,7 @@ impl Default for LlmSetupState {
             settings_dirty: false,
             settings_saved_confirmed_through: None,
             in_settings_mode: false,
+            settings_needs_connection_test: false,
         }
     }
 }
@@ -416,11 +424,26 @@ impl LlmSetupState {
         self.api_key_editing = false;
         self.settings_editing_field = None;
         self.settings_dirty = false;
+        self.settings_needs_connection_test = false;
+        self.connection_status = LlmConnectionStatus::Untested;
     }
 
     /// Whether the settings page is in field-editing mode (a dropdown/editor is open).
     pub fn is_settings_field_editing(&self) -> bool {
         self.settings_editing_field.is_some()
+    }
+
+    /// Whether any LLM config field differs from the saved snapshot.
+    pub fn has_config_changed_from_snapshot(&self) -> bool {
+        self.selected_provider_idx != self.settings_saved_provider_idx
+            || self.selected_model_idx != self.settings_saved_model_idx
+            || self.api_key_input.value() != self.settings_saved_api_key
+    }
+
+    /// Whether saving is blocked because an LLM config field (provider, model,
+    /// or API key) was changed and the connection test has not yet passed.
+    pub fn is_save_blocked(&self) -> bool {
+        self.settings_needs_connection_test && !self.connection_tested_ok()
     }
 
     /// Return the API key display text: masked when not editing, raw when editing.
@@ -545,6 +568,12 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LlmSetupState) {
         if !apikey_expanded && !state.api_key_editing {
             // Compact display for API key in settings overview
             constraints.push(Constraint::Length(2)); // compact
+            // Inline connection status in settings overview (not Untested)
+            if is_settings_mode
+                && !matches!(state.connection_status, LlmConnectionStatus::Untested)
+            {
+                constraints.push(Constraint::Length(1)); // status line
+            }
         } else {
             constraints.push(Constraint::Length(1)); // "API Key:" label
             constraints.push(Constraint::Length(2)); // api key input + spacing
@@ -732,8 +761,34 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LlmSetupState) {
             } else {
                 render_confirmed_line(frame, content_rect(sections[slot]), "API Key", &value);
             }
-            #[allow(unused_assignments)]
-            { slot += 1; }
+            slot += 1;
+
+            // Inline connection status in settings overview
+            if is_settings_mode
+                && !matches!(state.connection_status, LlmConnectionStatus::Untested)
+            {
+                let status_area = content_rect(sections[slot]);
+                let status_line = match &state.connection_status {
+                    LlmConnectionStatus::Untested => unreachable!(),
+                    LlmConnectionStatus::Testing => Line::from(vec![
+                        Span::styled("  Status: ", Style::default().fg(Color::Gray)),
+                        Span::styled("Testing...", Style::default().fg(Color::Yellow)),
+                    ]),
+                    LlmConnectionStatus::Success(msg) => Line::from(vec![
+                        Span::styled("  Status: ", Style::default().fg(Color::Gray)),
+                        Span::styled("* ", Style::default().fg(Color::Green)),
+                        Span::styled(msg.as_str(), Style::default().fg(Color::Green)),
+                    ]),
+                    LlmConnectionStatus::Failed(msg) => Line::from(vec![
+                        Span::styled("  Status: ", Style::default().fg(Color::Gray)),
+                        Span::styled("x ", Style::default().fg(Color::Red)),
+                        Span::styled(msg.as_str(), Style::default().fg(Color::Red)),
+                    ]),
+                };
+                frame.render_widget(Paragraph::new(status_line), status_area);
+                #[allow(unused_assignments)]
+                { slot += 1; }
+            }
         } else {
         // Expanded display (original rendering)
         let key_label_style = if key_active {

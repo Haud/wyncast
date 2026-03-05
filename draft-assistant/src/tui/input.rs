@@ -819,7 +819,34 @@ fn handle_llm_settings_key(
                 // ApiKey is the last field — return to overview
                 state.settings_editing_field = None;
                 state.active_section = LlmSetupSection::ApiKey;
-                None
+                // If any config field (provider, model, or API key) changed
+                // from the saved snapshot, require a connection test before
+                // allowing save.
+                let new_key = state.api_key_input.value().to_string();
+                let has_key = !new_key.is_empty() || state.has_saved_api_key;
+                if state.has_config_changed_from_snapshot() && has_key {
+                    state.settings_needs_connection_test = true;
+                    state.connection_status =
+                        super::onboarding::llm_setup::LlmConnectionStatus::Testing;
+                    if !new_key.is_empty() {
+                        // Key text is present — send SetApiKey which
+                        // auto-triggers a test on the backend.
+                        Some(UserCommand::OnboardingAction(
+                            OnboardingAction::SetApiKey(new_key),
+                        ))
+                    } else {
+                        // Key input is empty but a saved key exists on disk.
+                        // Trigger a connection test directly using the
+                        // persisted key.
+                        Some(UserCommand::OnboardingAction(
+                            OnboardingAction::TestConnection,
+                        ))
+                    }
+                } else {
+                    state.settings_needs_connection_test = false;
+                    state.connection_status = super::onboarding::llm_setup::LlmConnectionStatus::Untested;
+                    None
+                }
             }
             KeyCode::Esc => {
                 // Reset to saved snapshot and return to overview
@@ -880,27 +907,55 @@ fn handle_llm_settings_key(
                 None
             }
             KeyCode::Enter => {
-                // Confirm the current field and advance to the next in sequence
+                // Confirm the current field.
+                // In settings mode (not onboarding), return to overview and
+                // trigger a connection test if the config has changed and a
+                // key is available. In onboarding, advance to the next field.
                 match editing {
-                    LlmSetupSection::Provider => {
-                        // Advance to Model
-                        state.active_section = LlmSetupSection::Model;
-                        state.settings_editing_field = Some(LlmSetupSection::Model);
-                    }
-                    LlmSetupSection::Model => {
-                        // Advance to ApiKey — enter text editing mode
-                        state.active_section = LlmSetupSection::ApiKey;
-                        state.settings_editing_field = Some(LlmSetupSection::ApiKey);
-                        state.api_key_backup = state.api_key_input.value().to_string();
-                        state.api_key_editing = true;
+                    LlmSetupSection::Provider | LlmSetupSection::Model => {
+                        if state.in_settings_mode {
+                            // Return to overview mode
+                            state.settings_editing_field = None;
+                            // Check whether config changed and an API key exists
+                            let has_key = !state.api_key_input.value().is_empty()
+                                || state.has_saved_api_key;
+                            if state.has_config_changed_from_snapshot() && has_key {
+                                state.settings_needs_connection_test = true;
+                                state.connection_status =
+                                    super::onboarding::llm_setup::LlmConnectionStatus::Testing;
+                                let new_key = state.api_key_input.value().to_string();
+                                if !new_key.is_empty() {
+                                    return Some(UserCommand::OnboardingAction(
+                                        OnboardingAction::SetApiKey(new_key),
+                                    ));
+                                } else {
+                                    return Some(UserCommand::OnboardingAction(
+                                        OnboardingAction::TestConnection,
+                                    ));
+                                }
+                            }
+                            return None;
+                        }
+                        // Onboarding: advance to next field in sequence
+                        if editing == LlmSetupSection::Provider {
+                            state.active_section = LlmSetupSection::Model;
+                            state.settings_editing_field = Some(LlmSetupSection::Model);
+                        } else {
+                            // Model -> ApiKey
+                            state.active_section = LlmSetupSection::ApiKey;
+                            state.settings_editing_field = Some(LlmSetupSection::ApiKey);
+                            state.api_key_backup = state.api_key_input.value().to_string();
+                            state.api_key_editing = true;
+                        }
+                        None
                     }
                     LlmSetupSection::ApiKey => {
                         // Last field — return to overview (should not reach here,
                         // handled in api_key_editing block above)
                         state.settings_editing_field = None;
+                        None
                     }
                 }
-                None
             }
             KeyCode::Esc => {
                 // Reset to saved snapshot and return to overview
@@ -943,31 +998,37 @@ fn handle_llm_settings_key(
             None
         }
 
-        // s: save all settings
+        // s: save all settings (blocked while connection test is pending/failed)
         KeyCode::Char('s') => {
-            let provider = state.selected_provider().clone();
-            let model_id = state
-                .selected_model()
-                .map(|m| m.model_id.to_string())
-                .unwrap_or_default();
-            let api_key_val = state.api_key_input.value().to_string();
-            let api_key = if api_key_val.is_empty() {
+            if state.is_save_blocked() {
+                // Save is gated on a successful connection test — ignore
                 None
             } else {
-                Some(api_key_val)
-            };
+                let provider = state.selected_provider().clone();
+                let model_id = state
+                    .selected_model()
+                    .map(|m| m.model_id.to_string())
+                    .unwrap_or_default();
+                let api_key_val = state.api_key_input.value().to_string();
+                let api_key = if api_key_val.is_empty() {
+                    None
+                } else {
+                    Some(api_key_val)
+                };
 
-            state.settings_dirty = false;
-            // Update the saved snapshot to reflect the saved state
-            state.snapshot_settings();
+                state.settings_dirty = false;
+                state.settings_needs_connection_test = false;
+                // Update the saved snapshot to reflect the saved state
+                state.snapshot_settings();
 
-            Some(UserCommand::OnboardingAction(
-                OnboardingAction::SaveLlmConfig {
-                    provider,
-                    model_id,
-                    api_key,
-                },
-            ))
+                Some(UserCommand::OnboardingAction(
+                    OnboardingAction::SaveLlmConfig {
+                        provider,
+                        model_id,
+                        api_key,
+                    },
+                ))
+            }
         }
 
         // Tab switching between LLM and Strategy tabs
@@ -980,7 +1041,7 @@ fn handle_llm_settings_key(
 
         // Esc: discard unsaved changes and return to draft mode
         KeyCode::Esc => {
-            if state.settings_dirty {
+            if state.settings_dirty || state.settings_needs_connection_test {
                 state.restore_settings_snapshot();
             }
             Some(UserCommand::ExitSettings)
@@ -2809,7 +2870,7 @@ mod tests {
     #[test]
     fn settings_api_key_editing_delegates_correctly() {
         use crate::protocol::SettingsSection;
-        use crate::tui::onboarding::llm_setup::LlmSetupSection;
+        use crate::tui::onboarding::llm_setup::{LlmConnectionStatus, LlmSetupSection};
 
         let mut state = ViewState::default();
         state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
@@ -2825,11 +2886,11 @@ mod tests {
         assert_eq!(state.llm_setup.api_key_input.value(), "sk-a");
         assert!(state.llm_setup.settings_dirty);
 
-        // Enter should confirm locally (no command, deferred save)
+        // Enter confirms and dispatches SetApiKey to trigger a connection test
         let result = handle_key(key(KeyCode::Enter), &mut state);
         assert!(
-            result.is_none(),
-            "Enter in settings API key editing confirms locally, got {:?}",
+            matches!(result, Some(UserCommand::OnboardingAction(OnboardingAction::SetApiKey(_)))),
+            "Enter in settings API key editing should dispatch SetApiKey, got {:?}",
             result,
         );
         assert!(!state.llm_setup.api_key_editing);
@@ -2837,6 +2898,371 @@ mod tests {
         assert!(state.llm_setup.settings_editing_field.is_none());
         // Dirty flag should still be set (unsaved)
         assert!(state.llm_setup.settings_dirty);
+        // Save should be blocked until connection test passes
+        assert!(state.llm_setup.settings_needs_connection_test);
+        assert!(state.llm_setup.is_save_blocked());
+        assert_eq!(state.llm_setup.connection_status, LlmConnectionStatus::Testing);
+    }
+
+    #[test]
+    fn settings_api_key_unchanged_enter_does_not_trigger_test() {
+        use crate::protocol::SettingsSection;
+        use crate::tui::onboarding::llm_setup::LlmSetupSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        state.settings_tab = SettingsSection::LlmConfig;
+        state.llm_setup.confirmed_through = Some(LlmSetupSection::ApiKey);
+        state.llm_setup.settings_editing_field = Some(LlmSetupSection::ApiKey);
+        state.llm_setup.api_key_editing = true;
+        // Set both input and saved to the same value
+        state.llm_setup.api_key_input.set_value("sk-same-key");
+        state.llm_setup.settings_saved_api_key = "sk-same-key".to_string();
+
+        // Enter should confirm locally without dispatching SetApiKey
+        let result = handle_key(key(KeyCode::Enter), &mut state);
+        assert!(
+            result.is_none(),
+            "Enter with unchanged API key should not dispatch, got {:?}",
+            result,
+        );
+        assert!(!state.llm_setup.api_key_editing);
+        assert!(!state.llm_setup.settings_needs_connection_test);
+        assert!(!state.llm_setup.is_save_blocked());
+    }
+
+    #[test]
+    fn settings_save_blocked_while_connection_test_pending() {
+        use crate::protocol::SettingsSection;
+        use crate::tui::onboarding::llm_setup::{LlmConnectionStatus, LlmSetupSection};
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        state.settings_tab = SettingsSection::LlmConfig;
+        state.llm_setup.confirmed_through = Some(LlmSetupSection::ApiKey);
+        state.llm_setup.settings_dirty = true;
+        state.llm_setup.settings_needs_connection_test = true;
+        state.llm_setup.connection_status = LlmConnectionStatus::Testing;
+
+        // 's' should be blocked (no command dispatched)
+        let result = handle_key(key(KeyCode::Char('s')), &mut state);
+        assert!(
+            result.is_none(),
+            "'s' should be blocked while connection test is pending, got {:?}",
+            result,
+        );
+    }
+
+    #[test]
+    fn settings_save_blocked_after_connection_test_failure() {
+        use crate::protocol::SettingsSection;
+        use crate::tui::onboarding::llm_setup::{LlmConnectionStatus, LlmSetupSection};
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        state.settings_tab = SettingsSection::LlmConfig;
+        state.llm_setup.confirmed_through = Some(LlmSetupSection::ApiKey);
+        state.llm_setup.settings_dirty = true;
+        state.llm_setup.settings_needs_connection_test = true;
+        state.llm_setup.connection_status = LlmConnectionStatus::Failed("Invalid key".to_string());
+
+        // 's' should be blocked
+        let result = handle_key(key(KeyCode::Char('s')), &mut state);
+        assert!(
+            result.is_none(),
+            "'s' should be blocked after connection test failure, got {:?}",
+            result,
+        );
+    }
+
+    #[test]
+    fn settings_save_allowed_after_connection_test_success() {
+        use crate::protocol::SettingsSection;
+        use crate::tui::onboarding::llm_setup::{LlmConnectionStatus, LlmSetupSection};
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        state.settings_tab = SettingsSection::LlmConfig;
+        state.llm_setup.confirmed_through = Some(LlmSetupSection::ApiKey);
+        state.llm_setup.settings_dirty = true;
+        state.llm_setup.settings_needs_connection_test = false; // cleared by success handler
+        state.llm_setup.connection_status = LlmConnectionStatus::Success("ok".to_string());
+        state.llm_setup.api_key_input.set_value("sk-valid-key");
+
+        // 's' should be allowed
+        let result = handle_key(key(KeyCode::Char('s')), &mut state);
+        assert!(
+            matches!(result, Some(UserCommand::OnboardingAction(OnboardingAction::SaveLlmConfig { .. }))),
+            "'s' should dispatch SaveLlmConfig after successful test, got {:?}",
+            result,
+        );
+    }
+
+    #[test]
+    fn settings_esc_reverts_api_key_change_and_unblocks_save() {
+        use crate::protocol::SettingsSection;
+        use crate::tui::onboarding::llm_setup::{LlmConnectionStatus, LlmSetupSection};
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        state.settings_tab = SettingsSection::LlmConfig;
+        state.llm_setup.confirmed_through = Some(LlmSetupSection::ApiKey);
+        state.llm_setup.settings_dirty = true;
+        state.llm_setup.settings_needs_connection_test = true;
+        state.llm_setup.connection_status = LlmConnectionStatus::Failed("bad key".to_string());
+        state.llm_setup.api_key_input.set_value("sk-bad-key");
+        state.llm_setup.settings_saved_api_key = "sk-original".to_string();
+        state.llm_setup.settings_saved_provider_idx = 0;
+        state.llm_setup.settings_saved_model_idx = 0;
+
+        // Esc should revert and unblock save
+        let result = handle_key(key(KeyCode::Esc), &mut state);
+        assert_eq!(result, Some(UserCommand::ExitSettings));
+        assert!(!state.llm_setup.settings_needs_connection_test);
+        assert!(!state.llm_setup.is_save_blocked());
+        assert_eq!(state.llm_setup.connection_status, LlmConnectionStatus::Untested);
+    }
+
+    #[test]
+    fn settings_provider_change_triggers_connection_test() {
+        use crate::protocol::SettingsSection;
+        use crate::tui::onboarding::llm_setup::{LlmConnectionStatus, LlmSetupSection};
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        state.settings_tab = SettingsSection::LlmConfig;
+        state.llm_setup.confirmed_through = Some(LlmSetupSection::ApiKey);
+        state.llm_setup.in_settings_mode = true;
+
+        // Set an API key so the test can be triggered
+        state.llm_setup.api_key_input.set_value("sk-test-key");
+
+        // Snapshot the initial state (provider idx 0, model idx 0)
+        state.llm_setup.snapshot_settings();
+
+        // Enter overview -> open Provider dropdown
+        state.llm_setup.active_section = LlmSetupSection::Provider;
+        let _ = handle_key(key(KeyCode::Enter), &mut state);
+        assert_eq!(
+            state.llm_setup.settings_editing_field,
+            Some(LlmSetupSection::Provider),
+        );
+
+        // Move provider down to a different value
+        let _ = handle_key(key(KeyCode::Down), &mut state);
+        assert_ne!(state.llm_setup.selected_provider_idx, 0);
+        assert!(state.llm_setup.settings_dirty);
+
+        // Confirm provider — in settings mode, this should immediately
+        // trigger a connection test and return to overview (not advance
+        // to the Model field)
+        let result = handle_key(key(KeyCode::Enter), &mut state);
+        assert!(
+            matches!(
+                result,
+                Some(UserCommand::OnboardingAction(OnboardingAction::SetApiKey(_)))
+            ),
+            "Provider change should trigger connection test via SetApiKey, got {:?}",
+            result,
+        );
+        assert!(state.llm_setup.settings_needs_connection_test);
+        assert!(state.llm_setup.is_save_blocked());
+        assert_eq!(state.llm_setup.connection_status, LlmConnectionStatus::Testing);
+        // Should return to overview mode, not advance to Model
+        assert_eq!(state.llm_setup.settings_editing_field, None);
+    }
+
+    #[test]
+    fn settings_model_change_triggers_connection_test() {
+        use crate::protocol::SettingsSection;
+        use crate::tui::onboarding::llm_setup::{LlmConnectionStatus, LlmSetupSection};
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        state.settings_tab = SettingsSection::LlmConfig;
+        state.llm_setup.confirmed_through = Some(LlmSetupSection::ApiKey);
+        state.llm_setup.in_settings_mode = true;
+
+        // Set an API key so the test can be triggered
+        state.llm_setup.api_key_input.set_value("sk-test-key");
+
+        // Snapshot the initial state
+        state.llm_setup.snapshot_settings();
+
+        // Open Model dropdown directly from overview
+        state.llm_setup.active_section = LlmSetupSection::Model;
+        let _ = handle_key(key(KeyCode::Enter), &mut state);
+        assert_eq!(
+            state.llm_setup.settings_editing_field,
+            Some(LlmSetupSection::Model),
+        );
+
+        // Move model down to a different value
+        let _ = handle_key(key(KeyCode::Down), &mut state);
+        assert!(state.llm_setup.settings_dirty);
+
+        // Confirm model — in settings mode, this should immediately
+        // trigger a connection test and return to overview (not advance
+        // to ApiKey editing)
+        let result = handle_key(key(KeyCode::Enter), &mut state);
+        assert!(
+            matches!(
+                result,
+                Some(UserCommand::OnboardingAction(OnboardingAction::SetApiKey(_)))
+            ),
+            "Model change should trigger connection test via SetApiKey, got {:?}",
+            result,
+        );
+        assert!(state.llm_setup.settings_needs_connection_test);
+        assert!(state.llm_setup.is_save_blocked());
+        assert_eq!(state.llm_setup.connection_status, LlmConnectionStatus::Testing);
+        // Should return to overview mode, not advance to ApiKey
+        assert_eq!(state.llm_setup.settings_editing_field, None);
+        assert!(!state.llm_setup.api_key_editing);
+    }
+
+    #[test]
+    fn settings_provider_reverted_to_original_clears_test_requirement() {
+        use crate::protocol::SettingsSection;
+        use crate::tui::onboarding::llm_setup::{LlmConnectionStatus, LlmSetupSection};
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        state.settings_tab = SettingsSection::LlmConfig;
+        state.llm_setup.confirmed_through = Some(LlmSetupSection::ApiKey);
+
+        // Saved state: provider=0, model=0, key="sk-same"
+        state.llm_setup.api_key_input.set_value("sk-same");
+        state.llm_setup.snapshot_settings();
+
+        // Simulate the user editing and ending up back at original values.
+        // Provider, model, and key all match the saved snapshot.
+        state.llm_setup.selected_provider_idx = 0;
+        state.llm_setup.selected_model_idx = 0;
+        state.llm_setup.api_key_input.set_value("sk-same");
+
+        // Put into API key editing mode as if the user just went through the flow
+        state.llm_setup.settings_editing_field = Some(LlmSetupSection::ApiKey);
+        state.llm_setup.api_key_editing = true;
+
+        // Confirm API key — everything matches saved state, so no test needed
+        let result = handle_key(key(KeyCode::Enter), &mut state);
+        assert!(
+            result.is_none(),
+            "All fields matching saved state should not trigger test, got {:?}",
+            result,
+        );
+        assert!(!state.llm_setup.settings_needs_connection_test);
+        assert!(!state.llm_setup.is_save_blocked());
+        assert_eq!(state.llm_setup.connection_status, LlmConnectionStatus::Untested);
+    }
+
+    #[test]
+    fn settings_provider_change_with_saved_key_triggers_test_connection() {
+        use crate::protocol::SettingsSection;
+        use crate::tui::onboarding::llm_setup::{LlmConnectionStatus, LlmSetupSection};
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        state.settings_tab = SettingsSection::LlmConfig;
+        state.llm_setup.confirmed_through = Some(LlmSetupSection::ApiKey);
+
+        // A saved key exists on disk but the input field is empty (masked display)
+        state.llm_setup.has_saved_api_key = true;
+        state.llm_setup.saved_api_key_mask = "sk-ant-*****6789".to_string();
+        state.llm_setup.snapshot_settings();
+
+        // Change the provider
+        state.llm_setup.selected_provider_idx = 1;
+
+        // Put into API key editing mode
+        state.llm_setup.settings_editing_field = Some(LlmSetupSection::ApiKey);
+        state.llm_setup.api_key_editing = true;
+        // Key input is empty (user didn't type a new key)
+
+        // Confirm — provider changed but key is empty with saved key on disk.
+        // Should dispatch TestConnection (not SetApiKey) to test with persisted key.
+        let result = handle_key(key(KeyCode::Enter), &mut state);
+        assert!(
+            matches!(
+                result,
+                Some(UserCommand::OnboardingAction(OnboardingAction::TestConnection))
+            ),
+            "Provider change with empty key input but saved key should dispatch TestConnection, got {:?}",
+            result,
+        );
+        assert!(state.llm_setup.settings_needs_connection_test);
+        assert!(state.llm_setup.is_save_blocked());
+        assert_eq!(state.llm_setup.connection_status, LlmConnectionStatus::Testing);
+    }
+
+    #[test]
+    fn settings_provider_dropdown_with_saved_key_triggers_test_immediately() {
+        // In settings mode, confirming a provider change from the dropdown
+        // should immediately trigger a connection test (using the saved key)
+        // and return to overview mode — without advancing to Model.
+        use crate::protocol::SettingsSection;
+        use crate::tui::onboarding::llm_setup::{LlmConnectionStatus, LlmSetupSection};
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        state.settings_tab = SettingsSection::LlmConfig;
+        state.llm_setup.confirmed_through = Some(LlmSetupSection::ApiKey);
+        state.llm_setup.in_settings_mode = true;
+
+        // A saved key exists on disk but the input field is empty
+        state.llm_setup.has_saved_api_key = true;
+        state.llm_setup.saved_api_key_mask = "sk-ant-*****6789".to_string();
+        state.llm_setup.snapshot_settings();
+
+        // Open Provider dropdown
+        state.llm_setup.active_section = LlmSetupSection::Provider;
+        let _ = handle_key(key(KeyCode::Enter), &mut state);
+
+        // Change provider
+        let _ = handle_key(key(KeyCode::Down), &mut state);
+        assert_ne!(state.llm_setup.selected_provider_idx, 0);
+
+        // Confirm — should trigger TestConnection immediately
+        let result = handle_key(key(KeyCode::Enter), &mut state);
+        assert!(
+            matches!(
+                result,
+                Some(UserCommand::OnboardingAction(OnboardingAction::TestConnection))
+            ),
+            "Provider change from dropdown with saved key should dispatch TestConnection, got {:?}",
+            result,
+        );
+        assert!(state.llm_setup.settings_needs_connection_test);
+        assert_eq!(state.llm_setup.connection_status, LlmConnectionStatus::Testing);
+        assert_eq!(state.llm_setup.settings_editing_field, None);
+    }
+
+    #[test]
+    fn settings_provider_unchanged_returns_to_overview_no_test() {
+        // When the user opens the provider dropdown but doesn't change
+        // anything, Enter should return to overview without triggering a test.
+        use crate::protocol::SettingsSection;
+        use crate::tui::onboarding::llm_setup::{LlmConnectionStatus, LlmSetupSection};
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        state.settings_tab = SettingsSection::LlmConfig;
+        state.llm_setup.confirmed_through = Some(LlmSetupSection::ApiKey);
+        state.llm_setup.in_settings_mode = true;
+        state.llm_setup.api_key_input.set_value("sk-test-key");
+        state.llm_setup.snapshot_settings();
+
+        // Open Provider dropdown
+        state.llm_setup.active_section = LlmSetupSection::Provider;
+        let _ = handle_key(key(KeyCode::Enter), &mut state);
+
+        // Confirm without changing — should return to overview with no test
+        let result = handle_key(key(KeyCode::Enter), &mut state);
+        assert!(result.is_none(), "No change should not trigger test, got {:?}", result);
+        assert!(!state.llm_setup.settings_needs_connection_test);
+        assert_eq!(state.llm_setup.connection_status, LlmConnectionStatus::Untested);
+        assert_eq!(state.llm_setup.settings_editing_field, None);
     }
 
     // -- Strategy overview editing tests --

@@ -506,6 +506,9 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
             match update {
                 OnboardingUpdate::ConnectionTestResult { success, message } => {
                     state.llm_setup.connection_status = if success {
+                        // Connection test passed — allow saving if we were
+                        // waiting on it.
+                        state.llm_setup.settings_needs_connection_test = false;
                         LlmConnectionStatus::Success(message)
                     } else {
                         LlmConnectionStatus::Failed(message)
@@ -806,7 +809,11 @@ fn compute_settings_keybinds(state: &ViewState) -> Vec<KeybindHint> {
                 hints.push(KeybindHint::new("s", "Save"));
             }
             SettingsSection::LlmConfig => {
-                hints.push(KeybindHint::new("Enter", "Test Connection"));
+                hints.push(KeybindHint::new("Enter", "Edit"));
+                // Only show Save when it is not blocked and there are unsaved changes
+                if !state.llm_setup.is_save_blocked() && state.llm_setup.settings_dirty {
+                    hints.push(KeybindHint::new("s", "Save"));
+                }
             }
         }
         hints.push(KeybindHint::new("r", "Reset Onboarding"));

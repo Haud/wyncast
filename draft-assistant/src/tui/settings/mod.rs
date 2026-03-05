@@ -120,25 +120,24 @@ fn render_settings_help_bar(frame: &mut Frame, area: Rect, state: &ViewState) {
                     hint("Esc:cancel"),
                 ]
             } else {
-                // Overview mode: navigating between fields
+                // Overview mode: navigating between fields.
+                // The inline status display (in the LLM setup widget) handles
+                // connection test feedback, so the help bar just shows keybinds.
                 let mut spans = vec![
                     hint("1/2:tab"),
                     sep(),
                     hint("^v:navigate"),
                     sep(),
                     hint("Enter:edit"),
-                    sep(),
-                    hint("s:save"),
-                    sep(),
-                    hint("Esc:back to draft"),
                 ];
-                if state.llm_setup.settings_dirty {
+
+                if !state.llm_setup.is_save_blocked() && state.llm_setup.settings_dirty {
                     spans.push(sep());
-                    spans.push(Span::styled(
-                        "[unsaved]",
-                        Style::default().fg(Color::Yellow),
-                    ));
+                    spans.push(hint("s:save"));
                 }
+                spans.push(sep());
+                spans.push(hint("Esc:back to draft"));
+
                 spans
             }
         }
