@@ -676,20 +676,6 @@ fn handle_settings_key(
         // q: quit the application
         KeyCode::Char('q') => Some(UserCommand::Quit),
 
-        // Enter in Strategy Review: open save/confirm modal instead of editing a field.
-        // During onboarding, Enter edits the selected field inline, but in Settings
-        // the user is reviewing/tweaking — Enter should mean "save".
-        KeyCode::Enter
-            if active_tab == SettingsSection::StrategyConfig
-                && view_state.strategy_setup.step
-                    == super::onboarding::strategy_setup::StrategyWizardStep::Review =>
-        {
-            view_state.strategy_setup.step =
-                super::onboarding::strategy_setup::StrategyWizardStep::Confirm;
-            view_state.strategy_setup.confirm_yes = true;
-            None
-        }
-
         // For all other keys, delegate to the active tab's onboarding handler
         _ => {
             let cmd = match active_tab {
