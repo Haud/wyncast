@@ -116,7 +116,7 @@ fn render_settings_help_bar(frame: &mut Frame, area: Rect, state: &ViewState) {
         ];
         match state.settings_tab {
             SettingsSection::StrategyConfig => {
-                spans.push(Span::styled("s:save", Style::default().fg(Color::Gray)));
+                spans.push(Span::styled("Enter/s:save", Style::default().fg(Color::Gray)));
             }
             SettingsSection::LlmConfig => {
                 spans.push(Span::styled("Enter:test connection", Style::default().fg(Color::Gray)));
