@@ -44,6 +44,11 @@ pub fn render(frame: &mut Frame, state: &ViewState) {
 
     // --- Help bar: render the pre-synced keybind hints ---
     super::render_help_bar(frame, outer[2], state, &state.active_keybinds);
+
+    // --- Unsaved changes confirmation modal overlay ---
+    if state.confirm_exit_settings {
+        super::widgets::unsaved_changes_confirm::render(frame, area, state);
+    }
 }
 
 /// Render the settings tab bar with LLM and Strategy tabs.

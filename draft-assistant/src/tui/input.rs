@@ -717,6 +717,11 @@ fn handle_settings_key(
 ) -> Option<UserCommand> {
     use crate::protocol::SettingsSection;
 
+    // --- Unsaved changes confirmation modal: intercept all input ---
+    if view_state.confirm_exit_settings {
+        return handle_confirm_exit_settings(key_event, view_state);
+    }
+
     let active_tab = view_state.settings_tab;
 
     // --- LLM tab: dedicated settings-mode handler ---
@@ -766,12 +771,17 @@ fn handle_settings_key(
             ))
         }
 
-        // Esc: discard unsaved changes and exit settings
+        // Esc: if unsaved changes exist, show confirmation modal; otherwise exit
         KeyCode::Esc => {
-            if view_state.strategy_setup.settings_dirty {
-                view_state.strategy_setup.restore_settings_snapshot();
+            if view_state.strategy_setup.settings_dirty
+                || view_state.llm_setup.settings_dirty
+                || view_state.llm_setup.settings_needs_connection_test
+            {
+                view_state.confirm_exit_settings = true;
+                None
+            } else {
+                Some(UserCommand::ExitSettings)
             }
-            Some(UserCommand::ExitSettings)
         }
 
         // q: quit the application
@@ -782,6 +792,91 @@ fn handle_settings_key(
             let cmd = handle_strategy_setup_key(key_event, view_state);
             filter_onboarding_commands(cmd)
         }
+    }
+}
+
+/// Handle keyboard input while the unsaved-changes confirmation modal is showing.
+///
+/// - `y`/`Y`: Save all dirty settings and exit to draft mode.
+/// - `n`/`N`: Discard unsaved changes (restore snapshots) and exit.
+/// - `Esc`:   Dismiss the modal and return to settings.
+/// - All other keys: ignored.
+fn handle_confirm_exit_settings(
+    key_event: KeyEvent,
+    view_state: &mut ViewState,
+) -> Option<UserCommand> {
+    match key_event.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => {
+            view_state.confirm_exit_settings = false;
+
+            // Gather save payloads for each dirty tab.
+            // Only save LLM config when dirty AND not blocked by a pending/failed
+            // connection test. If save is blocked, discard LLM changes instead.
+            let llm_save = if view_state.llm_setup.settings_dirty
+                && !view_state.llm_setup.is_save_blocked()
+            {
+                let provider = view_state.llm_setup.selected_provider().clone();
+                let model_id = view_state
+                    .llm_setup
+                    .selected_model()
+                    .map(|m| m.model_id.to_string())
+                    .unwrap_or_default();
+                let api_key_val = view_state.llm_setup.api_key_input.value().to_string();
+                let api_key = if api_key_val.is_empty() {
+                    None
+                } else {
+                    Some(api_key_val)
+                };
+                view_state.llm_setup.settings_dirty = false;
+                view_state.llm_setup.settings_needs_connection_test = false;
+                view_state.llm_setup.snapshot_settings();
+                Some((provider, model_id, api_key))
+            } else {
+                if view_state.llm_setup.is_save_blocked() {
+                    view_state.llm_setup.restore_settings_snapshot();
+                }
+                None
+            };
+
+            let strategy_save = if view_state.strategy_setup.settings_dirty {
+                let pct = view_state.strategy_setup.hitting_budget_pct;
+                let weights = view_state.strategy_setup.category_weights.clone();
+                let overview = if view_state.strategy_setup.strategy_overview.is_empty() {
+                    None
+                } else {
+                    Some(view_state.strategy_setup.strategy_overview.clone())
+                };
+                view_state.strategy_setup.settings_dirty = false;
+                view_state.strategy_setup.snapshot_settings();
+                Some((pct, weights, overview))
+            } else {
+                None
+            };
+
+            Some(UserCommand::SaveAndExitSettings {
+                llm: llm_save,
+                strategy: strategy_save,
+            })
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') => {
+            view_state.confirm_exit_settings = false;
+            // Restore snapshots to discard unsaved changes
+            if view_state.llm_setup.settings_dirty
+                || view_state.llm_setup.settings_needs_connection_test
+            {
+                view_state.llm_setup.restore_settings_snapshot();
+            }
+            if view_state.strategy_setup.settings_dirty {
+                view_state.strategy_setup.restore_settings_snapshot();
+            }
+            Some(UserCommand::ExitSettings)
+        }
+        KeyCode::Esc => {
+            // Cancel: go back to settings
+            view_state.confirm_exit_settings = false;
+            None
+        }
+        _ => None,
     }
 }
 
@@ -963,6 +1058,21 @@ fn handle_llm_settings_key(
     }
 
     // --- Overview mode (no field editing, all fields shown as summaries) ---
+
+    // Handle Esc before the main match so we can access `view_state` fields
+    // outside the `llm_setup` borrow (strategy_setup, confirm_exit_settings).
+    if key_event.code == KeyCode::Esc {
+        let llm_dirty = view_state.llm_setup.settings_dirty
+            || view_state.llm_setup.settings_needs_connection_test;
+        let strategy_dirty = view_state.strategy_setup.settings_dirty;
+        if llm_dirty || strategy_dirty {
+            view_state.confirm_exit_settings = true;
+            return None;
+        } else {
+            return Some(UserCommand::ExitSettings);
+        }
+    }
+
     match key_event.code {
         // Up/Down: navigate between the three fields (clamped, no wrapping)
         KeyCode::Up | KeyCode::Char('k') => {
@@ -1034,13 +1144,8 @@ fn handle_llm_settings_key(
             Some(UserCommand::SwitchSettingsTab(SettingsSection::StrategyConfig))
         }
 
-        // Esc: discard unsaved changes and return to draft mode
-        KeyCode::Esc => {
-            if state.settings_dirty || state.settings_needs_connection_test {
-                state.restore_settings_snapshot();
-            }
-            Some(UserCommand::ExitSettings)
-        }
+        // Esc is handled above, before the match (to avoid borrow conflicts)
+        KeyCode::Esc => unreachable!(),
 
         // q: quit
         KeyCode::Char('q') => Some(UserCommand::Quit),
@@ -2975,7 +3080,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_esc_reverts_api_key_change_and_unblocks_save() {
+    fn settings_esc_shows_confirm_modal_when_dirty() {
         use crate::protocol::SettingsSection;
         use crate::tui::onboarding::llm_setup::{LlmConnectionStatus, LlmSetupSection};
 
@@ -2991,9 +3096,15 @@ mod tests {
         state.llm_setup.settings_saved_provider_idx = 0;
         state.llm_setup.settings_saved_model_idx = 0;
 
-        // Esc should revert and unblock save
+        // Esc should show confirmation modal, not exit
         let result = handle_key(key(KeyCode::Esc), &mut state);
+        assert_eq!(result, None);
+        assert!(state.confirm_exit_settings);
+
+        // 'n' should discard, revert, and exit
+        let result = handle_key(key(KeyCode::Char('n')), &mut state);
         assert_eq!(result, Some(UserCommand::ExitSettings));
+        assert!(!state.confirm_exit_settings);
         assert!(!state.llm_setup.settings_needs_connection_test);
         assert!(!state.llm_setup.is_save_blocked());
         assert_eq!(state.llm_setup.connection_status, LlmConnectionStatus::Untested);
@@ -3327,7 +3438,7 @@ mod tests {
     }
 
     #[test]
-    fn strategy_settings_esc_restores_snapshot_when_dirty() {
+    fn strategy_settings_esc_shows_confirm_modal_when_dirty() {
         use crate::protocol::SettingsSection;
         use crate::tui::onboarding::strategy_setup::StrategyWizardStep;
 
@@ -3347,9 +3458,15 @@ mod tests {
         state.strategy_setup.hitting_budget_pct = 80;
         state.strategy_setup.settings_dirty = true;
 
-        // Esc should restore and exit
+        // Esc should show confirmation modal, not exit
         let result = handle_key(key(KeyCode::Esc), &mut state);
+        assert_eq!(result, None);
+        assert!(state.confirm_exit_settings);
+
+        // 'n' should discard, restore, and exit
+        let result = handle_key(key(KeyCode::Char('n')), &mut state);
         assert_eq!(result, Some(UserCommand::ExitSettings));
+        assert!(!state.confirm_exit_settings);
         assert_eq!(state.strategy_setup.strategy_overview, "Original");
         assert_eq!(state.strategy_setup.hitting_budget_pct, 65);
         assert!(!state.strategy_setup.settings_dirty);
@@ -3371,5 +3488,251 @@ mod tests {
         let result = handle_key(key(KeyCode::Char(' ')), &mut state);
         assert!(result.is_none());
         assert_eq!(state.strategy_setup.overview_input.value(), "Punt ");
+    }
+
+    // -----------------------------------------------------------------------
+    // Unsaved changes confirmation modal tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn confirm_exit_settings_esc_cancels_modal() {
+        use crate::protocol::SettingsSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        state.settings_tab = SettingsSection::LlmConfig;
+        state.confirm_exit_settings = true;
+
+        // Esc should dismiss the modal and return to settings
+        let result = handle_key(key(KeyCode::Esc), &mut state);
+        assert_eq!(result, None);
+        assert!(!state.confirm_exit_settings);
+    }
+
+    #[test]
+    fn confirm_exit_settings_y_saves_and_exits() {
+        use crate::protocol::SettingsSection;
+        use crate::tui::onboarding::llm_setup::LlmSetupSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        state.settings_tab = SettingsSection::LlmConfig;
+        state.llm_setup.confirmed_through = Some(LlmSetupSection::ApiKey);
+        state.llm_setup.settings_dirty = true;
+        state.llm_setup.api_key_input.set_value("sk-test");
+        state.confirm_exit_settings = true;
+
+        let result = handle_key(key(KeyCode::Char('y')), &mut state);
+        assert!(
+            matches!(result, Some(UserCommand::SaveAndExitSettings { llm: Some(_), strategy: None })),
+            "expected SaveAndExitSettings with LLM save, got {:?}",
+            result,
+        );
+        assert!(!state.confirm_exit_settings);
+        assert!(!state.llm_setup.settings_dirty);
+    }
+
+    #[test]
+    fn confirm_exit_settings_y_saves_both_tabs() {
+        use crate::protocol::SettingsSection;
+        use crate::tui::onboarding::llm_setup::LlmSetupSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        state.settings_tab = SettingsSection::LlmConfig;
+        state.llm_setup.confirmed_through = Some(LlmSetupSection::ApiKey);
+        state.llm_setup.settings_dirty = true;
+        state.llm_setup.api_key_input.set_value("sk-test");
+        state.strategy_setup.settings_dirty = true;
+        state.strategy_setup.strategy_overview = "My strategy".to_string();
+        state.confirm_exit_settings = true;
+
+        let result = handle_key(key(KeyCode::Char('y')), &mut state);
+        assert!(
+            matches!(result, Some(UserCommand::SaveAndExitSettings { llm: Some(_), strategy: Some(_) })),
+            "expected SaveAndExitSettings with both saves, got {:?}",
+            result,
+        );
+        assert!(!state.confirm_exit_settings);
+        assert!(!state.llm_setup.settings_dirty);
+        assert!(!state.strategy_setup.settings_dirty);
+    }
+
+    #[test]
+    fn confirm_exit_settings_n_discards_both_tabs() {
+        use crate::protocol::SettingsSection;
+        use crate::tui::onboarding::llm_setup::LlmSetupSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::StrategyConfig);
+        state.settings_tab = SettingsSection::StrategyConfig;
+        state.llm_setup.confirmed_through = Some(LlmSetupSection::ApiKey);
+        state.llm_setup.settings_dirty = true;
+        state.llm_setup.settings_saved_provider_idx = 0;
+        state.llm_setup.settings_saved_model_idx = 0;
+
+        state.strategy_setup.strategy_overview = "Original".to_string();
+        state.strategy_setup.hitting_budget_pct = 65;
+        state.strategy_setup.snapshot_settings();
+        state.strategy_setup.strategy_overview = "Modified".to_string();
+        state.strategy_setup.settings_dirty = true;
+
+        state.confirm_exit_settings = true;
+
+        let result = handle_key(key(KeyCode::Char('n')), &mut state);
+        assert_eq!(result, Some(UserCommand::ExitSettings));
+        assert!(!state.confirm_exit_settings);
+        assert!(!state.llm_setup.settings_dirty);
+        assert!(!state.strategy_setup.settings_dirty);
+        assert_eq!(state.strategy_setup.strategy_overview, "Original");
+    }
+
+    #[test]
+    fn confirm_exit_settings_blocks_other_keys() {
+        use crate::protocol::SettingsSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        state.settings_tab = SettingsSection::LlmConfig;
+        state.confirm_exit_settings = true;
+
+        // Random keys should be ignored
+        let result = handle_key(key(KeyCode::Char('a')), &mut state);
+        assert_eq!(result, None);
+        assert!(state.confirm_exit_settings);
+
+        let result = handle_key(key(KeyCode::Enter), &mut state);
+        assert_eq!(result, None);
+        assert!(state.confirm_exit_settings);
+    }
+
+    #[test]
+    fn settings_esc_exits_immediately_when_clean() {
+        use crate::protocol::SettingsSection;
+        use crate::tui::onboarding::llm_setup::LlmSetupSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        state.settings_tab = SettingsSection::LlmConfig;
+        state.llm_setup.confirmed_through = Some(LlmSetupSection::ApiKey);
+        // Both tabs are clean
+        state.llm_setup.settings_dirty = false;
+        state.llm_setup.settings_needs_connection_test = false;
+        state.strategy_setup.settings_dirty = false;
+
+        let result = handle_key(key(KeyCode::Esc), &mut state);
+        assert_eq!(result, Some(UserCommand::ExitSettings));
+        assert!(!state.confirm_exit_settings);
+    }
+
+    #[test]
+    fn strategy_settings_esc_exits_immediately_when_clean() {
+        use crate::protocol::SettingsSection;
+        use crate::tui::onboarding::strategy_setup::StrategyWizardStep;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::StrategyConfig);
+        state.settings_tab = SettingsSection::StrategyConfig;
+        state.strategy_setup.step = StrategyWizardStep::Review;
+        state.strategy_setup.input_editing = false;
+        state.strategy_setup.settings_dirty = false;
+        state.llm_setup.settings_dirty = false;
+
+        let result = handle_key(key(KeyCode::Esc), &mut state);
+        assert_eq!(result, Some(UserCommand::ExitSettings));
+        assert!(!state.confirm_exit_settings);
+    }
+
+    #[test]
+    fn confirm_exit_settings_uppercase_y_works() {
+        use crate::protocol::SettingsSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::StrategyConfig);
+        state.settings_tab = SettingsSection::StrategyConfig;
+        state.strategy_setup.settings_dirty = true;
+        state.strategy_setup.strategy_overview = "Test".to_string();
+        state.confirm_exit_settings = true;
+
+        let result = handle_key(key(KeyCode::Char('Y')), &mut state);
+        assert!(
+            matches!(result, Some(UserCommand::SaveAndExitSettings { .. })),
+            "uppercase Y should save, got {:?}",
+            result,
+        );
+    }
+
+    #[test]
+    fn confirm_exit_settings_uppercase_n_works() {
+        use crate::protocol::SettingsSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::StrategyConfig);
+        state.settings_tab = SettingsSection::StrategyConfig;
+        state.strategy_setup.settings_dirty = true;
+        state.confirm_exit_settings = true;
+
+        let result = handle_key(key(KeyCode::Char('N')), &mut state);
+        assert_eq!(result, Some(UserCommand::ExitSettings));
+    }
+
+    #[test]
+    fn confirm_exit_settings_y_skips_llm_save_when_blocked() {
+        use crate::protocol::SettingsSection;
+        use crate::tui::onboarding::llm_setup::LlmSetupSection;
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        state.settings_tab = SettingsSection::LlmConfig;
+        state.llm_setup.confirmed_through = Some(LlmSetupSection::ApiKey);
+        state.llm_setup.settings_dirty = true;
+        state.llm_setup.settings_needs_connection_test = true;
+        // connection_status defaults to Untested, so is_save_blocked() == true
+        state.llm_setup.api_key_input.set_value("sk-test");
+        state.confirm_exit_settings = true;
+
+        // Snapshot original values so restore has something to go back to
+        state.llm_setup.settings_saved_provider_idx = state.llm_setup.selected_provider_idx;
+        state.llm_setup.settings_saved_model_idx = state.llm_setup.selected_model_idx;
+
+        let result = handle_key(key(KeyCode::Char('y')), &mut state);
+        // LLM save should be skipped because save is blocked
+        assert!(
+            matches!(result, Some(UserCommand::SaveAndExitSettings { llm: None, strategy: None })),
+            "expected SaveAndExitSettings with no LLM save when blocked, got {:?}",
+            result,
+        );
+        assert!(!state.confirm_exit_settings);
+        // restore_settings_snapshot should have been called, clearing dirty flags
+        assert!(!state.llm_setup.settings_dirty);
+        assert!(!state.llm_setup.settings_needs_connection_test);
+    }
+
+    #[test]
+    fn confirm_exit_settings_y_saves_llm_when_dirty_and_not_blocked() {
+        use crate::protocol::SettingsSection;
+        use crate::tui::onboarding::llm_setup::{LlmConnectionStatus, LlmSetupSection};
+
+        let mut state = ViewState::default();
+        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
+        state.settings_tab = SettingsSection::LlmConfig;
+        state.llm_setup.confirmed_through = Some(LlmSetupSection::ApiKey);
+        state.llm_setup.settings_dirty = true;
+        state.llm_setup.settings_needs_connection_test = true;
+        // Connection test passed, so is_save_blocked() == false
+        state.llm_setup.connection_status =
+            LlmConnectionStatus::Success("ok".to_string());
+        state.llm_setup.api_key_input.set_value("sk-test");
+        state.confirm_exit_settings = true;
+
+        let result = handle_key(key(KeyCode::Char('y')), &mut state);
+        // LLM save should proceed because connection test passed
+        assert!(
+            matches!(result, Some(UserCommand::SaveAndExitSettings { llm: Some(_), strategy: None })),
+            "expected SaveAndExitSettings with LLM save when not blocked, got {:?}",
+            result,
+        );
+        assert!(!state.confirm_exit_settings);
+        assert!(!state.llm_setup.settings_dirty);
     }
 }

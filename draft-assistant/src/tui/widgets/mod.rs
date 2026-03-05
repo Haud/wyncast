@@ -12,6 +12,7 @@ pub mod position_filter_modal;
 pub mod quit_confirm;
 pub mod roster;
 pub mod scarcity;
+pub mod unsaved_changes_confirm;
 pub mod status_bar;
 pub mod teams;
 
