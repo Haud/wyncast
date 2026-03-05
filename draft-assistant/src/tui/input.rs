@@ -629,10 +629,10 @@ fn handle_llm_setup_key(
 
 /// Handle keyboard input on the settings screen.
 ///
-/// Dispatches to the same input handlers used by onboarding (LLM setup or
-/// strategy setup) depending on the active settings tab. 1/2 switch between
-/// settings tabs; Tab cycles sections within the active tab; Esc returns to
-/// draft mode; `s`/`S` saves (Strategy tab only).
+/// Dispatches to the appropriate handler depending on the active settings tab.
+/// The LLM tab uses a dedicated settings-mode handler with field-level
+/// navigation (Up/Down between fields, Enter to open, Esc to cancel, 's' to
+/// save). The Strategy tab reuses the onboarding handler.
 fn handle_settings_key(
     key_event: KeyEvent,
     view_state: &mut ViewState,
@@ -641,23 +641,21 @@ fn handle_settings_key(
 
     let active_tab = view_state.settings_tab;
 
-    // Check if we're in an editing sub-mode. If so, delegate fully to the
-    // appropriate onboarding handler (it handles its own Esc/Enter).
+    // --- LLM tab: dedicated settings-mode handler ---
+    if active_tab == SettingsSection::LlmConfig {
+        return handle_llm_settings_key(key_event, view_state);
+    }
+
+    // --- Strategy tab: delegate to onboarding handler ---
+    // Check if we're in an editing sub-mode. If so, delegate fully.
     if view_state.settings_is_editing() {
-        // Delegate to onboarding handler for editing input. However, we need
-        // to intercept the commands it returns and translate onboarding-specific
-        // ones (GoBack, GoNext, Skip) since those make no sense in settings.
-        let cmd = match active_tab {
-            SettingsSection::LlmConfig => handle_llm_setup_key(key_event, view_state, true),
-            SettingsSection::StrategyConfig => handle_strategy_setup_key(key_event, view_state),
-        };
+        let cmd = handle_strategy_setup_key(key_event, view_state);
         return filter_onboarding_commands(cmd);
     }
 
     // Not editing: handle settings-level keys first, then delegate
     match key_event.code {
-        // Tab switching between LLM and Strategy tabs — dispatch to backend
-        // so that app_mode and settings_tab stay in sync via ModeChanged.
+        // Tab switching between LLM and Strategy tabs
         KeyCode::Char('1') => {
             Some(UserCommand::SwitchSettingsTab(SettingsSection::LlmConfig))
         }
@@ -676,14 +674,207 @@ fn handle_settings_key(
         // q: quit the application
         KeyCode::Char('q') => Some(UserCommand::Quit),
 
-        // For all other keys, delegate to the active tab's onboarding handler
+        // For all other keys, delegate to the strategy tab's handler
         _ => {
-            let cmd = match active_tab {
-                SettingsSection::LlmConfig => handle_llm_setup_key(key_event, view_state, true),
-                SettingsSection::StrategyConfig => handle_strategy_setup_key(key_event, view_state),
-            };
+            let cmd = handle_strategy_setup_key(key_event, view_state);
             filter_onboarding_commands(cmd)
         }
+    }
+}
+
+/// Handle keyboard input on the LLM settings tab.
+///
+/// Implements a field-based navigation model:
+/// - **Overview mode** (`settings_editing_field == None`): Up/Down navigate
+///   between the three fields (Provider, Model, API Key). Enter opens the
+///   focused field's dropdown/editor. 's' saves all settings. Esc exits
+///   settings and returns to draft.
+/// - **Field editing mode** (`settings_editing_field == Some(section)`):
+///   Only the active field's dropdown/editor is shown. Up/Down select within
+///   the list. Enter confirms the field and advances to the next field in
+///   sequence. Esc resets to the last saved values and returns to overview.
+fn handle_llm_settings_key(
+    key_event: KeyEvent,
+    view_state: &mut ViewState,
+) -> Option<UserCommand> {
+    use crate::protocol::SettingsSection;
+    use super::onboarding::llm_setup::LlmSetupSection;
+
+    let state = &mut view_state.llm_setup;
+
+    // --- API key text editing mode (typing characters) ---
+    if state.api_key_editing {
+        return match key_event.code {
+            KeyCode::Enter => {
+                state.api_key_editing = false;
+                state.settings_dirty = true;
+                // ApiKey is the last field — return to overview
+                state.settings_editing_field = None;
+                state.active_section = LlmSetupSection::ApiKey;
+                None
+            }
+            KeyCode::Esc => {
+                // Reset to saved snapshot and return to overview
+                state.restore_settings_snapshot();
+                None
+            }
+            _ if dispatch_text_input_key(&key_event, &mut state.api_key_input) => {
+                state.settings_dirty = true;
+                None
+            }
+            _ => None,
+        };
+    }
+
+    // --- Field editing mode (dropdown open for Provider or Model) ---
+    if let Some(editing) = state.settings_editing_field {
+        return match key_event.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                match editing {
+                    LlmSetupSection::Provider => {
+                        state.provider_up();
+                        state.settings_dirty = true;
+                    }
+                    LlmSetupSection::Model => {
+                        state.model_up();
+                        state.settings_dirty = true;
+                    }
+                    LlmSetupSection::ApiKey => {
+                        // Should not reach here; API key editing is handled above
+                    }
+                }
+                None
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                match editing {
+                    LlmSetupSection::Provider => {
+                        state.provider_down();
+                        state.settings_dirty = true;
+                    }
+                    LlmSetupSection::Model => {
+                        state.model_down();
+                        state.settings_dirty = true;
+                    }
+                    LlmSetupSection::ApiKey => {}
+                }
+                None
+            }
+            KeyCode::Enter => {
+                // Confirm the current field and advance to the next in sequence
+                match editing {
+                    LlmSetupSection::Provider => {
+                        // Advance to Model
+                        state.active_section = LlmSetupSection::Model;
+                        state.settings_editing_field = Some(LlmSetupSection::Model);
+                    }
+                    LlmSetupSection::Model => {
+                        // Advance to ApiKey — enter text editing mode
+                        state.active_section = LlmSetupSection::ApiKey;
+                        state.settings_editing_field = Some(LlmSetupSection::ApiKey);
+                        state.api_key_backup = state.api_key_input.value().to_string();
+                        state.api_key_editing = true;
+                    }
+                    LlmSetupSection::ApiKey => {
+                        // Last field — return to overview (should not reach here,
+                        // handled in api_key_editing block above)
+                        state.settings_editing_field = None;
+                    }
+                }
+                None
+            }
+            KeyCode::Esc => {
+                // Reset to saved snapshot and return to overview
+                state.restore_settings_snapshot();
+                None
+            }
+            KeyCode::Char('q') => Some(UserCommand::Quit),
+            _ => None,
+        };
+    }
+
+    // --- Overview mode (no field editing, all fields shown as summaries) ---
+    match key_event.code {
+        // Up/Down: navigate between the three fields (clamped, no wrapping)
+        KeyCode::Up | KeyCode::Char('k') => {
+            let idx = state.active_section.step_index();
+            if idx > 0 {
+                state.active_section = LlmSetupSection::CYCLE[idx - 1];
+            }
+            None
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            let idx = state.active_section.step_index();
+            if idx + 1 < LlmSetupSection::CYCLE.len() {
+                state.active_section = LlmSetupSection::CYCLE[idx + 1];
+            }
+            None
+        }
+
+        // Enter: open the focused field's dropdown/editor
+        KeyCode::Enter => {
+            // Snapshot current state for Escape restoration
+            state.snapshot_settings();
+            state.settings_editing_field = Some(state.active_section);
+            // If opening ApiKey, enter text editing mode
+            if state.active_section == LlmSetupSection::ApiKey {
+                state.api_key_backup = state.api_key_input.value().to_string();
+                state.api_key_editing = true;
+            }
+            None
+        }
+
+        // s: save all settings
+        KeyCode::Char('s') => {
+            let provider = state.selected_provider().clone();
+            let model_id = state
+                .selected_model()
+                .map(|m| m.model_id.to_string())
+                .unwrap_or_default();
+            let api_key_val = state.api_key_input.value().to_string();
+            let api_key = if api_key_val.is_empty() {
+                None
+            } else {
+                Some(api_key_val)
+            };
+
+            state.settings_dirty = false;
+            // Update the saved snapshot to reflect the saved state
+            state.snapshot_settings();
+
+            Some(UserCommand::OnboardingAction(
+                OnboardingAction::SaveLlmConfig {
+                    provider,
+                    model_id,
+                    api_key,
+                },
+            ))
+        }
+
+        // Tab switching between LLM and Strategy tabs
+        KeyCode::Char('1') => {
+            Some(UserCommand::SwitchSettingsTab(SettingsSection::LlmConfig))
+        }
+        KeyCode::Char('2') => {
+            Some(UserCommand::SwitchSettingsTab(SettingsSection::StrategyConfig))
+        }
+
+        // Esc: discard unsaved changes and return to draft mode
+        KeyCode::Esc => {
+            if state.settings_dirty {
+                state.restore_settings_snapshot();
+            }
+            Some(UserCommand::ExitSettings)
+        }
+
+        // r: reset and re-run onboarding
+        KeyCode::Char('r') => {
+            Some(UserCommand::OnboardingAction(OnboardingAction::ResetOnboarding))
+        }
+
+        // q: quit
+        KeyCode::Char('q') => Some(UserCommand::Quit),
+
+        _ => None,
     }
 }
 
@@ -2400,22 +2591,31 @@ mod tests {
     #[test]
     fn settings_llm_tab_delegates_to_llm_setup_handler() {
         use crate::protocol::SettingsSection;
+        use crate::tui::onboarding::llm_setup::LlmSetupSection;
 
         let mut state = ViewState::default();
         state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
         state.settings_tab = SettingsSection::LlmConfig;
+        // In settings mode, all sections are visible and we start in overview
+        state.llm_setup.confirmed_through = Some(LlmSetupSection::ApiKey);
+        state.llm_setup.settings_editing_field = None;
 
-        // Up/Down arrow in provider section should navigate
-        state.llm_setup.active_section = crate::tui::onboarding::llm_setup::LlmSetupSection::Provider;
-        let initial_idx = state.llm_setup.selected_provider_idx;
+        // Down arrow in overview mode moves focus to next field (no command)
+        state.llm_setup.active_section = LlmSetupSection::Provider;
         let result = handle_key(key(KeyCode::Down), &mut state);
-        // The command should be a SetProvider action (filtered through)
-        assert!(
-            matches!(result, Some(UserCommand::OnboardingAction(crate::protocol::OnboardingAction::SetProvider(_)))),
-            "expected SetProvider, got {:?}",
-            result,
-        );
-        assert_ne!(state.llm_setup.selected_provider_idx, initial_idx);
+        assert!(result.is_none(), "Down in overview navigates fields, no command");
+        assert_eq!(state.llm_setup.active_section, LlmSetupSection::Model);
+
+        // Enter opens the field's editor (snapshot + edit mode, no command)
+        let result = handle_key(key(KeyCode::Enter), &mut state);
+        assert!(result.is_none(), "Enter opens field editor, no command");
+        assert_eq!(state.llm_setup.settings_editing_field, Some(LlmSetupSection::Model));
+
+        // Down in field-editing mode changes the model selection
+        let initial_idx = state.llm_setup.selected_model_idx;
+        let result = handle_key(key(KeyCode::Down), &mut state);
+        assert!(result.is_none(), "Down in field editing selects within list");
+        assert_ne!(state.llm_setup.selected_model_idx, initial_idx);
     }
 
     #[test]
@@ -2493,39 +2693,33 @@ mod tests {
     #[test]
     fn settings_api_key_editing_delegates_correctly() {
         use crate::protocol::SettingsSection;
-        use crate::tui::onboarding::llm_setup::{LlmConnectionStatus, LlmSetupSection};
+        use crate::tui::onboarding::llm_setup::LlmSetupSection;
 
         let mut state = ViewState::default();
         state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
         state.settings_tab = SettingsSection::LlmConfig;
+        state.llm_setup.confirmed_through = Some(LlmSetupSection::ApiKey);
+        state.llm_setup.settings_editing_field = Some(LlmSetupSection::ApiKey);
         state.llm_setup.api_key_editing = true;
         state.llm_setup.api_key_input.set_value("sk-");
 
-        // Typing a character should append to the API key
+        // Typing a character should append to the API key and mark dirty
         let result = handle_key(key(KeyCode::Char('a')), &mut state);
         assert!(result.is_none());
         assert_eq!(state.llm_setup.api_key_input.value(), "sk-a");
+        assert!(state.llm_setup.settings_dirty);
 
-        // Enter should confirm and dispatch SetApiKey, with Testing status
+        // Enter should confirm locally (no command, deferred save)
         let result = handle_key(key(KeyCode::Enter), &mut state);
         assert!(
-            matches!(
-                result,
-                Some(UserCommand::OnboardingAction(
-                    crate::protocol::OnboardingAction::SetApiKey(_)
-                ))
-            ),
-            "Enter should dispatch SetApiKey, got {:?}",
+            result.is_none(),
+            "Enter in settings API key editing confirms locally, got {:?}",
             result,
         );
         assert!(!state.llm_setup.api_key_editing);
-        assert_eq!(
-            state.llm_setup.connection_status,
-            LlmConnectionStatus::Testing,
-        );
-        assert_eq!(
-            state.llm_setup.confirmed_through,
-            Some(LlmSetupSection::ApiKey),
-        );
+        // Should return to overview mode
+        assert!(state.llm_setup.settings_editing_field.is_none());
+        // Dirty flag should still be set (unsaved)
+        assert!(state.llm_setup.settings_dirty);
     }
 }

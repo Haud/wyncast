@@ -420,10 +420,12 @@ impl ViewState {
     }
 
     /// Returns `true` when the settings screen is in an editing sub-mode
-    /// (e.g. typing an API key or editing a strategy field).
+    /// (e.g. typing an API key, editing a dropdown, or editing a strategy field).
     pub fn settings_is_editing(&self) -> bool {
         match self.settings_tab {
-            SettingsSection::LlmConfig => self.llm_setup.api_key_editing,
+            SettingsSection::LlmConfig => {
+                self.llm_setup.api_key_editing || self.llm_setup.is_settings_field_editing()
+            }
             SettingsSection::StrategyConfig => self.strategy_setup.is_editing(),
         }
     }
@@ -573,6 +575,13 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
                 // (user has already completed onboarding).
                 state.llm_setup.confirmed_through =
                     Some(onboarding::llm_setup::LlmSetupSection::ApiKey);
+                // Initialize settings mode: start in overview mode with
+                // Provider selected, snapshot current values for Esc restore.
+                state.llm_setup.active_section =
+                    onboarding::llm_setup::LlmSetupSection::Provider;
+                state.llm_setup.settings_editing_field = None;
+                state.llm_setup.settings_dirty = false;
+                state.llm_setup.snapshot_settings();
             }
             state.app_mode = mode;
         }

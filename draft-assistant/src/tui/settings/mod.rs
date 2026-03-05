@@ -96,35 +96,75 @@ fn render_tab_bar(frame: &mut Frame, area: Rect, active_tab: SettingsSection) {
 
 /// Render the settings help bar.
 fn render_settings_help_bar(frame: &mut Frame, area: Rect, state: &ViewState) {
-    // When editing, defer to the onboarding widget's own help
-    let spans = if state.settings_is_editing() {
-        vec![
-            Span::styled("Type value", Style::default().fg(Color::Gray)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Enter:confirm", Style::default().fg(Color::Gray)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc:cancel", Style::default().fg(Color::Gray)),
-        ]
-    } else {
-        let mut spans = vec![
-            Span::styled("1/2:tab", Style::default().fg(Color::Gray)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Tab:section", Style::default().fg(Color::Gray)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-            Span::styled("^v:navigate", Style::default().fg(Color::Gray)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-        ];
-        match state.settings_tab {
-            SettingsSection::StrategyConfig => {
-                spans.push(Span::styled("s:save", Style::default().fg(Color::Gray)));
-            }
-            SettingsSection::LlmConfig => {
-                spans.push(Span::styled("Enter:test connection", Style::default().fg(Color::Gray)));
+    let sep = || Span::styled(" | ", Style::default().fg(Color::DarkGray));
+    let hint = |text: &str| Span::styled(text.to_string(), Style::default().fg(Color::Gray));
+
+    let spans = match state.settings_tab {
+        SettingsSection::LlmConfig => {
+            if state.llm_setup.api_key_editing {
+                // Typing API key
+                vec![
+                    hint("Type key"),
+                    sep(),
+                    hint("Enter:confirm"),
+                    sep(),
+                    hint("Esc:cancel"),
+                ]
+            } else if state.llm_setup.is_settings_field_editing() {
+                // Dropdown open for Provider or Model
+                vec![
+                    hint("^v:select"),
+                    sep(),
+                    hint("Enter:confirm & next"),
+                    sep(),
+                    hint("Esc:cancel"),
+                ]
+            } else {
+                // Overview mode: navigating between fields
+                let mut spans = vec![
+                    hint("1/2:tab"),
+                    sep(),
+                    hint("^v:navigate"),
+                    sep(),
+                    hint("Enter:edit"),
+                    sep(),
+                    hint("s:save"),
+                    sep(),
+                    hint("Esc:back to draft"),
+                ];
+                if state.llm_setup.settings_dirty {
+                    spans.push(sep());
+                    spans.push(Span::styled(
+                        "[unsaved]",
+                        Style::default().fg(Color::Yellow),
+                    ));
+                }
+                spans
             }
         }
-        spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
-        spans.push(Span::styled("Esc:back to draft", Style::default().fg(Color::Gray)));
-        spans
+        SettingsSection::StrategyConfig => {
+            if state.settings_is_editing() {
+                vec![
+                    hint("Type value"),
+                    sep(),
+                    hint("Enter:confirm"),
+                    sep(),
+                    hint("Esc:cancel"),
+                ]
+            } else {
+                vec![
+                    hint("1/2:tab"),
+                    sep(),
+                    hint("Tab:section"),
+                    sep(),
+                    hint("^v:navigate"),
+                    sep(),
+                    hint("s:save"),
+                    sep(),
+                    hint("Esc:back to draft"),
+                ]
+            }
+        }
     };
 
     frame.render_widget(
