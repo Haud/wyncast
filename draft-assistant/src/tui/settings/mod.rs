@@ -121,6 +121,8 @@ fn render_settings_help_bar(frame: &mut Frame, area: Rect, state: &ViewState) {
                 ]
             } else {
                 // Overview mode: navigating between fields
+                use crate::tui::onboarding::llm_setup::LlmConnectionStatus;
+
                 let mut spans = vec![
                     hint("1/2:tab"),
                     sep(),
@@ -128,11 +130,37 @@ fn render_settings_help_bar(frame: &mut Frame, area: Rect, state: &ViewState) {
                     sep(),
                     hint("Enter:edit"),
                     sep(),
-                    hint("s:save"),
-                    sep(),
-                    hint("Esc:back to draft"),
                 ];
-                if state.llm_setup.settings_dirty {
+
+                if state.llm_setup.is_save_blocked() {
+                    // Save is blocked — show why
+                    match &state.llm_setup.connection_status {
+                        LlmConnectionStatus::Testing => {
+                            spans.push(Span::styled(
+                                "[testing...]",
+                                Style::default().fg(Color::Yellow),
+                            ));
+                        }
+                        LlmConnectionStatus::Failed(_) => {
+                            spans.push(Span::styled(
+                                "[test failed — fix key or Esc to revert]",
+                                Style::default().fg(Color::Red),
+                            ));
+                        }
+                        _ => {
+                            spans.push(Span::styled(
+                                "[connection test required]",
+                                Style::default().fg(Color::Yellow),
+                            ));
+                        }
+                    }
+                } else {
+                    spans.push(hint("s:save"));
+                }
+                spans.push(sep());
+                spans.push(hint("Esc:back to draft"));
+
+                if state.llm_setup.settings_dirty && !state.llm_setup.is_save_blocked() {
                     spans.push(sep());
                     spans.push(Span::styled(
                         "[unsaved]",

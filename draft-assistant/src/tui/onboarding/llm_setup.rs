@@ -165,6 +165,11 @@ pub struct LlmSetupState {
     /// Explicit flag: true only when the app is in Settings mode (not onboarding).
     /// Set by `ModeChanged` handler; cleared when leaving settings.
     pub in_settings_mode: bool,
+    /// Whether the API key was edited in settings mode and a connection test
+    /// is required before saving. Set when Enter confirms a new API key;
+    /// cleared when the connection test succeeds or on Esc (restore snapshot).
+    /// While `true`, the 's' (save) keybind is blocked.
+    pub settings_api_key_changed: bool,
 }
 
 impl std::fmt::Debug for LlmSetupState {
@@ -206,6 +211,7 @@ impl Default for LlmSetupState {
             settings_dirty: false,
             settings_saved_confirmed_through: None,
             in_settings_mode: false,
+            settings_api_key_changed: false,
         }
     }
 }
@@ -416,11 +422,19 @@ impl LlmSetupState {
         self.api_key_editing = false;
         self.settings_editing_field = None;
         self.settings_dirty = false;
+        self.settings_api_key_changed = false;
+        self.connection_status = LlmConnectionStatus::Untested;
     }
 
     /// Whether the settings page is in field-editing mode (a dropdown/editor is open).
     pub fn is_settings_field_editing(&self) -> bool {
         self.settings_editing_field.is_some()
+    }
+
+    /// Whether saving is blocked because the API key was edited and the
+    /// connection test has not yet passed.
+    pub fn is_save_blocked(&self) -> bool {
+        self.settings_api_key_changed && !self.connection_tested_ok()
     }
 
     /// Return the API key display text: masked when not editing, raw when editing.

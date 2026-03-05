@@ -506,6 +506,11 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
             match update {
                 OnboardingUpdate::ConnectionTestResult { success, message } => {
                     state.llm_setup.connection_status = if success {
+                        // Connection test passed — allow saving if we were
+                        // waiting on it.
+                        if state.llm_setup.settings_api_key_changed {
+                            state.llm_setup.settings_api_key_changed = false;
+                        }
                         LlmConnectionStatus::Success(message)
                     } else {
                         LlmConnectionStatus::Failed(message)
@@ -742,6 +747,8 @@ fn compute_onboarding_keybinds(state: &ViewState, step: &crate::onboarding::Onbo
 
 /// Compute keybind hints for settings mode.
 fn compute_settings_keybinds(state: &ViewState) -> Vec<KeybindHint> {
+    use onboarding::llm_setup::LlmConnectionStatus;
+
     if state.settings_is_editing() {
         vec![
             KeybindHint::new("type", "Input"),
@@ -759,7 +766,23 @@ fn compute_settings_keybinds(state: &ViewState) -> Vec<KeybindHint> {
                 hints.push(KeybindHint::new("s", "Save"));
             }
             SettingsSection::LlmConfig => {
-                hints.push(KeybindHint::new("Enter", "Test Connection"));
+                if state.llm_setup.is_save_blocked() {
+                    match &state.llm_setup.connection_status {
+                        LlmConnectionStatus::Testing => {
+                            hints.push(KeybindHint::new("...", "Testing"));
+                        }
+                        LlmConnectionStatus::Failed(_) => {
+                            hints.push(KeybindHint::new("Enter", "Edit key"));
+                        }
+                        _ => {
+                            hints.push(KeybindHint::new("Enter", "Test required"));
+                        }
+                    }
+                } else if state.llm_setup.settings_dirty {
+                    hints.push(KeybindHint::new("s", "Save"));
+                } else {
+                    hints.push(KeybindHint::new("Enter", "Edit"));
+                }
             }
         }
         hints.push(KeybindHint::new("r", "Reset Onboarding"));
