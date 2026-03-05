@@ -51,7 +51,7 @@ pub enum LlmSetupSection {
 
 impl LlmSetupSection {
     /// Ordered list of sections for the progressive flow.
-    const CYCLE: &[LlmSetupSection] = &[
+    pub const CYCLE: &[LlmSetupSection] = &[
         LlmSetupSection::Provider,
         LlmSetupSection::Model,
         LlmSetupSection::ApiKey,
@@ -141,6 +141,30 @@ pub struct LlmSetupState {
     /// Masked display string for a saved API key (e.g. `sk-ant-***XXXX`).
     /// Populated when entering Settings mode; empty when no saved key exists.
     pub saved_api_key_mask: String,
+
+    // --- Settings mode fields ---
+
+    /// In settings mode, which field is currently open for editing.
+    /// `None` means we are in overview mode (all fields shown as summaries).
+    /// `Some(section)` means that field's dropdown/editor is open.
+    pub settings_editing_field: Option<LlmSetupSection>,
+    /// Snapshot of provider index before entering settings edit mode.
+    /// Used to restore on Escape.
+    pub settings_saved_provider_idx: usize,
+    /// Snapshot of model index before entering settings edit mode.
+    /// Used to restore on Escape.
+    pub settings_saved_model_idx: usize,
+    /// Snapshot of API key text before entering settings edit mode.
+    /// Used to restore on Escape.
+    pub settings_saved_api_key: String,
+    /// Whether the user has unsaved changes in settings mode.
+    pub settings_dirty: bool,
+    /// Snapshot of `confirmed_through` before entering settings edit mode.
+    /// Used to restore on Escape.
+    pub settings_saved_confirmed_through: Option<LlmSetupSection>,
+    /// Explicit flag: true only when the app is in Settings mode (not onboarding).
+    /// Set by `ModeChanged` handler; cleared when leaving settings.
+    pub in_settings_mode: bool,
 }
 
 impl std::fmt::Debug for LlmSetupState {
@@ -156,6 +180,8 @@ impl std::fmt::Debug for LlmSetupState {
             .field("connection_status", &self.connection_status)
             .field("has_saved_api_key", &self.has_saved_api_key)
             .field("saved_api_key_mask", &if self.saved_api_key_mask.is_empty() { "(empty)" } else { "[REDACTED]" })
+            .field("settings_editing_field", &self.settings_editing_field)
+            .field("settings_dirty", &self.settings_dirty)
             .finish()
     }
 }
@@ -173,6 +199,13 @@ impl Default for LlmSetupState {
             connection_status: LlmConnectionStatus::Untested,
             has_saved_api_key: false,
             saved_api_key_mask: String::new(),
+            settings_editing_field: None,
+            settings_saved_provider_idx: 0,
+            settings_saved_model_idx: 0,
+            settings_saved_api_key: String::new(),
+            settings_dirty: false,
+            settings_saved_confirmed_through: None,
+            in_settings_mode: false,
         }
     }
 }
@@ -237,7 +270,12 @@ impl LlmSetupState {
     /// If the user has confirmed past Provider (i.e. Model or ApiKey is confirmed),
     /// reset confirmed_through to at most Provider, reset model selection,
     /// and clear connection status, since the provider just changed.
+    ///
+    /// Skipped in settings mode (field-editing) to avoid corrupting navigation state.
     fn invalidate_past_provider(&mut self) {
+        if self.settings_editing_field.is_some() {
+            return;
+        }
         if self.confirmed_through > Some(LlmSetupSection::Provider) {
             self.selected_model_idx = 0;
             self.connection_status = LlmConnectionStatus::Untested;
@@ -248,7 +286,12 @@ impl LlmSetupState {
     /// If the user has confirmed past Model (i.e. ApiKey is confirmed),
     /// reset confirmed_through to Provider and clear connection status,
     /// since the model just changed.
+    ///
+    /// Skipped in settings mode (field-editing) to avoid corrupting navigation state.
     fn invalidate_past_model(&mut self) {
+        if self.settings_editing_field.is_some() {
+            return;
+        }
         if self.confirmed_through > Some(LlmSetupSection::Model) {
             self.confirmed_through = Some(LlmSetupSection::Provider);
             self.connection_status = LlmConnectionStatus::Untested;
@@ -356,6 +399,30 @@ impl LlmSetupState {
         true
     }
 
+    /// Snapshot the current settings state so it can be restored on Escape.
+    pub fn snapshot_settings(&mut self) {
+        self.settings_saved_provider_idx = self.selected_provider_idx;
+        self.settings_saved_model_idx = self.selected_model_idx;
+        self.settings_saved_api_key = self.api_key_input.value().to_string();
+        self.settings_saved_confirmed_through = self.confirmed_through;
+    }
+
+    /// Restore settings to the last saved snapshot (called on Escape).
+    pub fn restore_settings_snapshot(&mut self) {
+        self.selected_provider_idx = self.settings_saved_provider_idx;
+        self.selected_model_idx = self.settings_saved_model_idx;
+        self.api_key_input.set_value(&self.settings_saved_api_key.clone());
+        self.confirmed_through = self.settings_saved_confirmed_through;
+        self.api_key_editing = false;
+        self.settings_editing_field = None;
+        self.settings_dirty = false;
+    }
+
+    /// Whether the settings page is in field-editing mode (a dropdown/editor is open).
+    pub fn is_settings_field_editing(&self) -> bool {
+        self.settings_editing_field.is_some()
+    }
+
     /// Return the API key display text: masked when not editing, raw when editing.
     ///
     /// When the text input is empty but a saved key exists (indicated by
@@ -411,12 +478,50 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LlmSetupState) {
     let model_confirmed = state.is_section_confirmed(LlmSetupSection::Model);
     let apikey_visible = state.is_section_visible(LlmSetupSection::ApiKey);
 
+    // In settings mode, determine which fields should be shown expanded vs compact.
+    // - Overview mode (settings_editing_field == None): all compact, active highlighted
+    // - Field editing mode: only the editing field is expanded
+    let is_settings_mode = state.in_settings_mode
+        && ((state.confirmed_through == Some(LlmSetupSection::ApiKey)
+            && !state.api_key_editing
+            && state.settings_editing_field.is_none())
+            || state.settings_editing_field.is_some());
+
+    // A section should be shown expanded (full list) if:
+    // - In onboarding: it's the active section and not yet confirmed past it
+    // - In settings field editing: it matches settings_editing_field
+    // - In settings overview: never (all compact)
+    let provider_expanded = if state.settings_editing_field.is_some() {
+        state.settings_editing_field == Some(LlmSetupSection::Provider)
+    } else if is_settings_mode {
+        false // overview mode: all compact
+    } else {
+        // Onboarding: original logic
+        !(provider_confirmed && state.active_section != LlmSetupSection::Provider)
+    };
+
+    let model_expanded = if state.settings_editing_field.is_some() {
+        state.settings_editing_field == Some(LlmSetupSection::Model)
+    } else if is_settings_mode {
+        false
+    } else {
+        model_visible && !(model_confirmed && state.active_section != LlmSetupSection::Model)
+    };
+
+    let apikey_expanded = if state.settings_editing_field.is_some() {
+        state.settings_editing_field == Some(LlmSetupSection::ApiKey)
+    } else if is_settings_mode {
+        false
+    } else {
+        apikey_visible
+    };
+
     // Build dynamic layout constraints based on visibility
     let mut constraints: Vec<Constraint> = Vec::new();
     constraints.push(Constraint::Length(1)); // [0] top padding
 
     // Provider section (always visible)
-    if provider_confirmed && state.active_section != LlmSetupSection::Provider {
+    if !provider_expanded {
         // Compact: label + confirmed value on one line
         constraints.push(Constraint::Length(2)); // [1] "Provider: <value>"
     } else {
@@ -426,7 +531,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LlmSetupState) {
 
     // Model section (visible after provider confirmed)
     if model_visible {
-        if model_confirmed && state.active_section != LlmSetupSection::Model {
+        if !model_expanded {
             constraints.push(Constraint::Length(2)); // compact
         } else {
             let models = state.available_models();
@@ -437,15 +542,20 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LlmSetupState) {
 
     // API Key section (visible after model confirmed)
     if apikey_visible {
-        constraints.push(Constraint::Length(1)); // "API Key:" label
-        constraints.push(Constraint::Length(2)); // api key input + spacing
-        // Connection status (always show if api key section is visible and test has been run)
-        if !matches!(state.connection_status, LlmConnectionStatus::Untested) {
-            constraints.push(Constraint::Length(2)); // connection status
-        }
-        // "Press Enter to continue..." prompt (only after successful test)
-        if matches!(state.connection_status, LlmConnectionStatus::Success(_)) {
-            constraints.push(Constraint::Length(2)); // continue prompt
+        if !apikey_expanded && !state.api_key_editing {
+            // Compact display for API key in settings overview
+            constraints.push(Constraint::Length(2)); // compact
+        } else {
+            constraints.push(Constraint::Length(1)); // "API Key:" label
+            constraints.push(Constraint::Length(2)); // api key input + spacing
+            // Connection status (always show if api key section is visible and test has been run)
+            if !matches!(state.connection_status, LlmConnectionStatus::Untested) {
+                constraints.push(Constraint::Length(2)); // connection status
+            }
+            // "Press Enter to continue..." prompt (only after successful test)
+            if matches!(state.connection_status, LlmConnectionStatus::Success(_)) {
+                constraints.push(Constraint::Length(2)); // continue prompt
+            }
         }
     }
 
@@ -473,14 +583,24 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LlmSetupState) {
     // ---- Provider section ----
     if provider_visible {
         let provider_active = state.active_section == LlmSetupSection::Provider;
-        if provider_confirmed && !provider_active {
-            // Compact confirmed display
-            render_confirmed_line(
-                frame,
-                content_rect(sections[slot]),
-                "Provider",
-                state.selected_provider().display_name(),
-            );
+        if !provider_expanded {
+            // Compact display
+            if provider_active && is_settings_mode {
+                // Highlighted compact line in settings overview
+                render_highlighted_line(
+                    frame,
+                    content_rect(sections[slot]),
+                    "Provider",
+                    state.selected_provider().display_name(),
+                );
+            } else {
+                render_confirmed_line(
+                    frame,
+                    content_rect(sections[slot]),
+                    "Provider",
+                    state.selected_provider().display_name(),
+                );
+            }
             slot += 1;
         } else {
             // Full interactive list
@@ -533,13 +653,17 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LlmSetupState) {
     // ---- Model section ----
     if model_visible {
         let model_active = state.active_section == LlmSetupSection::Model;
-        if model_confirmed && !model_active {
-            // Compact confirmed display
+        if !model_expanded {
+            // Compact display
             let model_name = state
                 .selected_model()
                 .map(|m| m.display_name)
                 .unwrap_or("(none)");
-            render_confirmed_line(frame, content_rect(sections[slot]), "Model", model_name);
+            if model_active && is_settings_mode {
+                render_highlighted_line(frame, content_rect(sections[slot]), "Model", model_name);
+            } else {
+                render_confirmed_line(frame, content_rect(sections[slot]), "Model", model_name);
+            }
             slot += 1;
         } else {
             // Full interactive list
@@ -594,6 +718,24 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LlmSetupState) {
     // ---- API Key section ----
     if apikey_visible {
         let key_active = state.active_section == LlmSetupSection::ApiKey;
+
+        // Compact display for settings overview mode
+        if !apikey_expanded && !state.api_key_editing {
+            let display = state.api_key_display();
+            let value = if display.is_empty() {
+                "(not set)".to_string()
+            } else {
+                display
+            };
+            if key_active && is_settings_mode {
+                render_highlighted_line(frame, content_rect(sections[slot]), "API Key", &value);
+            } else {
+                render_confirmed_line(frame, content_rect(sections[slot]), "API Key", &value);
+            }
+            #[allow(unused_assignments)]
+            { slot += 1; }
+        } else {
+        // Expanded display (original rendering)
         let key_label_style = if key_active {
             Style::default()
                 .fg(Color::Cyan)
@@ -684,16 +826,21 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LlmSetupState) {
             #[allow(unused_assignments)]
             { slot += 1; }
         }
+        } // end expanded API key else block
     }
 
     // ---- Help bar (always last slot) ----
-    let help_slot = sections.len() - 1;
-    let help_area = content_rect(sections[help_slot]);
-    let help_spans = build_help_bar(state);
-    frame.render_widget(
-        Paragraph::new(Line::from(help_spans)).alignment(Alignment::Center),
-        help_area,
-    );
+    // In settings mode, suppress the inner onboarding help bar; the outer
+    // `render_settings_help_bar` in settings/mod.rs handles settings hints.
+    if !is_settings_mode {
+        let help_slot = sections.len() - 1;
+        let help_area = content_rect(sections[help_slot]);
+        let help_spans = build_help_bar(state);
+        frame.render_widget(
+            Paragraph::new(Line::from(help_spans)).alignment(Alignment::Center),
+            help_area,
+        );
+    }
 }
 
 /// Render a single-line confirmed section: "  label: value  [checkmark]"
@@ -710,6 +857,32 @@ fn render_confirmed_line(frame: &mut Frame, area: Rect, label: &str, value: &str
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" *", Style::default().fg(Color::Green)),
+    ]));
+    frame.render_widget(line, area);
+}
+
+/// Render a single-line highlighted section for settings overview navigation.
+/// Uses cyan to indicate the currently focused field: "> label: value"
+fn render_highlighted_line(frame: &mut Frame, area: Rect, label: &str, value: &str) {
+    let line = Paragraph::new(Line::from(vec![
+        Span::styled(
+            "> ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{}: ", label),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            value.to_string(),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
     ]));
     frame.render_widget(line, area);
 }

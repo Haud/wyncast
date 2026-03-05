@@ -1807,6 +1807,62 @@ async fn handle_settings_action(
     use crate::llm::provider::LlmProvider;
 
     match action {
+        OnboardingAction::SaveLlmConfig { provider, model_id, api_key } => {
+            // Batch save: update provider, model, and optionally API key in one go.
+            state.config.strategy.llm.provider = provider.clone();
+            state.config.strategy.llm.model = model_id.clone();
+            state.onboarding_progress.llm_provider = Some(provider.clone());
+            state.onboarding_progress.llm_model = Some(model_id);
+
+            if let Some(key) = api_key {
+                if !key.is_empty() {
+                    save_api_key_for_provider(&provider, &key, &mut state.config, &state.onboarding_manager);
+                }
+            }
+
+            state.reload_llm_client();
+
+            if let Err(e) = state.onboarding_manager.save_progress(&state.onboarding_progress) {
+                warn!("Failed to save onboarding progress after SaveLlmConfig: {}", e);
+            }
+
+            // Persist LLM settings to strategy.toml
+            if let Err(e) = state.onboarding_manager.save_strategy_full(
+                (state.config.strategy.hitting_budget_fraction * 100.0) as u8,
+                &crate::tui::onboarding::strategy_setup::CategoryWeights::from_config_weights(&state.config.strategy.weights),
+                Some(&state.config.strategy.llm.provider),
+                Some(&state.config.strategy.llm.model),
+                state.config.strategy.strategy_overview.as_deref(),
+            ) {
+                warn!("Failed to save strategy.toml after SaveLlmConfig: {}", e);
+            } else {
+                info!("Settings: saved LLM config (provider={:?}, model={})",
+                    state.config.strategy.llm.provider,
+                    state.config.strategy.llm.model,
+                );
+            }
+
+            // Update the saved API key mask for the UI
+            let raw_key = get_api_key_for_provider(&provider, &state.config);
+            let mask = if raw_key.is_empty() {
+                None
+            } else {
+                let m = crate::tui::onboarding::llm_setup::mask_api_key(&raw_key);
+                if m.is_empty() { None } else { Some(m) }
+            };
+            let _ = ui_tx
+                .send(UiUpdate::OnboardingUpdate(
+                    OnboardingUpdate::ProgressSync {
+                        provider: state.onboarding_progress.llm_provider.clone(),
+                        model: state.onboarding_progress.llm_model.clone(),
+                        api_key_mask: mask,
+                    },
+                ))
+                .await;
+
+            // Auto-trigger connection test
+            Box::pin(handle_settings_action(state, OnboardingAction::TestConnection, ui_tx)).await;
+        }
         OnboardingAction::SetProvider(provider) => {
             state.config.strategy.llm.provider = provider.clone();
             state.config.strategy.llm.model = String::new();

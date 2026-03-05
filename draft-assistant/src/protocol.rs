@@ -183,6 +183,13 @@ pub enum OnboardingAction {
     SetApiKey(String),
     /// Request an API connection test.
     TestConnection,
+    /// Save all LLM settings (provider, model, API key) in a single batch.
+    /// Used by the settings page to defer persistence until the user presses 's'.
+    SaveLlmConfig {
+        provider: LlmProvider,
+        model_id: String,
+        api_key: Option<String>,
+    },
     /// Save the strategy configuration with the given budget, weights, and optional overview.
     SaveStrategyConfig {
         hitting_budget_pct: u8,
@@ -1125,6 +1132,11 @@ mod tests {
             strategy_overview: Some("Test overview".to_string()),
         };
         let _configure_llm = OnboardingAction::ConfigureStrategyWithLlm("punt saves".to_string());
+        let _save_llm = OnboardingAction::SaveLlmConfig {
+            provider: LlmProvider::Anthropic,
+            model_id: "claude-sonnet-4-6".to_string(),
+            api_key: Some("sk-test".to_string()),
+        };
         let _go_back = OnboardingAction::GoBack;
         let _go_next = OnboardingAction::GoNext;
         let _skip = OnboardingAction::Skip;
