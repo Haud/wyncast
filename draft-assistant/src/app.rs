@@ -1321,6 +1321,38 @@ async fn handle_user_command(
                 .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
                 .await;
         }
+        UserCommand::SaveAndExitSettings { llm, strategy } => {
+            info!("Saving settings and exiting to draft mode");
+            // Save LLM config if dirty
+            if let Some((provider, model_id, api_key)) = llm {
+                handle_settings_action(
+                    state,
+                    OnboardingAction::SaveLlmConfig { provider, model_id, api_key },
+                    ui_tx,
+                )
+                .await;
+            }
+            // Save strategy config if dirty
+            if let Some((hitting_budget_pct, category_weights, strategy_overview)) = strategy {
+                handle_settings_action(
+                    state,
+                    OnboardingAction::SaveStrategyConfig {
+                        hitting_budget_pct,
+                        category_weights,
+                        strategy_overview,
+                    },
+                    ui_tx,
+                )
+                .await;
+            }
+            // Transition to draft mode
+            state.app_mode = AppMode::Draft;
+            let _ = ui_tx.send(UiUpdate::ModeChanged(AppMode::Draft)).await;
+            let snapshot = state.build_snapshot();
+            let _ = ui_tx
+                .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
+                .await;
+        }
         UserCommand::SwitchSettingsTab(section) => {
             state.app_mode = AppMode::Settings(section);
             let _ = ui_tx

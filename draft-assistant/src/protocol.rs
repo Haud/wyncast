@@ -288,6 +288,21 @@ pub enum UserCommand {
     OpenSettings,
     /// Exit the settings screen and return to draft mode.
     ExitSettings,
+    /// Save all dirty settings and then exit the settings screen.
+    ///
+    /// Carries optional save payloads for both LLM and Strategy tabs so
+    /// the orchestrator can persist whichever (or both) have unsaved changes
+    /// before transitioning back to draft mode.
+    SaveAndExitSettings {
+        /// LLM config to save, if any. (provider, model_id, api_key)
+        llm: Option<(LlmProvider, String, Option<String>)>,
+        /// Strategy config to save, if any. (budget_pct, weights, overview)
+        strategy: Option<(
+            u8,
+            crate::tui::onboarding::strategy_setup::CategoryWeights,
+            Option<String>,
+        )>,
+    },
     /// Switch which settings tab is active.
     SwitchSettingsTab(SettingsSection),
     Quit,

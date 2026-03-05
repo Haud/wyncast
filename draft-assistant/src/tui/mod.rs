@@ -328,6 +328,10 @@ pub struct ViewState {
     /// that a stray CSI introducer byte (`[`) leaked by the terminal
     /// as a separate key event is not inserted into the input buffer.
     pub suppress_next_bracket: bool,
+    /// Whether the unsaved-changes confirmation dialog is showing on the
+    /// settings screen. When `true`, the modal overlay intercepts all input
+    /// and offers Save / Discard / Cancel options.
+    pub confirm_exit_settings: bool,
 }
 
 impl Default for ViewState {
@@ -364,6 +368,7 @@ impl Default for ViewState {
             settings_tab: SettingsSection::LlmConfig,
             llm_configured: true,
             suppress_next_bracket: false,
+            confirm_exit_settings: false,
         }
     }
 }
@@ -562,6 +567,11 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
                     state.strategy_setup.generation_output.push_str(&token);
                 }
                 OnboardingUpdate::StrategyLlmComplete { hitting_budget_pct, category_weights, strategy_overview } => {
+                    // Capture whether the LLM was actively generating before
+                    // we clear the flag. When `was_generating` is false, this
+                    // event is a "load saved values" from SwitchSettingsTab
+                    // rather than actual new LLM output.
+                    let was_generating = state.strategy_setup.generating;
                     state.strategy_setup.generating = false;
                     state.strategy_setup.generation_error = None;
                     state.strategy_setup.hitting_budget_pct = hitting_budget_pct;
@@ -574,8 +584,17 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
                     state.strategy_setup.step = onboarding::strategy_setup::StrategyWizardStep::Review;
                     state.strategy_setup.review_section = onboarding::strategy_setup::ReviewSection::Overview;
                     state.strategy_setup.input_editing = false;
-                    // Mark dirty so the user knows to press 's' to save.
-                    state.strategy_setup.settings_dirty = true;
+                    if was_generating {
+                        // Actual LLM output: mark dirty so the user knows to
+                        // press 's' to save the generated strategy.
+                        state.strategy_setup.settings_dirty = true;
+                    } else if matches!(state.app_mode, AppMode::Settings(_)) {
+                        // Loading saved values in settings mode (from
+                        // SwitchSettingsTab): re-snapshot so these loaded values
+                        // become the baseline and the tab starts clean.
+                        state.strategy_setup.settings_dirty = false;
+                        state.strategy_setup.snapshot_settings();
+                    }
                 }
                 OnboardingUpdate::StrategyLlmError(msg) => {
                     state.strategy_setup.generating = false;
@@ -767,6 +786,15 @@ fn compute_onboarding_keybinds(state: &ViewState, step: &crate::onboarding::Onbo
 
 /// Compute keybind hints for settings mode.
 fn compute_settings_keybinds(state: &ViewState) -> Vec<KeybindHint> {
+    // Unsaved changes confirmation modal: override all hints
+    if state.confirm_exit_settings {
+        return vec![
+            KeybindHint::new("y", "Save & exit"),
+            KeybindHint::new("n", "Discard & exit"),
+            KeybindHint::new("Esc", "Cancel"),
+        ];
+    }
+
     // Strategy-specific sub-modes
     if state.settings_tab == SettingsSection::StrategyConfig {
         let ss = &state.strategy_setup;
@@ -841,6 +869,11 @@ fn compute_settings_keybinds(state: &ViewState) -> Vec<KeybindHint> {
                 // Only show Save when it is not blocked and there are unsaved changes
                 if !state.llm_setup.is_save_blocked() && state.llm_setup.settings_dirty {
                     hints.push(KeybindHint::new("s", "Save"));
+                }
+                if state.llm_setup.settings_dirty
+                    || state.llm_setup.settings_needs_connection_test
+                {
+                    hints.push(KeybindHint::new("", "[unsaved]"));
                 }
             }
         }
