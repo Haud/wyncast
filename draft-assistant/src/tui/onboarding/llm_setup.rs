@@ -14,6 +14,30 @@ use crate::llm::provider::{models_for_provider, LlmProvider, ModelOption};
 use crate::tui::TextInput;
 
 // ---------------------------------------------------------------------------
+// API key masking
+// ---------------------------------------------------------------------------
+
+/// Build a masked display string for a saved API key.
+///
+/// Shows the first 7 characters, a run of bullet characters, and the last 4
+/// characters. For example, `sk-ant-api03-abcdef123456789` becomes
+/// `sk-ant-\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}6789`.
+///
+/// Returns an empty string if the key is empty or shorter than 8 characters
+/// (too short to mask meaningfully).
+pub fn mask_api_key(key: &str) -> String {
+    let char_count = key.chars().count();
+    if char_count < 8 {
+        // Too short to mask meaningfully; treat as no key
+        return String::new();
+    }
+    let prefix: String = key.chars().take(7).collect();
+    let suffix: String = key.chars().skip(char_count - 4).collect();
+    let dots = "\u{2022}".repeat(5); // 5 bullet characters
+    format!("{}{}{}", prefix, dots, suffix)
+}
+
+// ---------------------------------------------------------------------------
 // LlmSetupSection
 // ---------------------------------------------------------------------------
 
@@ -110,6 +134,13 @@ pub struct LlmSetupState {
     pub api_key_editing: bool,
     /// Result of the last connection test.
     pub connection_status: LlmConnectionStatus,
+    /// Whether a saved API key exists in credentials (even though the text
+    /// input may be empty). Set when entering Settings mode so the UI can
+    /// show a masked placeholder instead of a blank field.
+    pub has_saved_api_key: bool,
+    /// Masked display string for a saved API key (e.g. `sk-ant-***XXXX`).
+    /// Populated when entering Settings mode; empty when no saved key exists.
+    pub saved_api_key_mask: String,
 }
 
 impl std::fmt::Debug for LlmSetupState {
@@ -123,6 +154,8 @@ impl std::fmt::Debug for LlmSetupState {
             .field("api_key_backup", &if self.api_key_backup.is_empty() { "(empty)" } else { "[REDACTED]" })
             .field("api_key_editing", &self.api_key_editing)
             .field("connection_status", &self.connection_status)
+            .field("has_saved_api_key", &self.has_saved_api_key)
+            .field("saved_api_key_mask", &if self.saved_api_key_mask.is_empty() { "(empty)" } else { "[REDACTED]" })
             .finish()
     }
 }
@@ -138,6 +171,8 @@ impl Default for LlmSetupState {
             api_key_backup: String::new(),
             api_key_editing: false,
             connection_status: LlmConnectionStatus::Untested,
+            has_saved_api_key: false,
+            saved_api_key_mask: String::new(),
         }
     }
 }
@@ -322,9 +357,16 @@ impl LlmSetupState {
     }
 
     /// Return the API key display text: masked when not editing, raw when editing.
+    ///
+    /// When the text input is empty but a saved key exists (indicated by
+    /// `has_saved_api_key`), returns the pre-computed `saved_api_key_mask`
+    /// so the UI shows a placeholder like `sk-ant-***XXXX` instead of blank.
     pub fn api_key_display(&self) -> String {
         let raw = self.api_key_input.value();
         if raw.is_empty() {
+            if !self.api_key_editing && self.has_saved_api_key && !self.saved_api_key_mask.is_empty() {
+                return self.saved_api_key_mask.clone();
+            }
             return String::new();
         }
         if self.api_key_editing {
@@ -698,8 +740,10 @@ fn build_help_bar(state: &LlmSetupState) -> Vec<Span<'static>> {
         LlmSetupSection::ApiKey => {
             if state.connection_tested_ok() {
                 spans.push(hint("Enter:continue"));
-            } else if state.api_key_input.is_empty() {
+            } else if state.api_key_input.is_empty() && !state.has_saved_api_key {
                 spans.push(hint("Enter:input key"));
+            } else if state.api_key_input.is_empty() && state.has_saved_api_key {
+                spans.push(hint("Enter:edit key"));
             } else if matches!(state.connection_status, LlmConnectionStatus::Failed(_)) {
                 spans.push(hint("Enter:edit key"));
             } else {
@@ -825,7 +869,7 @@ mod tests {
     }
 
     #[test]
-    fn api_key_display_empty() {
+    fn api_key_display_empty_no_saved_key() {
         let state = LlmSetupState::default();
         assert!(state.api_key_display().is_empty());
     }
@@ -995,6 +1039,88 @@ mod tests {
         state.confirm_current_section();
         state.confirmed_through = Some(LlmSetupSection::ApiKey);
         state.connection_status = LlmConnectionStatus::Success("Connected!".to_string());
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state))
+            .unwrap();
+    }
+
+    // --- mask_api_key tests ---
+
+    #[test]
+    fn mask_api_key_typical_key() {
+        let masked = mask_api_key("sk-ant-api03-abcdef123456789");
+        // First 7 chars + 5 bullets + last 4 chars
+        assert!(masked.starts_with("sk-ant-"));
+        assert!(masked.ends_with("6789"));
+        assert!(masked.contains('\u{2022}'));
+    }
+
+    #[test]
+    fn mask_api_key_empty() {
+        assert!(mask_api_key("").is_empty());
+    }
+
+    #[test]
+    fn mask_api_key_too_short() {
+        // Keys shorter than 8 chars cannot be meaningfully masked
+        assert!(mask_api_key("sk-1234").is_empty());
+    }
+
+    #[test]
+    fn mask_api_key_exactly_8_chars() {
+        let masked = mask_api_key("12345678");
+        assert!(masked.starts_with("1234567"));
+        assert!(masked.ends_with("5678"));
+    }
+
+    // --- api_key_display with saved_api_key_mask ---
+
+    #[test]
+    fn api_key_display_shows_saved_mask_when_input_empty() {
+        let mut state = LlmSetupState::default();
+        state.has_saved_api_key = true;
+        state.saved_api_key_mask = "sk-ant-\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}6789".to_string();
+        state.api_key_editing = false;
+
+        let display = state.api_key_display();
+        assert_eq!(display, state.saved_api_key_mask);
+    }
+
+    #[test]
+    fn api_key_display_empty_during_editing_even_with_saved_key() {
+        let mut state = LlmSetupState::default();
+        state.has_saved_api_key = true;
+        state.saved_api_key_mask = "sk-ant-\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}6789".to_string();
+        state.api_key_editing = true;
+
+        // When editing with empty input, display should be empty (user types from scratch)
+        let display = state.api_key_display();
+        assert!(display.is_empty());
+    }
+
+    #[test]
+    fn api_key_display_prefers_typed_input_over_saved_mask() {
+        let mut state = LlmSetupState::default();
+        state.has_saved_api_key = true;
+        state.saved_api_key_mask = "sk-ant-\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}6789".to_string();
+        state.api_key_input.set_value("sk-new-key-here");
+        state.api_key_editing = false;
+
+        let display = state.api_key_display();
+        // Should show the typed key's mask, not the saved mask
+        assert!(display.starts_with("sk-new-"));
+        assert!(display.contains('*'));
+    }
+
+    #[test]
+    fn render_with_saved_api_key_mask_does_not_panic() {
+        let backend = ratatui::backend::TestBackend::new(80, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut state = LlmSetupState::default();
+        state.confirmed_through = Some(LlmSetupSection::Model);
+        state.active_section = LlmSetupSection::ApiKey;
+        state.has_saved_api_key = true;
+        state.saved_api_key_mask = "sk-ant-\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}6789".to_string();
         terminal
             .draw(|frame| render(frame, frame.area(), &state))
             .unwrap();

@@ -212,9 +212,14 @@ pub enum OnboardingUpdate {
     },
     /// Sync onboarding state back to the TUI (e.g. on GoBack to LlmSetup).
     /// Carries the provider and model so the TUI can rebuild `LlmSetupState`.
+    /// Optionally carries a masked API key string for the Settings screen
+    /// placeholder (e.g. `sk-ant-*****6789`).
     ProgressSync {
         provider: Option<LlmProvider>,
         model: Option<String>,
+        /// Masked API key for display in Settings. `None` means no key exists
+        /// or the sync is from onboarding (where the user types the key fresh).
+        api_key_mask: Option<String>,
     },
     /// A streamed token from the strategy LLM generation.
     StrategyLlmToken(String),

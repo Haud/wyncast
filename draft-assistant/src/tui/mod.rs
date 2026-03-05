@@ -509,7 +509,7 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
                         LlmConnectionStatus::Failed(message)
                     };
                 }
-                OnboardingUpdate::ProgressSync { provider, model } => {
+                OnboardingUpdate::ProgressSync { provider, model, api_key_mask } => {
                     // Rebuild LlmSetupState indices from the saved progress.
                     // Also advance confirmed_through so that previously
                     // configured sections are visible.
@@ -533,6 +533,14 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
                             state.llm_setup.active_section =
                                 onboarding::llm_setup::LlmSetupSection::ApiKey;
                         }
+                    }
+                    // Populate saved API key mask for the Settings placeholder.
+                    if let Some(mask) = api_key_mask {
+                        state.llm_setup.has_saved_api_key = true;
+                        state.llm_setup.saved_api_key_mask = mask;
+                    } else {
+                        state.llm_setup.has_saved_api_key = false;
+                        state.llm_setup.saved_api_key_mask.clear();
                     }
                 }
                 OnboardingUpdate::StrategyLlmToken(token) => {
@@ -615,8 +623,10 @@ fn compute_onboarding_keybinds(state: &ViewState, step: &crate::onboarding::Onbo
                     LlmSetupSection::ApiKey => {
                         if state.llm_setup.connection_tested_ok() {
                             hints.push(KeybindHint::new("Enter", "Continue"));
-                        } else if state.llm_setup.api_key_input.is_empty() {
+                        } else if state.llm_setup.api_key_input.is_empty() && !state.llm_setup.has_saved_api_key {
                             hints.push(KeybindHint::new("Enter", "Input key"));
+                        } else if state.llm_setup.api_key_input.is_empty() && state.llm_setup.has_saved_api_key {
+                            hints.push(KeybindHint::new("Enter", "Edit key"));
                         } else if matches!(
                             state.llm_setup.connection_status,
                             onboarding::llm_setup::LlmConnectionStatus::Failed(_)
