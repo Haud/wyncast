@@ -274,16 +274,9 @@ fn handle_strategy_setup_key(
             if state.generating {
                 return match key_event.code {
                     KeyCode::Esc => {
-                        if state.generation_error.is_some() {
-                            // Error state: go back to overview editing
-                            state.generating = false;
-                            state.generation_error = None;
-                            state.start_overview_editing();
-                        } else {
-                            // Cancel generation, return to overview editing
-                            state.generating = false;
-                            state.start_overview_editing();
-                        }
+                        state.generating = false;
+                        state.generation_error = None;
+                        state.start_overview_editing();
                         None
                     }
                     KeyCode::Enter if state.generation_error.is_some() => {
@@ -292,6 +285,29 @@ fn handle_strategy_setup_key(
                         state.generation_output.clear();
                         state.generation_error = None;
                         let text = state.strategy_input.value().to_string();
+                        Some(UserCommand::OnboardingAction(
+                            OnboardingAction::ConfigureStrategyWithLlm(text),
+                        ))
+                    }
+                    KeyCode::Char('q') => Some(UserCommand::Quit),
+                    _ => None,
+                };
+            }
+
+            // Error state: LLM generation failed (generating is false, but error is set)
+            if state.generation_error.is_some() {
+                return match key_event.code {
+                    KeyCode::Esc => {
+                        state.generation_error = None;
+                        state.start_overview_editing();
+                        None
+                    }
+                    KeyCode::Enter => {
+                        // Retry: resubmit the last input
+                        let text = state.strategy_input.value().to_string();
+                        state.generation_error = None;
+                        state.generating = true;
+                        state.generation_output.clear();
                         Some(UserCommand::OnboardingAction(
                             OnboardingAction::ConfigureStrategyWithLlm(text),
                         ))

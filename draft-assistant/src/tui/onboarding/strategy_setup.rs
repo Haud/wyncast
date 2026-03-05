@@ -58,7 +58,7 @@ pub enum StrategyWizardStep {
 /// Which part of the review step has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewSection {
-    /// Strategy overview text (read-only, scrollable).
+    /// Strategy overview text (editable, scrollable).
     Overview,
     /// Hitting budget percentage field.
     BudgetField,
@@ -725,7 +725,7 @@ fn render_review_step(frame: &mut Frame, area: Rect, state: &StrategySetupState)
         Style::default().fg(Color::White)
     };
 
-    // Show "Thinking..." badge next to label when generating
+    // Show status badge next to label
     let label_spans = if state.generating {
         vec![
             Span::styled("Strategy Overview:  ", overview_label_style),
@@ -733,6 +733,16 @@ fn render_review_step(frame: &mut Frame, area: Rect, state: &StrategySetupState)
                 "Thinking...",
                 Style::default()
                     .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]
+    } else if state.generation_error.is_some() {
+        vec![
+            Span::styled("Strategy Overview:  ", overview_label_style),
+            Span::styled(
+                "[error]",
+                Style::default()
+                    .fg(Color::Red)
                     .add_modifier(Modifier::BOLD),
             ),
         ]
@@ -789,6 +799,27 @@ fn render_review_step(frame: &mut Frame, area: Rect, state: &StrategySetupState)
         ))
         .block(overview_block)
         .wrap(Wrap { trim: false });
+        frame.render_widget(overview_para, content_rect(sections[2]));
+    } else if let Some(ref err) = state.generation_error {
+        // Error state: show error message in red
+        let error_lines = vec![
+            Line::from(Span::styled(
+                format!("Error: {err}"),
+                Style::default().fg(Color::Red),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Esc: back to editing | Enter: retry",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ];
+        let overview_para = Paragraph::new(error_lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Red)),
+            )
+            .wrap(Wrap { trim: false });
         frame.render_widget(overview_para, content_rect(sections[2]));
     } else {
         let overview_text = if state.strategy_overview.is_empty() {
@@ -1061,6 +1092,14 @@ fn render_review_help_bar(frame: &mut Frame, area: Rect, state: &StrategySetupSt
             Span::styled("Generating...", Style::default().fg(Color::Yellow)),
             Span::styled(" | ", Style::default().fg(Color::DarkGray)),
             Span::styled("Esc:cancel", Style::default().fg(Color::Gray)),
+        ]
+    } else if state.generation_error.is_some() {
+        vec![
+            Span::styled("Error!", Style::default().fg(Color::Red)),
+            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Enter:retry", Style::default().fg(Color::Gray)),
+            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Esc:back to editing", Style::default().fg(Color::Gray)),
         ]
     } else if state.overview_editing {
         vec![
