@@ -723,6 +723,8 @@ fn handle_llm_settings_key(
                         OnboardingAction::SetApiKey(new_key),
                     ))
                 } else {
+                    state.settings_api_key_changed = false;
+                    state.connection_status = super::onboarding::llm_setup::LlmConnectionStatus::Untested;
                     None
                 }
             }
@@ -891,7 +893,7 @@ fn handle_llm_settings_key(
 
         // Esc: discard unsaved changes and return to draft mode
         KeyCode::Esc => {
-            if state.settings_dirty {
+            if state.settings_dirty || state.settings_api_key_changed {
                 state.restore_settings_snapshot();
             }
             Some(UserCommand::ExitSettings)

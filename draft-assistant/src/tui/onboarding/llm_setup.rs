@@ -187,6 +187,7 @@ impl std::fmt::Debug for LlmSetupState {
             .field("saved_api_key_mask", &if self.saved_api_key_mask.is_empty() { "(empty)" } else { "[REDACTED]" })
             .field("settings_editing_field", &self.settings_editing_field)
             .field("settings_dirty", &self.settings_dirty)
+            .field("settings_api_key_changed", &self.settings_api_key_changed)
             .finish()
     }
 }

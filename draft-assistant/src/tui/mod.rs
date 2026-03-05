@@ -508,9 +508,7 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
                     state.llm_setup.connection_status = if success {
                         // Connection test passed — allow saving if we were
                         // waiting on it.
-                        if state.llm_setup.settings_api_key_changed {
-                            state.llm_setup.settings_api_key_changed = false;
-                        }
+                        state.llm_setup.settings_api_key_changed = false;
                         LlmConnectionStatus::Success(message)
                     } else {
                         LlmConnectionStatus::Failed(message)
