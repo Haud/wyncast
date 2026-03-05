@@ -135,7 +135,7 @@ pub struct AppState {
     /// the result without routing through the event loop.
     pub connection_test_result: Arc<AtomicI8>,
     /// Generation counter for connection tests. Incremented when a new test
-    /// is triggered and when `ResetOnboarding` runs. Spawned test tasks
+    /// is triggered. Spawned test tasks
     /// capture the current generation and only write to `connection_test_result`
     /// if the generation hasn't changed, preventing stale writes.
     pub connection_test_generation: Arc<AtomicU64>,
@@ -1779,8 +1779,8 @@ async fn handle_onboarding_action(
             }
         }
         other => {
-            // ResetOnboarding and any other unexpected variants during
-            // onboarding are handled by the settings path or ignored.
+            // Any unexpected variants during onboarding are handled by the
+            // settings path or ignored.
             warn!("Unexpected onboarding action in onboarding handler: {:?}", other);
         }
     }
@@ -2000,42 +2000,6 @@ async fn handle_settings_action(
                 ui_tx,
             )
             .await;
-        }
-        OnboardingAction::ResetOnboarding => {
-            // Clear onboarding progress, save to disk, switch to onboarding mode
-            state.onboarding_progress = OnboardingProgress::default();
-            state.connection_test_result.store(CONNECTION_NEVER_TESTED, Ordering::Relaxed);
-            // Bump generation to discard any in-flight connection test results
-            state.connection_test_generation.fetch_add(1, Ordering::Relaxed);
-
-            // Clear in-memory LLM config and disable the client so the user
-            // starts fresh when re-entering onboarding.
-            state.config.strategy.llm.provider = LlmProvider::Anthropic;
-            state.config.strategy.llm.model = String::new();
-            state.llm_client = Arc::new(LlmClient::Disabled);
-
-            if let Err(e) = state
-                .onboarding_manager
-                .save_progress(&state.onboarding_progress)
-            {
-                warn!("Failed to save reset onboarding progress: {}", e);
-            }
-            state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
-            let _ = ui_tx
-                .send(UiUpdate::ModeChanged(AppMode::Onboarding(
-                    OnboardingStep::LlmSetup,
-                )))
-                .await;
-            // Sync the reset state back to the TUI
-            let _ = ui_tx
-                .send(UiUpdate::OnboardingUpdate(
-                    OnboardingUpdate::ProgressSync {
-                        provider: None,
-                        model: None,
-                        api_key_mask: None,
-                    },
-                ))
-                .await;
         }
         // GoNext/GoBack/Skip are filtered by the input handler and should
         // not reach here. If they do, ignore them silently.
@@ -5063,61 +5027,6 @@ mod tests {
             state.app_mode,
             AppMode::Onboarding(OnboardingStep::StrategySetup)
         );
-    }
-
-    // -----------------------------------------------------------------------
-    // Tests: Reset Onboarding from Settings (Task 7)
-    // -----------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn reset_onboarding_from_settings_resets_to_llm_setup() {
-        use crate::onboarding::OnboardingStep;
-        use crate::protocol::SettingsSection;
-
-        let mut state = create_test_app_state();
-        state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
-        // Simulate completed onboarding
-        state.onboarding_progress.current_step = OnboardingStep::Complete;
-        state.onboarding_progress.strategy_configured = true;
-        state.onboarding_progress.llm_provider = Some(crate::llm::provider::LlmProvider::Anthropic);
-        state.onboarding_progress.llm_model = Some("claude-sonnet-4-6".to_string());
-        state.connection_test_result.store(CONNECTION_TEST_PASSED, Ordering::Relaxed);
-
-        let (ui_tx, mut ui_rx) = mpsc::channel(16);
-
-        handle_user_command(
-            &mut state,
-            UserCommand::OnboardingAction(OnboardingAction::ResetOnboarding),
-            &ui_tx,
-        )
-        .await;
-
-        // Should be in Onboarding(LlmSetup) mode
-        assert_eq!(
-            state.app_mode,
-            AppMode::Onboarding(OnboardingStep::LlmSetup)
-        );
-
-        // Progress should be reset to defaults
-        assert_eq!(state.onboarding_progress.current_step, OnboardingStep::LlmSetup);
-        assert!(state.onboarding_progress.llm_provider.is_none());
-        assert!(state.onboarding_progress.llm_model.is_none());
-        assert!(!state.onboarding_progress.strategy_configured);
-
-        // Connection test tracker should be reset
-        assert_eq!(state.connection_test_result.load(Ordering::Relaxed), CONNECTION_NEVER_TESTED);
-
-        // Should have received ModeChanged and ProgressSync
-        let update1 = ui_rx.recv().await.expect("expected ModeChanged");
-        assert!(matches!(
-            update1,
-            UiUpdate::ModeChanged(AppMode::Onboarding(OnboardingStep::LlmSetup))
-        ));
-        let update2 = ui_rx.recv().await.expect("expected ProgressSync");
-        assert!(matches!(
-            update2,
-            UiUpdate::OnboardingUpdate(OnboardingUpdate::ProgressSync { .. })
-        ));
     }
 
     // -----------------------------------------------------------------------

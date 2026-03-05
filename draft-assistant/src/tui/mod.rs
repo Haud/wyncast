@@ -844,7 +844,6 @@ fn compute_settings_keybinds(state: &ViewState) -> Vec<KeybindHint> {
                 }
             }
         }
-        hints.push(KeybindHint::new("r", "Reset Onboarding"));
         hints.push(KeybindHint::new("Esc", "Back to Draft"));
         hints
     }
@@ -1803,9 +1802,6 @@ mod tests {
         assert!(!ks.contains(&"s"), "LLM tab should not show save hint");
         // Draft-specific hints should NOT appear
         assert!(!ks.contains(&"1-4"), "draft tab hints should not appear in settings");
-        // 'r' in settings is now "Reset Onboarding", not the draft "Resync"
-        assert!(ks.contains(&"r"), "settings should show Reset Onboarding hint");
-
         // Strategy tab: should show "s: Save" and "Enter: Edit" when in Review step (non-editing)
         state.settings_tab = SettingsSection::StrategyConfig;
         state.strategy_setup.step = onboarding::strategy_setup::StrategyWizardStep::Review;

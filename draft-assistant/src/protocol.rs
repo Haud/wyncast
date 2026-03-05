@@ -204,9 +204,6 @@ pub enum OnboardingAction {
     GoNext,
     /// Skip onboarding entirely and go straight to draft mode.
     Skip,
-    /// Reset onboarding and re-run from the beginning.
-    /// Accessible from the Settings screen.
-    ResetOnboarding,
 }
 
 /// Updates pushed from the app orchestrator to the TUI during onboarding.
@@ -1140,7 +1137,6 @@ mod tests {
         let _go_back = OnboardingAction::GoBack;
         let _go_next = OnboardingAction::GoNext;
         let _skip = OnboardingAction::Skip;
-        let _reset = OnboardingAction::ResetOnboarding;
     }
 
     #[test]
