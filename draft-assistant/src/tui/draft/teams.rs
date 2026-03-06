@@ -19,7 +19,7 @@ pub enum TeamsMessage {
 
 /// Stateful teams overview panel component.
 pub struct TeamsPanel {
-    pub scroll: ScrollState,
+    scroll: ScrollState,
 }
 
 impl TeamsPanel {
@@ -29,16 +29,10 @@ impl TeamsPanel {
         }
     }
 
-    /// Update scroll viewport dimensions so PageUp/PageDown jump by the
-    /// correct amount. Call this from the parent when the layout changes.
-    pub fn set_viewport(&mut self, content_height: usize, viewport_height: usize) {
-        self.scroll.set_viewport(content_height, viewport_height);
-    }
-
     pub fn update(&mut self, msg: TeamsMessage) -> Option<Action> {
         match msg {
             TeamsMessage::Scroll(dir) => {
-                self.scroll.scroll(dir);
+                self.scroll.scroll(dir, 0);
                 None
             }
         }
@@ -80,11 +74,7 @@ impl TeamsPanel {
 
         let total = teams.len();
 
-        // Clamp scroll offset locally for rendering (scroll bounds are enforced
-        // by ScrollState::scroll(); we just need a safe value here without
-        // mutating self).
-        let max_offset = total.saturating_sub(visible_rows);
-        let scroll_offset = self.scroll.offset.min(max_offset);
+        let scroll_offset = self.scroll.clamped_offset(total, visible_rows);
 
         let rows: Vec<Row> = if teams.is_empty() {
             vec![Row::new(vec![Cell::from("  No team data available")])]
@@ -124,7 +114,7 @@ impl TeamsPanel {
 
         // Render vertical scrollbar whenever content overflows
         if total > visible_rows {
-            let mut scrollbar_state = ScrollbarState::new(max_offset).position(scroll_offset);
+            let mut scrollbar_state = ScrollbarState::new(total.saturating_sub(visible_rows)).position(scroll_offset);
             frame.render_stateful_widget(
                 Scrollbar::new(ScrollbarOrientation::VerticalRight),
                 area.inner(Margin {
@@ -171,15 +161,13 @@ mod tests {
     #[test]
     fn new_starts_with_zero_scroll() {
         let panel = TeamsPanel::new();
-        assert_eq!(panel.scroll.offset, 0);
-        assert_eq!(panel.scroll.content_height, 0);
-        assert_eq!(panel.scroll.viewport_height, 0);
+        assert_eq!(panel.scroll.offset(), 0);
     }
 
     #[test]
     fn default_starts_with_zero_scroll() {
         let panel = TeamsPanel::default();
-        assert_eq!(panel.scroll.offset, 0);
+        assert_eq!(panel.scroll.offset(), 0);
     }
 
     // -- Update --
@@ -187,26 +175,26 @@ mod tests {
     #[test]
     fn update_scroll_down_changes_offset() {
         let mut panel = TeamsPanel::new();
-        panel.scroll.set_viewport(100, 10);
         let result = panel.update(TeamsMessage::Scroll(ScrollDirection::Down));
         assert!(result.is_none());
-        assert_eq!(panel.scroll.offset, 1);
+        assert_eq!(panel.scroll.offset(), 1);
     }
 
     #[test]
     fn update_scroll_up_changes_offset() {
         let mut panel = TeamsPanel::new();
-        panel.scroll.set_viewport(100, 10);
-        panel.scroll.offset = 5;
+        // Scroll down a few times to set offset
+        for _ in 0..5 {
+            panel.update(TeamsMessage::Scroll(ScrollDirection::Down));
+        }
         let result = panel.update(TeamsMessage::Scroll(ScrollDirection::Up));
         assert!(result.is_none());
-        assert_eq!(panel.scroll.offset, 4);
+        assert_eq!(panel.scroll.offset(), 4);
     }
 
     #[test]
     fn update_returns_none() {
         let mut panel = TeamsPanel::new();
-        panel.scroll.set_viewport(100, 10);
         assert!(panel
             .update(TeamsMessage::Scroll(ScrollDirection::Down))
             .is_none());

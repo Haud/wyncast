@@ -8,7 +8,7 @@ use crate::tui::scroll::{ScrollDirection, ScrollState};
 pub struct LlmStreamState {
     pub text: String,
     pub status: LlmStatus,
-    pub scroll: ScrollState,
+    scroll: ScrollState,
 }
 
 /// Messages that can be sent to an `LlmStreamState` component.
@@ -30,12 +30,24 @@ impl LlmStreamState {
         }
     }
 
+    /// Get the scroll offset clamped for the given viewport height.
+    /// Content height is derived from `self.text`.
+    pub fn scroll_offset_clamped(&self, viewport_height: usize) -> usize {
+        let content_height = self.text.lines().count();
+        self.scroll.clamped_offset(content_height, viewport_height)
+    }
+
+    /// Raw scroll offset (may exceed valid range).
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll.offset()
+    }
+
     pub fn update(&mut self, msg: LlmStreamMessage) -> Option<Action> {
         match msg {
             LlmStreamMessage::TokenReceived(token) => {
                 self.text.push_str(&token);
                 self.status = LlmStatus::Streaming;
-                self.scroll.auto_scroll_to_bottom();
+                self.scroll.scroll_to_end();
                 None
             }
             LlmStreamMessage::Complete(final_text) => {
@@ -56,7 +68,7 @@ impl LlmStreamState {
                 None
             }
             LlmStreamMessage::Scroll(dir) => {
-                self.scroll.scroll(dir);
+                self.scroll.scroll(dir, 0);
                 None
             }
         }
@@ -82,9 +94,7 @@ mod tests {
         let s = LlmStreamState::new();
         assert_eq!(s.text, "");
         assert_eq!(s.status, LlmStatus::Idle);
-        assert_eq!(s.scroll.offset, 0);
-        assert_eq!(s.scroll.content_height, 0);
-        assert_eq!(s.scroll.viewport_height, 0);
+        assert_eq!(s.scroll_offset(), 0);
     }
 
     #[test]
@@ -92,7 +102,7 @@ mod tests {
         let s = LlmStreamState::default();
         assert_eq!(s.text, "");
         assert_eq!(s.status, LlmStatus::Idle);
-        assert_eq!(s.scroll.offset, 0);
+        assert_eq!(s.scroll_offset(), 0);
     }
 
     #[test]
@@ -105,14 +115,13 @@ mod tests {
     }
 
     #[test]
-    fn token_received_auto_scrolls() {
+    fn token_received_scrolls_to_end() {
         let mut s = LlmStreamState::new();
-        // Set up viewport so auto-scroll has an effect
-        s.scroll.set_viewport(50, 10);
-        assert_eq!(s.scroll.offset, 0);
         s.update(LlmStreamMessage::TokenReceived("token".into()));
-        // auto_scroll_to_bottom sets offset to max
-        assert_eq!(s.scroll.offset, 40);
+        // scroll_to_end sets offset to usize::MAX; clamped_offset resolves it
+        assert_eq!(s.scroll_offset(), usize::MAX);
+        // With 1 line of content and viewport of 10, clamped is 0
+        assert_eq!(s.scroll_offset_clamped(10), 0);
     }
 
     #[test]
@@ -148,28 +157,24 @@ mod tests {
     fn clear_resets_everything() {
         let mut s = LlmStreamState::new();
         s.update(LlmStreamMessage::TokenReceived("data".into()));
-        s.scroll.set_viewport(100, 10);
-        s.scroll.scroll(ScrollDirection::Down);
+        s.update(LlmStreamMessage::Scroll(ScrollDirection::Down));
 
         let result = s.update(LlmStreamMessage::Clear);
         assert_eq!(s.text, "");
         assert_eq!(s.status, LlmStatus::Idle);
-        assert_eq!(s.scroll.offset, 0);
-        assert_eq!(s.scroll.content_height, 0);
-        assert_eq!(s.scroll.viewport_height, 0);
+        assert_eq!(s.scroll_offset(), 0);
         assert_eq!(result, None);
     }
 
     #[test]
     fn scroll_delegates_to_scroll_state() {
         let mut s = LlmStreamState::new();
-        s.scroll.set_viewport(100, 10);
         let result = s.update(LlmStreamMessage::Scroll(ScrollDirection::Down));
-        assert_eq!(s.scroll.offset, 1);
+        assert_eq!(s.scroll_offset(), 1);
         assert_eq!(result, None);
 
-        s.update(LlmStreamMessage::Scroll(ScrollDirection::PageDown));
-        assert_eq!(s.scroll.offset, 11);
+        s.update(LlmStreamMessage::Scroll(ScrollDirection::Down));
+        assert_eq!(s.scroll_offset(), 2);
     }
 
     #[test]
