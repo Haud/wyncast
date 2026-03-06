@@ -967,7 +967,7 @@ fn compute_draft_keybinds(state: &ViewState) -> Vec<KeybindHint> {
 /// Note: active keybind hints are read from `state.active_keybinds`, which is
 /// pre-synced by the run loop before each draw call. This avoids recomputing
 /// keybinds inside the render path.
-fn render_frame(frame: &mut Frame, state: &mut ViewState) {
+fn render_frame(frame: &mut Frame, state: &ViewState) {
     match &state.app_mode {
         AppMode::Onboarding(step) => {
             onboarding::render(frame, step, state);
@@ -982,7 +982,7 @@ fn render_frame(frame: &mut Frame, state: &mut ViewState) {
 }
 
 /// Render the full draft dashboard (the main operational view).
-fn render_draft_frame(frame: &mut Frame, state: &mut ViewState) {
+fn render_draft_frame(frame: &mut Frame, state: &ViewState) {
     let layout = build_layout(frame.area());
 
     widgets::status_bar::render(frame, layout.status_bar, state);
@@ -1187,7 +1187,7 @@ pub async fn run(
                 // field reflects the current hints (useful for testing and
                 // any future consumers of ViewState outside the render path).
                 view_state.active_keybinds = compute_keybinds(&view_state);
-                terminal.draw(|frame| render_frame(frame, &mut view_state))?;
+                terminal.draw(|frame| render_frame(frame, &view_state))?;
             }
         }
     }

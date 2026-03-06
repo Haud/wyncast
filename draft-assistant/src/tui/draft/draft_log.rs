@@ -40,6 +40,12 @@ impl DraftLogPanel {
         }
     }
 
+    /// Update scroll viewport dimensions so PageUp/PageDown jump by the
+    /// correct amount. Call this from the parent when the layout changes.
+    pub fn set_viewport(&mut self, content_height: usize, viewport_height: usize) {
+        self.scroll.set_viewport(content_height, viewport_height);
+    }
+
     pub fn update(&mut self, msg: DraftLogMessage) -> Option<Action> {
         match msg {
             DraftLogMessage::Scroll(dir) => {
@@ -66,7 +72,7 @@ impl DraftLogPanel {
         }
     }
 
-    pub fn view(&mut self, frame: &mut Frame, area: Rect, props: &DraftLogProps) {
+    pub fn view(&self, frame: &mut Frame, area: Rect, props: &DraftLogProps) {
         let focus_border = focused_border_style(props.focused, Style::default());
 
         if props.picks.is_empty() {
@@ -88,12 +94,15 @@ impl DraftLogPanel {
         let all_picks: Vec<_> = props.picks.iter().rev().collect();
         let total = all_picks.len();
 
-        // Update scroll viewport dimensions
-        self.scroll.set_viewport(total, visible_rows);
+        // Clamp offset locally for rendering (scroll bounds are enforced by
+        // ScrollState::scroll(); we just need a safe value here without
+        // mutating self).
+        let max_offset = total.saturating_sub(visible_rows);
+        let scroll_offset = self.scroll.offset.min(max_offset);
 
         let items: Vec<ListItem> = all_picks
             .into_iter()
-            .skip(self.scroll.offset)
+            .skip(scroll_offset)
             .take(visible_rows.max(1))
             .map(|pick| {
                 let value = value_map.get(pick.player_name.as_str()).copied();
@@ -115,7 +124,7 @@ impl DraftLogPanel {
 
         if total > visible_rows {
             let mut scrollbar_state = ScrollbarState::new(total.saturating_sub(visible_rows))
-                .position(self.scroll.offset);
+                .position(scroll_offset);
             frame.render_stateful_widget(
                 Scrollbar::new(ScrollbarOrientation::VerticalRight),
                 area.inner(Margin {
@@ -390,7 +399,7 @@ mod tests {
     fn view_does_not_panic_empty() {
         let backend = ratatui::backend::TestBackend::new(80, 20);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        let mut panel = DraftLogPanel::new();
+        let panel = DraftLogPanel::new();
         let props = DraftLogProps {
             picks: &[],
             available_players: &[],
@@ -405,7 +414,7 @@ mod tests {
     fn view_does_not_panic_with_picks() {
         let backend = ratatui::backend::TestBackend::new(80, 20);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        let mut panel = DraftLogPanel::new();
+        let panel = DraftLogPanel::new();
         let picks = vec![
             make_pick(1, "Player 1", "SP", 30),
             make_pick(2, "Player 2", "C", 15),
@@ -424,7 +433,7 @@ mod tests {
     fn view_does_not_panic_when_focused() {
         let backend = ratatui::backend::TestBackend::new(80, 20);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        let mut panel = DraftLogPanel::new();
+        let panel = DraftLogPanel::new();
         let props = DraftLogProps {
             picks: &[],
             available_players: &[],
