@@ -8,6 +8,7 @@ pub mod action;
 pub mod input;
 pub mod layout;
 pub mod onboarding;
+pub mod scroll;
 pub mod settings;
 pub mod text_input;
 pub mod widgets;
