@@ -4,7 +4,6 @@ use ratatui::style::{Color, Style};
 
 pub mod available;
 pub mod budget;
-pub mod llm_analysis;
 pub mod nomination_banner;
 pub mod nomination_plan;
 pub mod position_filter_modal;

@@ -38,9 +38,11 @@ use crate::valuation::scarcity::ScarcityEntry;
 use crate::valuation::zscore::PlayerValuation;
 
 use draft::draft_log::DraftLogPanel;
+use draft::main_panel::analysis::{AnalysisPanel, AnalysisPanelMessage};
 use draft::sidebar::roster::RosterPanel;
 use draft::sidebar::scarcity::ScarcityPanel;
 use draft::teams::TeamsPanel;
+use llm_stream::LlmStreamMessage;
 use layout::build_layout;
 pub use onboarding::llm_setup::LlmSetupState;
 pub use onboarding::strategy_setup::StrategySetupState;
@@ -280,10 +282,8 @@ pub struct ViewState {
     pub budget: BudgetStatus,
     /// Current inflation rate.
     pub inflation: f64,
-    /// Accumulated LLM analysis text (streamed tokens).
-    pub analysis_text: String,
-    /// Status of the LLM analysis stream.
-    pub analysis_status: LlmStatus,
+    /// LLM analysis panel component (owns text, status, scroll).
+    pub analysis_panel: AnalysisPanel,
     /// Accumulated LLM nomination plan text (streamed tokens).
     pub plan_text: String,
     /// Status of the LLM plan stream.
@@ -361,8 +361,7 @@ impl Default for ViewState {
             positional_scarcity: Vec::new(),
             budget: BudgetStatus::default(),
             inflation: 1.0,
-            analysis_text: String::new(),
-            analysis_status: LlmStatus::Idle,
+            analysis_panel: AnalysisPanel::new(),
             plan_text: String::new(),
             plan_status: LlmStatus::Idle,
             connection_status: ConnectionStatus::Disconnected,
@@ -471,15 +470,13 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
         UiUpdate::NominationUpdate(nomination) => {
             state.current_nomination = Some(*nomination);
             // Clear previous analysis text and instant analysis when a new nomination arrives
-            state.analysis_text.clear();
-            state.analysis_status = LlmStatus::Idle;
+            state.analysis_panel.update(AnalysisPanelMessage::Stream(LlmStreamMessage::Clear));
             state.instant_analysis = None;
             // Clear focused panel to avoid a stale cyan border on the new nomination
             state.focused_panel = None;
             // Reset main panel scroll offsets so the new nomination context is visible from the top.
             // This ensures the nominated player highlight in the Available tab is not scrolled off screen.
             state.scroll_offset.insert("available".to_string(), 0);
-            state.scroll_offset.insert("analysis".to_string(), 0);
         }
         UiUpdate::BidUpdate(nomination) => {
             // Update nomination info (new bid) but preserve LLM streaming text
@@ -488,22 +485,23 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
         UiUpdate::NominationCleared => {
             state.current_nomination = None;
             state.instant_analysis = None;
-            state.analysis_text.clear();
-            state.analysis_status = LlmStatus::Idle;
+            state.analysis_panel.update(AnalysisPanelMessage::Stream(LlmStreamMessage::Clear));
             state.focused_panel = None;
         }
         UiUpdate::AnalysisToken(token) => {
-            state.analysis_text.push_str(&token);
-            state.analysis_status = LlmStatus::Streaming;
+            state.analysis_panel.update(AnalysisPanelMessage::Stream(
+                LlmStreamMessage::TokenReceived(token),
+            ));
         }
         UiUpdate::AnalysisComplete(final_text) => {
-            state.analysis_text = final_text;
-            state.analysis_status = LlmStatus::Complete;
+            state.analysis_panel.update(AnalysisPanelMessage::Stream(
+                LlmStreamMessage::Complete(final_text),
+            ));
         }
         UiUpdate::AnalysisError(msg) => {
-            state.analysis_text.clear();
-            state.analysis_text.push_str(&format!("[Error: {}]", msg));
-            state.analysis_status = LlmStatus::Error;
+            state.analysis_panel.update(AnalysisPanelMessage::Stream(
+                LlmStreamMessage::Error(msg),
+            ));
         }
         UiUpdate::PlanStarted => {
             state.plan_text.clear();
@@ -1008,7 +1006,7 @@ fn render_draft_frame(frame: &mut Frame, state: &ViewState) {
 
     // Main panel: tab-dependent content
     match state.active_tab {
-        TabId::Analysis => widgets::llm_analysis::render(frame, layout.main_panel, state, main_focused),
+        TabId::Analysis => state.analysis_panel.view(frame, layout.main_panel, main_focused),
         TabId::Available => widgets::available::render(frame, layout.main_panel, state, main_focused),
         TabId::DraftLog => {
             state.draft_log_panel.view(frame, layout.main_panel, &state.draft_log, &state.available_players, main_focused);
@@ -1260,9 +1258,9 @@ mod tests {
         assert_eq!(state.total_picks, 0);
         assert_eq!(state.active_tab, TabId::Analysis);
         assert_eq!(state.connection_status, ConnectionStatus::Disconnected);
-        assert_eq!(state.analysis_status, LlmStatus::Idle);
+        assert_eq!(state.analysis_panel.status(), LlmStatus::Idle);
         assert_eq!(state.plan_status, LlmStatus::Idle);
-        assert!(state.analysis_text.is_empty());
+        assert!(state.analysis_panel.text().is_empty());
         assert!(state.plan_text.is_empty());
         assert!(state.scroll_offset.is_empty());
         assert!(!state.filter_mode);
@@ -1385,8 +1383,10 @@ mod tests {
         use crate::protocol::{InstantAnalysis, InstantVerdict};
 
         let mut state = ViewState::default();
-        state.analysis_text = "old analysis".to_string();
-        state.analysis_status = LlmStatus::Complete;
+        // Simulate old analysis via component
+        state.analysis_panel.update(AnalysisPanelMessage::Stream(
+            LlmStreamMessage::Complete("old analysis".into()),
+        ));
         state.instant_analysis = Some(InstantAnalysis {
             player_name: "Old Player".to_string(),
             dollar_value: 30.0,
@@ -1411,14 +1411,13 @@ mod tests {
             "Mike Trout"
         );
         // Analysis text should be cleared for new nomination
-        assert!(state.analysis_text.is_empty());
-        assert_eq!(state.analysis_status, LlmStatus::Idle);
+        assert!(state.analysis_panel.text().is_empty());
+        assert_eq!(state.analysis_panel.status(), LlmStatus::Idle);
         // instant_analysis should also be cleared to avoid stale data from previous nomination
         assert!(state.instant_analysis.is_none());
-        // Scroll offsets for available and analysis panels should be reset so the nominated
+        // Scroll offsets for available panel should be reset so the nominated
         // player highlight is visible from the top of the list.
         assert_eq!(state.scroll_offset.get("available").copied(), Some(0));
-        assert_eq!(state.scroll_offset.get("analysis").copied(), Some(0));
     }
 
     #[test]
@@ -1434,8 +1433,9 @@ mod tests {
             time_remaining: Some(30),
             eligible_slots: vec![],
         });
-        state.analysis_text = "Trout is a strong target because...".to_string();
-        state.analysis_status = LlmStatus::Streaming;
+        state.analysis_panel.update(AnalysisPanelMessage::Stream(
+            LlmStreamMessage::TokenReceived("Trout is a strong target because...".into()),
+        ));
 
         // A bid update comes in (same player, higher bid)
         let updated_nom = NominationInfo {
@@ -1454,8 +1454,8 @@ mod tests {
         assert_eq!(nom.current_bid, 50);
         assert_eq!(nom.current_bidder, Some("Team Gamma".to_string()));
         // Analysis text and status should be preserved
-        assert_eq!(state.analysis_text, "Trout is a strong target because...");
-        assert_eq!(state.analysis_status, LlmStatus::Streaming);
+        assert_eq!(state.analysis_panel.text(), "Trout is a strong target because...");
+        assert_eq!(state.analysis_panel.status(), LlmStatus::Streaming);
     }
 
     #[test]
@@ -1470,14 +1470,16 @@ mod tests {
             time_remaining: None,
             eligible_slots: vec![],
         });
-        state.analysis_text = "some analysis".to_string();
+        state.analysis_panel.update(AnalysisPanelMessage::Stream(
+            LlmStreamMessage::TokenReceived("some analysis".into()),
+        ));
 
         apply_ui_update(&mut state, UiUpdate::NominationCleared);
 
         assert!(state.current_nomination.is_none());
         assert!(state.instant_analysis.is_none());
-        assert!(state.analysis_text.is_empty());
-        assert_eq!(state.analysis_status, LlmStatus::Idle);
+        assert!(state.analysis_panel.text().is_empty());
+        assert_eq!(state.analysis_panel.status(), LlmStatus::Idle);
     }
 
     #[test]
@@ -1491,22 +1493,23 @@ mod tests {
             &mut state,
             UiUpdate::AnalysisToken("World".to_string()),
         );
-        assert_eq!(state.analysis_text, "Hello World");
-        assert_eq!(state.analysis_status, LlmStatus::Streaming);
+        assert_eq!(state.analysis_panel.text(), "Hello World");
+        assert_eq!(state.analysis_panel.status(), LlmStatus::Streaming);
     }
 
     #[test]
     fn apply_ui_update_analysis_complete() {
         let mut state = ViewState::default();
-        state.analysis_status = LlmStatus::Streaming;
-        state.analysis_text = "partial token".to_string();
+        state.analysis_panel.update(AnalysisPanelMessage::Stream(
+            LlmStreamMessage::TokenReceived("partial token".into()),
+        ));
         apply_ui_update(
             &mut state,
             UiUpdate::AnalysisComplete("Full analysis text.".to_string()),
         );
-        assert_eq!(state.analysis_status, LlmStatus::Complete);
+        assert_eq!(state.analysis_panel.status(), LlmStatus::Complete);
         // AnalysisComplete carries the final text, which may include a truncation note
-        assert_eq!(state.analysis_text, "Full analysis text.");
+        assert_eq!(state.analysis_panel.text(), "Full analysis text.");
     }
 
     #[test]
