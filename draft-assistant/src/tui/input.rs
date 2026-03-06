@@ -9,6 +9,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crate::protocol::{AppMode, OnboardingAction, TabFeature, TabId, UserCommand};
 use crate::tui::draft::draft_log::DraftLogMessage;
 use crate::tui::draft::main_panel::analysis::AnalysisPanelMessage;
+use crate::tui::draft::main_panel::available::AvailablePanelMessage;
 use crate::tui::draft::sidebar::plan::PlanPanelMessage;
 use crate::tui::draft::sidebar::roster::RosterMessage;
 use crate::tui::draft::sidebar::scarcity::ScarcityPanelMessage;
@@ -85,7 +86,7 @@ fn is_text_editing_active(view_state: &ViewState) -> bool {
         || view_state.strategy_setup.editing_field.is_some()
         || view_state.strategy_setup.overview_editing);
 
-    view_state.filter_mode
+    view_state.available_panel.filter_mode()
         || view_state.llm_setup.api_key_editing
         || strategy_editing
         || view_state.position_filter_modal.open
@@ -1189,9 +1190,12 @@ fn handle_draft_key(
         return handle_confirm_quit(key_event, view_state);
     }
 
-    // Filter mode: capture printable characters and special keys
-    if view_state.filter_mode {
-        return handle_filter_mode(key_event, view_state);
+    // Filter mode: route keys through the available panel component
+    if view_state.available_panel.filter_mode() {
+        if let Some(msg) = view_state.available_panel.key_to_message(key_event) {
+            view_state.available_panel.update(msg);
+        }
+        return None;
     }
 
     // Position filter modal: intercept all keys when the modal is open
@@ -1258,7 +1262,7 @@ fn handle_draft_key(
         // Filter mode entry: only on tabs that support filtering
         KeyCode::Char('/') => {
             if view_state.active_tab.supports(TabFeature::Filter) {
-                view_state.filter_mode = true;
+                view_state.available_panel.update(AvailablePanelMessage::ToggleFilterMode);
             }
             None
         }
@@ -1266,8 +1270,7 @@ fn handle_draft_key(
         // Escape: clear focus, filter text, and position filter
         KeyCode::Esc => {
             view_state.focused_panel = None;
-            view_state.filter_text.clear();
-            view_state.position_filter = None;
+            view_state.available_panel.update(AvailablePanelMessage::ClearFilters);
             None
         }
 
@@ -1317,40 +1320,6 @@ fn handle_confirm_quit(
     }
 }
 
-/// Handle key events while in filter mode.
-///
-/// In filter mode:
-/// - Printable characters are inserted at the cursor position
-/// - Backspace removes the character before the cursor
-/// - Delete removes the character at the cursor
-/// - Left/Right move the cursor; Home/End jump to start/end
-/// - Insert toggles overwrite mode
-/// - Enter exits filter mode (keeping the filter text)
-/// - Esc exits filter mode and clears the filter text
-fn handle_filter_mode(
-    key_event: KeyEvent,
-    view_state: &mut ViewState,
-) -> Option<UserCommand> {
-    match key_event.code {
-        KeyCode::Esc => {
-            view_state.filter_mode = false;
-            view_state.filter_text.clear();
-            None
-        }
-        KeyCode::Enter => {
-            view_state.filter_mode = false;
-            // Keep the filter text on Enter
-            None
-        }
-        _ => {
-            if let Some(msg) = super::TextInput::key_to_message(&key_event) {
-                view_state.filter_text.update(msg);
-            }
-            None
-        }
-    }
-}
-
 /// Open the position filter modal, pre-selecting the row that matches the
 /// current active position filter so the user's context is preserved.
 fn open_position_filter_modal(view_state: &mut ViewState) {
@@ -1359,7 +1328,7 @@ fn open_position_filter_modal(view_state: &mut ViewState) {
     modal.search_text.clear();
 
     // Pre-select the option that matches the current position_filter
-    let current = view_state.position_filter;
+    let current = view_state.available_panel.position_filter();
     let idx = PositionFilterModal::OPTIONS
         .iter()
         .position(|opt| *opt == current)
@@ -1395,7 +1364,7 @@ fn handle_position_filter_modal(
             // Apply selected option
             if !options.is_empty() {
                 let idx = view_state.position_filter_modal.selected_index.min(option_count - 1);
-                view_state.position_filter = options[idx];
+                view_state.available_panel.update(AvailablePanelMessage::SetPositionFilter(options[idx]));
             }
             view_state.position_filter_modal.open = false;
             view_state.position_filter_modal.search_text.clear();
@@ -1530,6 +1499,17 @@ fn dispatch_scroll_up(view_state: &mut ViewState, lines: usize) {
             .update(PlanPanelMessage::Scroll(dir));
         return;
     }
+    if key == "available" {
+        let dir = if lines >= page_size() {
+            ScrollDirection::PageUp
+        } else {
+            ScrollDirection::Up
+        };
+        view_state
+            .available_panel
+            .update(AvailablePanelMessage::Scroll(dir));
+        return;
+    }
     let offset = view_state.scroll_offset.entry(key.to_string()).or_insert(0);
     *offset = offset.saturating_sub(lines);
 }
@@ -1601,6 +1581,17 @@ fn dispatch_scroll_down(view_state: &mut ViewState, lines: usize) {
         view_state
             .plan_panel
             .update(PlanPanelMessage::Scroll(dir));
+        return;
+    }
+    if key == "available" {
+        let dir = if lines >= page_size() {
+            ScrollDirection::PageDown
+        } else {
+            ScrollDirection::Down
+        };
+        view_state
+            .available_panel
+            .update(AvailablePanelMessage::Scroll(dir));
         return;
     }
     let offset = view_state.scroll_offset.entry(key.to_string()).or_insert(0);
@@ -1753,7 +1744,7 @@ mod tests {
         state.active_tab = TabId::Available;
         handle_key(key(KeyCode::Down), &mut state);
         handle_key(key(KeyCode::Down), &mut state);
-        assert_eq!(state.scroll_offset.get("available"), Some(&2));
+        assert_eq!(state.available_panel.scroll_offset(), 2);
         // Analysis panel should not have been scrolled
         assert_eq!(state.analysis_panel.scroll_offset(), 0);
         // Nomination plan should not have been scrolled
@@ -1937,7 +1928,7 @@ mod tests {
         handle_key(key(KeyCode::Tab), &mut state);
 
         assert_eq!(state.active_tab, TabId::Available, "Tab should not switch tabs");
-        assert!(!state.filter_mode, "Tab should not enter filter mode");
+        assert!(!state.available_panel.filter_mode(), "Tab should not enter filter mode");
     }
 
     #[test]
@@ -1990,7 +1981,7 @@ mod tests {
         state.active_tab = TabId::Available;
         let result = handle_key(key(KeyCode::Char('/')), &mut state);
         assert!(result.is_none());
-        assert!(state.filter_mode);
+        assert!(state.available_panel.filter_mode());
     }
 
     #[test]
@@ -2001,7 +1992,7 @@ mod tests {
             let result = handle_key(key(KeyCode::Char('/')), &mut state);
             assert!(result.is_none(), "/ on {:?} should return None", tab);
             assert!(
-                !state.filter_mode,
+                !state.available_panel.filter_mode(),
                 "/ on {:?} should not activate filter_mode",
                 tab
             );
@@ -2011,70 +2002,77 @@ mod tests {
     #[test]
     fn filter_mode_appends_chars() {
         let mut state = ViewState::default();
-        state.filter_mode = true;
+        state.available_panel.update(AvailablePanelMessage::ToggleFilterMode);
         handle_key(key(KeyCode::Char('t')), &mut state);
         handle_key(key(KeyCode::Char('r')), &mut state);
         handle_key(key(KeyCode::Char('o')), &mut state);
         handle_key(key(KeyCode::Char('u')), &mut state);
         handle_key(key(KeyCode::Char('t')), &mut state);
-        assert_eq!(state.filter_text.value(), "trout");
-        assert!(state.filter_mode);
+        assert_eq!(state.available_panel.filter_text().value(), "trout");
+        assert!(state.available_panel.filter_mode());
     }
 
     #[test]
     fn filter_mode_backspace_removes_char() {
         let mut state = ViewState::default();
-        state.filter_mode = true;
-        state.filter_text.set_value("test");
+        state.available_panel.update(AvailablePanelMessage::ToggleFilterMode);
+        // Type "test"
+        for ch in "test".chars() {
+            state.available_panel.update(AvailablePanelMessage::FilterKeyPress(key(KeyCode::Char(ch))));
+        }
         handle_key(key(KeyCode::Backspace), &mut state);
-        assert_eq!(state.filter_text.value(), "tes");
+        assert_eq!(state.available_panel.filter_text().value(), "tes");
     }
 
     #[test]
     fn filter_mode_backspace_on_empty_is_noop() {
         let mut state = ViewState::default();
-        state.filter_mode = true;
+        state.available_panel.update(AvailablePanelMessage::ToggleFilterMode);
         handle_key(key(KeyCode::Backspace), &mut state);
-        assert!(state.filter_text.is_empty());
+        assert!(state.available_panel.filter_text().is_empty());
     }
 
     #[test]
     fn filter_mode_enter_exits_keeps_text() {
         let mut state = ViewState::default();
-        state.filter_mode = true;
-        state.filter_text.set_value("trout");
+        state.available_panel.update(AvailablePanelMessage::ToggleFilterMode);
+        for ch in "trout".chars() {
+            state.available_panel.update(AvailablePanelMessage::FilterKeyPress(key(KeyCode::Char(ch))));
+        }
         let result = handle_key(key(KeyCode::Enter), &mut state);
         assert!(result.is_none());
-        assert!(!state.filter_mode);
-        assert_eq!(state.filter_text.value(), "trout");
+        assert!(!state.available_panel.filter_mode());
+        assert_eq!(state.available_panel.filter_text().value(), "trout");
     }
 
     #[test]
     fn filter_mode_esc_exits_clears_text() {
         let mut state = ViewState::default();
-        state.filter_mode = true;
-        state.filter_text.set_value("trout");
+        state.available_panel.update(AvailablePanelMessage::ToggleFilterMode);
+        for ch in "trout".chars() {
+            state.available_panel.update(AvailablePanelMessage::FilterKeyPress(key(KeyCode::Char(ch))));
+        }
         let result = handle_key(key(KeyCode::Esc), &mut state);
         assert!(result.is_none());
-        assert!(!state.filter_mode);
-        assert!(state.filter_text.is_empty());
+        assert!(!state.available_panel.filter_mode());
+        assert!(state.available_panel.filter_text().is_empty());
     }
 
     #[test]
     fn filter_mode_does_not_switch_tabs() {
         let mut state = ViewState::default();
-        state.filter_mode = true;
+        state.available_panel.update(AvailablePanelMessage::ToggleFilterMode);
         state.active_tab = TabId::Analysis;
         handle_key(key(KeyCode::Char('3')), &mut state);
         // Should add '3' to filter text, not switch tabs
-        assert_eq!(state.filter_text.value(), "3");
+        assert_eq!(state.available_panel.filter_text().value(), "3");
         assert_eq!(state.active_tab, TabId::Analysis);
     }
 
     #[test]
     fn filter_mode_ctrl_c_still_quits() {
         let mut state = ViewState::default();
-        state.filter_mode = true;
+        state.available_panel.update(AvailablePanelMessage::ToggleFilterMode);
         let result = handle_key(ctrl_key(KeyCode::Char('c')), &mut state);
         assert_eq!(result, Some(UserCommand::Quit));
     }
@@ -2108,7 +2106,7 @@ mod tests {
     fn modal_esc_closes_without_applying() {
         let mut state = ViewState::default();
         state.active_tab = TabId::Available;
-        state.position_filter = Some(Position::Catcher);
+        state.available_panel.update(AvailablePanelMessage::SetPositionFilter(Some(Position::Catcher)));
         state.position_filter_modal.open = true;
         state.position_filter_modal.selected_index = 2; // e.g. "1B"
         state.position_filter_modal.search_text.set_value("1");
@@ -2122,7 +2120,7 @@ mod tests {
         );
         // Position filter must NOT have changed
         assert_eq!(
-            state.position_filter,
+            state.available_panel.position_filter(),
             Some(Position::Catcher),
             "Esc should not change the position filter"
         );
@@ -2132,7 +2130,6 @@ mod tests {
     fn modal_enter_applies_selected_option() {
         let mut state = ViewState::default();
         state.active_tab = TabId::Available;
-        state.position_filter = None;
         state.position_filter_modal.open = true;
         // Options (unfiltered): ALL(0), C(1), 1B(2), ...
         state.position_filter_modal.selected_index = 1; // "C"
@@ -2141,7 +2138,7 @@ mod tests {
 
         assert!(!state.position_filter_modal.open, "Enter should close modal");
         assert_eq!(
-            state.position_filter,
+            state.available_panel.position_filter(),
             Some(Position::Catcher),
             "Enter should apply selected option"
         );
@@ -2151,7 +2148,7 @@ mod tests {
     fn modal_enter_applies_all_option() {
         let mut state = ViewState::default();
         state.active_tab = TabId::Available;
-        state.position_filter = Some(Position::Catcher);
+        state.available_panel.update(AvailablePanelMessage::SetPositionFilter(Some(Position::Catcher)));
         state.position_filter_modal.open = true;
         state.position_filter_modal.selected_index = 0; // "ALL"
 
@@ -2159,7 +2156,7 @@ mod tests {
 
         assert!(!state.position_filter_modal.open);
         assert!(
-            state.position_filter.is_none(),
+            state.available_panel.position_filter().is_none(),
             "Selecting ALL should clear position filter"
         );
     }
@@ -2240,14 +2237,14 @@ mod tests {
         handle_key(key(KeyCode::Enter), &mut state);
 
         assert!(!state.position_filter_modal.open);
-        assert_eq!(state.position_filter, Some(Position::StartingPitcher));
+        assert_eq!(state.available_panel.position_filter(), Some(Position::StartingPitcher));
     }
 
     #[test]
     fn modal_pre_selects_current_position_filter() {
         let mut state = ViewState::default();
         state.active_tab = TabId::Available;
-        state.position_filter = Some(Position::StartingPitcher);
+        state.available_panel.update(AvailablePanelMessage::SetPositionFilter(Some(Position::StartingPitcher)));
 
         handle_key(key(KeyCode::Char('p')), &mut state);
 
@@ -2404,11 +2401,13 @@ mod tests {
     #[test]
     fn q_in_filter_mode_appends_to_filter_text() {
         let mut state = ViewState::default();
-        state.filter_mode = true;
-        state.filter_text.set_value("test");
+        state.available_panel.update(AvailablePanelMessage::ToggleFilterMode);
+        for ch in "test".chars() {
+            state.available_panel.update(AvailablePanelMessage::FilterKeyPress(key(KeyCode::Char(ch))));
+        }
         let result = handle_key(key(KeyCode::Char('q')), &mut state);
         assert!(result.is_none(), "q in filter mode should not produce a command");
-        assert_eq!(state.filter_text.value(), "testq", "q should be appended to filter text");
+        assert_eq!(state.available_panel.filter_text().value(), "testq", "q should be appended to filter text");
         assert!(!state.confirm_quit, "q in filter mode should not set confirm_quit");
     }
 
@@ -2431,13 +2430,15 @@ mod tests {
     #[test]
     fn esc_clears_filter_text_position_and_focus() {
         let mut state = ViewState::default();
-        state.filter_text.set_value("test");
-        state.position_filter = Some(Position::Catcher);
+        for ch in "test".chars() {
+            state.available_panel.update(AvailablePanelMessage::FilterKeyPress(key(KeyCode::Char(ch))));
+        }
+        state.available_panel.update(AvailablePanelMessage::SetPositionFilter(Some(Position::Catcher)));
         state.focused_panel = Some(FocusPanel::Roster);
         let result = handle_key(key(KeyCode::Esc), &mut state);
         assert!(result.is_none());
-        assert!(state.filter_text.is_empty());
-        assert!(state.position_filter.is_none());
+        assert!(state.available_panel.filter_text().is_empty());
+        assert!(state.available_panel.position_filter().is_none());
         assert!(state.focused_panel.is_none());
     }
 
@@ -2493,7 +2494,7 @@ mod tests {
         // '/' enters filter mode, which transitions into text editing,
         // so the post-handler check should set suppress_next_bracket.
         handle_key(key(KeyCode::Char('/')), &mut state);
-        assert!(state.filter_mode);
+        assert!(state.available_panel.filter_mode());
         assert!(
             state.suppress_next_bracket,
             "Entering filter mode should set suppress_next_bracket"
@@ -2513,7 +2514,7 @@ mod tests {
         let result = handle_key(key(KeyCode::Char('[')), &mut state);
         assert!(result.is_none(), "Stray '[' should be suppressed");
         assert!(
-            state.filter_text.is_empty(),
+            state.available_panel.filter_text().is_empty(),
             "'[' should not be inserted into filter text"
         );
         assert!(
@@ -2538,7 +2539,7 @@ mod tests {
             "Flag should be consumed even when the key is not '['"
         );
         assert_eq!(
-            state.filter_text.value(),
+            state.available_panel.filter_text().value(),
             "a",
             "'a' should be inserted normally"
         );
@@ -2547,13 +2548,13 @@ mod tests {
     #[test]
     fn bracket_not_suppressed_when_flag_is_not_set() {
         let mut state = ViewState::default();
-        state.filter_mode = true;
+        state.available_panel.update(AvailablePanelMessage::ToggleFilterMode);
         assert!(!state.suppress_next_bracket);
 
         // '[' without the suppression flag should be inserted normally
         handle_key(key(KeyCode::Char('[')), &mut state);
         assert_eq!(
-            state.filter_text.value(),
+            state.available_panel.filter_text().value(),
             "[",
             "Normal '[' should be inserted when flag is not set"
         );
