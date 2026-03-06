@@ -204,66 +204,8 @@ pub struct TeamSummary {
 // ViewState
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// PositionFilterModal
-// ---------------------------------------------------------------------------
-
-/// State for the position filter modal overlay.
-///
-/// When `open` is true the modal is shown on the Available Players tab.
-/// The user can navigate with arrow keys, type to narrow the list, press
-/// Enter to apply the highlighted selection, or press Escape to cancel.
-#[derive(Debug, Clone, Default)]
-pub struct PositionFilterModal {
-    /// Whether the modal is currently visible.
-    pub open: bool,
-    /// Incremental search text typed by the user while the modal is open.
-    pub search_text: TextInput,
-    /// Index into the *filtered* list of options that is currently highlighted.
-    pub selected_index: usize,
-}
-
-impl PositionFilterModal {
-    /// The full ordered list of selectable options (None = "ALL").
-    ///
-    /// `None` represents "no filter" (show all positions).
-    pub const OPTIONS: &'static [Option<Position>] = &[
-        None,
-        Some(Position::Catcher),
-        Some(Position::FirstBase),
-        Some(Position::SecondBase),
-        Some(Position::ThirdBase),
-        Some(Position::ShortStop),
-        Some(Position::LeftField),
-        Some(Position::CenterField),
-        Some(Position::RightField),
-        Some(Position::Utility),
-        Some(Position::StartingPitcher),
-        Some(Position::ReliefPitcher),
-    ];
-
-    /// Return the display label for an option.
-    pub fn option_label(opt: Option<Position>) -> &'static str {
-        match opt {
-            None => "ALL",
-            Some(p) => p.display_str(),
-        }
-    }
-
-    /// Return the subset of options that match the current search text
-    /// (case-insensitive prefix or substring match).
-    pub fn filtered_options(&self) -> Vec<Option<Position>> {
-        let search = self.search_text.value().to_uppercase();
-        Self::OPTIONS
-            .iter()
-            .copied()
-            .filter(|opt| {
-                let label = Self::option_label(*opt);
-                label.contains(search.as_str())
-            })
-            .collect()
-    }
-}
+// PositionFilterModal re-export from its Elm Architecture component module.
+pub use draft::modal::position_filter::PositionFilterModal;
 
 /// TUI-local state that mirrors the application state for rendering.
 ///
@@ -1040,7 +982,7 @@ fn render_draft_frame(frame: &mut Frame, state: &ViewState) {
 
     // Position filter modal overlay
     if state.position_filter_modal.open {
-        widgets::position_filter_modal::render(frame, frame.area(), state);
+        state.position_filter_modal.view(frame, frame.area());
     }
 
     // Quit confirm dialog rendered last so it appears on top of everything
@@ -1284,8 +1226,6 @@ mod tests {
         assert!(state.my_roster.is_empty());
         assert!(state.focused_panel.is_none());
         assert!(!state.position_filter_modal.open);
-        assert!(state.position_filter_modal.search_text.is_empty());
-        assert_eq!(state.position_filter_modal.selected_index, 0);
     }
 
     #[test]
