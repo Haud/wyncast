@@ -7,16 +7,23 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::protocol::{ConnectionStatus, TabId};
-use crate::tui::ViewState;
 
 /// Render the status bar into the given area.
 ///
 /// Layout: [connection indicator] [pick counter] [tab bar]
-pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    connection_status: ConnectionStatus,
+    pick_number: usize,
+    total_picks: usize,
+    active_tab: TabId,
+    llm_configured: bool,
+) {
     let mut spans = Vec::new();
 
     // Connection indicator
-    let (dot, dot_color) = connection_indicator(state.connection_status);
+    let (dot, dot_color) = connection_indicator(connection_status);
     spans.push(Span::styled(
         format!(" {} ", dot),
         Style::default().fg(dot_color),
@@ -24,7 +31,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
 
     // Pick counter
     spans.push(Span::styled(
-        format!("Pick {}/{}", state.pick_number, state.total_picks),
+        format!("Pick {}/{}", pick_number, total_picks),
         Style::default().fg(Color::White),
     ));
 
@@ -32,11 +39,11 @@ pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
     spans.push(Span::styled(" | ", Style::default().fg(Color::Gray)));
 
     // Tab bar
-    let tabs = tab_spans(state.active_tab);
+    let tabs = tab_spans(active_tab);
     spans.extend(tabs);
 
     // "No LLM configured" hint when LLM is disabled
-    if !state.llm_configured {
+    if !llm_configured {
         spans.push(Span::styled(" | ", Style::default().fg(Color::Gray)));
         spans.push(Span::styled(
             "No LLM configured",
@@ -156,10 +163,18 @@ mod tests {
     fn render_does_not_panic_with_llm_unconfigured() {
         let backend = ratatui::backend::TestBackend::new(120, 1);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        let mut state = ViewState::default();
-        state.llm_configured = false;
         terminal
-            .draw(|frame| render(frame, frame.area(), &state))
+            .draw(|frame| {
+                render(
+                    frame,
+                    frame.area(),
+                    ConnectionStatus::Disconnected,
+                    0,
+                    0,
+                    TabId::Analysis,
+                    false,
+                )
+            })
             .unwrap();
     }
 
@@ -167,10 +182,18 @@ mod tests {
     fn render_does_not_panic_with_llm_configured() {
         let backend = ratatui::backend::TestBackend::new(120, 1);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        let mut state = ViewState::default();
-        state.llm_configured = true;
         terminal
-            .draw(|frame| render(frame, frame.area(), &state))
+            .draw(|frame| {
+                render(
+                    frame,
+                    frame.area(),
+                    ConnectionStatus::Disconnected,
+                    0,
+                    0,
+                    TabId::Analysis,
+                    true,
+                )
+            })
             .unwrap();
     }
 
@@ -178,9 +201,18 @@ mod tests {
     fn render_does_not_panic_with_defaults() {
         let backend = ratatui::backend::TestBackend::new(80, 1);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        let state = ViewState::default();
         terminal
-            .draw(|frame| render(frame, frame.area(), &state))
+            .draw(|frame| {
+                render(
+                    frame,
+                    frame.area(),
+                    ConnectionStatus::Disconnected,
+                    0,
+                    0,
+                    TabId::Analysis,
+                    false,
+                )
+            })
             .unwrap();
     }
 }

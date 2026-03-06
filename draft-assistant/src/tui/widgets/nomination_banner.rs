@@ -12,12 +12,16 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
 use crate::protocol::{InstantAnalysis, InstantVerdict, NominationInfo};
-use crate::tui::ViewState;
 
 /// Render the nomination banner into the given area.
-pub fn render(frame: &mut Frame, area: Rect, state: &ViewState) {
-    if let Some(ref nom) = state.current_nomination {
-        let lines = build_nomination_lines(nom, state.instant_analysis.as_ref());
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    nomination: Option<&NominationInfo>,
+    analysis: Option<&InstantAnalysis>,
+) {
+    if let Some(nom) = nomination {
+        let lines = build_nomination_lines(nom, analysis);
         let paragraph = Paragraph::new(lines).block(
             Block::default()
                 .borders(Borders::ALL)
@@ -218,9 +222,8 @@ mod tests {
     fn render_does_not_panic_with_defaults() {
         let backend = ratatui::backend::TestBackend::new(80, 6);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        let state = ViewState::default();
         terminal
-            .draw(|frame| render(frame, frame.area(), &state))
+            .draw(|frame| render(frame, frame.area(), None, None))
             .unwrap();
     }
 
@@ -228,8 +231,7 @@ mod tests {
     fn render_does_not_panic_with_nomination() {
         let backend = ratatui::backend::TestBackend::new(80, 6);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        let mut state = ViewState::default();
-        state.current_nomination = Some(NominationInfo {
+        let nom = NominationInfo {
             player_name: "Aaron Judge".to_string(),
             position: "OF".to_string(),
             nominated_by: "Team Beta".to_string(),
@@ -237,9 +239,9 @@ mod tests {
             current_bidder: None,
             time_remaining: None,
             eligible_slots: vec![],
-        });
+        };
         terminal
-            .draw(|frame| render(frame, frame.area(), &state))
+            .draw(|frame| render(frame, frame.area(), Some(&nom), None))
             .unwrap();
     }
 }
