@@ -59,7 +59,7 @@ fn source_files_exist() {
     let expected_files = [
         "src/main.rs",
         "src/lib.rs",
-        "src/app.rs",
+        "src/app/mod.rs",
         "src/config.rs",
         "src/ws_server.rs",
         "src/protocol.rs",

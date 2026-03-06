@@ -4,28 +4,32 @@
 // extension, LLM streaming events, and user commands from the TUI. Maintains
 // the complete application state and pushes UI updates to the TUI render loop.
 
-use std::sync::atomic::{AtomicI8, AtomicU64, Ordering};
+mod ws_handler;
+mod llm_handler;
+mod command_handler;
+mod onboarding_handler;
+
+use std::sync::atomic::{AtomicI8, AtomicU64};
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
 use tokio::time::Instant;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::db::Database;
 use crate::draft::state::{
-    compute_state_diff, ActiveNomination, DraftState, NominationPayload, PickPayload,
-    ReconcileResult, StateUpdatePayload, TeamBudgetPayload,
+    ActiveNomination, DraftState, NominationPayload, PickPayload,
+    StateUpdatePayload, TeamBudgetPayload,
 };
 use crate::llm::client::LlmClient;
 use crate::llm::prompt;
-use crate::onboarding::{OnboardingManager, OnboardingProgress, OnboardingStep, RealFileSystem};
+use crate::onboarding::{OnboardingManager, OnboardingProgress, RealFileSystem};
 use crate::protocol::{
-    AppMode, AppSnapshot, ConnectionStatus, ExtensionMessage, LlmEvent, LlmStatus, NominationInfo,
-    OnboardingAction, OnboardingUpdate, TabId, TeamSnapshot, UiUpdate, UserCommand,
+    AppMode, AppSnapshot, ConnectionStatus, LlmEvent, LlmStatus, NominationInfo,
+    TabId, TeamSnapshot, UiUpdate, UserCommand,
 };
-use crate::valuation;
 use crate::valuation::analysis::{compute_instant_analysis, CategoryNeeds, InstantAnalysis};
 use crate::valuation::auction::InflationTracker;
 use crate::valuation::projections::AllProjections;
@@ -714,7 +718,7 @@ pub async fn run(
                         if state.last_ws_message_time.is_some() {
                             state.last_ws_message_time = Some(Instant::now());
                         }
-                        handle_ws_message(&mut state, &json_str, &ui_tx).await;
+                        ws_handler::handle_ws_message(&mut state, &json_str, &ui_tx).await;
                     }
                     None => {
                         info!("WebSocket channel closed, shutting down");
@@ -727,7 +731,7 @@ pub async fn run(
             llm_event = llm_rx.recv(), if llm_open => {
                 match llm_event {
                     Some(event) => {
-                        handle_llm_event(&mut state, event, &ui_tx).await;
+                        llm_handler::handle_llm_event(&mut state, event, &ui_tx).await;
                     }
                     None => {
                         // LLM channel closed - stop polling to avoid busy-loop
@@ -745,7 +749,7 @@ pub async fn run(
                         break;
                     }
                     Some(cmd) => {
-                        handle_user_command(&mut state, cmd, &ui_tx).await;
+                        command_handler::handle_user_command(&mut state, cmd, &ui_tx).await;
                     }
                     None => {
                         info!("Command channel closed, shutting down");
@@ -781,1478 +785,13 @@ pub async fn run(
     Ok(())
 }
 
-/// Handle an incoming WebSocket message (JSON from the extension).
-async fn handle_ws_message(
-    state: &mut AppState,
-    json_str: &str,
-    ui_tx: &mpsc::Sender<UiUpdate>,
-) {
-    let msg: ExtensionMessage = match serde_json::from_str(json_str) {
-        Ok(m) => m,
-        Err(e) => {
-            warn!("Failed to parse extension message: {}", e);
-            return;
-        }
-    };
 
-    match msg {
-        ExtensionMessage::ExtensionConnected { payload } => {
-            info!(
-                "Extension identified: {} v{}",
-                payload.platform, payload.extension_version
-            );
-        }
-        ExtensionMessage::StateUpdate { timestamp: _, payload } => {
-            handle_state_update(state, payload, ui_tx).await;
-        }
-        ExtensionMessage::FullStateSync { timestamp: _, payload } => {
-            handle_full_state_sync(state, payload, ui_tx).await;
-        }
-        ExtensionMessage::ExtensionHeartbeat { .. } => {
-            // Heartbeats are logged at trace level, no action needed
-        }
-    }
-}
 
-/// Handle a full state sync from the extension (on connect or reconnect).
-///
-/// Resets the in-memory draft state (picks, rosters, budgets) and rebuilds it
-/// entirely from the snapshot payload. After the reset, delegates to
-/// `handle_state_update` with `previous_extension_state` cleared so that
-/// `compute_state_diff` treats every pick in the snapshot as new (applied
-/// against an empty baseline). This prevents corrupted state that would
-/// result from applying incremental diffs against a blank slate when resuming
-/// a mid-draft session.
-async fn handle_full_state_sync(
-    state: &mut AppState,
-    ext_payload: crate::protocol::StateUpdatePayload,
-    ui_tx: &mpsc::Sender<UiUpdate>,
-) {
-    info!(
-        "Received FULL_STATE_SYNC with {} picks — resetting draft state",
-        ext_payload.picks.len()
-    );
 
-    // Reset in-memory draft state so the snapshot is applied from scratch.
-    // Preserve salary_cap and roster_config (stored inside DraftState).
-    state.draft_state = DraftState::new(
-        state.config.league.salary_cap,
-        &state.config.league.roster,
-    );
 
-    // Clear the previous extension state so that compute_state_diff in
-    // handle_state_update treats all picks in the snapshot as new.
-    state.previous_extension_state = None;
 
-    // Reset valuation pool and derived state so they're rebuilt cleanly
-    // after all snapshot picks are applied.
-    state.available_players =
-        valuation::compute_initial(&state.all_projections, &state.config)
-            .unwrap_or_default();
-    state.scarcity = compute_scarcity(&state.available_players, &state.config.league);
-    state.inflation = InflationTracker::new();
-    state.category_needs = CategoryNeeds::default();
 
-    // Clear any in-flight LLM task — its context is stale.
-    state.cancel_llm_task();
-    state.llm_mode = None;
-    state.nomination_analysis_text.clear();
-    state.nomination_analysis_status = LlmStatus::Idle;
-    state.nomination_plan_text.clear();
-    state.nomination_plan_status = LlmStatus::Idle;
 
-    // Now process the snapshot as a regular state update.  Because
-    // previous_extension_state is None, compute_state_diff will emit all
-    // picks as new, rebuilding the draft log, rosters, and budgets cleanly.
-    handle_state_update(state, ext_payload, ui_tx).await;
-}
-
-/// Handle a state update from the extension.
-///
-/// Performs differential state detection, processes new picks,
-/// and handles nomination changes.
-///
-/// On each STATE_UPDATE, checks whether the extension's `draftId` matches
-/// the stored ESPN draft identifier. If they differ, a new draft session is
-/// started with a fresh internal draft_id and all in-memory state is reset.
-/// This is resilient across disconnects because it relies on a stable
-/// identifier derived from the ESPN page URL rather than comparing pick counts.
-async fn handle_state_update(
-    state: &mut AppState,
-    ext_payload: crate::protocol::StateUpdatePayload,
-    ui_tx: &mpsc::Sender<UiUpdate>,
-) {
-    // --- New draft detection via ESPN draft identifier ---
-    // The extension derives a stable draft identifier from the ESPN page URL
-    // (leagueId + year). When this ID differs from what we have stored, a new
-    // draft has started and we reset all in-memory state.
-    if let Some(ref ext_draft_id) = ext_payload.draft_id {
-        match &state.espn_draft_id {
-            Some(stored_espn_id) if stored_espn_id != ext_draft_id => {
-                // ESPN draft ID changed -> new draft
-                let new_draft_id = Database::generate_draft_id();
-                info!(
-                    "New draft detected: ESPN draft ID changed from '{}' to '{}'. \
-                     Starting new draft session: {}",
-                    stored_espn_id, ext_draft_id, new_draft_id
-                );
-                // Persist to DB first -- only reset in-memory state if the
-                // write succeeds so we never diverge from the database.
-                match state.db.set_both_draft_ids(&new_draft_id, ext_draft_id) {
-                    Ok(()) => {}
-                    Err(e) => {
-                        warn!(
-                            "Failed to persist draft IDs, skipping draft reset: {}",
-                            e
-                        );
-                        // Skip the entire reset; keep current in-memory state
-                        // consistent with what the database still holds.
-                        return;
-                    }
-                }
-                state.draft_id = new_draft_id.clone();
-                state.espn_draft_id = Some(ext_draft_id.clone());
-                // Reset in-memory draft state for the new draft
-                state.draft_state = DraftState::new(
-                    state.config.league.salary_cap,
-                    &state.config.league.roster,
-                );
-                state.available_players =
-                    valuation::compute_initial(&state.all_projections, &state.config)
-                        .unwrap_or_default();
-                state.scarcity =
-                    compute_scarcity(&state.available_players, &state.config.league);
-                state.inflation = InflationTracker::new();
-                state.previous_extension_state = None;
-                // Clear LLM state so stale analysis from the previous draft
-                // doesn't bleed into the new session.
-                if let Some(handle) = state.current_llm_task.take() {
-                    handle.abort();
-                }
-                state.llm_mode = None;
-                state.nomination_analysis_text.clear();
-                state.nomination_analysis_status = LlmStatus::Idle;
-                state.nomination_plan_text.clear();
-                state.nomination_plan_status = LlmStatus::Idle;
-                state.category_needs = CategoryNeeds::default();
-            }
-            None => {
-                // First time receiving an ESPN draft ID -- store it.
-                info!("ESPN draft ID received: {}", ext_draft_id);
-                state.espn_draft_id = Some(ext_draft_id.clone());
-                if let Err(e) = state.db.set_espn_draft_id(ext_draft_id) {
-                    warn!("Failed to persist ESPN draft_id: {}", e);
-                }
-            }
-            _ => {
-                // Same ESPN draft ID, no action needed.
-            }
-        }
-    }
-
-    let internal_payload = AppState::convert_extension_state(&ext_payload);
-
-    // Compute diff against previous state
-    let diff = compute_state_diff(&state.previous_extension_state, &internal_payload);
-
-    // Process new picks first (updates local budget tracking)
-    let had_new_picks = !diff.new_picks.is_empty();
-    if had_new_picks {
-        info!("Processing {} new picks", diff.new_picks.len());
-        state.process_new_picks(diff.new_picks);
-    }
-
-    // Update pick count / total picks from ESPN clock label if available.
-    // Done after process_new_picks so ESPN's authoritative count takes precedence.
-    if let Some(pc) = internal_payload.pick_count {
-        state.draft_state.pick_count = pc as usize;
-    }
-    if let Some(tp) = internal_payload.total_picks {
-        state.draft_state.total_picks = tp as usize;
-    }
-
-    // Reconcile team budgets from ESPN-scraped data.
-    // On the first call this auto-registers all teams from ESPN and
-    // replays any crash-recovery picks. Returns a ReconcileResult
-    // indicating whether teams were registered and/or budgets changed.
-    let reconcile = if !internal_payload.teams.is_empty() {
-        state
-            .draft_state
-            .reconcile_budgets(&internal_payload.teams)
-    } else {
-        ReconcileResult {
-            teams_registered: false,
-            budgets_changed: false,
-        }
-    };
-    let teams_just_registered = reconcile.teams_registered;
-
-    // Set the user's team from the extension's myTeamId (a team name).
-    // This must happen after reconcile_budgets so teams are registered.
-    if let Some(ref my_team_name) = ext_payload.my_team_id {
-        if !my_team_name.is_empty() && !state.draft_state.teams.is_empty() {
-            state.draft_state.set_my_team_by_name(my_team_name);
-        }
-    }
-
-    // Send a state snapshot to the TUI so all recalculated data
-    // (available players, scarcity, budget, inflation, draft log,
-    // roster, team summaries) is reflected in the UI.
-    // Only send when something actually changed — not on every ESPN poll.
-    let has_changes = had_new_picks
-        || internal_payload.pick_count.is_some()
-        || teams_just_registered
-        || reconcile.budgets_changed;
-    if has_changes {
-        let snapshot = state.build_snapshot();
-        let _ = ui_tx
-            .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
-            .await;
-    }
-
-    // Handle nomination changes
-    if diff.nomination_changed {
-        if diff.nomination_cleared {
-            info!("Nomination cleared");
-            let planning_started = state.handle_nomination_cleared();
-            let _ = ui_tx.send(UiUpdate::NominationCleared).await;
-            if planning_started {
-                let _ = ui_tx.send(UiUpdate::PlanStarted).await;
-            }
-        } else if let Some(ref nomination) = diff.new_nomination {
-            info!(
-                "New nomination: {} (bid: ${})",
-                nomination.player_name, nomination.current_bid
-            );
-            let analysis = state.handle_nomination(nomination);
-
-            let nom_info = NominationInfo {
-                player_name: nomination.player_name.clone(),
-                position: nomination.position.clone(),
-                nominated_by: nomination.nominated_by.clone(),
-                current_bid: nomination.current_bid,
-                current_bidder: nomination.current_bidder.clone(),
-                time_remaining: nomination.time_remaining,
-                eligible_slots: nomination.eligible_slots.clone(),
-            };
-            let _ = ui_tx
-                .send(UiUpdate::NominationUpdate(Box::new(nom_info)))
-                .await;
-
-            // If we have an analysis, we could send it too (future: embedded in snapshot)
-            if let Some(_analysis) = analysis {
-                info!("Instant analysis computed for nomination");
-            }
-        }
-    } else if diff.bid_updated {
-        // Same player, bid updated - update the nomination info without clearing LLM text
-        if let Some(ref nomination) = diff.new_nomination {
-            state.draft_state.current_nomination = Some(nomination.clone());
-
-            let nom_info = NominationInfo {
-                player_name: nomination.player_name.clone(),
-                position: nomination.position.clone(),
-                nominated_by: nomination.nominated_by.clone(),
-                current_bid: nomination.current_bid,
-                current_bidder: nomination.current_bidder.clone(),
-                time_remaining: nomination.time_remaining,
-                eligible_slots: nomination.eligible_slots.clone(),
-            };
-            let _ = ui_tx
-                .send(UiUpdate::BidUpdate(Box::new(nom_info)))
-                .await;
-        }
-    }
-
-    // If teams were just registered this update cycle, check if a nomination
-    // exists but was skipped because my_team() returned None (teams weren't
-    // ready yet). This handles two race conditions:
-    //
-    // 1. The first STATE_UPDATE contains both team data AND a nomination.
-    //    The diff-based nomination handling ran handle_nomination() which
-    //    succeeded because reconcile_budgets() already ran earlier in this
-    //    function. No retry needed (llm_mode will be Some).
-    //
-    // 2. An earlier STATE_UPDATE had a nomination but no teams. The
-    //    handle_nomination() call returned early (my_team() was None),
-    //    leaving current_nomination unset and llm_mode as None. A later
-    //    update now registers teams, but the diff sees the same nomination
-    //    (no change) so nomination handling is skipped. We detect this by
-    //    checking the payload's current_nomination directly.
-    if teams_just_registered && state.llm_mode.is_none() {
-        if let Some(ref nom_payload) = internal_payload.current_nomination {
-            let nomination = ActiveNomination {
-                player_name: nom_payload.player_name.clone(),
-                player_id: nom_payload.player_id.clone(),
-                position: nom_payload.position.clone(),
-                nominated_by: nom_payload.nominated_by.clone(),
-                current_bid: nom_payload.current_bid,
-                current_bidder: nom_payload.current_bidder.clone(),
-                time_remaining: nom_payload.time_remaining,
-                eligible_slots: nom_payload.eligible_slots.clone(),
-            };
-            info!(
-                "Teams just registered, retrying analysis for pending nomination: {}",
-                nomination.player_name
-            );
-            let analysis = state.handle_nomination(&nomination);
-
-            let nom_info = NominationInfo {
-                player_name: nomination.player_name.clone(),
-                position: nomination.position.clone(),
-                nominated_by: nomination.nominated_by.clone(),
-                current_bid: nomination.current_bid,
-                current_bidder: nomination.current_bidder.clone(),
-                time_remaining: nomination.time_remaining,
-                eligible_slots: nomination.eligible_slots.clone(),
-            };
-            let _ = ui_tx
-                .send(UiUpdate::NominationUpdate(Box::new(nom_info)))
-                .await;
-
-            if let Some(_analysis) = analysis {
-                info!("Instant analysis computed for retried nomination");
-            }
-        }
-    }
-
-    // Store current state for next diff
-    state.previous_extension_state = Some(internal_payload);
-}
-
-/// Handle an LLM streaming event.
-///
-/// Routes tokens and completions to the appropriate text buffer
-/// based on the current LLM mode.
-///
-/// **Generation check**: Every event carries a generation counter set when
-/// the task was spawned. If the event's generation doesn't match
-/// `state.llm_generation`, it's a stale event from a cancelled task and
-/// is silently discarded. This prevents leftover tokens from a previous
-/// analysis bleeding into a newer one.
-///
-/// **Mode reset on completion/error**: After a `Complete` or `Error` event
-/// is processed, `llm_mode` is set back to `None`. This ensures that:
-/// 1. Any further stale events hit the `(None, _)` discard path.
-/// 2. The system is clearly in an idle state, ready for the next
-///    nomination to set a fresh mode.
-async fn handle_llm_event(
-    state: &mut AppState,
-    event: LlmEvent,
-    ui_tx: &mpsc::Sender<UiUpdate>,
-) {
-    // Extract the generation from the event.
-    let event_generation = match &event {
-        LlmEvent::Token { generation, .. } => *generation,
-        LlmEvent::Complete { generation, .. } => *generation,
-        LlmEvent::Error { generation, .. } => *generation,
-    };
-
-    // Discard events from stale (cancelled) tasks.
-    if event_generation != state.llm_generation {
-        debug!(
-            "Discarding stale LLM event (event gen: {}, current gen: {})",
-            event_generation, state.llm_generation
-        );
-        return;
-    }
-
-    match (&state.llm_mode, event) {
-        (Some(LlmMode::NominationAnalysis { .. }), LlmEvent::Token { text, .. }) => {
-            state.nomination_analysis_text.push_str(&text);
-            state.nomination_analysis_status = LlmStatus::Streaming;
-            let _ = ui_tx.send(UiUpdate::AnalysisToken(text)).await;
-        }
-        (Some(LlmMode::NominationAnalysis { .. }), LlmEvent::Complete { full_text, stop_reason, .. }) => {
-            let text = if stop_reason.as_deref() == Some("max_tokens") {
-                format!("{full_text}\n\n[Response truncated due to token limit]")
-            } else {
-                full_text
-            };
-            state.nomination_analysis_text = text.clone();
-            state.nomination_analysis_status = LlmStatus::Complete;
-            state.llm_mode = None;
-            let _ = ui_tx.send(UiUpdate::AnalysisComplete(text)).await;
-        }
-        (Some(LlmMode::NominationAnalysis { .. }), LlmEvent::Error { message, .. }) => {
-            warn!("LLM analysis error: {}", message);
-            state.nomination_analysis_status = LlmStatus::Error;
-            state.llm_mode = None;
-            let _ = ui_tx.send(UiUpdate::AnalysisError(message)).await;
-        }
-        (Some(LlmMode::NominationPlanning), LlmEvent::Token { text, .. }) => {
-            state.nomination_plan_text.push_str(&text);
-            state.nomination_plan_status = LlmStatus::Streaming;
-            let _ = ui_tx.send(UiUpdate::PlanToken(text)).await;
-        }
-        (Some(LlmMode::NominationPlanning), LlmEvent::Complete { full_text, stop_reason, .. }) => {
-            let text = if stop_reason.as_deref() == Some("max_tokens") {
-                format!("{full_text}\n\n[Response truncated due to token limit]")
-            } else {
-                full_text
-            };
-            state.nomination_plan_text = text.clone();
-            state.nomination_plan_status = LlmStatus::Complete;
-            state.llm_mode = None;
-            let _ = ui_tx.send(UiUpdate::PlanComplete(text)).await;
-        }
-        (Some(LlmMode::NominationPlanning), LlmEvent::Error { message, .. }) => {
-            warn!("LLM planning error: {}", message);
-            state.nomination_plan_status = LlmStatus::Error;
-            state.llm_mode = None;
-            let _ = ui_tx.send(UiUpdate::PlanError(message)).await;
-        }
-        (None, _) => {
-            // No active LLM mode - discard the event (likely a stale
-            // completion that arrived after mode was reset).
-            debug!("Received LLM event with no active mode, discarding");
-        }
-    }
-}
-
-/// Handle a user command from the TUI.
-async fn handle_user_command(
-    state: &mut AppState,
-    cmd: UserCommand,
-    ui_tx: &mpsc::Sender<UiUpdate>,
-) {
-    match cmd {
-        UserCommand::SwitchTab(tab) => {
-            state.active_tab = tab;
-            info!("Switched to tab: {:?}", tab);
-        }
-        UserCommand::RequestKeyframe => {
-            info!("Manual keyframe refresh requested");
-            if let Some(ref ws_tx) = state.ws_outbound_tx {
-                let request = serde_json::json!({
-                    "type": "REQUEST_KEYFRAME"
-                });
-                if let Err(e) = ws_tx.send(request.to_string()).await {
-                    warn!("Failed to send REQUEST_KEYFRAME: {}", e);
-                }
-            } else {
-                warn!("Cannot request keyframe: no outbound WebSocket channel");
-            }
-        }
-        UserCommand::ManualPick {
-            player_name,
-            team_idx,
-            price,
-        } => {
-            info!(
-                "Manual pick: {} -> team {} for ${}",
-                player_name, team_idx, price
-            );
-            if team_idx < state.draft_state.teams.len() {
-                let team = &state.draft_state.teams[team_idx];
-                let pick = crate::draft::pick::DraftPick {
-                    pick_number: 0, // overwritten by record_pick
-                    team_id: team.team_id.clone(),
-                    team_name: team.team_name.clone(),
-                    player_name,
-                    position: "UTIL".to_string(),
-                    price,
-                    espn_player_id: None,
-                    eligible_slots: vec![],
-            assigned_slot: None,
-                };
-                state.process_new_picks(vec![pick]);
-
-                // Send updated state to TUI
-                let snapshot = state.build_snapshot();
-                let _ = ui_tx
-                    .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
-                    .await;
-            }
-        }
-        UserCommand::Scroll { .. } => {
-            // Scroll is handled by the TUI directly, no app-level action needed
-        }
-        UserCommand::OnboardingAction(action) => {
-            let in_settings = matches!(state.app_mode, AppMode::Settings(_));
-            match &action {
-                OnboardingAction::SetApiKey(_) => info!("Onboarding action: SetApiKey(***)"),
-                _ => info!("Onboarding action: {:?}", action),
-            }
-            if in_settings {
-                handle_settings_action(state, action, ui_tx).await;
-            } else {
-                handle_onboarding_action(state, action, ui_tx).await;
-            }
-        }
-        UserCommand::OpenSettings => {
-            info!("Opening settings screen");
-            state.app_mode = AppMode::Settings(crate::protocol::SettingsSection::LlmConfig);
-            let _ = ui_tx
-                .send(UiUpdate::ModeChanged(AppMode::Settings(
-                    crate::protocol::SettingsSection::LlmConfig,
-                )))
-                .await;
-            // Send a ProgressSync so the TUI can show a masked placeholder
-            // for the saved API key (instead of showing a blank field).
-            let provider = state
-                .onboarding_progress
-                .llm_provider
-                .clone()
-                .unwrap_or(crate::llm::provider::LlmProvider::Anthropic);
-            let raw_key = get_api_key_for_provider(&provider, &state.config);
-            let mask = if raw_key.is_empty() {
-                None
-            } else {
-                let m = crate::tui::onboarding::llm_setup::mask_api_key(&raw_key);
-                if m.is_empty() { None } else { Some(m) }
-            };
-            let _ = ui_tx
-                .send(UiUpdate::OnboardingUpdate(
-                    OnboardingUpdate::ProgressSync {
-                        provider: state.onboarding_progress.llm_provider.clone(),
-                        model: state.onboarding_progress.llm_model.clone(),
-                        api_key_mask: mask,
-                    },
-                ))
-                .await;
-        }
-        UserCommand::ExitSettings => {
-            info!("Exiting settings, returning to draft mode");
-            state.app_mode = AppMode::Draft;
-            let _ = ui_tx.send(UiUpdate::ModeChanged(AppMode::Draft)).await;
-            let snapshot = state.build_snapshot();
-            let _ = ui_tx
-                .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
-                .await;
-        }
-        UserCommand::SaveAndExitSettings { llm, strategy } => {
-            info!("Saving settings and exiting to draft mode");
-            // Save LLM config if dirty
-            if let Some((provider, model_id, api_key)) = llm {
-                handle_settings_action(
-                    state,
-                    OnboardingAction::SaveLlmConfig { provider, model_id, api_key },
-                    ui_tx,
-                )
-                .await;
-            }
-            // Save strategy config if dirty
-            if let Some((hitting_budget_pct, category_weights, strategy_overview)) = strategy {
-                handle_settings_action(
-                    state,
-                    OnboardingAction::SaveStrategyConfig {
-                        hitting_budget_pct,
-                        category_weights,
-                        strategy_overview,
-                    },
-                    ui_tx,
-                )
-                .await;
-            }
-            // Transition to draft mode
-            state.app_mode = AppMode::Draft;
-            let _ = ui_tx.send(UiUpdate::ModeChanged(AppMode::Draft)).await;
-            let snapshot = state.build_snapshot();
-            let _ = ui_tx
-                .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
-                .await;
-        }
-        UserCommand::SwitchSettingsTab(section) => {
-            state.app_mode = AppMode::Settings(section);
-            let _ = ui_tx
-                .send(UiUpdate::ModeChanged(AppMode::Settings(section)))
-                .await;
-            // When switching to the StrategyConfig tab, send current saved
-            // config so the TUI initializes the strategy wizard at the
-            // Review step with the correct values (including strategy_overview).
-            if section == crate::protocol::SettingsSection::StrategyConfig {
-                let pct = (state.config.strategy.hitting_budget_fraction * 100.0).round() as u8;
-                let weights = crate::tui::onboarding::strategy_setup::CategoryWeights::from_config_weights(
-                    &state.config.strategy.weights,
-                );
-                let overview = state.config.strategy.strategy_overview.clone().unwrap_or_default();
-                let _ = ui_tx
-                    .send(UiUpdate::OnboardingUpdate(
-                        crate::protocol::OnboardingUpdate::StrategyLlmComplete {
-                            hitting_budget_pct: pct,
-                            category_weights: weights,
-                            strategy_overview: overview,
-                        },
-                    ))
-                    .await;
-            }
-        }
-        UserCommand::Quit => {
-            // Handled in the main loop
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Onboarding action handling
-// ---------------------------------------------------------------------------
-
-/// Handle a single onboarding action from the TUI.
-///
-/// Updates `OnboardingProgress` in memory and persists it to disk on
-/// step transitions (GoNext/GoBack). Dispatches `UiUpdate` messages
-/// back to the TUI so it can reflect changes.
-async fn handle_onboarding_action(
-    state: &mut AppState,
-    action: OnboardingAction,
-    ui_tx: &mpsc::Sender<UiUpdate>,
-) {
-    use crate::llm::provider::LlmProvider;
-
-    match action {
-        OnboardingAction::SetProvider(provider) => {
-            state.onboarding_progress.llm_provider = Some(provider);
-            // Model is reset by the TUI; we just clear it here too for consistency
-            state.onboarding_progress.llm_model = None;
-        }
-        OnboardingAction::SetModel(model_id) => {
-            state.onboarding_progress.llm_model = Some(model_id);
-        }
-        OnboardingAction::SetApiKey(key) => {
-            // Persist the API key to credentials.toml for the current provider
-            if let Some(ref provider) = state.onboarding_progress.llm_provider {
-                save_api_key_for_provider(provider, &key, &mut state.config, &state.onboarding_manager);
-            } else {
-                // Default to Anthropic if no provider selected yet
-                save_api_key_for_provider(&LlmProvider::Anthropic, &key, &mut state.config, &state.onboarding_manager);
-            }
-            // Auto-trigger connection test so the user doesn't need a second Enter.
-            // Box::pin is used for the recursive async call.
-            Box::pin(handle_onboarding_action(state, OnboardingAction::TestConnection, ui_tx)).await;
-        }
-        OnboardingAction::TestConnection => {
-            // Spawn an async task to test the API connection
-            let provider = state
-                .onboarding_progress
-                .llm_provider
-                .clone()
-                .unwrap_or(LlmProvider::Anthropic);
-            let model_id = state
-                .onboarding_progress
-                .llm_model
-                .clone()
-                .unwrap_or_else(|| "claude-sonnet-4-6".to_string());
-
-            let api_key = get_api_key_for_provider(&provider, &state.config);
-
-            if api_key.is_empty() {
-                state.connection_test_result.store(CONNECTION_TEST_FAILED, Ordering::Relaxed);
-                let _ = ui_tx
-                    .send(UiUpdate::OnboardingUpdate(
-                        OnboardingUpdate::ConnectionTestResult {
-                            success: false,
-                            message: "No API key entered".to_string(),
-                        },
-                    ))
-                    .await;
-                return;
-            }
-
-            // Increment generation so any in-flight test from a previous
-            // trigger is discarded when it completes.
-            let generation = state.connection_test_generation.fetch_add(1, Ordering::Relaxed) + 1;
-
-            let tx = ui_tx.clone();
-            let tracker = Arc::clone(&state.connection_test_result);
-            let gen_tracker = Arc::clone(&state.connection_test_generation);
-            tokio::spawn(async move {
-                let result = test_api_connection(&provider, &api_key, &model_id).await;
-                let success = result.is_ok();
-                // Only write if this generation is still current (no newer
-                // test or reset has occurred since we started).
-                if gen_tracker.load(Ordering::Relaxed) == generation {
-                    tracker.store(
-                        if success { CONNECTION_TEST_PASSED } else { CONNECTION_TEST_FAILED },
-                        Ordering::Relaxed,
-                    );
-                }
-                let _ = tx
-                    .send(UiUpdate::OnboardingUpdate(
-                        OnboardingUpdate::ConnectionTestResult {
-                            success,
-                            message: match &result {
-                                Ok(msg) => msg.clone(),
-                                Err(msg) => msg.clone(),
-                            },
-                        },
-                    ))
-                    .await;
-            });
-        }
-        OnboardingAction::GoNext => {
-            match state.app_mode {
-                AppMode::Onboarding(OnboardingStep::LlmSetup) => {
-                    // Block advance if the last connection test explicitly failed.
-                    let test_val = state.connection_test_result.load(Ordering::Relaxed);
-                    if test_val == CONNECTION_TEST_FAILED {
-                        // Test was run and failed — send error back to TUI
-                        let _ = ui_tx
-                            .send(UiUpdate::OnboardingUpdate(
-                                OnboardingUpdate::ConnectionTestResult {
-                                    success: false,
-                                    message: "Connection test failed — fix the API key or skip to proceed".to_string(),
-                                },
-                            ))
-                            .await;
-                        return;
-                    }
-
-                    // Save the LLM provider/model to strategy config and persist
-                    if let Some(ref provider) = state.onboarding_progress.llm_provider {
-                        state.config.strategy.llm.provider = provider.clone();
-                    }
-                    if let Some(ref model) = state.onboarding_progress.llm_model {
-                        state.config.strategy.llm.model = model.clone();
-                    }
-
-                    // Reload LLM client so strategy step can use it
-                    state.reload_llm_client();
-
-                    // Advance to next step
-                    state.onboarding_progress.current_step = OnboardingStep::StrategySetup;
-                    if let Err(e) = state
-                        .onboarding_manager
-                        .save_progress(&state.onboarding_progress)
-                    {
-                        warn!("Failed to save onboarding progress: {}", e);
-                    }
-
-                    state.app_mode =
-                        AppMode::Onboarding(OnboardingStep::StrategySetup);
-                    let _ = ui_tx
-                        .send(UiUpdate::ModeChanged(AppMode::Onboarding(
-                            OnboardingStep::StrategySetup,
-                        )))
-                        .await;
-                }
-                AppMode::Onboarding(OnboardingStep::StrategySetup) => {
-                    // Mark onboarding as complete
-                    state.onboarding_progress.current_step = OnboardingStep::Complete;
-                    state.onboarding_progress.strategy_configured = true;
-                    if let Err(e) = state
-                        .onboarding_manager
-                        .save_progress(&state.onboarding_progress)
-                    {
-                        warn!("Failed to save onboarding progress: {}", e);
-                    }
-
-                    // Rebuild LLM client with new config
-                    state.llm_client = Arc::new(LlmClient::from_config(&state.config));
-
-                    state.app_mode = AppMode::Draft;
-                    let _ = ui_tx.send(UiUpdate::ModeChanged(AppMode::Draft)).await;
-                    let snapshot = state.build_snapshot();
-                    let _ = ui_tx
-                        .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
-                        .await;
-                }
-                AppMode::Onboarding(OnboardingStep::Complete) => {
-                    // Already complete, go to draft
-                    state.app_mode = AppMode::Draft;
-                    let _ = ui_tx.send(UiUpdate::ModeChanged(AppMode::Draft)).await;
-                    let snapshot = state.build_snapshot();
-                    let _ = ui_tx
-                        .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
-                        .await;
-                }
-                _ => {
-                    // Not in an onboarding mode, ignore
-                }
-            }
-        }
-        OnboardingAction::GoBack => {
-            match state.app_mode {
-                AppMode::Onboarding(OnboardingStep::LlmSetup) => {
-                    // Already at first step, no-op
-                }
-                AppMode::Onboarding(OnboardingStep::StrategySetup) => {
-                    state.onboarding_progress.current_step = OnboardingStep::LlmSetup;
-                    if let Err(e) = state
-                        .onboarding_manager
-                        .save_progress(&state.onboarding_progress)
-                    {
-                        warn!("Failed to save onboarding progress: {}", e);
-                    }
-
-                    state.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
-                    let _ = ui_tx
-                        .send(UiUpdate::OnboardingUpdate(
-                            OnboardingUpdate::ProgressSync {
-                                provider: state.onboarding_progress.llm_provider.clone(),
-                                model: state.onboarding_progress.llm_model.clone(),
-                                api_key_mask: None,
-                            },
-                        ))
-                        .await;
-                    let _ = ui_tx
-                        .send(UiUpdate::ModeChanged(AppMode::Onboarding(
-                            OnboardingStep::LlmSetup,
-                        )))
-                        .await;
-                }
-                AppMode::Onboarding(OnboardingStep::Complete) => {
-                    // Go back to strategy setup
-                    state.onboarding_progress.current_step = OnboardingStep::StrategySetup;
-                    if let Err(e) = state
-                        .onboarding_manager
-                        .save_progress(&state.onboarding_progress)
-                    {
-                        warn!("Failed to save onboarding progress: {}", e);
-                    }
-                    state.app_mode =
-                        AppMode::Onboarding(OnboardingStep::StrategySetup);
-                    let _ = ui_tx
-                        .send(UiUpdate::ModeChanged(AppMode::Onboarding(
-                            OnboardingStep::StrategySetup,
-                        )))
-                        .await;
-                }
-                _ => {
-                    // Not in an onboarding mode, ignore
-                }
-            }
-        }
-        OnboardingAction::Skip => {
-            // Save partial progress but keep current_step at the skipped step
-            // so re-running the app will resume from this step.
-            if let Err(e) = state
-                .onboarding_manager
-                .save_progress(&state.onboarding_progress)
-            {
-                warn!("Failed to save onboarding progress on skip: {}", e);
-            }
-
-            match state.app_mode {
-                AppMode::Onboarding(OnboardingStep::LlmSetup) => {
-                    // Skip LlmSetup -> show StrategySetup for this session
-                    // but don't advance current_step (stays at LlmSetup)
-                    state.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
-                    let _ = ui_tx
-                        .send(UiUpdate::ModeChanged(AppMode::Onboarding(
-                            OnboardingStep::StrategySetup,
-                        )))
-                        .await;
-                }
-                AppMode::Onboarding(OnboardingStep::StrategySetup) => {
-                    // Skip StrategySetup -> transition to Draft for this session
-                    // but don't advance current_step (stays at StrategySetup)
-                    state.llm_client = Arc::new(LlmClient::from_config(&state.config));
-                    state.app_mode = AppMode::Draft;
-                    let _ = ui_tx.send(UiUpdate::ModeChanged(AppMode::Draft)).await;
-                    let snapshot = state.build_snapshot();
-                    let _ = ui_tx
-                        .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
-                        .await;
-                }
-                AppMode::Onboarding(OnboardingStep::Complete) => {
-                    // Already complete, go to draft
-                    state.app_mode = AppMode::Draft;
-                    let _ = ui_tx.send(UiUpdate::ModeChanged(AppMode::Draft)).await;
-                    let snapshot = state.build_snapshot();
-                    let _ = ui_tx
-                        .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
-                        .await;
-                }
-                _ => {
-                    // Not in an onboarding mode, ignore
-                }
-            }
-        }
-        OnboardingAction::SaveStrategyConfig { hitting_budget_pct, category_weights, strategy_overview } => {
-            // Update in-memory config
-            state.config.strategy.hitting_budget_fraction = hitting_budget_pct as f64 / 100.0;
-            state.config.strategy.weights = category_weights.to_config_weights();
-            state.config.strategy.strategy_overview = strategy_overview.clone();
-
-            // Persist to strategy.toml (including strategy overview)
-            if let Err(e) = state.onboarding_manager.save_strategy_full(
-                hitting_budget_pct,
-                &category_weights,
-                None,
-                None,
-                strategy_overview.as_deref(),
-            ) {
-                warn!("Failed to save strategy.toml: {}", e);
-            } else {
-                info!("Saved strategy config to strategy.toml (budget={}%, weights updated)", hitting_budget_pct);
-            }
-
-            // Mark strategy as configured and advance to Complete
-            state.onboarding_progress.strategy_configured = true;
-            state.onboarding_progress.current_step = OnboardingStep::Complete;
-            if let Err(e) = state
-                .onboarding_manager
-                .save_progress(&state.onboarding_progress)
-            {
-                warn!("Failed to save onboarding progress: {}", e);
-            }
-
-            // Rebuild LLM client with new config
-            state.llm_client = Arc::new(LlmClient::from_config(&state.config));
-
-            // Transition to Draft mode
-            state.app_mode = AppMode::Draft;
-            let _ = ui_tx.send(UiUpdate::ModeChanged(AppMode::Draft)).await;
-            let snapshot = state.build_snapshot();
-            let _ = ui_tx
-                .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
-                .await;
-        }
-        OnboardingAction::ConfigureStrategyWithLlm(description) => {
-            // Check if LLM is available
-            let llm_client = state.llm_client.clone();
-            match &*llm_client {
-                LlmClient::Disabled => {
-                    let _ = ui_tx
-                        .send(UiUpdate::OnboardingUpdate(
-                            OnboardingUpdate::StrategyLlmError(
-                                "LLM is not configured. Please set up an API key first.".to_string(),
-                            ),
-                        ))
-                        .await;
-                }
-                LlmClient::Active(_) => {
-                    // Increment generation counter BEFORE spawning the task
-                    // to prevent race conditions with stale events.
-                    state.llm_generation += 1;
-                    let generation = state.llm_generation;
-                    let tx = ui_tx.clone();
-
-                    // Build the prompt for strategy configuration
-                    let system = "You are a fantasy baseball strategy advisor. Given the user's \
-                        strategy description, output ONLY a valid JSON object (no markdown, no \
-                        explanation) with exactly these fields:\n\
-                        - \"hitting_budget_pct\": integer 0-100 (percentage of budget for hitting)\n\
-                        - \"category_weights\": object with keys R, HR, RBI, BB, SB, AVG, K, W, SV, HD, ERA, WHIP, \
-                        each a float where 1.0 = normal importance, >1.0 = overweight, <1.0 = underweight (min 0.0, max 5.0)\n\
-                        - \"strategy_overview\": a 2-3 sentence prose summary of the strategy that captures the key \
-                        decisions (budget split, punt categories, target player profiles, market edges). This will be \
-                        fed to the draft-time AI advisor for context.\n\n\
-                        League: 10-team H2H Most Categories, salary cap $260, 26 keepers.\n\
-                        Categories: R, HR, RBI, BB, SB, AVG (hitting) | K, W, SV, HD, ERA, WHIP (pitching)\n\
-                        Key edges: BB (walks) and HD (holds) are non-standard and undervalued.";
-
-                    let user_content = format!(
-                        "Configure my draft strategy based on this description:\n\n{}",
-                        description
-                    );
-
-                    // Spawn LLM streaming task
-                    tokio::spawn(async move {
-                        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel::<crate::protocol::LlmEvent>(100);
-
-                        // Start the LLM stream in a separate task
-                        let client = llm_client.clone();
-                        let sys = system.to_string();
-                        let usr = user_content.clone();
-                        tokio::spawn(async move {
-                            let _ = client.stream_message(&sys, &usr, 1024, stream_tx, generation).await;
-                        });
-
-                        let mut full_text = String::new();
-
-                        while let Some(event) = stream_rx.recv().await {
-                            match event {
-                                crate::protocol::LlmEvent::Token { text, generation: g } => {
-                                    if g == generation {
-                                        full_text.push_str(&text);
-                                        let _ = tx
-                                            .send(UiUpdate::OnboardingUpdate(
-                                                OnboardingUpdate::StrategyLlmToken(text),
-                                            ))
-                                            .await;
-                                    }
-                                }
-                                crate::protocol::LlmEvent::Complete { full_text: ft, generation: g, .. } => {
-                                    if g == generation {
-                                        full_text = ft;
-                                        break;
-                                    }
-                                }
-                                crate::protocol::LlmEvent::Error { message, generation: g } => {
-                                    if g == generation {
-                                        let _ = tx
-                                            .send(UiUpdate::OnboardingUpdate(
-                                                OnboardingUpdate::StrategyLlmError(message),
-                                            ))
-                                            .await;
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-
-                        // Parse JSON from the response
-                        match parse_strategy_json(&full_text) {
-                            Ok((pct, weights, overview)) => {
-                                let _ = tx
-                                    .send(UiUpdate::OnboardingUpdate(
-                                        OnboardingUpdate::StrategyLlmComplete {
-                                            hitting_budget_pct: pct,
-                                            category_weights: weights,
-                                            strategy_overview: overview,
-                                        },
-                                    ))
-                                    .await;
-                            }
-                            Err(e) => {
-                                let _ = tx
-                                    .send(UiUpdate::OnboardingUpdate(
-                                        OnboardingUpdate::StrategyLlmError(
-                                            format!("Failed to parse LLM response: {}", e),
-                                        ),
-                                    ))
-                                    .await;
-                            }
-                        }
-                    });
-                }
-            }
-        }
-        other => {
-            // Any unexpected variants during onboarding are handled by the
-            // settings path or ignored.
-            warn!("Unexpected onboarding action in onboarding handler: {:?}", other);
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Settings action handling
-// ---------------------------------------------------------------------------
-
-/// Handle an onboarding-style action dispatched from the settings screen.
-///
-/// Settings mode reuses the same onboarding input handlers, so it receives
-/// the same `OnboardingAction` variants. However, the behavior differs:
-/// - `SetProvider`/`SetModel`/`SetApiKey` update config and reload the LLM client
-/// - `SaveStrategyConfig` persists strategy without transitioning to Draft
-/// - `TestConnection` works the same as during onboarding
-/// - `GoNext`/`GoBack`/`Skip` are filtered out by input.rs and should not arrive
-/// - `ConfigureStrategyWithLlm` works the same as during onboarding
-async fn handle_settings_action(
-    state: &mut AppState,
-    action: OnboardingAction,
-    ui_tx: &mpsc::Sender<UiUpdate>,
-) {
-    use crate::llm::provider::LlmProvider;
-
-    match action {
-        OnboardingAction::SaveLlmConfig { provider, model_id, api_key } => {
-            // Batch save: update provider, model, and optionally API key in one go.
-            state.config.strategy.llm.provider = provider.clone();
-            state.config.strategy.llm.model = model_id.clone();
-            state.onboarding_progress.llm_provider = Some(provider.clone());
-            state.onboarding_progress.llm_model = Some(model_id);
-
-            if let Some(key) = api_key {
-                if !key.is_empty() {
-                    save_api_key_for_provider(&provider, &key, &mut state.config, &state.onboarding_manager);
-                }
-            }
-
-            state.reload_llm_client();
-
-            if let Err(e) = state.onboarding_manager.save_progress(&state.onboarding_progress) {
-                warn!("Failed to save onboarding progress after SaveLlmConfig: {}", e);
-            }
-
-            // Persist LLM settings to strategy.toml
-            if let Err(e) = state.onboarding_manager.save_strategy_full(
-                (state.config.strategy.hitting_budget_fraction * 100.0) as u8,
-                &crate::tui::onboarding::strategy_setup::CategoryWeights::from_config_weights(&state.config.strategy.weights),
-                Some(&state.config.strategy.llm.provider),
-                Some(&state.config.strategy.llm.model),
-                state.config.strategy.strategy_overview.as_deref(),
-            ) {
-                warn!("Failed to save strategy.toml after SaveLlmConfig: {}", e);
-            } else {
-                info!("Settings: saved LLM config (provider={:?}, model={})",
-                    state.config.strategy.llm.provider,
-                    state.config.strategy.llm.model,
-                );
-            }
-
-            // Update the saved API key mask for the UI
-            let raw_key = get_api_key_for_provider(&provider, &state.config);
-            let mask = if raw_key.is_empty() {
-                None
-            } else {
-                let m = crate::tui::onboarding::llm_setup::mask_api_key(&raw_key);
-                if m.is_empty() { None } else { Some(m) }
-            };
-            let _ = ui_tx
-                .send(UiUpdate::OnboardingUpdate(
-                    OnboardingUpdate::ProgressSync {
-                        provider: state.onboarding_progress.llm_provider.clone(),
-                        model: state.onboarding_progress.llm_model.clone(),
-                        api_key_mask: mask,
-                    },
-                ))
-                .await;
-
-            // Auto-trigger connection test
-            Box::pin(handle_settings_action(state, OnboardingAction::TestConnection, ui_tx)).await;
-        }
-        OnboardingAction::SetProvider(provider) => {
-            state.config.strategy.llm.provider = provider.clone();
-            state.config.strategy.llm.model = String::new();
-            state.onboarding_progress.llm_provider = Some(provider.clone());
-            state.onboarding_progress.llm_model = None;
-            state.reload_llm_client();
-            if let Err(e) = state.onboarding_manager.save_progress(&state.onboarding_progress) {
-                warn!("Failed to save onboarding progress after SetProvider: {}", e);
-            }
-            // Update the saved API key mask for the newly selected provider
-            // so the TUI shows the correct mask (or clears it if no key exists).
-            let raw_key = get_api_key_for_provider(&provider, &state.config);
-            let mask = if raw_key.is_empty() {
-                None
-            } else {
-                let m = crate::tui::onboarding::llm_setup::mask_api_key(&raw_key);
-                if m.is_empty() { None } else { Some(m) }
-            };
-            let _ = ui_tx
-                .send(UiUpdate::OnboardingUpdate(
-                    OnboardingUpdate::ProgressSync {
-                        provider: state.onboarding_progress.llm_provider.clone(),
-                        model: state.onboarding_progress.llm_model.clone(),
-                        api_key_mask: mask,
-                    },
-                ))
-                .await;
-        }
-        OnboardingAction::SetModel(model_id) => {
-            state.config.strategy.llm.model = model_id.clone();
-            state.onboarding_progress.llm_model = Some(model_id);
-            state.reload_llm_client();
-            if let Err(e) = state.onboarding_manager.save_progress(&state.onboarding_progress) {
-                warn!("Failed to save onboarding progress after SetModel: {}", e);
-            }
-        }
-        OnboardingAction::SetApiKey(key) => {
-            let provider = state
-                .onboarding_progress
-                .llm_provider
-                .clone()
-                .unwrap_or(LlmProvider::Anthropic);
-            save_api_key_for_provider(&provider, &key, &mut state.config, &state.onboarding_manager);
-            // Reload LLM client so the new key takes effect immediately
-            state.reload_llm_client();
-            // Auto-trigger connection test so the user doesn't need a second Enter.
-            Box::pin(handle_settings_action(state, OnboardingAction::TestConnection, ui_tx)).await;
-        }
-        OnboardingAction::TestConnection => {
-            // Same as onboarding: spawn async test
-            let provider = state
-                .onboarding_progress
-                .llm_provider
-                .clone()
-                .unwrap_or(LlmProvider::Anthropic);
-            let model_id = state
-                .onboarding_progress
-                .llm_model
-                .clone()
-                .unwrap_or_else(|| state.config.strategy.llm.model.clone());
-
-            let api_key = get_api_key_for_provider(&provider, &state.config);
-
-            if api_key.is_empty() {
-                let _ = ui_tx
-                    .send(UiUpdate::OnboardingUpdate(
-                        OnboardingUpdate::ConnectionTestResult {
-                            success: false,
-                            message: "No API key entered".to_string(),
-                        },
-                    ))
-                    .await;
-                return;
-            }
-
-            let tx = ui_tx.clone();
-            tokio::spawn(async move {
-                let result = test_api_connection(&provider, &api_key, &model_id).await;
-                let _ = tx
-                    .send(UiUpdate::OnboardingUpdate(
-                        OnboardingUpdate::ConnectionTestResult {
-                            success: result.is_ok(),
-                            message: match &result {
-                                Ok(msg) => msg.clone(),
-                                Err(msg) => msg.clone(),
-                            },
-                        },
-                    ))
-                    .await;
-            });
-        }
-        OnboardingAction::SaveStrategyConfig { hitting_budget_pct, category_weights, strategy_overview } => {
-            // Update in-memory config
-            state.config.strategy.hitting_budget_fraction = hitting_budget_pct as f64 / 100.0;
-            state.config.strategy.weights = category_weights.to_config_weights();
-            state.config.strategy.strategy_overview = strategy_overview.clone();
-
-            // Persist to strategy.toml (including current LLM provider/model
-            // in case they were changed on the LLM tab)
-            if let Err(e) = state.onboarding_manager.save_strategy_full(
-                hitting_budget_pct,
-                &category_weights,
-                Some(&state.config.strategy.llm.provider),
-                Some(&state.config.strategy.llm.model),
-                strategy_overview.as_deref(),
-            ) {
-                warn!("Failed to save strategy.toml: {}", e);
-            } else {
-                info!("Settings: saved strategy config (budget={}%, weights updated)", hitting_budget_pct);
-            }
-
-            // Reload LLM client in case provider/model changed on the LLM tab
-            state.reload_llm_client();
-
-            // Recalculate valuations with new strategy weights
-            valuation::recalculate_all(
-                &mut state.available_players,
-                &state.config.league,
-                &state.config.strategy,
-                &state.draft_state,
-            );
-            state.scarcity = compute_scarcity(&state.available_players, &state.config.league);
-
-            // Send updated snapshot to TUI (stay in Settings mode)
-            let snapshot = state.build_snapshot();
-            let _ = ui_tx
-                .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
-                .await;
-        }
-        OnboardingAction::ConfigureStrategyWithLlm(description) => {
-            // Delegate to the same LLM generation logic as onboarding
-            handle_onboarding_action(
-                state,
-                OnboardingAction::ConfigureStrategyWithLlm(description),
-                ui_tx,
-            )
-            .await;
-        }
-        // GoNext/GoBack/Skip are filtered by the input handler and should
-        // not reach here. If they do, ignore them silently.
-        OnboardingAction::GoNext | OnboardingAction::GoBack | OnboardingAction::Skip => {}
-    }
-}
-
-/// Persist an API key for the given provider to both in-memory config and
-/// the `credentials.toml` file via the OnboardingManager's FileSystem trait.
-fn save_api_key_for_provider(
-    provider: &crate::llm::provider::LlmProvider,
-    key: &str,
-    config: &mut Config,
-    onboarding_manager: &crate::onboarding::OnboardingManager<crate::onboarding::RealFileSystem>,
-) {
-    use crate::llm::provider::LlmProvider;
-
-    match provider {
-        LlmProvider::Anthropic => {
-            config.credentials.anthropic_api_key = Some(key.to_string());
-        }
-        LlmProvider::Google => {
-            config.credentials.google_api_key = Some(key.to_string());
-        }
-        LlmProvider::OpenAI => {
-            config.credentials.openai_api_key = Some(key.to_string());
-        }
-    }
-
-    if let Err(e) = onboarding_manager.save_credentials(&config.credentials) {
-        warn!("Failed to save credentials.toml: {}", e);
-    } else {
-        info!("Saved API key for {} to credentials.toml", provider.display_name());
-    }
-}
-
-/// Get the API key for a given provider from the current config.
-fn get_api_key_for_provider(
-    provider: &crate::llm::provider::LlmProvider,
-    config: &Config,
-) -> String {
-    use crate::llm::provider::LlmProvider;
-
-    match provider {
-        LlmProvider::Anthropic => config
-            .credentials
-            .anthropic_api_key
-            .clone()
-            .unwrap_or_default(),
-        LlmProvider::Google => config
-            .credentials
-            .google_api_key
-            .clone()
-            .unwrap_or_default(),
-        LlmProvider::OpenAI => config
-            .credentials
-            .openai_api_key
-            .clone()
-            .unwrap_or_default(),
-    }
-}
-
-/// Test an API connection by making a minimal request to the provider.
-///
-/// Returns `Ok(message)` on success or `Err(message)` on failure.
-async fn test_api_connection(
-    provider: &crate::llm::provider::LlmProvider,
-    api_key: &str,
-    model_id: &str,
-) -> Result<String, String> {
-    use crate::llm::provider::LlmProvider;
-
-    let client = reqwest::Client::new();
-
-    match provider {
-        LlmProvider::Anthropic => {
-            let resp = client
-                .post("https://api.anthropic.com/v1/messages")
-                .header("x-api-key", api_key)
-                .header("anthropic-version", "2023-06-01")
-                .header("content-type", "application/json")
-                .json(&serde_json::json!({
-                    "model": model_id,
-                    "max_tokens": 1,
-                    "messages": [{"role": "user", "content": "hi"}]
-                }))
-                .send()
-                .await
-                .map_err(|e| format!("Connection error: {}", e))?;
-
-            let status = resp.status();
-            if status.is_success() {
-                Ok("Connected to Anthropic API".to_string())
-            } else if status.as_u16() == 401 || status.as_u16() == 403 {
-                Err("Invalid API key".to_string())
-            } else {
-                let body = resp.text().await.unwrap_or_default();
-                Err(format!("HTTP {}: {}", status, body.chars().take(100).collect::<String>()))
-            }
-        }
-        LlmProvider::Google => {
-            let url = format!(
-                "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-                model_id, api_key
-            );
-            let resp = client
-                .post(&url)
-                .header("content-type", "application/json")
-                .json(&serde_json::json!({
-                    "contents": [{"parts": [{"text": "hi"}]}],
-                    "generationConfig": {"maxOutputTokens": 1}
-                }))
-                .send()
-                .await
-                .map_err(|e| format!("Connection error: {}", e))?;
-
-            let status = resp.status();
-            if status.is_success() {
-                Ok("Connected to Google Gemini API".to_string())
-            } else if status.as_u16() == 400 || status.as_u16() == 401 || status.as_u16() == 403 {
-                Err("Invalid API key".to_string())
-            } else {
-                let body = resp.text().await.unwrap_or_default();
-                Err(format!("HTTP {}: {}", status, body.chars().take(100).collect::<String>()))
-            }
-        }
-        LlmProvider::OpenAI => {
-            let resp = client
-                .post("https://api.openai.com/v1/chat/completions")
-                .header("Authorization", format!("Bearer {}", api_key))
-                .header("content-type", "application/json")
-                .json(&serde_json::json!({
-                    "model": model_id,
-                    "max_tokens": 1,
-                    "messages": [{"role": "user", "content": "hi"}]
-                }))
-                .send()
-                .await
-                .map_err(|e| format!("Connection error: {}", e))?;
-
-            let status = resp.status();
-            if status.is_success() {
-                Ok("Connected to OpenAI API".to_string())
-            } else if status.as_u16() == 401 || status.as_u16() == 403 {
-                Err("Invalid API key".to_string())
-            } else {
-                let body = resp.text().await.unwrap_or_default();
-                Err(format!("HTTP {}: {}", status, body.chars().take(100).collect::<String>()))
-            }
-        }
-    }
-}
-
-/// Parse the LLM's JSON response into a hitting budget percentage, category weights,
-/// and strategy overview.
-///
-/// The LLM is prompted to return a JSON object with `hitting_budget_pct` (int 0-100),
-/// `category_weights` (map of category name to float), and `strategy_overview` (string).
-/// This function extracts the JSON from the response (stripping any surrounding
-/// text/markdown fences) and parses it.
-fn parse_strategy_json(
-    text: &str,
-) -> Result<(u8, crate::tui::onboarding::strategy_setup::CategoryWeights, String), String> {
-    use crate::tui::onboarding::strategy_setup::CategoryWeights;
-
-    // Strip markdown code fences if present.
-    // Use safe string operations to avoid panics on edge cases.
-    let trimmed = text.trim();
-    let json_str = if trimmed.starts_with("```") {
-        // Find end of the opening fence line (e.g. "```json\n")
-        let after_fence = if let Some(newline_pos) = trimmed.find('\n') {
-            &trimmed[newline_pos + 1..]
-        } else {
-            // Opening fence with no newline — strip the leading ```
-            &trimmed[3..]
-        };
-        // Strip the closing ``` if present
-        if let Some(close_pos) = after_fence.rfind("```") {
-            &after_fence[..close_pos]
-        } else {
-            after_fence
-        }
-    } else {
-        trimmed
-    };
-
-    // Try to find a JSON object in the text (between first { and last })
-    let json_str = if let (Some(start), Some(end)) = (json_str.find('{'), json_str.rfind('}')) {
-        &json_str[start..=end]
-    } else {
-        return Err("No JSON object found in response".to_string());
-    };
-
-    let parsed: serde_json::Value =
-        serde_json::from_str(json_str).map_err(|e| format!("JSON parse error: {}", e))?;
-
-    let pct = parsed
-        .get("hitting_budget_pct")
-        .and_then(|v| v.as_u64())
-        .map(|v| v.min(100) as u8)
-        .unwrap_or(65);
-
-    let mut weights = CategoryWeights::default();
-
-    if let Some(cw) = parsed.get("category_weights").and_then(|v| v.as_object()) {
-        for (idx, name) in crate::tui::onboarding::strategy_setup::CATEGORIES.iter().enumerate() {
-            if let Some(val) = cw.get(*name).and_then(|v| v.as_f64()) {
-                let clamped = val.max(0.0).min(5.0) as f32;
-                weights.set(idx, clamped);
-            }
-        }
-    }
-
-    let overview = parsed
-        .get("strategy_overview")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    Ok((pct, weights, overview))
-}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -2261,17 +800,18 @@ fn parse_strategy_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::sync::atomic::Ordering;
     use crate::config::*;
     use crate::db::Database;
     use crate::draft::pick::{DraftPick, Position};
     use crate::draft::state::{ActiveNomination, DraftState};
-    use crate::protocol::{LlmEvent, LlmStatus, UserCommand};
+    use crate::protocol::{LlmEvent, LlmStatus, OnboardingAction, OnboardingUpdate, UserCommand};
     use crate::valuation::auction::InflationTracker;
     use crate::valuation::projections::{AllProjections, PitcherType};
     use crate::valuation::zscore::{
         CategoryZScores, HitterZScores, PitcherZScores, PlayerProjectionData, PlayerValuation,
     };
-    use std::collections::HashMap;
 
     // -----------------------------------------------------------------------
     // Test helpers
@@ -3357,7 +1897,7 @@ mod tests {
             source: Some("test".into()),
         };
 
-        handle_state_update(&mut state, ext_payload, &ui_tx).await;
+        ws_handler::handle_state_update(&mut state, ext_payload, &ui_tx).await;
 
         // Teams should now be registered
         assert_eq!(state.draft_state.teams.len(), 2);
@@ -3425,7 +1965,7 @@ mod tests {
             source: Some("test".into()),
         };
 
-        handle_state_update(&mut state, ext_payload_1, &ui_tx).await;
+        ws_handler::handle_state_update(&mut state, ext_payload_1, &ui_tx).await;
 
         // Teams should still be empty
         assert!(state.draft_state.teams.is_empty());
@@ -3475,7 +2015,7 @@ mod tests {
             source: Some("test".into()),
         };
 
-        handle_state_update(&mut state, ext_payload_2, &ui_tx).await;
+        ws_handler::handle_state_update(&mut state, ext_payload_2, &ui_tx).await;
 
         // Teams should now be registered
         assert_eq!(state.draft_state.teams.len(), 2);
@@ -3551,7 +2091,7 @@ mod tests {
             source: Some("test".into()),
         };
 
-        handle_state_update(&mut state, ext_payload, &ui_tx).await;
+        ws_handler::handle_state_update(&mut state, ext_payload, &ui_tx).await;
 
         // Count NominationUpdate messages -- should be exactly 1
         // (from the normal flow, not doubled by the retry)
@@ -4687,7 +3227,7 @@ mod tests {
         };
 
         let (ui_tx, _ui_rx) = mpsc::channel(64);
-        handle_state_update(&mut state, ext_payload, &ui_tx).await;
+        ws_handler::handle_state_update(&mut state, ext_payload, &ui_tx).await;
 
         // ESPN draft ID should now be stored in state
         assert_eq!(state.espn_draft_id, Some("espn_12345_2026".into()));
@@ -4719,7 +3259,7 @@ mod tests {
         };
 
         let (ui_tx, _ui_rx) = mpsc::channel(64);
-        handle_state_update(&mut state, ext_payload, &ui_tx).await;
+        ws_handler::handle_state_update(&mut state, ext_payload, &ui_tx).await;
 
         // Draft ID should remain the same
         assert_eq!(state.draft_id, original_draft_id);
@@ -4749,7 +3289,7 @@ mod tests {
         };
 
         let (ui_tx, _ui_rx) = mpsc::channel(64);
-        handle_state_update(&mut state, ext_payload, &ui_tx).await;
+        ws_handler::handle_state_update(&mut state, ext_payload, &ui_tx).await;
 
         // A new draft session should have been started
         assert_ne!(state.draft_id, original_draft_id);
@@ -4789,7 +3329,7 @@ mod tests {
         };
 
         let (ui_tx, _ui_rx) = mpsc::channel(64);
-        handle_state_update(&mut state, ext_payload, &ui_tx).await;
+        ws_handler::handle_state_update(&mut state, ext_payload, &ui_tx).await;
 
         // Draft ID should remain unchanged
         assert_eq!(state.draft_id, original_draft_id);
@@ -4834,7 +3374,7 @@ mod tests {
         };
 
         let (ui_tx, _ui_rx) = mpsc::channel(64);
-        handle_state_update(&mut state, ext_payload1, &ui_tx).await;
+        ws_handler::handle_state_update(&mut state, ext_payload1, &ui_tx).await;
 
         let draft_id_after_first = state.draft_id.clone();
         assert_eq!(state.espn_draft_id, Some("espn_12345_2026".into()));
@@ -4876,7 +3416,7 @@ mod tests {
             source: Some("test".into()),
         };
 
-        handle_state_update(&mut state, ext_payload2, &ui_tx).await;
+        ws_handler::handle_state_update(&mut state, ext_payload2, &ui_tx).await;
 
         // Draft ID should NOT change across reconnect with same ESPN ID
         assert_eq!(state.draft_id, draft_id_after_first);
@@ -4897,7 +3437,7 @@ mod tests {
 
         let (ui_tx, mut ui_rx) = mpsc::channel(16);
 
-        handle_user_command(
+        command_handler::handle_user_command(
             &mut state,
             UserCommand::OnboardingAction(OnboardingAction::Skip),
             &ui_tx,
@@ -4935,7 +3475,7 @@ mod tests {
 
         let (ui_tx, mut ui_rx) = mpsc::channel(16);
 
-        handle_user_command(
+        command_handler::handle_user_command(
             &mut state,
             UserCommand::OnboardingAction(OnboardingAction::Skip),
             &ui_tx,
@@ -4981,7 +3521,7 @@ mod tests {
 
         let (ui_tx, mut ui_rx) = mpsc::channel(16);
 
-        handle_user_command(
+        command_handler::handle_user_command(
             &mut state,
             UserCommand::OnboardingAction(OnboardingAction::GoNext),
             &ui_tx,
@@ -5021,7 +3561,7 @@ mod tests {
 
         let (ui_tx, _ui_rx) = mpsc::channel(16);
 
-        handle_user_command(
+        command_handler::handle_user_command(
             &mut state,
             UserCommand::OnboardingAction(OnboardingAction::GoNext),
             &ui_tx,
@@ -5047,7 +3587,7 @@ mod tests {
 
         let (ui_tx, _ui_rx) = mpsc::channel(16);
 
-        handle_user_command(
+        command_handler::handle_user_command(
             &mut state,
             UserCommand::OnboardingAction(OnboardingAction::GoNext),
             &ui_tx,
@@ -5082,7 +3622,7 @@ mod tests {
 
         let (ui_tx, mut ui_rx) = mpsc::channel(16);
 
-        handle_user_command(&mut state, UserCommand::ExitSettings, &ui_tx).await;
+        command_handler::handle_user_command(&mut state, UserCommand::ExitSettings, &ui_tx).await;
 
         // AppState should now be in Draft mode
         assert_eq!(state.app_mode, AppMode::Draft);
@@ -5119,7 +3659,7 @@ mod tests {
 
         let (ui_tx, mut ui_rx) = mpsc::channel(16);
 
-        handle_user_command(
+        command_handler::handle_user_command(
             &mut state,
             UserCommand::OnboardingAction(OnboardingAction::SaveStrategyConfig {
                 hitting_budget_pct: 70,
@@ -5174,7 +3714,7 @@ mod tests {
     #[test]
     fn parse_strategy_json_valid() {
         let json = r#"{"hitting_budget_pct": 70, "category_weights": {"R": 1.0, "HR": 1.1, "RBI": 1.0, "BB": 1.3, "SB": 0.8, "AVG": 1.0, "K": 1.0, "W": 1.0, "SV": 0.3, "HD": 1.2, "ERA": 1.0, "WHIP": 1.0}, "strategy_overview": "Test overview"}"#;
-        let (pct, weights, overview) = parse_strategy_json(json).unwrap();
+        let (pct, weights, overview) = onboarding_handler::parse_strategy_json(json).unwrap();
         assert_eq!(pct, 70);
         assert!((weights.bb - 1.3).abs() < f32::EPSILON);
         assert!((weights.sv - 0.3).abs() < f32::EPSILON);
@@ -5185,7 +3725,7 @@ mod tests {
     #[test]
     fn parse_strategy_json_with_markdown_fences() {
         let json = "```json\n{\"hitting_budget_pct\": 65, \"category_weights\": {\"R\": 1.0, \"HR\": 1.0, \"RBI\": 1.0, \"BB\": 1.0, \"SB\": 1.0, \"AVG\": 1.0, \"K\": 1.0, \"W\": 1.0, \"SV\": 0.7, \"HD\": 1.0, \"ERA\": 1.0, \"WHIP\": 1.0}}\n```";
-        let (pct, weights, overview) = parse_strategy_json(json).unwrap();
+        let (pct, weights, overview) = onboarding_handler::parse_strategy_json(json).unwrap();
         assert_eq!(pct, 65);
         assert!((weights.sv - 0.7).abs() < f32::EPSILON);
         assert_eq!(overview, ""); // no overview in this JSON
@@ -5194,7 +3734,7 @@ mod tests {
     #[test]
     fn parse_strategy_json_clamps_values() {
         let json = r#"{"hitting_budget_pct": 200, "category_weights": {"SV": -1.0, "BB": 7.0}}"#;
-        let (pct, weights, _overview) = parse_strategy_json(json).unwrap();
+        let (pct, weights, _overview) = onboarding_handler::parse_strategy_json(json).unwrap();
         assert_eq!(pct, 100); // clamped to 100
         assert!((weights.sv - 0.0).abs() < f32::EPSILON); // clamped to 0.0
         assert!((weights.bb - 5.0).abs() < f32::EPSILON); // clamped to 5.0
@@ -5203,7 +3743,7 @@ mod tests {
     #[test]
     fn parse_strategy_json_missing_fields_uses_defaults() {
         let json = r#"{"category_weights": {"BB": 1.3}}"#;
-        let (pct, weights, overview) = parse_strategy_json(json).unwrap();
+        let (pct, weights, overview) = onboarding_handler::parse_strategy_json(json).unwrap();
         assert_eq!(pct, 65); // default
         assert!((weights.bb - 1.3).abs() < f32::EPSILON);
         assert!((weights.r - 1.0).abs() < f32::EPSILON); // default
@@ -5212,14 +3752,14 @@ mod tests {
 
     #[test]
     fn parse_strategy_json_no_json_object() {
-        let result = parse_strategy_json("no json here");
+        let result = onboarding_handler::parse_strategy_json("no json here");
         assert!(result.is_err());
     }
 
     #[test]
     fn parse_strategy_json_with_surrounding_text() {
         let text = "Here is the configuration:\n{\"hitting_budget_pct\": 60, \"category_weights\": {}}\nEnjoy!";
-        let (pct, _, _) = parse_strategy_json(text).unwrap();
+        let (pct, _, _) = onboarding_handler::parse_strategy_json(text).unwrap();
         assert_eq!(pct, 60);
     }
 
@@ -5236,7 +3776,7 @@ mod tests {
 
         let (ui_tx, mut ui_rx) = mpsc::channel(16);
 
-        handle_user_command(&mut state, UserCommand::OpenSettings, &ui_tx).await;
+        command_handler::handle_user_command(&mut state, UserCommand::OpenSettings, &ui_tx).await;
 
         // AppState should now be in Settings(LlmConfig) mode
         assert_eq!(
@@ -5265,7 +3805,7 @@ mod tests {
 
         let (ui_tx, mut ui_rx) = mpsc::channel(16);
 
-        handle_user_command(&mut state, UserCommand::ExitSettings, &ui_tx).await;
+        command_handler::handle_user_command(&mut state, UserCommand::ExitSettings, &ui_tx).await;
 
         assert_eq!(state.app_mode, AppMode::Draft);
 
@@ -5307,7 +3847,7 @@ mod tests {
 
         let (ui_tx, mut ui_rx) = mpsc::channel(16);
 
-        handle_user_command(
+        command_handler::handle_user_command(
             &mut state,
             UserCommand::OnboardingAction(OnboardingAction::SaveStrategyConfig {
                 hitting_budget_pct: 70,
@@ -5358,7 +3898,7 @@ mod tests {
 
         let (ui_tx, _ui_rx) = mpsc::channel(16);
 
-        handle_user_command(
+        command_handler::handle_user_command(
             &mut state,
             UserCommand::OnboardingAction(OnboardingAction::SetApiKey("sk-ant-test-key".to_string())),
             &ui_tx,
@@ -5385,7 +3925,7 @@ mod tests {
 
         let (ui_tx, mut ui_rx) = mpsc::channel(16);
 
-        handle_user_command(
+        command_handler::handle_user_command(
             &mut state,
             UserCommand::SwitchSettingsTab(SettingsSection::StrategyConfig),
             &ui_tx,
