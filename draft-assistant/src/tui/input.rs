@@ -6,7 +6,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use crate::protocol::{AppMode, OnboardingAction, UserCommand};
+use crate::protocol::{AppMode, UserCommand};
 use super::ViewState;
 
 /// Handle a keyboard event.
@@ -121,199 +121,24 @@ fn handle_settings_key(
     key_event: KeyEvent,
     view_state: &mut ViewState,
 ) -> Option<UserCommand> {
-    use crate::protocol::SettingsSection;
-    use super::onboarding::llm_setup::LlmSetupMessage;
+    use super::settings;
 
-    // --- Unsaved changes confirmation modal: intercept all input ---
-    if view_state.confirm_exit_settings.open {
-        use crate::tui::confirm_dialog::ConfirmResult;
-        if let Some(msg) = view_state.confirm_exit_settings.key_to_message(key_event) {
-            if let Some(result) = view_state.confirm_exit_settings.update(msg) {
-                match result {
-                    ConfirmResult::Confirmed(ch) => {
-                        return handle_confirm_exit_settings_choice(ch, view_state);
-                    }
-                    ConfirmResult::Cancelled => return None,
-                }
-            }
-        }
-        return None;
-    }
-
-    let active_tab = view_state.settings_tab;
-
-    // --- LLM tab: use component key_to_message + update ---
-    if active_tab == SettingsSection::LlmConfig {
-        if let Some(msg) = view_state.llm_setup.key_to_message(key_event, true) {
-            // Intercept SettingsExit to check cross-component dirty state
-            if matches!(msg, LlmSetupMessage::SettingsExit) {
-                let llm_dirty = view_state.llm_setup.settings_dirty
-                    || view_state.llm_setup.settings_needs_connection_test;
-                let strategy_dirty = view_state.strategy_setup.settings_dirty;
-                if llm_dirty || strategy_dirty {
-                    use crate::tui::confirm_dialog::ConfirmMessage;
-                    view_state.confirm_exit_settings.update(ConfirmMessage::Open);
-                    return None;
-                }
-            }
-            return view_state.llm_setup.update(msg);
-        }
-        return None;
-    }
-
-    // --- Strategy tab ---
-    // In editing sub-modes, delegate fully to the strategy component
-    if view_state.settings_is_editing()
-        || view_state.strategy_setup.generating
-    {
-        if let Some(msg) = view_state.strategy_setup.key_to_message(key_event) {
-            let cmd = view_state.strategy_setup.update(msg);
-            return filter_onboarding_commands(cmd);
-        }
-        return None;
-    }
-
-    // Not editing: handle settings-level keys first, then delegate
-    match key_event.code {
-        KeyCode::Char('1') => {
-            Some(UserCommand::SwitchSettingsTab(SettingsSection::LlmConfig))
-        }
-        KeyCode::Char('2') => {
-            Some(UserCommand::SwitchSettingsTab(SettingsSection::StrategyConfig))
-        }
-
-        // s: save strategy settings
-        KeyCode::Char('s') => {
-            let state = &mut view_state.strategy_setup;
-            let weights = state.category_weights.clone();
-            let pct = state.hitting_budget_pct;
-            let overview = if state.strategy_overview.is_empty() {
-                None
-            } else {
-                Some(state.strategy_overview.clone())
-            };
-            state.settings_dirty = false;
-            state.snapshot_settings();
-            Some(UserCommand::OnboardingAction(
-                OnboardingAction::SaveStrategyConfig {
-                    hitting_budget_pct: pct,
-                    category_weights: weights,
-                    strategy_overview: overview,
-                },
-            ))
-        }
-
-        // Esc: if unsaved changes exist, show confirmation modal; otherwise exit
-        KeyCode::Esc => {
-            if view_state.strategy_setup.settings_dirty
-                || view_state.llm_setup.settings_dirty
-                || view_state.llm_setup.settings_needs_connection_test
-            {
-                use crate::tui::confirm_dialog::ConfirmMessage;
-                view_state.confirm_exit_settings.update(ConfirmMessage::Open);
-                None
-            } else {
-                Some(UserCommand::ExitSettings)
-            }
-        }
-
-        KeyCode::Char('q') => Some(UserCommand::Quit),
-
-        // Delegate other keys to strategy component
-        _ => {
-            if let Some(msg) = view_state.strategy_setup.key_to_message(key_event) {
-                let cmd = view_state.strategy_setup.update(msg);
-                filter_onboarding_commands(cmd)
-            } else {
-                None
-            }
-        }
-    }
-}
-
-/// Handle the user's choice from the unsaved-changes confirmation dialog.
-fn handle_confirm_exit_settings_choice(
-    ch: char,
-    view_state: &mut ViewState,
-) -> Option<UserCommand> {
-    match ch {
-        'y' => {
-            let llm_save = if view_state.llm_setup.settings_dirty
-                && !view_state.llm_setup.is_save_blocked()
-            {
-                let provider = view_state.llm_setup.selected_provider().clone();
-                let model_id = view_state
-                    .llm_setup
-                    .selected_model()
-                    .map(|m| m.model_id.to_string())
-                    .unwrap_or_default();
-                let api_key_val = view_state.llm_setup.api_key_input.value().to_string();
-                let api_key = if api_key_val.is_empty() {
-                    None
-                } else {
-                    Some(api_key_val)
-                };
-                view_state.llm_setup.settings_dirty = false;
-                view_state.llm_setup.settings_needs_connection_test = false;
-                view_state.llm_setup.snapshot_settings();
-                Some((provider, model_id, api_key))
-            } else {
-                if view_state.llm_setup.is_save_blocked() {
-                    view_state.llm_setup.restore_settings_snapshot();
-                }
-                None
-            };
-
-            let strategy_save = if view_state.strategy_setup.settings_dirty {
-                let pct = view_state.strategy_setup.hitting_budget_pct;
-                let weights = view_state.strategy_setup.category_weights.clone();
-                let overview = if view_state.strategy_setup.strategy_overview.is_empty() {
-                    None
-                } else {
-                    Some(view_state.strategy_setup.strategy_overview.clone())
-                };
-                view_state.strategy_setup.settings_dirty = false;
-                view_state.strategy_setup.snapshot_settings();
-                Some((pct, weights, overview))
-            } else {
-                None
-            };
-
-            Some(UserCommand::SaveAndExitSettings {
-                llm: llm_save,
-                strategy: strategy_save,
-            })
-        }
-        'n' => {
-            if view_state.llm_setup.settings_dirty
-                || view_state.llm_setup.settings_needs_connection_test
-            {
-                view_state.llm_setup.restore_settings_snapshot();
-            }
-            if view_state.strategy_setup.settings_dirty {
-                view_state.strategy_setup.restore_settings_snapshot();
-            }
-            Some(UserCommand::ExitSettings)
-        }
-        _ => None,
-    }
-}
-
-/// Filter out onboarding-specific commands that don't apply in settings mode.
-///
-/// In settings mode, GoBack/GoNext/Skip make no sense. `n` in LLM setup
-/// normally maps to GoNext, but in settings we suppress it. Esc in the
-/// onboarding handlers normally maps to GoBack, but we handle Esc at the
-/// settings level (exit settings). This function strips those commands.
-fn filter_onboarding_commands(cmd: Option<UserCommand>) -> Option<UserCommand> {
-    use crate::protocol::OnboardingAction;
-
-    match &cmd {
-        Some(UserCommand::OnboardingAction(action)) => match action {
-            OnboardingAction::GoBack | OnboardingAction::GoNext | OnboardingAction::Skip => None,
-            _ => cmd,
-        },
-        _ => cmd,
+    let msg = settings::key_to_message(
+        view_state.settings_tab,
+        &view_state.llm_setup,
+        &view_state.strategy_setup,
+        &view_state.confirm_exit_settings,
+        key_event,
+    );
+    match msg {
+        Some(m) => settings::update(
+            view_state.settings_tab,
+            &mut view_state.llm_setup,
+            &mut view_state.strategy_setup,
+            &mut view_state.confirm_exit_settings,
+            m,
+        ),
+        None => None,
     }
 }
 
@@ -326,7 +151,7 @@ fn filter_onboarding_commands(cmd: Option<UserCommand>) -> Option<UserCommand> {
 mod tests {
     use super::*;
     use crate::draft::pick::Position;
-    use crate::protocol::TabId;
+    use crate::protocol::{OnboardingAction, TabId};
     use crate::tui::FocusPanel;
     use crate::tui::draft::main_panel::MainPanelMessage;
     use crate::tui::draft::main_panel::analysis::AnalysisPanelMessage;
