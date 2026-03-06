@@ -74,6 +74,11 @@ impl LlmStreamState {
         }
     }
 
+    /// Scroll with a specified viewport height for PageUp/PageDown step size.
+    pub fn scroll(&mut self, dir: ScrollDirection, viewport_height: usize) {
+        self.scroll.scroll(dir, viewport_height);
+    }
+
     // NOTE: view() is intentionally NOT included here.
     // Each usage (Analysis, Plan) has different chrome (title, border, status indicator).
     // The parent component handles rendering using self.text, self.status, self.scroll.

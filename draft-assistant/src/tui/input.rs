@@ -8,6 +8,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::protocol::{AppMode, OnboardingAction, TabFeature, TabId, UserCommand};
 use crate::tui::draft::draft_log::DraftLogMessage;
+use crate::tui::draft::main_panel::analysis::AnalysisPanelMessage;
 use crate::tui::draft::sidebar::roster::RosterMessage;
 use crate::tui::draft::sidebar::scarcity::ScarcityPanelMessage;
 use crate::tui::draft::teams::TeamsMessage;
@@ -1463,6 +1464,17 @@ fn focused_scroll_key(view_state: &ViewState) -> &'static str {
 /// Dispatch a scroll-up event to the appropriate panel based on focus state.
 fn dispatch_scroll_up(view_state: &mut ViewState, lines: usize) {
     let key = focused_scroll_key(view_state);
+    if key == "analysis" {
+        let dir = if lines >= page_size() {
+            ScrollDirection::PageUp
+        } else {
+            ScrollDirection::Up
+        };
+        view_state
+            .analysis_panel
+            .update(AnalysisPanelMessage::Scroll(dir));
+        return;
+    }
     if key == "draft_log" {
         let dir = if lines >= page_size() {
             ScrollDirection::PageUp
@@ -1514,6 +1526,17 @@ fn dispatch_scroll_up(view_state: &mut ViewState, lines: usize) {
 /// Dispatch a scroll-down event to the appropriate panel based on focus state.
 fn dispatch_scroll_down(view_state: &mut ViewState, lines: usize) {
     let key = focused_scroll_key(view_state);
+    if key == "analysis" {
+        let dir = if lines >= page_size() {
+            ScrollDirection::PageDown
+        } else {
+            ScrollDirection::Down
+        };
+        view_state
+            .analysis_panel
+            .update(AnalysisPanelMessage::Scroll(dir));
+        return;
+    }
     if key == "draft_log" {
         let dir = if lines >= page_size() {
             ScrollDirection::PageDown
@@ -1638,10 +1661,13 @@ mod tests {
     #[test]
     fn arrow_up_decrements_scroll() {
         let mut state = ViewState::default();
-        state.scroll_offset.insert("analysis".to_string(), 5);
+        // Pre-scroll the analysis panel down 5 positions
+        for _ in 0..5 {
+            state.analysis_panel.update(AnalysisPanelMessage::Scroll(ScrollDirection::Down));
+        }
         let result = handle_key(key(KeyCode::Up), &mut state);
         assert!(result.is_none());
-        assert_eq!(state.scroll_offset["analysis"], 4);
+        assert_eq!(state.analysis_panel.scroll_offset(), 4);
     }
 
     #[test]
@@ -1649,16 +1675,18 @@ mod tests {
         let mut state = ViewState::default();
         let result = handle_key(key(KeyCode::Down), &mut state);
         assert!(result.is_none());
-        assert_eq!(state.scroll_offset["analysis"], 1);
+        assert_eq!(state.analysis_panel.scroll_offset(), 1);
     }
 
     #[test]
     fn k_scrolls_up() {
         let mut state = ViewState::default();
-        state.scroll_offset.insert("analysis".to_string(), 3);
+        for _ in 0..3 {
+            state.analysis_panel.update(AnalysisPanelMessage::Scroll(ScrollDirection::Down));
+        }
         let result = handle_key(key(KeyCode::Char('k')), &mut state);
         assert!(result.is_none());
-        assert_eq!(state.scroll_offset["analysis"], 2);
+        assert_eq!(state.analysis_panel.scroll_offset(), 2);
     }
 
     #[test]
@@ -1666,7 +1694,7 @@ mod tests {
         let mut state = ViewState::default();
         let result = handle_key(key(KeyCode::Char('j')), &mut state);
         assert!(result.is_none());
-        assert_eq!(state.scroll_offset["analysis"], 1);
+        assert_eq!(state.analysis_panel.scroll_offset(), 1);
     }
 
     #[test]
@@ -1675,7 +1703,7 @@ mod tests {
         // Default is 0, scrolling up should stay at 0
         let result = handle_key(key(KeyCode::Up), &mut state);
         assert!(result.is_none());
-        assert_eq!(state.scroll_offset["analysis"], 0);
+        assert_eq!(state.analysis_panel.scroll_offset(), 0);
     }
 
     #[test]
@@ -1683,16 +1711,18 @@ mod tests {
         let mut state = ViewState::default();
         let result = handle_key(key(KeyCode::PageDown), &mut state);
         assert!(result.is_none());
-        assert_eq!(state.scroll_offset["analysis"], 20);
+        assert_eq!(state.analysis_panel.scroll_offset(), 20);
     }
 
     #[test]
     fn page_up_scrolls_by_page_size() {
         let mut state = ViewState::default();
-        state.scroll_offset.insert("analysis".to_string(), 25);
+        for _ in 0..25 {
+            state.analysis_panel.update(AnalysisPanelMessage::Scroll(ScrollDirection::Down));
+        }
         let result = handle_key(key(KeyCode::PageUp), &mut state);
         assert!(result.is_none());
-        assert_eq!(state.scroll_offset["analysis"], 5);
+        assert_eq!(state.analysis_panel.scroll_offset(), 5);
     }
 
     #[test]
@@ -1702,8 +1732,8 @@ mod tests {
         handle_key(key(KeyCode::Down), &mut state);
         handle_key(key(KeyCode::Down), &mut state);
         assert_eq!(state.scroll_offset.get("available"), Some(&2));
-        // Analysis tab should not have a scroll offset
-        assert_eq!(state.scroll_offset.get("analysis"), None);
+        // Analysis panel should not have been scrolled
+        assert_eq!(state.analysis_panel.scroll_offset(), 0);
         // Nomination plan is no longer a tab key
         assert_eq!(state.scroll_offset.get("nom_plan"), None);
     }
@@ -1807,8 +1837,8 @@ mod tests {
         handle_key(key(KeyCode::Down), &mut state);
 
         assert_eq!(state.roster_panel.scroll_offset(), 2);
-        // Main panel scroll should not be affected
-        assert!(state.scroll_offset.get("analysis").is_none());
+        // Analysis panel scroll should not be affected
+        assert_eq!(state.analysis_panel.scroll_offset(), 0);
     }
 
     #[test]
@@ -1819,7 +1849,7 @@ mod tests {
         handle_key(key(KeyCode::Down), &mut state);
 
         assert_eq!(state.scarcity_panel.scroll_offset(), 1);
-        assert!(state.scroll_offset.get("analysis").is_none());
+        assert_eq!(state.analysis_panel.scroll_offset(), 0);
     }
 
     #[test]
@@ -1830,7 +1860,7 @@ mod tests {
         handle_key(key(KeyCode::Down), &mut state);
 
         assert_eq!(state.scroll_offset.get("budget"), Some(&1));
-        assert!(state.scroll_offset.get("analysis").is_none());
+        assert_eq!(state.analysis_panel.scroll_offset(), 0);
     }
 
     #[test]
@@ -1841,7 +1871,7 @@ mod tests {
         handle_key(key(KeyCode::Down), &mut state);
 
         assert_eq!(state.scroll_offset.get("nom_plan"), Some(&1));
-        assert!(state.scroll_offset.get("analysis").is_none());
+        assert_eq!(state.analysis_panel.scroll_offset(), 0);
     }
 
     #[test]
@@ -1851,7 +1881,7 @@ mod tests {
 
         handle_key(key(KeyCode::Down), &mut state);
 
-        assert_eq!(state.scroll_offset.get("analysis"), Some(&1));
+        assert_eq!(state.analysis_panel.scroll_offset(), 1);
         assert!(state.scroll_offset.get("sidebar").is_none());
     }
 
@@ -1862,7 +1892,7 @@ mod tests {
 
         handle_key(key(KeyCode::Down), &mut state);
 
-        assert_eq!(state.scroll_offset.get("analysis"), Some(&1));
+        assert_eq!(state.analysis_panel.scroll_offset(), 1);
         assert!(state.scroll_offset.get("sidebar").is_none());
     }
 
@@ -1874,7 +1904,7 @@ mod tests {
         handle_key(key(KeyCode::PageDown), &mut state);
 
         assert_eq!(state.roster_panel.scroll_offset(), 20);
-        assert!(state.scroll_offset.get("analysis").is_none());
+        assert_eq!(state.analysis_panel.scroll_offset(), 0);
     }
 
     #[test]
@@ -2296,7 +2326,7 @@ mod tests {
         // Scrolling should be blocked
         let result = handle_key(key(KeyCode::Down), &mut state);
         assert!(result.is_none());
-        assert!(state.scroll_offset.get("analysis").is_none(), "Scroll should be blocked");
+        assert_eq!(state.analysis_panel.scroll_offset(), 0, "Scroll should be blocked");
 
         // r should be blocked
         let result = handle_key(key(KeyCode::Char('r')), &mut state);
@@ -2424,8 +2454,8 @@ mod tests {
         };
         let result = handle_key(repeat_event, &mut state);
         assert!(result.is_none(), "Repeat events should be ignored");
-        assert!(
-            state.scroll_offset.get("analysis").is_none(),
+        assert_eq!(
+            state.analysis_panel.scroll_offset(), 0,
             "Repeat event should not modify scroll state"
         );
     }
@@ -2515,7 +2545,7 @@ mod tests {
 
         // Scroll main panel down
         handle_key(key(KeyCode::Down), &mut state);
-        assert_eq!(state.scroll_offset.get("analysis"), Some(&1));
+        assert_eq!(state.analysis_panel.scroll_offset(), 1);
 
         // Switch focus to roster and scroll
         state.focused_panel = Some(FocusPanel::Roster);
@@ -2523,7 +2553,7 @@ mod tests {
         assert_eq!(state.roster_panel.scroll_offset(), 1);
 
         // Main panel scroll should be untouched
-        assert_eq!(state.scroll_offset.get("analysis"), Some(&1));
+        assert_eq!(state.analysis_panel.scroll_offset(), 1);
         // Other panels should be untouched
         assert!(state.scroll_offset.get("scarcity").is_none());
     }
