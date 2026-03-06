@@ -10,17 +10,15 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
-use crate::tui::{BudgetStatus, ViewState};
+use crate::tui::BudgetStatus;
 use super::focused_border_style;
 
 /// Render the budget display into the given area.
 ///
 /// When `focused` is true, the border is highlighted in cyan to indicate this
 /// panel has keyboard focus for scroll routing.
-pub fn render(frame: &mut Frame, area: Rect, state: &ViewState, focused: bool) {
-    let lines = build_budget_lines(&state.budget);
-
-    let scroll_offset = state.scroll_offset.get("budget").copied().unwrap_or(0);
+pub fn render(frame: &mut Frame, area: Rect, budget: &BudgetStatus, scroll_offset: usize, focused: bool) {
+    let lines = build_budget_lines(budget);
     let total_lines = lines.len();
     let visible_rows = (area.height as usize).saturating_sub(2);
     let max_offset = total_lines.saturating_sub(visible_rows);
@@ -163,9 +161,9 @@ mod tests {
     fn render_does_not_panic_with_defaults() {
         let backend = ratatui::backend::TestBackend::new(40, 10);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        let state = ViewState::default();
+        let budget = BudgetStatus::default();
         terminal
-            .draw(|frame| render(frame, frame.area(), &state, false))
+            .draw(|frame| render(frame, frame.area(), &budget, 0, false))
             .unwrap();
     }
 
@@ -173,8 +171,7 @@ mod tests {
     fn render_does_not_panic_with_data() {
         let backend = ratatui::backend::TestBackend::new(40, 10);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        let mut state = ViewState::default();
-        state.budget = BudgetStatus {
+        let budget = BudgetStatus {
             spent: 120,
             remaining: 140,
             cap: 260,
@@ -183,7 +180,7 @@ mod tests {
             avg_per_slot: 10.8,
         };
         terminal
-            .draw(|frame| render(frame, frame.area(), &state, false))
+            .draw(|frame| render(frame, frame.area(), &budget, 0, false))
             .unwrap();
     }
 
@@ -191,9 +188,9 @@ mod tests {
     fn render_does_not_panic_when_focused() {
         let backend = ratatui::backend::TestBackend::new(40, 10);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        let state = ViewState::default();
+        let budget = BudgetStatus::default();
         terminal
-            .draw(|frame| render(frame, frame.area(), &state, true))
+            .draw(|frame| render(frame, frame.area(), &budget, 0, true))
             .unwrap();
     }
 }

@@ -937,8 +937,21 @@ fn render_frame(frame: &mut Frame, state: &ViewState) {
 fn render_draft_frame(frame: &mut Frame, state: &ViewState) {
     let layout = build_layout(frame.area());
 
-    widgets::status_bar::render(frame, layout.status_bar, state);
-    widgets::nomination_banner::render(frame, layout.nomination_banner, state);
+    widgets::status_bar::render(
+        frame,
+        layout.status_bar,
+        state.connection_status,
+        state.pick_number,
+        state.total_picks,
+        state.active_tab,
+        state.llm_configured,
+    );
+    widgets::nomination_banner::render(
+        frame,
+        layout.nomination_banner,
+        state.current_nomination.as_ref(),
+        state.instant_analysis.as_ref(),
+    );
 
     let main_focused = state.focused_panel == Some(FocusPanel::MainPanel);
     let roster_focused = state.focused_panel == Some(FocusPanel::Roster);
@@ -975,7 +988,13 @@ fn render_draft_frame(frame: &mut Frame, state: &ViewState) {
         .and_then(|n| Position::from_str_pos(&n.position));
     state.roster_panel.view(frame, layout.roster, &state.my_roster, nominated_position.as_ref(), roster_focused);
     state.scarcity_panel.view(frame, layout.scarcity, &state.positional_scarcity, nominated_position.as_ref(), scarcity_focused);
-    widgets::budget::render(frame, layout.budget, state, budget_focused);
+    widgets::budget::render(
+        frame,
+        layout.budget,
+        &state.budget,
+        state.scroll_offset.get("budget").copied().unwrap_or(0),
+        budget_focused,
+    );
     state.plan_panel.view(frame, layout.nomination_plan, nom_plan_focused);
 
     // Help bar: dumb renderer of the pre-synced active keybind hints
