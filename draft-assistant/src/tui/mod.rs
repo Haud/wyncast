@@ -6,6 +6,7 @@
 
 pub mod action;
 pub mod confirm_dialog;
+pub mod draft;
 pub mod input;
 pub mod layout;
 pub mod llm_stream;
@@ -36,6 +37,7 @@ use crate::protocol::{
 use crate::valuation::scarcity::ScarcityEntry;
 use crate::valuation::zscore::PlayerValuation;
 
+use draft::draft_log::DraftLogPanel;
 use layout::build_layout;
 pub use onboarding::llm_setup::LlmSetupState;
 pub use onboarding::strategy_setup::StrategySetupState;
@@ -303,6 +305,8 @@ pub struct ViewState {
     pub confirm_quit: bool,
     /// Chronological list of completed draft picks.
     pub draft_log: Vec<DraftPick>,
+    /// Draft log panel component (owns its own scroll state).
+    pub draft_log_panel: DraftLogPanel,
     /// Summary of each team's draft state.
     pub team_summaries: Vec<TeamSummary>,
     /// User's roster slots (position + optional player).
@@ -362,6 +366,7 @@ impl Default for ViewState {
             position_filter: None,
             confirm_quit: false,
             draft_log: Vec::new(),
+            draft_log_panel: DraftLogPanel::new(),
             team_summaries: Vec::new(),
             my_roster: Vec::new(),
             focused_panel: None,
@@ -993,7 +998,14 @@ fn render_draft_frame(frame: &mut Frame, state: &ViewState) {
     match state.active_tab {
         TabId::Analysis => widgets::llm_analysis::render(frame, layout.main_panel, state, main_focused),
         TabId::Available => widgets::available::render(frame, layout.main_panel, state, main_focused),
-        TabId::DraftLog => widgets::draft_log::render(frame, layout.main_panel, state, main_focused),
+        TabId::DraftLog => {
+            let props = crate::tui::draft::draft_log::DraftLogProps {
+                picks: &state.draft_log,
+                available_players: &state.available_players,
+                focused: main_focused,
+            };
+            state.draft_log_panel.view(frame, layout.main_panel, &props);
+        }
         TabId::Teams => widgets::teams::render(frame, layout.main_panel, state, main_focused),
     }
 
