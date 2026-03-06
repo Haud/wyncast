@@ -6,20 +6,8 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use crate::protocol::{AppMode, OnboardingAction, TabFeature, TabId, UserCommand};
-use crate::tui::draft::draft_log::DraftLogMessage;
-use crate::tui::draft::main_panel::MainPanelMessage;
-use crate::tui::draft::main_panel::analysis::AnalysisPanelMessage;
-use crate::tui::draft::main_panel::available::AvailablePanelMessage;
-use crate::tui::draft::sidebar::plan::PlanPanelMessage;
-use crate::tui::draft::sidebar::roster::RosterMessage;
-use crate::tui::draft::sidebar::scarcity::ScarcityPanelMessage;
-use crate::tui::draft::teams::TeamsMessage;
-use crate::tui::scroll::ScrollDirection;
-use crate::tui::draft::modal::position_filter::{
-    PositionFilterModalAction, PositionFilterModalMessage,
-};
-use super::{FocusPanel, ViewState};
+use crate::protocol::{AppMode, OnboardingAction, UserCommand};
+use super::ViewState;
 
 /// Handle a keyboard event.
 ///
@@ -66,7 +54,7 @@ pub fn handle_key(
     let result = match &view_state.app_mode {
         AppMode::Onboarding(_) => handle_onboarding_key(key_event, view_state),
         AppMode::Settings(_) => handle_settings_key(key_event, view_state),
-        AppMode::Draft => handle_draft_key(key_event, view_state),
+        AppMode::Draft => view_state.draft_screen.handle_key(key_event),
     };
 
     if !was_editing && is_text_editing_active(view_state) {
@@ -90,10 +78,10 @@ fn is_text_editing_active(view_state: &ViewState) -> bool {
         || view_state.strategy_setup.editing_field.is_some()
         || view_state.strategy_setup.overview_editing);
 
-    view_state.main_panel.available.filter_mode()
+    view_state.draft_screen.main_panel.available.filter_mode()
         || view_state.llm_setup.api_key_editing
         || strategy_editing
-        || view_state.modal_layer.position_filter.open
+        || view_state.draft_screen.modal_layer.position_filter.open
 }
 
 /// Handle keyboard input during the onboarding wizard.
@@ -1189,352 +1177,6 @@ fn filter_onboarding_commands(cmd: Option<UserCommand>) -> Option<UserCommand> {
     }
 }
 
-/// Handle keyboard input in draft mode (the main operational view).
-///
-/// This contains all the existing draft-mode key handling logic unchanged.
-fn handle_draft_key(
-    key_event: KeyEvent,
-    view_state: &mut ViewState,
-) -> Option<UserCommand> {
-    // Quit confirmation mode: delegate to ConfirmDialog component
-    if view_state.modal_layer.quit_confirm.open {
-        use crate::tui::confirm_dialog::ConfirmResult;
-        if let Some(msg) = view_state.modal_layer.quit_confirm.key_to_message(key_event) {
-            if let Some(result) = view_state.modal_layer.quit_confirm.update(msg) {
-                match result {
-                    ConfirmResult::Confirmed('n') => return None, // 'n' cancels
-                    ConfirmResult::Confirmed(_) => return Some(UserCommand::Quit),
-                    ConfirmResult::Cancelled => return None,
-                }
-            }
-        }
-        return None; // block all other keys
-    }
-
-    // Filter mode: route keys through the available panel component
-    if view_state.main_panel.available.filter_mode() {
-        if let Some(msg) = view_state.main_panel.available.key_to_message(key_event) {
-            view_state.main_panel.available.update(msg);
-        }
-        return None;
-    }
-
-    // Position filter modal: intercept all keys when the modal is open
-    if view_state.modal_layer.position_filter.open {
-        if let Some(msg) = view_state.modal_layer.position_filter.key_to_message(key_event) {
-            if let Some(action) = view_state.modal_layer.position_filter.update(msg) {
-                if let PositionFilterModalAction::Selected(pos) = action {
-                    view_state
-                        .main_panel.available
-                        .update(AvailablePanelMessage::SetPositionFilter(pos));
-                }
-            }
-        }
-        return None;
-    }
-
-    // Normal mode key dispatch
-    match key_event.code {
-        // Tab switching
-        KeyCode::Char('1') => {
-            view_state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Analysis));
-            view_state.focused_panel = None;
-            None
-        }
-        KeyCode::Char('2') => {
-            view_state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
-            view_state.focused_panel = None;
-            None
-        }
-        KeyCode::Char('3') => {
-            view_state.main_panel.update(MainPanelMessage::SwitchTab(TabId::DraftLog));
-            view_state.focused_panel = None;
-            None
-        }
-        KeyCode::Char('4') => {
-            view_state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Teams));
-            view_state.focused_panel = None;
-            None
-        }
-
-        // Scrolling: routes to focused panel (or main panel if no focus)
-        KeyCode::Up | KeyCode::Char('k') => {
-            dispatch_scroll_up(view_state, 1);
-            None
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            dispatch_scroll_down(view_state, 1);
-            None
-        }
-        KeyCode::PageUp => {
-            dispatch_scroll_up(view_state, page_size());
-            None
-        }
-        KeyCode::PageDown => {
-            dispatch_scroll_down(view_state, page_size());
-            None
-        }
-
-        // Panel focus cycling
-        KeyCode::Tab => {
-            if key_event.modifiers.contains(KeyModifiers::SHIFT) {
-                view_state.focused_panel = FocusPanel::prev(view_state.focused_panel);
-            } else {
-                view_state.focused_panel = FocusPanel::next(view_state.focused_panel);
-            }
-            None
-        }
-        KeyCode::BackTab => {
-            view_state.focused_panel = FocusPanel::prev(view_state.focused_panel);
-            None
-        }
-
-        // Filter mode entry: only on tabs that support filtering
-        KeyCode::Char('/') => {
-            if view_state.main_panel.active_tab().supports(TabFeature::Filter) {
-                view_state.main_panel.available.update(AvailablePanelMessage::ToggleFilterMode);
-            }
-            None
-        }
-
-        // Escape: clear focus, filter text, and position filter
-        KeyCode::Esc => {
-            view_state.focused_panel = None;
-            view_state.main_panel.available.update(AvailablePanelMessage::ClearFilters);
-            None
-        }
-
-        // Position filter modal: only on tabs that support it
-        KeyCode::Char('p') => {
-            if view_state.main_panel.active_tab().supports(TabFeature::PositionFilter) {
-                view_state.modal_layer.position_filter.update(
-                    PositionFilterModalMessage::Open {
-                        current_filter: view_state.main_panel.available.position_filter(),
-                    },
-                );
-            }
-            None
-        }
-
-        // Request a full keyframe (FULL_STATE_SYNC) from the extension
-        KeyCode::Char('r') => Some(UserCommand::RequestKeyframe),
-
-        // Open settings screen
-        KeyCode::Char(',') => Some(UserCommand::OpenSettings),
-
-        // Quit: enter confirmation mode instead of quitting immediately
-        KeyCode::Char('q') => {
-            use crate::tui::confirm_dialog::ConfirmMessage;
-            view_state.modal_layer.quit_confirm.update(ConfirmMessage::Open);
-            None
-        }
-
-        _ => None,
-    }
-}
-
-
-/// Get the widget key for scroll state based on the active tab.
-fn active_widget_key(view_state: &ViewState) -> &'static str {
-    match view_state.main_panel.active_tab() {
-        TabId::Analysis => "analysis",
-        TabId::Available => "available",
-        TabId::DraftLog => "draft_log",
-        TabId::Teams => "teams",
-    }
-}
-
-/// Return the scroll key for the currently focused panel.
-///
-/// Each focusable panel has its own scroll offset key:
-/// - `MainPanel` -> the active tab widget key (analysis/available/draft_log/teams)
-/// - `Roster` -> "roster"
-/// - `Scarcity` -> "scarcity"
-/// - `Budget` -> "budget"
-/// - `NominationPlan` -> "nom_plan"
-/// - `None` -> the active tab widget key (backward compatible default)
-fn focused_scroll_key(view_state: &ViewState) -> &'static str {
-    match view_state.focused_panel {
-        Some(FocusPanel::Roster) => "roster",
-        Some(FocusPanel::Scarcity) => "scarcity",
-        Some(FocusPanel::Budget) => "budget",
-        Some(FocusPanel::NominationPlan) => "nom_plan",
-        Some(FocusPanel::MainPanel) | None => active_widget_key(view_state),
-    }
-}
-
-/// Dispatch a scroll-up event to the appropriate panel based on focus state.
-fn dispatch_scroll_up(view_state: &mut ViewState, lines: usize) {
-    let key = focused_scroll_key(view_state);
-    if key == "analysis" {
-        let dir = if lines >= page_size() {
-            ScrollDirection::PageUp
-        } else {
-            ScrollDirection::Up
-        };
-        view_state
-            .main_panel.analysis
-            .update(AnalysisPanelMessage::Scroll(dir));
-        return;
-    }
-    if key == "draft_log" {
-        let dir = if lines >= page_size() {
-            ScrollDirection::PageUp
-        } else {
-            ScrollDirection::Up
-        };
-        view_state
-            .main_panel.draft_log
-            .update(DraftLogMessage::Scroll(dir));
-        return;
-    }
-    if key == "teams" {
-        let dir = if lines >= page_size() {
-            ScrollDirection::PageUp
-        } else {
-            ScrollDirection::Up
-        };
-        view_state
-            .main_panel.teams
-            .update(TeamsMessage::Scroll(dir));
-        return;
-    }
-    if key == "roster" {
-        let dir = if lines >= page_size() {
-            ScrollDirection::PageUp
-        } else {
-            ScrollDirection::Up
-        };
-        view_state
-            .sidebar.roster
-            .update(RosterMessage::Scroll(dir));
-        return;
-    }
-    if key == "scarcity" {
-        let dir = if lines >= page_size() {
-            ScrollDirection::PageUp
-        } else {
-            ScrollDirection::Up
-        };
-        view_state
-            .sidebar.scarcity
-            .update(ScarcityPanelMessage::Scroll(dir));
-        return;
-    }
-    if key == "nom_plan" {
-        let dir = if lines >= page_size() {
-            ScrollDirection::PageUp
-        } else {
-            ScrollDirection::Up
-        };
-        view_state
-            .sidebar.plan
-            .update(PlanPanelMessage::Scroll(dir));
-        return;
-    }
-    if key == "available" {
-        let dir = if lines >= page_size() {
-            ScrollDirection::PageUp
-        } else {
-            ScrollDirection::Up
-        };
-        view_state
-            .main_panel.available
-            .update(AvailablePanelMessage::Scroll(dir));
-        return;
-    }
-    let offset = view_state.scroll_offset.entry(key.to_string()).or_insert(0);
-    *offset = offset.saturating_sub(lines);
-}
-
-/// Dispatch a scroll-down event to the appropriate panel based on focus state.
-fn dispatch_scroll_down(view_state: &mut ViewState, lines: usize) {
-    let key = focused_scroll_key(view_state);
-    if key == "analysis" {
-        let dir = if lines >= page_size() {
-            ScrollDirection::PageDown
-        } else {
-            ScrollDirection::Down
-        };
-        view_state
-            .main_panel.analysis
-            .update(AnalysisPanelMessage::Scroll(dir));
-        return;
-    }
-    if key == "draft_log" {
-        let dir = if lines >= page_size() {
-            ScrollDirection::PageDown
-        } else {
-            ScrollDirection::Down
-        };
-        view_state
-            .main_panel.draft_log
-            .update(DraftLogMessage::Scroll(dir));
-        return;
-    }
-    if key == "teams" {
-        let dir = if lines >= page_size() {
-            ScrollDirection::PageDown
-        } else {
-            ScrollDirection::Down
-        };
-        view_state
-            .main_panel.teams
-            .update(TeamsMessage::Scroll(dir));
-        return;
-    }
-    if key == "roster" {
-        let dir = if lines >= page_size() {
-            ScrollDirection::PageDown
-        } else {
-            ScrollDirection::Down
-        };
-        view_state
-            .sidebar.roster
-            .update(RosterMessage::Scroll(dir));
-        return;
-    }
-    if key == "scarcity" {
-        let dir = if lines >= page_size() {
-            ScrollDirection::PageDown
-        } else {
-            ScrollDirection::Down
-        };
-        view_state
-            .sidebar.scarcity
-            .update(ScarcityPanelMessage::Scroll(dir));
-        return;
-    }
-    if key == "nom_plan" {
-        let dir = if lines >= page_size() {
-            ScrollDirection::PageDown
-        } else {
-            ScrollDirection::Down
-        };
-        view_state
-            .sidebar.plan
-            .update(PlanPanelMessage::Scroll(dir));
-        return;
-    }
-    if key == "available" {
-        let dir = if lines >= page_size() {
-            ScrollDirection::PageDown
-        } else {
-            ScrollDirection::Down
-        };
-        view_state
-            .main_panel.available
-            .update(AvailablePanelMessage::Scroll(dir));
-        return;
-    }
-    let offset = view_state.scroll_offset.entry(key.to_string()).or_insert(0);
-    *offset = offset.saturating_add(lines);
-}
-
-/// Page size for PageUp/PageDown scrolling.
-fn page_size() -> usize {
-    20
-}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -1544,7 +1186,13 @@ fn page_size() -> usize {
 mod tests {
     use super::*;
     use crate::draft::pick::Position;
+    use crate::protocol::TabId;
     use crate::tui::FocusPanel;
+    use crate::tui::draft::main_panel::MainPanelMessage;
+    use crate::tui::draft::main_panel::analysis::AnalysisPanelMessage;
+    use crate::tui::draft::main_panel::available::AvailablePanelMessage;
+    use crate::tui::draft::modal::position_filter::PositionFilterModalMessage;
+    use crate::tui::scroll::ScrollDirection;
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
     /// Helper to create a KeyEvent with no modifiers.
@@ -1572,10 +1220,10 @@ mod tests {
     #[test]
     fn tab_1_switches_to_analysis() {
         let mut state = ViewState::default();
-        state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Teams));
+        state.draft_screen.main_panel.update(MainPanelMessage::SwitchTab(TabId::Teams));
         let result = handle_key(key(KeyCode::Char('1')), &mut state);
         assert!(result.is_none());
-        assert_eq!(state.main_panel.active_tab(), TabId::Analysis);
+        assert_eq!(state.draft_screen.main_panel.active_tab(), TabId::Analysis);
     }
 
     #[test]
@@ -1583,7 +1231,7 @@ mod tests {
         let mut state = ViewState::default();
         let result = handle_key(key(KeyCode::Char('2')), &mut state);
         assert!(result.is_none());
-        assert_eq!(state.main_panel.active_tab(), TabId::Available);
+        assert_eq!(state.draft_screen.main_panel.active_tab(), TabId::Available);
     }
 
     #[test]
@@ -1591,7 +1239,7 @@ mod tests {
         let mut state = ViewState::default();
         let result = handle_key(key(KeyCode::Char('3')), &mut state);
         assert!(result.is_none());
-        assert_eq!(state.main_panel.active_tab(), TabId::DraftLog);
+        assert_eq!(state.draft_screen.main_panel.active_tab(), TabId::DraftLog);
     }
 
     #[test]
@@ -1599,7 +1247,7 @@ mod tests {
         let mut state = ViewState::default();
         let result = handle_key(key(KeyCode::Char('4')), &mut state);
         assert!(result.is_none());
-        assert_eq!(state.main_panel.active_tab(), TabId::Teams);
+        assert_eq!(state.draft_screen.main_panel.active_tab(), TabId::Teams);
     }
 
     // -- Scroll --
@@ -1609,11 +1257,11 @@ mod tests {
         let mut state = ViewState::default();
         // Pre-scroll the analysis panel down 5 positions
         for _ in 0..5 {
-            state.main_panel.analysis.update(AnalysisPanelMessage::Scroll(ScrollDirection::Down));
+            state.draft_screen.main_panel.analysis.update(AnalysisPanelMessage::Scroll(ScrollDirection::Down));
         }
         let result = handle_key(key(KeyCode::Up), &mut state);
         assert!(result.is_none());
-        assert_eq!(state.main_panel.analysis.scroll_offset(), 4);
+        assert_eq!(state.draft_screen.main_panel.analysis.scroll_offset(), 4);
     }
 
     #[test]
@@ -1621,18 +1269,18 @@ mod tests {
         let mut state = ViewState::default();
         let result = handle_key(key(KeyCode::Down), &mut state);
         assert!(result.is_none());
-        assert_eq!(state.main_panel.analysis.scroll_offset(), 1);
+        assert_eq!(state.draft_screen.main_panel.analysis.scroll_offset(), 1);
     }
 
     #[test]
     fn k_scrolls_up() {
         let mut state = ViewState::default();
         for _ in 0..3 {
-            state.main_panel.analysis.update(AnalysisPanelMessage::Scroll(ScrollDirection::Down));
+            state.draft_screen.main_panel.analysis.update(AnalysisPanelMessage::Scroll(ScrollDirection::Down));
         }
         let result = handle_key(key(KeyCode::Char('k')), &mut state);
         assert!(result.is_none());
-        assert_eq!(state.main_panel.analysis.scroll_offset(), 2);
+        assert_eq!(state.draft_screen.main_panel.analysis.scroll_offset(), 2);
     }
 
     #[test]
@@ -1640,7 +1288,7 @@ mod tests {
         let mut state = ViewState::default();
         let result = handle_key(key(KeyCode::Char('j')), &mut state);
         assert!(result.is_none());
-        assert_eq!(state.main_panel.analysis.scroll_offset(), 1);
+        assert_eq!(state.draft_screen.main_panel.analysis.scroll_offset(), 1);
     }
 
     #[test]
@@ -1649,7 +1297,7 @@ mod tests {
         // Default is 0, scrolling up should stay at 0
         let result = handle_key(key(KeyCode::Up), &mut state);
         assert!(result.is_none());
-        assert_eq!(state.main_panel.analysis.scroll_offset(), 0);
+        assert_eq!(state.draft_screen.main_panel.analysis.scroll_offset(), 0);
     }
 
     #[test]
@@ -1657,31 +1305,31 @@ mod tests {
         let mut state = ViewState::default();
         let result = handle_key(key(KeyCode::PageDown), &mut state);
         assert!(result.is_none());
-        assert_eq!(state.main_panel.analysis.scroll_offset(), 20);
+        assert_eq!(state.draft_screen.main_panel.analysis.scroll_offset(), 20);
     }
 
     #[test]
     fn page_up_scrolls_by_page_size() {
         let mut state = ViewState::default();
         for _ in 0..25 {
-            state.main_panel.analysis.update(AnalysisPanelMessage::Scroll(ScrollDirection::Down));
+            state.draft_screen.main_panel.analysis.update(AnalysisPanelMessage::Scroll(ScrollDirection::Down));
         }
         let result = handle_key(key(KeyCode::PageUp), &mut state);
         assert!(result.is_none());
-        assert_eq!(state.main_panel.analysis.scroll_offset(), 5);
+        assert_eq!(state.draft_screen.main_panel.analysis.scroll_offset(), 5);
     }
 
     #[test]
     fn scroll_applies_to_active_tab_widget() {
         let mut state = ViewState::default();
-        state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
+        state.draft_screen.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
         handle_key(key(KeyCode::Down), &mut state);
         handle_key(key(KeyCode::Down), &mut state);
-        assert_eq!(state.main_panel.available.scroll_offset(), 2);
+        assert_eq!(state.draft_screen.main_panel.available.scroll_offset(), 2);
         // Analysis panel should not have been scrolled
-        assert_eq!(state.main_panel.analysis.scroll_offset(), 0);
+        assert_eq!(state.draft_screen.main_panel.analysis.scroll_offset(), 0);
         // Nomination plan should not have been scrolled
-        assert_eq!(state.sidebar.plan.scroll_offset(), 0);
+        assert_eq!(state.draft_screen.sidebar.plan.scroll_offset(), 0);
     }
 
     // -- Panel focus --
@@ -1689,55 +1337,55 @@ mod tests {
     #[test]
     fn tab_cycles_focus_forward() {
         let mut state = ViewState::default();
-        assert!(state.focused_panel.is_none());
+        assert!(state.draft_screen.focused_panel.is_none());
 
         handle_key(key(KeyCode::Tab), &mut state);
-        assert_eq!(state.focused_panel, Some(FocusPanel::MainPanel));
+        assert_eq!(state.draft_screen.focused_panel, Some(FocusPanel::MainPanel));
 
         handle_key(key(KeyCode::Tab), &mut state);
-        assert_eq!(state.focused_panel, Some(FocusPanel::Roster));
+        assert_eq!(state.draft_screen.focused_panel, Some(FocusPanel::Roster));
 
         handle_key(key(KeyCode::Tab), &mut state);
-        assert_eq!(state.focused_panel, Some(FocusPanel::Scarcity));
+        assert_eq!(state.draft_screen.focused_panel, Some(FocusPanel::Scarcity));
 
         handle_key(key(KeyCode::Tab), &mut state);
-        assert_eq!(state.focused_panel, Some(FocusPanel::Budget));
+        assert_eq!(state.draft_screen.focused_panel, Some(FocusPanel::Budget));
 
         handle_key(key(KeyCode::Tab), &mut state);
-        assert_eq!(state.focused_panel, Some(FocusPanel::NominationPlan));
+        assert_eq!(state.draft_screen.focused_panel, Some(FocusPanel::NominationPlan));
 
         handle_key(key(KeyCode::Tab), &mut state);
-        assert!(state.focused_panel.is_none());
+        assert!(state.draft_screen.focused_panel.is_none());
     }
 
     #[test]
     fn backtab_cycles_focus_backward() {
         let mut state = ViewState::default();
-        assert!(state.focused_panel.is_none());
+        assert!(state.draft_screen.focused_panel.is_none());
 
         handle_key(key(KeyCode::BackTab), &mut state);
-        assert_eq!(state.focused_panel, Some(FocusPanel::NominationPlan));
+        assert_eq!(state.draft_screen.focused_panel, Some(FocusPanel::NominationPlan));
 
         handle_key(key(KeyCode::BackTab), &mut state);
-        assert_eq!(state.focused_panel, Some(FocusPanel::Budget));
+        assert_eq!(state.draft_screen.focused_panel, Some(FocusPanel::Budget));
 
         handle_key(key(KeyCode::BackTab), &mut state);
-        assert_eq!(state.focused_panel, Some(FocusPanel::Scarcity));
+        assert_eq!(state.draft_screen.focused_panel, Some(FocusPanel::Scarcity));
 
         handle_key(key(KeyCode::BackTab), &mut state);
-        assert_eq!(state.focused_panel, Some(FocusPanel::Roster));
+        assert_eq!(state.draft_screen.focused_panel, Some(FocusPanel::Roster));
 
         handle_key(key(KeyCode::BackTab), &mut state);
-        assert_eq!(state.focused_panel, Some(FocusPanel::MainPanel));
+        assert_eq!(state.draft_screen.focused_panel, Some(FocusPanel::MainPanel));
 
         handle_key(key(KeyCode::BackTab), &mut state);
-        assert!(state.focused_panel.is_none());
+        assert!(state.draft_screen.focused_panel.is_none());
     }
 
     #[test]
     fn shift_tab_cycles_focus_backward() {
         let mut state = ViewState::default();
-        assert!(state.focused_panel.is_none());
+        assert!(state.draft_screen.focused_panel.is_none());
 
         let shift_tab = KeyEvent {
             code: KeyCode::Tab,
@@ -1747,121 +1395,121 @@ mod tests {
         };
 
         handle_key(shift_tab, &mut state);
-        assert_eq!(state.focused_panel, Some(FocusPanel::NominationPlan));
+        assert_eq!(state.draft_screen.focused_panel, Some(FocusPanel::NominationPlan));
 
         handle_key(shift_tab, &mut state);
-        assert_eq!(state.focused_panel, Some(FocusPanel::Budget));
+        assert_eq!(state.draft_screen.focused_panel, Some(FocusPanel::Budget));
 
         handle_key(shift_tab, &mut state);
-        assert_eq!(state.focused_panel, Some(FocusPanel::Scarcity));
+        assert_eq!(state.draft_screen.focused_panel, Some(FocusPanel::Scarcity));
 
         handle_key(shift_tab, &mut state);
-        assert_eq!(state.focused_panel, Some(FocusPanel::Roster));
+        assert_eq!(state.draft_screen.focused_panel, Some(FocusPanel::Roster));
 
         handle_key(shift_tab, &mut state);
-        assert_eq!(state.focused_panel, Some(FocusPanel::MainPanel));
+        assert_eq!(state.draft_screen.focused_panel, Some(FocusPanel::MainPanel));
 
         handle_key(shift_tab, &mut state);
-        assert!(state.focused_panel.is_none());
+        assert!(state.draft_screen.focused_panel.is_none());
     }
 
     #[test]
     fn esc_clears_focus() {
         let mut state = ViewState::default();
-        state.focused_panel = Some(FocusPanel::MainPanel);
+        state.draft_screen.focused_panel = Some(FocusPanel::MainPanel);
 
         handle_key(key(KeyCode::Esc), &mut state);
-        assert!(state.focused_panel.is_none());
+        assert!(state.draft_screen.focused_panel.is_none());
     }
 
     #[test]
     fn scroll_routes_to_roster_when_focused() {
         let mut state = ViewState::default();
-        state.focused_panel = Some(FocusPanel::Roster);
+        state.draft_screen.focused_panel = Some(FocusPanel::Roster);
 
         handle_key(key(KeyCode::Down), &mut state);
         handle_key(key(KeyCode::Down), &mut state);
 
-        assert_eq!(state.sidebar.roster.scroll_offset(), 2);
+        assert_eq!(state.draft_screen.sidebar.roster.scroll_offset(), 2);
         // Analysis panel scroll should not be affected
-        assert_eq!(state.main_panel.analysis.scroll_offset(), 0);
+        assert_eq!(state.draft_screen.main_panel.analysis.scroll_offset(), 0);
     }
 
     #[test]
     fn scroll_routes_to_scarcity_when_focused() {
         let mut state = ViewState::default();
-        state.focused_panel = Some(FocusPanel::Scarcity);
+        state.draft_screen.focused_panel = Some(FocusPanel::Scarcity);
 
         handle_key(key(KeyCode::Down), &mut state);
 
-        assert_eq!(state.sidebar.scarcity.scroll_offset(), 1);
-        assert_eq!(state.main_panel.analysis.scroll_offset(), 0);
+        assert_eq!(state.draft_screen.sidebar.scarcity.scroll_offset(), 1);
+        assert_eq!(state.draft_screen.main_panel.analysis.scroll_offset(), 0);
     }
 
     #[test]
     fn scroll_routes_to_budget_when_focused() {
         let mut state = ViewState::default();
-        state.focused_panel = Some(FocusPanel::Budget);
+        state.draft_screen.focused_panel = Some(FocusPanel::Budget);
 
         handle_key(key(KeyCode::Down), &mut state);
 
-        assert_eq!(state.scroll_offset.get("budget"), Some(&1));
-        assert_eq!(state.main_panel.analysis.scroll_offset(), 0);
+        assert_eq!(state.draft_screen.scroll_offset.get("budget"), Some(&1));
+        assert_eq!(state.draft_screen.main_panel.analysis.scroll_offset(), 0);
     }
 
     #[test]
     fn scroll_routes_to_nom_plan_when_focused() {
         let mut state = ViewState::default();
-        state.focused_panel = Some(FocusPanel::NominationPlan);
+        state.draft_screen.focused_panel = Some(FocusPanel::NominationPlan);
 
         handle_key(key(KeyCode::Down), &mut state);
 
-        assert_eq!(state.sidebar.plan.scroll_offset(), 1);
-        assert_eq!(state.main_panel.analysis.scroll_offset(), 0);
+        assert_eq!(state.draft_screen.sidebar.plan.scroll_offset(), 1);
+        assert_eq!(state.draft_screen.main_panel.analysis.scroll_offset(), 0);
     }
 
     #[test]
     fn scroll_routes_to_main_when_focused() {
         let mut state = ViewState::default();
-        state.focused_panel = Some(FocusPanel::MainPanel);
+        state.draft_screen.focused_panel = Some(FocusPanel::MainPanel);
 
         handle_key(key(KeyCode::Down), &mut state);
 
-        assert_eq!(state.main_panel.analysis.scroll_offset(), 1);
-        assert!(state.scroll_offset.get("sidebar").is_none());
+        assert_eq!(state.draft_screen.main_panel.analysis.scroll_offset(), 1);
+        assert!(state.draft_screen.scroll_offset.get("sidebar").is_none());
     }
 
     #[test]
     fn scroll_routes_to_main_when_no_focus() {
         let mut state = ViewState::default();
-        assert!(state.focused_panel.is_none());
+        assert!(state.draft_screen.focused_panel.is_none());
 
         handle_key(key(KeyCode::Down), &mut state);
 
-        assert_eq!(state.main_panel.analysis.scroll_offset(), 1);
-        assert!(state.scroll_offset.get("sidebar").is_none());
+        assert_eq!(state.draft_screen.main_panel.analysis.scroll_offset(), 1);
+        assert!(state.draft_screen.scroll_offset.get("sidebar").is_none());
     }
 
     #[test]
     fn page_scroll_routes_to_roster_when_focused() {
         let mut state = ViewState::default();
-        state.focused_panel = Some(FocusPanel::Roster);
+        state.draft_screen.focused_panel = Some(FocusPanel::Roster);
 
         handle_key(key(KeyCode::PageDown), &mut state);
 
-        assert_eq!(state.sidebar.roster.scroll_offset(), 20);
-        assert_eq!(state.main_panel.analysis.scroll_offset(), 0);
+        assert_eq!(state.draft_screen.sidebar.roster.scroll_offset(), 20);
+        assert_eq!(state.draft_screen.main_panel.analysis.scroll_offset(), 0);
     }
 
     #[test]
     fn tab_does_not_affect_other_state() {
         let mut state = ViewState::default();
-        state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
+        state.draft_screen.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
 
         handle_key(key(KeyCode::Tab), &mut state);
 
-        assert_eq!(state.main_panel.active_tab(), TabId::Available, "Tab should not switch tabs");
-        assert!(!state.main_panel.available.filter_mode(), "Tab should not enter filter mode");
+        assert_eq!(state.draft_screen.main_panel.active_tab(), TabId::Available, "Tab should not switch tabs");
+        assert!(!state.draft_screen.main_panel.available.filter_mode(), "Tab should not enter filter mode");
     }
 
     #[test]
@@ -1874,14 +1522,14 @@ mod tests {
             ('4', TabId::Teams),
         ] {
             let mut state = ViewState::default();
-            state.focused_panel = Some(FocusPanel::MainPanel);
+            state.draft_screen.focused_panel = Some(FocusPanel::MainPanel);
             handle_key(key(KeyCode::Char(key_char)), &mut state);
-            assert_eq!(state.main_panel.active_tab(), expected_tab, "Key '{}' should switch to {:?}", key_char, expected_tab);
+            assert_eq!(state.draft_screen.main_panel.active_tab(), expected_tab, "Key '{}' should switch to {:?}", key_char, expected_tab);
             assert!(
-                state.focused_panel.is_none(),
+                state.draft_screen.focused_panel.is_none(),
                 "Key '{}': focused_panel should be None after tab switch, got {:?}",
                 key_char,
-                state.focused_panel
+                state.draft_screen.focused_panel
             );
         }
     }
@@ -1896,10 +1544,10 @@ mod tests {
             FocusPanel::NominationPlan,
         ] {
             let mut state = ViewState::default();
-            state.focused_panel = Some(focused);
+            state.draft_screen.focused_panel = Some(focused);
             handle_key(key(KeyCode::Char('2')), &mut state);
             assert!(
-                state.focused_panel.is_none(),
+                state.draft_screen.focused_panel.is_none(),
                 "focused_panel {:?} should be cleared after tab switch",
                 focused
             );
@@ -1911,21 +1559,21 @@ mod tests {
     #[test]
     fn slash_enters_filter_mode_on_available_tab() {
         let mut state = ViewState::default();
-        state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
+        state.draft_screen.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
         let result = handle_key(key(KeyCode::Char('/')), &mut state);
         assert!(result.is_none());
-        assert!(state.main_panel.available.filter_mode());
+        assert!(state.draft_screen.main_panel.available.filter_mode());
     }
 
     #[test]
     fn slash_does_not_enter_filter_mode_on_other_tabs() {
         for tab in [TabId::Analysis, TabId::DraftLog, TabId::Teams] {
             let mut state = ViewState::default();
-            state.main_panel.update(MainPanelMessage::SwitchTab(tab));
+            state.draft_screen.main_panel.update(MainPanelMessage::SwitchTab(tab));
             let result = handle_key(key(KeyCode::Char('/')), &mut state);
             assert!(result.is_none(), "/ on {:?} should return None", tab);
             assert!(
-                !state.main_panel.available.filter_mode(),
+                !state.draft_screen.main_panel.available.filter_mode(),
                 "/ on {:?} should not activate filter_mode",
                 tab
             );
@@ -1935,77 +1583,77 @@ mod tests {
     #[test]
     fn filter_mode_appends_chars() {
         let mut state = ViewState::default();
-        state.main_panel.available.update(AvailablePanelMessage::ToggleFilterMode);
+        state.draft_screen.main_panel.available.update(AvailablePanelMessage::ToggleFilterMode);
         handle_key(key(KeyCode::Char('t')), &mut state);
         handle_key(key(KeyCode::Char('r')), &mut state);
         handle_key(key(KeyCode::Char('o')), &mut state);
         handle_key(key(KeyCode::Char('u')), &mut state);
         handle_key(key(KeyCode::Char('t')), &mut state);
-        assert_eq!(state.main_panel.available.filter_text().value(), "trout");
-        assert!(state.main_panel.available.filter_mode());
+        assert_eq!(state.draft_screen.main_panel.available.filter_text().value(), "trout");
+        assert!(state.draft_screen.main_panel.available.filter_mode());
     }
 
     #[test]
     fn filter_mode_backspace_removes_char() {
         let mut state = ViewState::default();
-        state.main_panel.available.update(AvailablePanelMessage::ToggleFilterMode);
+        state.draft_screen.main_panel.available.update(AvailablePanelMessage::ToggleFilterMode);
         // Type "test"
         for ch in "test".chars() {
-            state.main_panel.available.update(AvailablePanelMessage::FilterKeyPress(key(KeyCode::Char(ch))));
+            state.draft_screen.main_panel.available.update(AvailablePanelMessage::FilterKeyPress(key(KeyCode::Char(ch))));
         }
         handle_key(key(KeyCode::Backspace), &mut state);
-        assert_eq!(state.main_panel.available.filter_text().value(), "tes");
+        assert_eq!(state.draft_screen.main_panel.available.filter_text().value(), "tes");
     }
 
     #[test]
     fn filter_mode_backspace_on_empty_is_noop() {
         let mut state = ViewState::default();
-        state.main_panel.available.update(AvailablePanelMessage::ToggleFilterMode);
+        state.draft_screen.main_panel.available.update(AvailablePanelMessage::ToggleFilterMode);
         handle_key(key(KeyCode::Backspace), &mut state);
-        assert!(state.main_panel.available.filter_text().is_empty());
+        assert!(state.draft_screen.main_panel.available.filter_text().is_empty());
     }
 
     #[test]
     fn filter_mode_enter_exits_keeps_text() {
         let mut state = ViewState::default();
-        state.main_panel.available.update(AvailablePanelMessage::ToggleFilterMode);
+        state.draft_screen.main_panel.available.update(AvailablePanelMessage::ToggleFilterMode);
         for ch in "trout".chars() {
-            state.main_panel.available.update(AvailablePanelMessage::FilterKeyPress(key(KeyCode::Char(ch))));
+            state.draft_screen.main_panel.available.update(AvailablePanelMessage::FilterKeyPress(key(KeyCode::Char(ch))));
         }
         let result = handle_key(key(KeyCode::Enter), &mut state);
         assert!(result.is_none());
-        assert!(!state.main_panel.available.filter_mode());
-        assert_eq!(state.main_panel.available.filter_text().value(), "trout");
+        assert!(!state.draft_screen.main_panel.available.filter_mode());
+        assert_eq!(state.draft_screen.main_panel.available.filter_text().value(), "trout");
     }
 
     #[test]
     fn filter_mode_esc_exits_clears_text() {
         let mut state = ViewState::default();
-        state.main_panel.available.update(AvailablePanelMessage::ToggleFilterMode);
+        state.draft_screen.main_panel.available.update(AvailablePanelMessage::ToggleFilterMode);
         for ch in "trout".chars() {
-            state.main_panel.available.update(AvailablePanelMessage::FilterKeyPress(key(KeyCode::Char(ch))));
+            state.draft_screen.main_panel.available.update(AvailablePanelMessage::FilterKeyPress(key(KeyCode::Char(ch))));
         }
         let result = handle_key(key(KeyCode::Esc), &mut state);
         assert!(result.is_none());
-        assert!(!state.main_panel.available.filter_mode());
-        assert!(state.main_panel.available.filter_text().is_empty());
+        assert!(!state.draft_screen.main_panel.available.filter_mode());
+        assert!(state.draft_screen.main_panel.available.filter_text().is_empty());
     }
 
     #[test]
     fn filter_mode_does_not_switch_tabs() {
         let mut state = ViewState::default();
-        state.main_panel.available.update(AvailablePanelMessage::ToggleFilterMode);
-        state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Analysis));
+        state.draft_screen.main_panel.available.update(AvailablePanelMessage::ToggleFilterMode);
+        state.draft_screen.main_panel.update(MainPanelMessage::SwitchTab(TabId::Analysis));
         handle_key(key(KeyCode::Char('3')), &mut state);
         // Should add '3' to filter text, not switch tabs
-        assert_eq!(state.main_panel.available.filter_text().value(), "3");
-        assert_eq!(state.main_panel.active_tab(), TabId::Analysis);
+        assert_eq!(state.draft_screen.main_panel.available.filter_text().value(), "3");
+        assert_eq!(state.draft_screen.main_panel.active_tab(), TabId::Analysis);
     }
 
     #[test]
     fn filter_mode_ctrl_c_still_quits() {
         let mut state = ViewState::default();
-        state.main_panel.available.update(AvailablePanelMessage::ToggleFilterMode);
+        state.draft_screen.main_panel.available.update(AvailablePanelMessage::ToggleFilterMode);
         let result = handle_key(ctrl_key(KeyCode::Char('c')), &mut state);
         assert_eq!(result, Some(UserCommand::Quit));
     }
@@ -2015,20 +1663,20 @@ mod tests {
     #[test]
     fn p_opens_modal_on_available_tab() {
         let mut state = ViewState::default();
-        state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
-        assert!(!state.modal_layer.position_filter.open);
+        state.draft_screen.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
+        assert!(!state.draft_screen.modal_layer.position_filter.open);
         handle_key(key(KeyCode::Char('p')), &mut state);
-        assert!(state.modal_layer.position_filter.open, "p should open the modal on Available tab");
+        assert!(state.draft_screen.modal_layer.position_filter.open, "p should open the modal on Available tab");
     }
 
     #[test]
     fn p_does_not_open_modal_on_other_tabs() {
         for tab in [TabId::Analysis, TabId::DraftLog, TabId::Teams] {
             let mut state = ViewState::default();
-            state.main_panel.update(MainPanelMessage::SwitchTab(tab));
+            state.draft_screen.main_panel.update(MainPanelMessage::SwitchTab(tab));
             handle_key(key(KeyCode::Char('p')), &mut state);
             assert!(
-                !state.modal_layer.position_filter.open,
+                !state.draft_screen.modal_layer.position_filter.open,
                 "p on {:?} should not open modal",
                 tab
             );
@@ -2038,19 +1686,19 @@ mod tests {
     #[test]
     fn modal_esc_closes_without_applying() {
         let mut state = ViewState::default();
-        state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
-        state.main_panel.available.update(AvailablePanelMessage::SetPositionFilter(Some(Position::Catcher)));
+        state.draft_screen.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
+        state.draft_screen.main_panel.available.update(AvailablePanelMessage::SetPositionFilter(Some(Position::Catcher)));
         // Open via message, then move down twice to select "1B" (index 2)
-        state.modal_layer.position_filter.update(PositionFilterModalMessage::Open {
+        state.draft_screen.modal_layer.position_filter.update(PositionFilterModalMessage::Open {
             current_filter: Some(Position::Catcher),
         });
 
         handle_key(key(KeyCode::Esc), &mut state);
 
-        assert!(!state.modal_layer.position_filter.open, "Esc should close modal");
+        assert!(!state.draft_screen.modal_layer.position_filter.open, "Esc should close modal");
         // Position filter must NOT have changed
         assert_eq!(
-            state.main_panel.available.position_filter(),
+            state.draft_screen.main_panel.available.position_filter(),
             Some(Position::Catcher),
             "Esc should not change the position filter"
         );
@@ -2059,18 +1707,18 @@ mod tests {
     #[test]
     fn modal_enter_applies_selected_option() {
         let mut state = ViewState::default();
-        state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
+        state.draft_screen.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
         // Open modal, then move down to index 1 (Catcher)
-        state.modal_layer.position_filter.update(PositionFilterModalMessage::Open {
+        state.draft_screen.modal_layer.position_filter.update(PositionFilterModalMessage::Open {
             current_filter: None,
         });
         handle_key(key(KeyCode::Down), &mut state); // move to index 1 = C
 
         handle_key(key(KeyCode::Enter), &mut state);
 
-        assert!(!state.modal_layer.position_filter.open, "Enter should close modal");
+        assert!(!state.draft_screen.modal_layer.position_filter.open, "Enter should close modal");
         assert_eq!(
-            state.main_panel.available.position_filter(),
+            state.draft_screen.main_panel.available.position_filter(),
             Some(Position::Catcher),
             "Enter should apply selected option"
         );
@@ -2079,18 +1727,18 @@ mod tests {
     #[test]
     fn modal_enter_applies_all_option() {
         let mut state = ViewState::default();
-        state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
-        state.main_panel.available.update(AvailablePanelMessage::SetPositionFilter(Some(Position::Catcher)));
+        state.draft_screen.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
+        state.draft_screen.main_panel.available.update(AvailablePanelMessage::SetPositionFilter(Some(Position::Catcher)));
         // Open modal: selected_index defaults to 0 = "ALL"
-        state.modal_layer.position_filter.update(PositionFilterModalMessage::Open {
+        state.draft_screen.modal_layer.position_filter.update(PositionFilterModalMessage::Open {
             current_filter: None,
         });
 
         handle_key(key(KeyCode::Enter), &mut state);
 
-        assert!(!state.modal_layer.position_filter.open);
+        assert!(!state.draft_screen.modal_layer.position_filter.open);
         assert!(
-            state.main_panel.available.position_filter().is_none(),
+            state.draft_screen.main_panel.available.position_filter().is_none(),
             "Selecting ALL should clear position filter"
         );
     }
@@ -2098,29 +1746,29 @@ mod tests {
     #[test]
     fn modal_arrow_down_does_not_close() {
         let mut state = ViewState::default();
-        state.modal_layer.position_filter.update(PositionFilterModalMessage::Open {
+        state.draft_screen.modal_layer.position_filter.update(PositionFilterModalMessage::Open {
             current_filter: None,
         });
 
         handle_key(key(KeyCode::Down), &mut state);
-        assert!(state.modal_layer.position_filter.open, "Down should not close modal");
+        assert!(state.draft_screen.modal_layer.position_filter.open, "Down should not close modal");
     }
 
     #[test]
     fn modal_arrow_up_does_not_close() {
         let mut state = ViewState::default();
-        state.modal_layer.position_filter.update(PositionFilterModalMessage::Open {
+        state.draft_screen.modal_layer.position_filter.update(PositionFilterModalMessage::Open {
             current_filter: None,
         });
 
         handle_key(key(KeyCode::Up), &mut state);
-        assert!(state.modal_layer.position_filter.open, "Up should not close modal");
+        assert!(state.draft_screen.modal_layer.position_filter.open, "Up should not close modal");
     }
 
     #[test]
     fn modal_enter_with_filtered_list_applies_correct_option() {
         let mut state = ViewState::default();
-        state.modal_layer.position_filter.update(PositionFilterModalMessage::Open {
+        state.draft_screen.modal_layer.position_filter.update(PositionFilterModalMessage::Open {
             current_filter: None,
         });
         // Type "SP" to filter
@@ -2129,25 +1777,25 @@ mod tests {
 
         handle_key(key(KeyCode::Enter), &mut state);
 
-        assert!(!state.modal_layer.position_filter.open);
-        assert_eq!(state.main_panel.available.position_filter(), Some(Position::StartingPitcher));
+        assert!(!state.draft_screen.modal_layer.position_filter.open);
+        assert_eq!(state.draft_screen.main_panel.available.position_filter(), Some(Position::StartingPitcher));
     }
 
     #[test]
     fn modal_pre_selects_current_position_filter() {
         let mut state = ViewState::default();
-        state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
-        state.main_panel.available.update(AvailablePanelMessage::SetPositionFilter(Some(Position::StartingPitcher)));
+        state.draft_screen.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
+        state.draft_screen.main_panel.available.update(AvailablePanelMessage::SetPositionFilter(Some(Position::StartingPitcher)));
 
         handle_key(key(KeyCode::Char('p')), &mut state);
 
         // Verify the modal opened -- detailed selection index testing is in the
         // component's own unit tests.
-        assert!(state.modal_layer.position_filter.open);
+        assert!(state.draft_screen.modal_layer.position_filter.open);
         // Confirm by pressing Enter: should apply the pre-selected SP
         handle_key(key(KeyCode::Enter), &mut state);
         assert_eq!(
-            state.main_panel.available.position_filter(),
+            state.draft_screen.main_panel.available.position_filter(),
             Some(Position::StartingPitcher),
             "Pre-selected option should match current filter"
         );
@@ -2156,7 +1804,7 @@ mod tests {
     #[test]
     fn modal_ctrl_c_still_quits() {
         let mut state = ViewState::default();
-        state.modal_layer.position_filter.update(PositionFilterModalMessage::Open {
+        state.draft_screen.modal_layer.position_filter.update(PositionFilterModalMessage::Open {
             current_filter: None,
         });
         let result = handle_key(ctrl_key(KeyCode::Char('c')), &mut state);
@@ -2166,15 +1814,15 @@ mod tests {
     #[test]
     fn modal_blocks_normal_navigation() {
         let mut state = ViewState::default();
-        state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
-        state.modal_layer.position_filter.update(PositionFilterModalMessage::Open {
+        state.draft_screen.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
+        state.draft_screen.modal_layer.position_filter.update(PositionFilterModalMessage::Open {
             current_filter: None,
         });
 
         // '2' should NOT switch tabs while modal is open
         handle_key(key(KeyCode::Char('2')), &mut state);
         // It should have been treated as search text, not tab switch
-        assert_eq!(state.main_panel.active_tab(), TabId::Available);
+        assert_eq!(state.draft_screen.main_panel.active_tab(), TabId::Available);
     }
 
     // -- Command returns --
@@ -2193,13 +1841,13 @@ mod tests {
         let mut state = ViewState::default();
         let result = handle_key(key(KeyCode::Char('q')), &mut state);
         assert!(result.is_none(), "q should not send Quit immediately");
-        assert!(state.modal_layer.quit_confirm.open,"q should enter confirm_quit mode");
+        assert!(state.draft_screen.modal_layer.quit_confirm.open,"q should enter confirm_quit mode");
     }
 
     #[test]
     fn confirm_quit_y_sends_quit() {
         let mut state = ViewState::default();
-        state.modal_layer.quit_confirm.open = true;
+        state.draft_screen.modal_layer.quit_confirm.open = true;
         let result = handle_key(key(KeyCode::Char('y')), &mut state);
         assert_eq!(result, Some(UserCommand::Quit));
     }
@@ -2207,7 +1855,7 @@ mod tests {
     #[test]
     fn confirm_quit_q_sends_quit() {
         let mut state = ViewState::default();
-        state.modal_layer.quit_confirm.open = true;
+        state.draft_screen.modal_layer.quit_confirm.open = true;
         let result = handle_key(key(KeyCode::Char('q')), &mut state);
         assert_eq!(result, Some(UserCommand::Quit));
     }
@@ -2215,37 +1863,37 @@ mod tests {
     #[test]
     fn confirm_quit_n_cancels() {
         let mut state = ViewState::default();
-        state.modal_layer.quit_confirm.open = true;
+        state.draft_screen.modal_layer.quit_confirm.open = true;
         let result = handle_key(key(KeyCode::Char('n')), &mut state);
         assert!(result.is_none());
-        assert!(!state.modal_layer.quit_confirm.open,"n should cancel confirm_quit mode");
+        assert!(!state.draft_screen.modal_layer.quit_confirm.open,"n should cancel confirm_quit mode");
     }
 
     #[test]
     fn confirm_quit_esc_cancels() {
         let mut state = ViewState::default();
-        state.modal_layer.quit_confirm.open = true;
+        state.draft_screen.modal_layer.quit_confirm.open = true;
         let result = handle_key(key(KeyCode::Esc), &mut state);
         assert!(result.is_none());
-        assert!(!state.modal_layer.quit_confirm.open,"Esc should cancel confirm_quit mode");
+        assert!(!state.draft_screen.modal_layer.quit_confirm.open,"Esc should cancel confirm_quit mode");
     }
 
     #[test]
     fn confirm_quit_blocks_other_keys() {
         let mut state = ViewState::default();
-        state.modal_layer.quit_confirm.open = true;
-        state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Analysis));
+        state.draft_screen.modal_layer.quit_confirm.open = true;
+        state.draft_screen.main_panel.update(MainPanelMessage::SwitchTab(TabId::Analysis));
 
         // Tab switching should be blocked
         let result = handle_key(key(KeyCode::Char('3')), &mut state);
         assert!(result.is_none());
-        assert_eq!(state.main_panel.active_tab(), TabId::Analysis, "Tab switch should be blocked");
-        assert!(state.modal_layer.quit_confirm.open,"confirm_quit should remain active");
+        assert_eq!(state.draft_screen.main_panel.active_tab(), TabId::Analysis, "Tab switch should be blocked");
+        assert!(state.draft_screen.modal_layer.quit_confirm.open,"confirm_quit should remain active");
 
         // Scrolling should be blocked
         let result = handle_key(key(KeyCode::Down), &mut state);
         assert!(result.is_none());
-        assert_eq!(state.main_panel.analysis.scroll_offset(), 0, "Scroll should be blocked");
+        assert_eq!(state.draft_screen.main_panel.analysis.scroll_offset(), 0, "Scroll should be blocked");
 
         // r should be blocked
         let result = handle_key(key(KeyCode::Char('r')), &mut state);
@@ -2254,7 +1902,7 @@ mod tests {
         // Arbitrary keys should be blocked
         let result = handle_key(key(KeyCode::Char('x')), &mut state);
         assert!(result.is_none());
-        assert!(state.modal_layer.quit_confirm.open,"confirm_quit should remain active");
+        assert!(state.draft_screen.modal_layer.quit_confirm.open,"confirm_quit should remain active");
     }
 
     #[test]
@@ -2262,13 +1910,13 @@ mod tests {
         let mut state = ViewState::default();
         let result = handle_key(ctrl_key(KeyCode::Char('c')), &mut state);
         assert_eq!(result, Some(UserCommand::Quit));
-        assert!(!state.modal_layer.quit_confirm.open,"Ctrl+C should not enter confirm_quit mode");
+        assert!(!state.draft_screen.modal_layer.quit_confirm.open,"Ctrl+C should not enter confirm_quit mode");
     }
 
     #[test]
     fn ctrl_c_quits_even_during_confirmation() {
         let mut state = ViewState::default();
-        state.modal_layer.quit_confirm.open = true;
+        state.draft_screen.modal_layer.quit_confirm.open = true;
         let result = handle_key(ctrl_key(KeyCode::Char('c')), &mut state);
         assert_eq!(result, Some(UserCommand::Quit));
     }
@@ -2276,7 +1924,7 @@ mod tests {
     #[test]
     fn confirm_quit_uppercase_y_sends_quit() {
         let mut state = ViewState::default();
-        state.modal_layer.quit_confirm.open = true;
+        state.draft_screen.modal_layer.quit_confirm.open = true;
         let result = handle_key(key(KeyCode::Char('Y')), &mut state);
         assert_eq!(result, Some(UserCommand::Quit));
     }
@@ -2284,7 +1932,7 @@ mod tests {
     #[test]
     fn confirm_quit_uppercase_q_sends_quit() {
         let mut state = ViewState::default();
-        state.modal_layer.quit_confirm.open = true;
+        state.draft_screen.modal_layer.quit_confirm.open = true;
         let result = handle_key(key(KeyCode::Char('Q')), &mut state);
         assert_eq!(result, Some(UserCommand::Quit));
     }
@@ -2292,23 +1940,23 @@ mod tests {
     #[test]
     fn confirm_quit_uppercase_n_cancels() {
         let mut state = ViewState::default();
-        state.modal_layer.quit_confirm.open = true;
+        state.draft_screen.modal_layer.quit_confirm.open = true;
         let result = handle_key(key(KeyCode::Char('N')), &mut state);
         assert!(result.is_none());
-        assert!(!state.modal_layer.quit_confirm.open,"N should cancel confirm_quit mode");
+        assert!(!state.draft_screen.modal_layer.quit_confirm.open,"N should cancel confirm_quit mode");
     }
 
     #[test]
     fn q_in_filter_mode_appends_to_filter_text() {
         let mut state = ViewState::default();
-        state.main_panel.available.update(AvailablePanelMessage::ToggleFilterMode);
+        state.draft_screen.main_panel.available.update(AvailablePanelMessage::ToggleFilterMode);
         for ch in "test".chars() {
-            state.main_panel.available.update(AvailablePanelMessage::FilterKeyPress(key(KeyCode::Char(ch))));
+            state.draft_screen.main_panel.available.update(AvailablePanelMessage::FilterKeyPress(key(KeyCode::Char(ch))));
         }
         let result = handle_key(key(KeyCode::Char('q')), &mut state);
         assert!(result.is_none(), "q in filter mode should not produce a command");
-        assert_eq!(state.main_panel.available.filter_text().value(), "testq", "q should be appended to filter text");
-        assert!(!state.modal_layer.quit_confirm.open,"q in filter mode should not set confirm_quit");
+        assert_eq!(state.draft_screen.main_panel.available.filter_text().value(), "testq", "q should be appended to filter text");
+        assert!(!state.draft_screen.modal_layer.quit_confirm.open,"q in filter mode should not set confirm_quit");
     }
 
     #[test]
@@ -2318,7 +1966,7 @@ mod tests {
         // First q: enters confirmation mode
         let result = handle_key(key(KeyCode::Char('q')), &mut state);
         assert!(result.is_none(), "First q should not send Quit");
-        assert!(state.modal_layer.quit_confirm.open,"First q should enter confirm_quit mode");
+        assert!(state.draft_screen.modal_layer.quit_confirm.open,"First q should enter confirm_quit mode");
 
         // Second q: confirms quit
         let result = handle_key(key(KeyCode::Char('q')), &mut state);
@@ -2331,15 +1979,15 @@ mod tests {
     fn esc_clears_filter_text_position_and_focus() {
         let mut state = ViewState::default();
         for ch in "test".chars() {
-            state.main_panel.available.update(AvailablePanelMessage::FilterKeyPress(key(KeyCode::Char(ch))));
+            state.draft_screen.main_panel.available.update(AvailablePanelMessage::FilterKeyPress(key(KeyCode::Char(ch))));
         }
-        state.main_panel.available.update(AvailablePanelMessage::SetPositionFilter(Some(Position::Catcher)));
-        state.focused_panel = Some(FocusPanel::Roster);
+        state.draft_screen.main_panel.available.update(AvailablePanelMessage::SetPositionFilter(Some(Position::Catcher)));
+        state.draft_screen.focused_panel = Some(FocusPanel::Roster);
         let result = handle_key(key(KeyCode::Esc), &mut state);
         assert!(result.is_none());
-        assert!(state.main_panel.available.filter_text().is_empty());
-        assert!(state.main_panel.available.position_filter().is_none());
-        assert!(state.focused_panel.is_none());
+        assert!(state.draft_screen.main_panel.available.filter_text().is_empty());
+        assert!(state.draft_screen.main_panel.available.position_filter().is_none());
+        assert!(state.draft_screen.focused_panel.is_none());
     }
 
     // -- Unknown keys --
@@ -2378,7 +2026,7 @@ mod tests {
         let result = handle_key(repeat_event, &mut state);
         assert!(result.is_none(), "Repeat events should be ignored");
         assert_eq!(
-            state.main_panel.analysis.scroll_offset(), 0,
+            state.draft_screen.main_panel.analysis.scroll_offset(), 0,
             "Repeat event should not modify scroll state"
         );
     }
@@ -2388,13 +2036,13 @@ mod tests {
     #[test]
     fn entering_filter_mode_sets_suppress_next_bracket() {
         let mut state = ViewState::default();
-        state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
+        state.draft_screen.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
         assert!(!state.suppress_next_bracket);
 
         // '/' enters filter mode, which transitions into text editing,
         // so the post-handler check should set suppress_next_bracket.
         handle_key(key(KeyCode::Char('/')), &mut state);
-        assert!(state.main_panel.available.filter_mode());
+        assert!(state.draft_screen.main_panel.available.filter_mode());
         assert!(
             state.suppress_next_bracket,
             "Entering filter mode should set suppress_next_bracket"
@@ -2404,7 +2052,7 @@ mod tests {
     #[test]
     fn bracket_immediately_after_entering_text_mode_is_suppressed() {
         let mut state = ViewState::default();
-        state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
+        state.draft_screen.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
 
         // Enter filter mode (sets the suppression flag)
         handle_key(key(KeyCode::Char('/')), &mut state);
@@ -2414,7 +2062,7 @@ mod tests {
         let result = handle_key(key(KeyCode::Char('[')), &mut state);
         assert!(result.is_none(), "Stray '[' should be suppressed");
         assert!(
-            state.main_panel.available.filter_text().is_empty(),
+            state.draft_screen.main_panel.available.filter_text().is_empty(),
             "'[' should not be inserted into filter text"
         );
         assert!(
@@ -2426,7 +2074,7 @@ mod tests {
     #[test]
     fn suppress_flag_consumed_even_when_next_key_is_not_bracket() {
         let mut state = ViewState::default();
-        state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
+        state.draft_screen.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
 
         // Enter filter mode (sets the suppression flag)
         handle_key(key(KeyCode::Char('/')), &mut state);
@@ -2439,7 +2087,7 @@ mod tests {
             "Flag should be consumed even when the key is not '['"
         );
         assert_eq!(
-            state.main_panel.available.filter_text().value(),
+            state.draft_screen.main_panel.available.filter_text().value(),
             "a",
             "'a' should be inserted normally"
         );
@@ -2448,13 +2096,13 @@ mod tests {
     #[test]
     fn bracket_not_suppressed_when_flag_is_not_set() {
         let mut state = ViewState::default();
-        state.main_panel.available.update(AvailablePanelMessage::ToggleFilterMode);
+        state.draft_screen.main_panel.available.update(AvailablePanelMessage::ToggleFilterMode);
         assert!(!state.suppress_next_bracket);
 
         // '[' without the suppression flag should be inserted normally
         handle_key(key(KeyCode::Char('[')), &mut state);
         assert_eq!(
-            state.main_panel.available.filter_text().value(),
+            state.draft_screen.main_panel.available.filter_text().value(),
             "[",
             "Normal '[' should be inserted when flag is not set"
         );
@@ -2468,17 +2116,17 @@ mod tests {
 
         // Scroll main panel down
         handle_key(key(KeyCode::Down), &mut state);
-        assert_eq!(state.main_panel.analysis.scroll_offset(), 1);
+        assert_eq!(state.draft_screen.main_panel.analysis.scroll_offset(), 1);
 
         // Switch focus to roster and scroll
-        state.focused_panel = Some(FocusPanel::Roster);
+        state.draft_screen.focused_panel = Some(FocusPanel::Roster);
         handle_key(key(KeyCode::Down), &mut state);
-        assert_eq!(state.sidebar.roster.scroll_offset(), 1);
+        assert_eq!(state.draft_screen.sidebar.roster.scroll_offset(), 1);
 
         // Main panel scroll should be untouched
-        assert_eq!(state.main_panel.analysis.scroll_offset(), 1);
+        assert_eq!(state.draft_screen.main_panel.analysis.scroll_offset(), 1);
         // Other panels should be untouched
-        assert!(state.scroll_offset.get("scarcity").is_none());
+        assert!(state.draft_screen.scroll_offset.get("scarcity").is_none());
     }
 
     // -- AppMode-aware input dispatch --
@@ -2858,10 +2506,10 @@ mod tests {
     fn draft_mode_tab_switching_still_works() {
         let mut state = ViewState::default();
         state.app_mode = AppMode::Draft;
-        state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Analysis));
+        state.draft_screen.main_panel.update(MainPanelMessage::SwitchTab(TabId::Analysis));
         let result = handle_key(key(KeyCode::Char('2')), &mut state);
         assert!(result.is_none());
-        assert_eq!(state.main_panel.active_tab(), TabId::Available);
+        assert_eq!(state.draft_screen.main_panel.active_tab(), TabId::Available);
     }
 
     #[test]

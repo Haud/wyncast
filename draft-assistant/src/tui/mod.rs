@@ -16,7 +16,6 @@ pub mod settings;
 pub mod text_input;
 pub mod widgets;
 
-use std::collections::HashMap;
 use std::time::Duration;
 
 use crossterm::event::{Event, EventStream};
@@ -28,23 +27,18 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use tokio::sync::mpsc;
 
-use crate::draft::pick::{DraftPick, Position};
-use crate::draft::roster::RosterSlot;
 use crate::protocol::{
-    AppMode, AppSnapshot, ConnectionStatus, InstantAnalysis, NominationInfo,
-    SettingsSection, TabFeature, TabId, UiUpdate, UserCommand,
+    AppMode, AppSnapshot,
+    SettingsSection, UiUpdate, UserCommand,
 };
-use crate::valuation::scarcity::ScarcityEntry;
-use crate::valuation::zscore::PlayerValuation;
 
 use confirm_dialog::ConfirmDialog;
 use draft::main_panel::analysis::AnalysisPanelMessage;
 use draft::main_panel::available::AvailablePanelMessage;
-use draft::main_panel::{MainPanel, MainPanelMessage};
+use draft::main_panel::MainPanelMessage;
 use draft::sidebar::plan::PlanPanelMessage;
-use draft::sidebar::Sidebar;
+use draft::DraftScreen;
 use llm_stream::LlmStreamMessage;
-use layout::build_layout;
 pub use onboarding::llm_setup::LlmSetupState;
 pub use onboarding::strategy_setup::StrategySetupState;
 pub use text_input::{TextInput, TextInputMessage};
@@ -214,41 +208,8 @@ pub use draft::modal::position_filter::PositionFilterModal;
 pub struct ViewState {
     /// Current app mode (Onboarding, Draft, or Settings).
     pub app_mode: AppMode,
-    /// Current active nomination, if any.
-    pub current_nomination: Option<NominationInfo>,
-    /// Instant analysis for the current nomination.
-    pub instant_analysis: Option<InstantAnalysis>,
-    /// All available (undrafted) players sorted by value.
-    pub available_players: Vec<PlayerValuation>,
-    /// Positional scarcity entries.
-    pub positional_scarcity: Vec<ScarcityEntry>,
-    /// User's team budget status.
-    pub budget: BudgetStatus,
-    /// Current inflation rate.
-    pub inflation: f64,
-    /// Main panel component: owns the four tab panels and active tab state.
-    pub main_panel: MainPanel,
-    /// Sidebar component: roster, scarcity, plan panels (budget is stateless).
-    pub sidebar: Sidebar,
-    /// WebSocket connection status.
-    pub connection_status: ConnectionStatus,
-    /// Number of picks completed.
-    pub pick_number: usize,
-    /// Total picks in the draft.
-    pub total_picks: usize,
-    /// Per-widget scroll offsets (keyed by widget name).
-    pub scroll_offset: HashMap<String, usize>,
-    /// Draft-mode modal overlays (position filter + quit confirmation).
-    pub modal_layer: ModalLayer,
-    /// Chronological list of completed draft picks.
-    pub draft_log: Vec<DraftPick>,
-    /// Summary of each team's draft state.
-    pub team_summaries: Vec<TeamSummary>,
-    /// User's roster slots (position + optional player).
-    pub my_roster: Vec<RosterSlot>,
-    /// Which panel currently has keyboard focus for scroll routing.
-    /// `None` means no panel is focused (scroll goes to active tab by default).
-    pub focused_panel: Option<FocusPanel>,
+    /// Draft screen component: owns all draft-mode state and UI.
+    pub draft_screen: DraftScreen,
     /// Active keybind hints displayed in the help bar.
     ///
     /// Recomputed on every render frame by [`compute_keybinds`] based on the
@@ -261,9 +222,6 @@ pub struct ViewState {
     pub strategy_setup: StrategySetupState,
     /// Which settings tab is currently active (LLM or Strategy).
     pub settings_tab: SettingsSection,
-    /// Whether the LLM client is configured (has a valid API key).
-    /// Used by the status bar to show a "No LLM configured" hint.
-    pub llm_configured: bool,
     /// When `true`, the next `KeyCode::Char('[')` event is silently
     /// discarded.  Set when transitioning into a text-editing mode so
     /// that a stray CSI introducer byte (`[`) leaked by the terminal
@@ -279,28 +237,11 @@ impl Default for ViewState {
     fn default() -> Self {
         ViewState {
             app_mode: AppMode::Draft,
-            current_nomination: None,
-            instant_analysis: None,
-            available_players: Vec::new(),
-            positional_scarcity: Vec::new(),
-            budget: BudgetStatus::default(),
-            inflation: 1.0,
-            main_panel: MainPanel::new(),
-            sidebar: Sidebar::new(),
-            connection_status: ConnectionStatus::Disconnected,
-            pick_number: 0,
-            total_picks: 0,
-            scroll_offset: HashMap::new(),
-            modal_layer: ModalLayer::new(),
-            draft_log: Vec::new(),
-            team_summaries: Vec::new(),
-            my_roster: Vec::new(),
-            focused_panel: None,
+            draft_screen: DraftScreen::new(),
             active_keybinds: Vec::new(),
             llm_setup: LlmSetupState::default(),
             strategy_setup: StrategySetupState::default(),
             settings_tab: SettingsSection::LlmConfig,
-            llm_configured: true,
             suppress_next_bracket: false,
             confirm_exit_settings: ConfirmDialog::unsaved_changes(),
         }
@@ -315,23 +256,24 @@ impl ViewState {
     /// unchanged.
     pub fn apply_snapshot(&mut self, snapshot: AppSnapshot) {
         self.app_mode = snapshot.app_mode;
-        self.pick_number = snapshot.pick_count;
-        self.total_picks = snapshot.total_picks;
+        let ds = &mut self.draft_screen;
+        ds.pick_number = snapshot.pick_count;
+        ds.total_picks = snapshot.total_picks;
         if let Some(tab) = snapshot.active_tab {
-            if self.main_panel.active_tab() != tab {
-                self.focused_panel = None;
+            if ds.main_panel.active_tab() != tab {
+                ds.focused_panel = None;
             }
-            self.main_panel.update(MainPanelMessage::SwitchTab(tab));
+            ds.main_panel.update(MainPanelMessage::SwitchTab(tab));
         }
 
         // Recalculated data from the valuation pipeline
-        self.available_players = snapshot.available_players;
-        self.positional_scarcity = snapshot.positional_scarcity;
-        self.draft_log = snapshot.draft_log;
-        self.my_roster = snapshot.my_roster;
+        ds.available_players = snapshot.available_players;
+        ds.positional_scarcity = snapshot.positional_scarcity;
+        ds.draft_log = snapshot.draft_log;
+        ds.my_roster = snapshot.my_roster;
 
         // Budget status
-        self.budget = BudgetStatus {
+        ds.budget = BudgetStatus {
             spent: snapshot.budget_spent,
             remaining: snapshot.budget_remaining,
             cap: snapshot.salary_cap,
@@ -341,10 +283,10 @@ impl ViewState {
         };
 
         // Inflation rate
-        self.inflation = snapshot.inflation_rate;
+        ds.inflation = snapshot.inflation_rate;
 
         // Team summaries
-        self.team_summaries = snapshot
+        ds.team_summaries = snapshot
             .team_snapshots
             .into_iter()
             .map(|ts| TeamSummary {
@@ -356,7 +298,7 @@ impl ViewState {
             .collect();
 
         // LLM configured status
-        self.llm_configured = snapshot.llm_configured;
+        ds.llm_configured = snapshot.llm_configured;
     }
 
     /// Returns `true` when the settings screen is in an editing sub-mode
@@ -382,66 +324,66 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
             state.apply_snapshot(*snapshot);
         }
         UiUpdate::NominationUpdate(nomination) => {
-            state.current_nomination = Some(*nomination);
+            state.draft_screen.current_nomination = Some(*nomination);
             // Clear previous analysis text and instant analysis when a new nomination arrives
-            state.main_panel.analysis.update(AnalysisPanelMessage::Stream(LlmStreamMessage::Clear));
-            state.instant_analysis = None;
+            state.draft_screen.main_panel.analysis.update(AnalysisPanelMessage::Stream(LlmStreamMessage::Clear));
+            state.draft_screen.instant_analysis = None;
             // Clear focused panel to avoid a stale cyan border on the new nomination
-            state.focused_panel = None;
+            state.draft_screen.focused_panel = None;
             // Reset available panel scroll so the new nomination context is visible from the top.
             // This ensures the nominated player highlight in the Available tab is not scrolled off screen.
-            state.main_panel.available.update(AvailablePanelMessage::Scroll(
+            state.draft_screen.main_panel.available.update(AvailablePanelMessage::Scroll(
                 crate::tui::scroll::ScrollDirection::Top,
             ));
         }
         UiUpdate::BidUpdate(nomination) => {
             // Update nomination info (new bid) but preserve LLM streaming text
-            state.current_nomination = Some(*nomination);
+            state.draft_screen.current_nomination = Some(*nomination);
         }
         UiUpdate::NominationCleared => {
-            state.current_nomination = None;
-            state.instant_analysis = None;
-            state.main_panel.analysis.update(AnalysisPanelMessage::Stream(LlmStreamMessage::Clear));
-            state.focused_panel = None;
+            state.draft_screen.current_nomination = None;
+            state.draft_screen.instant_analysis = None;
+            state.draft_screen.main_panel.analysis.update(AnalysisPanelMessage::Stream(LlmStreamMessage::Clear));
+            state.draft_screen.focused_panel = None;
         }
         UiUpdate::AnalysisToken(token) => {
-            state.main_panel.analysis.update(AnalysisPanelMessage::Stream(
+            state.draft_screen.main_panel.analysis.update(AnalysisPanelMessage::Stream(
                 LlmStreamMessage::TokenReceived(token),
             ));
         }
         UiUpdate::AnalysisComplete(final_text) => {
-            state.main_panel.analysis.update(AnalysisPanelMessage::Stream(
+            state.draft_screen.main_panel.analysis.update(AnalysisPanelMessage::Stream(
                 LlmStreamMessage::Complete(final_text),
             ));
         }
         UiUpdate::AnalysisError(msg) => {
-            state.main_panel.analysis.update(AnalysisPanelMessage::Stream(
+            state.draft_screen.main_panel.analysis.update(AnalysisPanelMessage::Stream(
                 LlmStreamMessage::Error(msg),
             ));
         }
         UiUpdate::PlanStarted => {
-            state.sidebar.plan.update(PlanPanelMessage::Stream(LlmStreamMessage::Clear));
-            state.sidebar.plan.update(PlanPanelMessage::Stream(
+            state.draft_screen.sidebar.plan.update(PlanPanelMessage::Stream(LlmStreamMessage::Clear));
+            state.draft_screen.sidebar.plan.update(PlanPanelMessage::Stream(
                 LlmStreamMessage::TokenReceived(String::new()),
             ));
         }
         UiUpdate::PlanToken(token) => {
-            state.sidebar.plan.update(PlanPanelMessage::Stream(
+            state.draft_screen.sidebar.plan.update(PlanPanelMessage::Stream(
                 LlmStreamMessage::TokenReceived(token),
             ));
         }
         UiUpdate::PlanComplete(final_text) => {
-            state.sidebar.plan.update(PlanPanelMessage::Stream(
+            state.draft_screen.sidebar.plan.update(PlanPanelMessage::Stream(
                 LlmStreamMessage::Complete(final_text),
             ));
         }
         UiUpdate::PlanError(msg) => {
-            state.sidebar.plan.update(PlanPanelMessage::Stream(
+            state.draft_screen.sidebar.plan.update(PlanPanelMessage::Stream(
                 LlmStreamMessage::Error(msg),
             ));
         }
         UiUpdate::ConnectionStatus(status) => {
-            state.connection_status = status;
+            state.draft_screen.connection_status = status;
         }
         UiUpdate::OnboardingUpdate(update) => {
             use crate::protocol::OnboardingUpdate;
@@ -593,7 +535,7 @@ pub fn compute_keybinds(state: &ViewState) -> Vec<KeybindHint> {
     match &state.app_mode {
         AppMode::Onboarding(step) => compute_onboarding_keybinds(state, step),
         AppMode::Settings(_) => compute_settings_keybinds(state),
-        AppMode::Draft => compute_draft_keybinds(state),
+        AppMode::Draft => state.draft_screen.compute_keybinds(),
     }
 }
 
@@ -822,67 +764,6 @@ fn compute_settings_keybinds(state: &ViewState) -> Vec<KeybindHint> {
     }
 }
 
-/// Compute keybind hints for draft mode.
-fn compute_draft_keybinds(state: &ViewState) -> Vec<KeybindHint> {
-    // 1. Quit confirmation overlay: all other input is blocked
-    if state.modal_layer.quit_confirm.open {
-        return vec![
-            KeybindHint::new("y/q", "Confirm quit"),
-            KeybindHint::new("n/Esc", "Cancel"),
-        ];
-    }
-
-    // 2. Position filter modal
-    if state.modal_layer.position_filter.open {
-        return vec![
-            KeybindHint::new("↑↓", "Navigate"),
-            KeybindHint::new("Enter", "Select"),
-            KeybindHint::new("Esc", "Cancel"),
-        ];
-    }
-
-    // 3. Text filter mode (the inline filter input bar)
-    if state.main_panel.available.filter_mode() {
-        return vec![
-            KeybindHint::new("Enter", "Apply"),
-            KeybindHint::new("Esc", "Cancel"),
-        ];
-    }
-
-    // 4. Normal mode: assemble context-sensitive hints
-    let mut hints = vec![
-        KeybindHint::new("q", "Quit"),
-        KeybindHint::new("1-4", "Tabs"),
-    ];
-
-    // Tab-specific: filtering and position-filter only on supported tabs
-    if state.main_panel.active_tab().supports(TabFeature::Filter) {
-        hints.push(KeybindHint::new("/", "Filter"));
-        hints.push(KeybindHint::new("p", "Pos"));
-    }
-
-    // Focus cycling, resync, and settings are always available in normal mode
-    hints.push(KeybindHint::new("Tab", "Focus"));
-    hints.push(KeybindHint::new("r", "Resync"));
-    hints.push(KeybindHint::new(",", "Settings"));
-
-    // Scroll hint only appears when a panel is focused (scroll is routed there)
-    if state.focused_panel.is_some() {
-        hints.push(KeybindHint::new("↑↓/j/k/PgUp/PgDn", "Scroll"));
-    }
-
-    // Active filter reminder: shown as a trailing hint when the Available tab
-    // has a non-empty filter so the user knows results are currently filtered.
-    if !state.main_panel.available.filter_text().is_empty() && state.main_panel.active_tab() == TabId::Available {
-        hints.push(KeybindHint::new(
-            format!("filter:\"{}\"", state.main_panel.available.filter_text().value()),
-            "active",
-        ));
-    }
-
-    hints
-}
-
 // ---------------------------------------------------------------------------
 // Render frame
 // ---------------------------------------------------------------------------
@@ -906,74 +787,9 @@ fn render_frame(frame: &mut Frame, state: &ViewState) {
             settings::render(frame, state);
         }
         AppMode::Draft => {
-            render_draft_frame(frame, state);
+            state.draft_screen.view(frame);
         }
     }
-}
-
-/// Render the full draft dashboard (the main operational view).
-fn render_draft_frame(frame: &mut Frame, state: &ViewState) {
-    let layout = build_layout(frame.area());
-
-    widgets::status_bar::render(
-        frame,
-        layout.status_bar,
-        state.connection_status,
-        state.pick_number,
-        state.total_picks,
-        state.main_panel.active_tab(),
-        state.llm_configured,
-    );
-    widgets::nomination_banner::render(
-        frame,
-        layout.nomination_banner,
-        state.current_nomination.as_ref(),
-        state.instant_analysis.as_ref(),
-    );
-
-    let main_focused = state.focused_panel == Some(FocusPanel::MainPanel);
-    let roster_focused = state.focused_panel == Some(FocusPanel::Roster);
-    let scarcity_focused = state.focused_panel == Some(FocusPanel::Scarcity);
-    let budget_focused = state.focused_panel == Some(FocusPanel::Budget);
-    let nom_plan_focused = state.focused_panel == Some(FocusPanel::NominationPlan);
-
-    // Main panel: delegates to active tab
-    let nominated_name = state.current_nomination.as_ref().map(|n| n.player_name.as_str());
-    state.main_panel.view(
-        frame,
-        layout.main_panel,
-        &state.available_players,
-        nominated_name,
-        &state.draft_log,
-        &state.team_summaries,
-        main_focused,
-    );
-
-    // Sidebar: roster, scarcity, budget, nomination plan
-    let nominated_position = state.current_nomination.as_ref()
-        .and_then(|n| Position::from_str_pos(&n.position));
-    state.sidebar.view(
-        frame,
-        layout.roster,
-        layout.scarcity,
-        layout.budget,
-        layout.nomination_plan,
-        &state.my_roster,
-        &state.positional_scarcity,
-        nominated_position.as_ref(),
-        &state.budget,
-        state.scroll_offset.get("budget").copied().unwrap_or(0),
-        roster_focused,
-        scarcity_focused,
-        budget_focused,
-        nom_plan_focused,
-    );
-
-    // Help bar: dumb renderer of the pre-synced active keybind hints
-    render_help_bar(frame, layout.help_bar, state, &state.active_keybinds);
-
-    // Modal overlay layer (position filter + quit confirm)
-    state.modal_layer.view(frame, frame.area());
 }
 
 
@@ -982,8 +798,11 @@ fn render_draft_frame(frame: &mut Frame, state: &ViewState) {
 /// This function is a dumb renderer: it knows nothing about modes, tabs, or
 /// focus. All context-sensitivity lives in [`compute_keybinds`]. The special
 /// case for filter mode (showing an inline input bar) is still handled here
-/// because it requires displaying live `ViewState` data (the current filter
+/// because it requires displaying live state data (the current filter
 /// text and cursor), not just static hint labels.
+///
+/// For onboarding/settings modes, `filter_text` and `filter_mode` are
+/// `None`/`false` since the filter UI only exists in draft mode.
 pub(crate) fn render_help_bar(
     frame: &mut Frame,
     area: Rect,
@@ -991,10 +810,7 @@ pub(crate) fn render_help_bar(
     keybinds: &[KeybindHint],
 ) {
     // Filter mode: show a dedicated inline filter input bar instead of hints.
-    // This is handled here (not in compute_keybinds) because the input bar
-    // embeds the live filter_text content, which is display state rather than
-    // a keybind description.
-    if state.main_panel.available.filter_mode() {
+    if state.draft_screen.main_panel.available.filter_mode() {
         let spans = vec![
             Span::styled(
                 " FILTER ",
@@ -1005,12 +821,12 @@ pub(crate) fn render_help_bar(
             ),
             Span::styled(" ", Style::default()),
             Span::styled(
-                state.main_panel.available.filter_text().value().to_string(),
+                state.draft_screen.main_panel.available.filter_text().value().to_string(),
                 Style::default()
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("▎", Style::default().fg(Color::Cyan)),
+            Span::styled("\u{258e}", Style::default().fg(Color::Cyan)),
             Span::styled(
                 "  (Enter:apply | Esc:cancel)",
                 Style::default().fg(Color::DarkGray),
@@ -1022,8 +838,53 @@ pub(crate) fn render_help_bar(
         return;
     }
 
-    // Normal / modal modes: render the precomputed hint list.
-    // Format: " key:desc | key:desc | ..."
+    render_keybind_hints(frame, area, keybinds);
+}
+
+/// Render the help bar from within the DraftScreen component.
+///
+/// This is a draft-mode-specific variant that takes a DraftScreen reference
+/// instead of a ViewState reference, used by `DraftScreen::view()`.
+pub(crate) fn render_help_bar_from_draft(
+    frame: &mut Frame,
+    area: Rect,
+    draft_screen: &DraftScreen,
+    keybinds: &[KeybindHint],
+) {
+    // Filter mode: show a dedicated inline filter input bar instead of hints.
+    if draft_screen.main_panel.available.filter_mode() {
+        let spans = vec![
+            Span::styled(
+                " FILTER ",
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" ", Style::default()),
+            Span::styled(
+                draft_screen.main_panel.available.filter_text().value().to_string(),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("\u{258e}", Style::default().fg(Color::Cyan)),
+            Span::styled(
+                "  (Enter:apply | Esc:cancel)",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ];
+        let paragraph = Paragraph::new(Line::from(spans))
+            .style(Style::default().bg(Color::Black));
+        frame.render_widget(paragraph, area);
+        return;
+    }
+
+    render_keybind_hints(frame, area, keybinds);
+}
+
+/// Render a list of keybind hints into the help bar area.
+fn render_keybind_hints(frame: &mut Frame, area: Rect, keybinds: &[KeybindHint]) {
     let mut spans: Vec<Span> = Vec::new();
     for (i, hint) in keybinds.iter().enumerate() {
         if i > 0 {
@@ -1152,7 +1013,9 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{AppMode, LlmStatus, TeamSnapshot};
+    use crate::protocol::{
+        AppMode, ConnectionStatus, LlmStatus, NominationInfo, TabId, TeamSnapshot,
+    };
     use crossterm::event::KeyCode;
 
     // -- FocusPanel cycling --
@@ -1189,28 +1052,28 @@ mod tests {
     fn view_state_default_is_sensible() {
         let state = ViewState::default();
         assert_eq!(state.app_mode, AppMode::Draft);
-        assert!(state.current_nomination.is_none());
-        assert!(state.instant_analysis.is_none());
-        assert!(state.available_players.is_empty());
-        assert!(state.positional_scarcity.is_empty());
-        assert_eq!(state.pick_number, 0);
-        assert_eq!(state.total_picks, 0);
-        assert_eq!(state.main_panel.active_tab(), TabId::Analysis);
-        assert_eq!(state.connection_status, ConnectionStatus::Disconnected);
-        assert_eq!(state.main_panel.analysis.status(), LlmStatus::Idle);
-        assert_eq!(state.sidebar.plan.status(), LlmStatus::Idle);
-        assert!(state.main_panel.analysis.text().is_empty());
-        assert!(state.sidebar.plan.text().is_empty());
-        assert!(state.scroll_offset.is_empty());
-        assert!(!state.main_panel.available.filter_mode());
-        assert!(state.main_panel.available.filter_text().is_empty());
-        assert!(state.main_panel.available.position_filter().is_none());
-        assert!(!state.modal_layer.quit_confirm.open);
-        assert!(state.draft_log.is_empty());
-        assert!(state.team_summaries.is_empty());
-        assert!(state.my_roster.is_empty());
-        assert!(state.focused_panel.is_none());
-        assert!(!state.modal_layer.position_filter.open);
+        assert!(state.draft_screen.current_nomination.is_none());
+        assert!(state.draft_screen.instant_analysis.is_none());
+        assert!(state.draft_screen.available_players.is_empty());
+        assert!(state.draft_screen.positional_scarcity.is_empty());
+        assert_eq!(state.draft_screen.pick_number, 0);
+        assert_eq!(state.draft_screen.total_picks, 0);
+        assert_eq!(state.draft_screen.main_panel.active_tab(), TabId::Analysis);
+        assert_eq!(state.draft_screen.connection_status, ConnectionStatus::Disconnected);
+        assert_eq!(state.draft_screen.main_panel.analysis.status(), LlmStatus::Idle);
+        assert_eq!(state.draft_screen.sidebar.plan.status(), LlmStatus::Idle);
+        assert!(state.draft_screen.main_panel.analysis.text().is_empty());
+        assert!(state.draft_screen.sidebar.plan.text().is_empty());
+        assert!(state.draft_screen.scroll_offset.is_empty());
+        assert!(!state.draft_screen.main_panel.available.filter_mode());
+        assert!(state.draft_screen.main_panel.available.filter_text().is_empty());
+        assert!(state.draft_screen.main_panel.available.position_filter().is_none());
+        assert!(!state.draft_screen.modal_layer.quit_confirm.open);
+        assert!(state.draft_screen.draft_log.is_empty());
+        assert!(state.draft_screen.team_summaries.is_empty());
+        assert!(state.draft_screen.my_roster.is_empty());
+        assert!(state.draft_screen.focused_panel.is_none());
+        assert!(!state.draft_screen.modal_layer.position_filter.open);
     }
 
     #[test]
@@ -1251,19 +1114,19 @@ mod tests {
         let mut state = ViewState::default();
         let snapshot = test_snapshot(42, 260, Some(TabId::Teams));
         state.apply_snapshot(snapshot);
-        assert_eq!(state.pick_number, 42);
-        assert_eq!(state.total_picks, 260);
-        assert_eq!(state.main_panel.active_tab(), TabId::Teams);
+        assert_eq!(state.draft_screen.pick_number, 42);
+        assert_eq!(state.draft_screen.total_picks, 260);
+        assert_eq!(state.draft_screen.main_panel.active_tab(), TabId::Teams);
     }
 
     #[test]
     fn apply_snapshot_preserves_tab_when_none() {
         let mut state = ViewState::default();
-        state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
+        state.draft_screen.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
         let snapshot = test_snapshot(10, 260, None);
         state.apply_snapshot(snapshot);
-        assert_eq!(state.pick_number, 10);
-        assert_eq!(state.main_panel.active_tab(), TabId::Available);
+        assert_eq!(state.draft_screen.pick_number, 10);
+        assert_eq!(state.draft_screen.main_panel.active_tab(), TabId::Available);
     }
 
     #[test]
@@ -1271,9 +1134,9 @@ mod tests {
         let mut state = ViewState::default();
         let snapshot = test_snapshot(5, 100, Some(TabId::DraftLog));
         apply_ui_update(&mut state, UiUpdate::StateSnapshot(Box::new(snapshot)));
-        assert_eq!(state.pick_number, 5);
-        assert_eq!(state.total_picks, 100);
-        assert_eq!(state.main_panel.active_tab(), TabId::DraftLog);
+        assert_eq!(state.draft_screen.pick_number, 5);
+        assert_eq!(state.draft_screen.total_picks, 100);
+        assert_eq!(state.draft_screen.main_panel.active_tab(), TabId::DraftLog);
     }
 
     #[test]
@@ -1302,17 +1165,17 @@ mod tests {
 
         state.apply_snapshot(snapshot);
 
-        assert_eq!(state.budget.spent, 100);
-        assert_eq!(state.budget.remaining, 160);
-        assert!((state.budget.inflation_rate - 1.15).abs() < f64::EPSILON);
-        assert_eq!(state.budget.max_bid, 140);
-        assert!((state.inflation - 1.15).abs() < f64::EPSILON);
-        assert_eq!(state.team_summaries.len(), 2);
-        assert_eq!(state.team_summaries[0].name, "Team 1");
-        assert_eq!(state.team_summaries[0].budget_remaining, 160);
-        assert_eq!(state.team_summaries[0].slots_filled, 5);
-        assert_eq!(state.team_summaries[1].name, "Team 2");
-        assert_eq!(state.team_summaries[1].budget_remaining, 200);
+        assert_eq!(state.draft_screen.budget.spent, 100);
+        assert_eq!(state.draft_screen.budget.remaining, 160);
+        assert!((state.draft_screen.budget.inflation_rate - 1.15).abs() < f64::EPSILON);
+        assert_eq!(state.draft_screen.budget.max_bid, 140);
+        assert!((state.draft_screen.inflation - 1.15).abs() < f64::EPSILON);
+        assert_eq!(state.draft_screen.team_summaries.len(), 2);
+        assert_eq!(state.draft_screen.team_summaries[0].name, "Team 1");
+        assert_eq!(state.draft_screen.team_summaries[0].budget_remaining, 160);
+        assert_eq!(state.draft_screen.team_summaries[0].slots_filled, 5);
+        assert_eq!(state.draft_screen.team_summaries[1].name, "Team 2");
+        assert_eq!(state.draft_screen.team_summaries[1].budget_remaining, 200);
     }
 
     #[test]
@@ -1321,10 +1184,10 @@ mod tests {
 
         let mut state = ViewState::default();
         // Simulate old analysis via component
-        state.main_panel.analysis.update(AnalysisPanelMessage::Stream(
+        state.draft_screen.main_panel.analysis.update(AnalysisPanelMessage::Stream(
             LlmStreamMessage::Complete("old analysis".into()),
         ));
-        state.instant_analysis = Some(InstantAnalysis {
+        state.draft_screen.instant_analysis = Some(InstantAnalysis {
             player_name: "Old Player".to_string(),
             dollar_value: 30.0,
             adjusted_value: 28.0,
@@ -1342,26 +1205,26 @@ mod tests {
         };
         apply_ui_update(&mut state, UiUpdate::NominationUpdate(Box::new(nom)));
 
-        assert!(state.current_nomination.is_some());
+        assert!(state.draft_screen.current_nomination.is_some());
         assert_eq!(
-            state.current_nomination.as_ref().unwrap().player_name,
+            state.draft_screen.current_nomination.as_ref().unwrap().player_name,
             "Mike Trout"
         );
         // Analysis text should be cleared for new nomination
-        assert!(state.main_panel.analysis.text().is_empty());
-        assert_eq!(state.main_panel.analysis.status(), LlmStatus::Idle);
+        assert!(state.draft_screen.main_panel.analysis.text().is_empty());
+        assert_eq!(state.draft_screen.main_panel.analysis.status(), LlmStatus::Idle);
         // instant_analysis should also be cleared to avoid stale data from previous nomination
-        assert!(state.instant_analysis.is_none());
+        assert!(state.draft_screen.instant_analysis.is_none());
         // Available panel scroll should be reset so the nominated
         // player highlight is visible from the top of the list.
-        assert_eq!(state.main_panel.available.scroll_offset(), 0);
+        assert_eq!(state.draft_screen.main_panel.available.scroll_offset(), 0);
     }
 
     #[test]
     fn apply_ui_update_bid_update_preserves_analysis_text() {
         let mut state = ViewState::default();
         // Simulate an active nomination with streaming analysis
-        state.current_nomination = Some(NominationInfo {
+        state.draft_screen.current_nomination = Some(NominationInfo {
             player_name: "Mike Trout".to_string(),
             position: "CF".to_string(),
             nominated_by: "Team Alpha".to_string(),
@@ -1370,7 +1233,7 @@ mod tests {
             time_remaining: Some(30),
             eligible_slots: vec![],
         });
-        state.main_panel.analysis.update(AnalysisPanelMessage::Stream(
+        state.draft_screen.main_panel.analysis.update(AnalysisPanelMessage::Stream(
             LlmStreamMessage::TokenReceived("Trout is a strong target because...".into()),
         ));
 
@@ -1387,18 +1250,18 @@ mod tests {
         apply_ui_update(&mut state, UiUpdate::BidUpdate(Box::new(updated_nom)));
 
         // Nomination info should be updated
-        let nom = state.current_nomination.as_ref().unwrap();
+        let nom = state.draft_screen.current_nomination.as_ref().unwrap();
         assert_eq!(nom.current_bid, 50);
         assert_eq!(nom.current_bidder, Some("Team Gamma".to_string()));
         // Analysis text and status should be preserved
-        assert_eq!(state.main_panel.analysis.text(), "Trout is a strong target because...");
-        assert_eq!(state.main_panel.analysis.status(), LlmStatus::Streaming);
+        assert_eq!(state.draft_screen.main_panel.analysis.text(), "Trout is a strong target because...");
+        assert_eq!(state.draft_screen.main_panel.analysis.status(), LlmStatus::Streaming);
     }
 
     #[test]
     fn apply_ui_update_nomination_cleared() {
         let mut state = ViewState::default();
-        state.current_nomination = Some(NominationInfo {
+        state.draft_screen.current_nomination = Some(NominationInfo {
             player_name: "Test".to_string(),
             position: "SP".to_string(),
             nominated_by: "Team".to_string(),
@@ -1407,16 +1270,16 @@ mod tests {
             time_remaining: None,
             eligible_slots: vec![],
         });
-        state.main_panel.analysis.update(AnalysisPanelMessage::Stream(
+        state.draft_screen.main_panel.analysis.update(AnalysisPanelMessage::Stream(
             LlmStreamMessage::TokenReceived("some analysis".into()),
         ));
 
         apply_ui_update(&mut state, UiUpdate::NominationCleared);
 
-        assert!(state.current_nomination.is_none());
-        assert!(state.instant_analysis.is_none());
-        assert!(state.main_panel.analysis.text().is_empty());
-        assert_eq!(state.main_panel.analysis.status(), LlmStatus::Idle);
+        assert!(state.draft_screen.current_nomination.is_none());
+        assert!(state.draft_screen.instant_analysis.is_none());
+        assert!(state.draft_screen.main_panel.analysis.text().is_empty());
+        assert_eq!(state.draft_screen.main_panel.analysis.status(), LlmStatus::Idle);
     }
 
     #[test]
@@ -1430,44 +1293,44 @@ mod tests {
             &mut state,
             UiUpdate::AnalysisToken("World".to_string()),
         );
-        assert_eq!(state.main_panel.analysis.text(), "Hello World");
-        assert_eq!(state.main_panel.analysis.status(), LlmStatus::Streaming);
+        assert_eq!(state.draft_screen.main_panel.analysis.text(), "Hello World");
+        assert_eq!(state.draft_screen.main_panel.analysis.status(), LlmStatus::Streaming);
     }
 
     #[test]
     fn apply_ui_update_analysis_complete() {
         let mut state = ViewState::default();
-        state.main_panel.analysis.update(AnalysisPanelMessage::Stream(
+        state.draft_screen.main_panel.analysis.update(AnalysisPanelMessage::Stream(
             LlmStreamMessage::TokenReceived("partial token".into()),
         ));
         apply_ui_update(
             &mut state,
             UiUpdate::AnalysisComplete("Full analysis text.".to_string()),
         );
-        assert_eq!(state.main_panel.analysis.status(), LlmStatus::Complete);
+        assert_eq!(state.draft_screen.main_panel.analysis.status(), LlmStatus::Complete);
         // AnalysisComplete carries the final text, which may include a truncation note
-        assert_eq!(state.main_panel.analysis.text(), "Full analysis text.");
+        assert_eq!(state.draft_screen.main_panel.analysis.text(), "Full analysis text.");
     }
 
     #[test]
     fn apply_ui_update_plan_started_clears_previous_text() {
         let mut state = ViewState::default();
         // Simulate old plan text from a previous invocation
-        state.sidebar.plan.update(PlanPanelMessage::Stream(
+        state.draft_screen.sidebar.plan.update(PlanPanelMessage::Stream(
             LlmStreamMessage::Complete("Old plan from last pick cycle.".into()),
         ));
 
         apply_ui_update(&mut state, UiUpdate::PlanStarted);
 
         // PlanStarted must clear plan text so new tokens don't append to stale content
-        assert!(state.sidebar.plan.text().is_empty(), "plan text should be cleared on PlanStarted");
-        assert_eq!(state.sidebar.plan.status(), LlmStatus::Streaming);
+        assert!(state.draft_screen.sidebar.plan.text().is_empty(), "plan text should be cleared on PlanStarted");
+        assert_eq!(state.draft_screen.sidebar.plan.status(), LlmStatus::Streaming);
     }
 
     #[test]
     fn apply_ui_update_plan_started_then_tokens_replace_not_append() {
         let mut state = ViewState::default();
-        state.sidebar.plan.update(PlanPanelMessage::Stream(
+        state.draft_screen.sidebar.plan.update(PlanPanelMessage::Stream(
             LlmStreamMessage::Complete("Stale plan text.".into()),
         ));
 
@@ -1477,8 +1340,8 @@ mod tests {
         apply_ui_update(&mut state, UiUpdate::PlanToken("nominate X".to_string()));
 
         // Result must be only the new tokens, not stale text + new tokens
-        assert_eq!(state.sidebar.plan.text(), "New plan: nominate X");
-        assert_eq!(state.sidebar.plan.status(), LlmStatus::Streaming);
+        assert_eq!(state.draft_screen.sidebar.plan.text(), "New plan: nominate X");
+        assert_eq!(state.draft_screen.sidebar.plan.status(), LlmStatus::Streaming);
     }
 
     #[test]
@@ -1486,34 +1349,34 @@ mod tests {
         let mut state = ViewState::default();
         apply_ui_update(&mut state, UiUpdate::PlanToken("Plan: ".to_string()));
         apply_ui_update(&mut state, UiUpdate::PlanToken("nominate X".to_string()));
-        assert_eq!(state.sidebar.plan.text(), "Plan: nominate X");
-        assert_eq!(state.sidebar.plan.status(), LlmStatus::Streaming);
+        assert_eq!(state.draft_screen.sidebar.plan.text(), "Plan: nominate X");
+        assert_eq!(state.draft_screen.sidebar.plan.status(), LlmStatus::Streaming);
     }
 
     #[test]
     fn apply_ui_update_plan_complete() {
         let mut state = ViewState::default();
-        state.sidebar.plan.update(PlanPanelMessage::Stream(
+        state.draft_screen.sidebar.plan.update(PlanPanelMessage::Stream(
             LlmStreamMessage::TokenReceived("partial token".into()),
         ));
         apply_ui_update(
             &mut state,
             UiUpdate::PlanComplete("Full plan text.".to_string()),
         );
-        assert_eq!(state.sidebar.plan.status(), LlmStatus::Complete);
+        assert_eq!(state.draft_screen.sidebar.plan.status(), LlmStatus::Complete);
         // PlanComplete carries the final text, which may include a truncation note
-        assert_eq!(state.sidebar.plan.text(), "Full plan text.");
+        assert_eq!(state.draft_screen.sidebar.plan.text(), "Full plan text.");
     }
 
     #[test]
     fn apply_ui_update_connection_status() {
         let mut state = ViewState::default();
-        assert_eq!(state.connection_status, ConnectionStatus::Disconnected);
+        assert_eq!(state.draft_screen.connection_status, ConnectionStatus::Disconnected);
         apply_ui_update(
             &mut state,
             UiUpdate::ConnectionStatus(ConnectionStatus::Connected),
         );
-        assert_eq!(state.connection_status, ConnectionStatus::Connected);
+        assert_eq!(state.draft_screen.connection_status, ConnectionStatus::Connected);
     }
 
     // -- KeybindHint --
@@ -1553,7 +1416,7 @@ mod tests {
     #[test]
     fn compute_keybinds_no_scroll_hint_without_focus() {
         let mut state = ViewState::default();
-        state.focused_panel = None;
+        state.draft_screen.focused_panel = None;
         let hints = compute_keybinds(&state);
         let ks = keys(&hints);
         // Scroll hint should only appear when a panel is focused
@@ -1566,7 +1429,7 @@ mod tests {
     #[test]
     fn compute_keybinds_scroll_hint_with_focus() {
         let mut state = ViewState::default();
-        state.focused_panel = Some(FocusPanel::MainPanel);
+        state.draft_screen.focused_panel = Some(FocusPanel::MainPanel);
         let hints = compute_keybinds(&state);
         let ks = keys(&hints);
         assert!(
@@ -1578,7 +1441,7 @@ mod tests {
     #[test]
     fn compute_keybinds_filter_hints_on_available_tab() {
         let mut state = ViewState::default();
-        state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
+        state.draft_screen.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
         let hints = compute_keybinds(&state);
         let ks = keys(&hints);
         assert!(ks.contains(&"/"), "filter hint should appear on Available tab");
@@ -1588,7 +1451,7 @@ mod tests {
     #[test]
     fn compute_keybinds_no_filter_hints_on_analysis_tab() {
         let mut state = ViewState::default();
-        state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Analysis));
+        state.draft_screen.main_panel.update(MainPanelMessage::SwitchTab(TabId::Analysis));
         let hints = compute_keybinds(&state);
         let ks = keys(&hints);
         assert!(
@@ -1600,7 +1463,7 @@ mod tests {
     #[test]
     fn compute_keybinds_filter_mode() {
         let mut state = ViewState::default();
-        state.main_panel.available.update(AvailablePanelMessage::ToggleFilterMode);
+        state.draft_screen.main_panel.available.update(AvailablePanelMessage::ToggleFilterMode);
         let hints = compute_keybinds(&state);
         let ks = keys(&hints);
         // Filter mode shows only Enter/Esc
@@ -1614,7 +1477,7 @@ mod tests {
     #[test]
     fn compute_keybinds_position_modal_open() {
         let mut state = ViewState::default();
-        state.modal_layer.position_filter.open = true;
+        state.draft_screen.modal_layer.position_filter.open = true;
         let hints = compute_keybinds(&state);
         let ks = keys(&hints);
         assert!(ks.contains(&"↑↓"), "modal should show navigate hint");
@@ -1627,7 +1490,7 @@ mod tests {
     #[test]
     fn compute_keybinds_quit_confirm_mode() {
         let mut state = ViewState::default();
-        state.modal_layer.quit_confirm.open = true;
+        state.draft_screen.modal_layer.quit_confirm.open = true;
         let hints = compute_keybinds(&state);
         let ks = keys(&hints);
         assert!(ks.contains(&"y/q"), "confirm quit hint should appear");
@@ -1639,10 +1502,10 @@ mod tests {
     #[test]
     fn compute_keybinds_active_filter_reminder_on_available_tab() {
         let mut state = ViewState::default();
-        state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
+        state.draft_screen.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
         // Set filter text via FilterKeyPress messages
         for ch in "trout".chars() {
-            state.main_panel.available.update(AvailablePanelMessage::FilterKeyPress(
+            state.draft_screen.main_panel.available.update(AvailablePanelMessage::FilterKeyPress(
                 crossterm::event::KeyEvent {
                     code: KeyCode::Char(ch),
                     modifiers: crossterm::event::KeyModifiers::NONE,
@@ -1660,9 +1523,9 @@ mod tests {
     #[test]
     fn compute_keybinds_no_filter_reminder_on_analysis_tab() {
         let mut state = ViewState::default();
-        state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Analysis));
+        state.draft_screen.main_panel.update(MainPanelMessage::SwitchTab(TabId::Analysis));
         for ch in "trout".chars() {
-            state.main_panel.available.update(AvailablePanelMessage::FilterKeyPress(
+            state.draft_screen.main_panel.available.update(AvailablePanelMessage::FilterKeyPress(
                 crossterm::event::KeyEvent {
                     code: KeyCode::Char(ch),
                     modifiers: crossterm::event::KeyModifiers::NONE,
@@ -1693,9 +1556,9 @@ mod tests {
     fn quit_confirm_takes_priority_over_modal_and_filter_mode() {
         // If somehow both confirm_quit and modal are set, confirm_quit wins
         let mut state = ViewState::default();
-        state.modal_layer.quit_confirm.open = true;
-        state.modal_layer.position_filter.open = true;
-        state.main_panel.available.update(AvailablePanelMessage::ToggleFilterMode);
+        state.draft_screen.modal_layer.quit_confirm.open = true;
+        state.draft_screen.modal_layer.position_filter.open = true;
+        state.draft_screen.main_panel.available.update(AvailablePanelMessage::ToggleFilterMode);
         let hints = compute_keybinds(&state);
         let ks = keys(&hints);
         assert!(ks.contains(&"y/q"), "quit confirm should take highest priority");
@@ -1884,17 +1747,17 @@ mod tests {
         let mut state = ViewState::default();
         // Default is true (optimistic) to avoid flashing "No LLM" before
         // the first snapshot arrives.
-        assert!(state.llm_configured);
+        assert!(state.draft_screen.llm_configured);
 
         let mut snapshot = test_snapshot(0, 0, None);
         snapshot.llm_configured = false;
         state.apply_snapshot(snapshot);
-        assert!(!state.llm_configured);
+        assert!(!state.draft_screen.llm_configured);
 
         let mut snapshot2 = test_snapshot(0, 0, None);
         snapshot2.llm_configured = true;
         state.apply_snapshot(snapshot2);
-        assert!(state.llm_configured);
+        assert!(state.draft_screen.llm_configured);
     }
 
     #[test]
