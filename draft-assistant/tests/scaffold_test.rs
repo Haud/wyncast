@@ -79,7 +79,7 @@ fn source_files_exist() {
         "src/llm/prompt.rs",
         "src/tui/mod.rs",
         "src/tui/layout.rs",
-        "src/tui/input.rs",
+        "src/tui/app.rs",
         "src/tui/widgets/mod.rs",
         "src/tui/widgets/nomination_banner.rs",
         "src/tui/draft/main_panel/mod.rs",

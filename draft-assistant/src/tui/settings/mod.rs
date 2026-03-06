@@ -12,7 +12,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::protocol::{OnboardingAction, SettingsSection, UserCommand};
-use crate::tui::ViewState;
+use crate::tui::app::App;
 use crate::tui::confirm_dialog::{ConfirmDialog, ConfirmMessage, ConfirmResult};
 use crate::tui::onboarding::llm_setup::{LlmSetupMessage, LlmSetupState};
 use crate::tui::onboarding::strategy_setup::{StrategySetupMessage, StrategySetupState};
@@ -252,7 +252,7 @@ fn filter_onboarding_commands(cmd: Option<UserCommand>) -> Option<UserCommand> {
 /// Draws a tabbed layout with LLM and Strategy tabs, delegating content
 /// rendering to the existing onboarding widgets. The active tab is determined
 /// by `view_state.settings_tab`.
-pub fn render(frame: &mut Frame, state: &ViewState) {
+pub fn render(frame: &mut Frame, state: &App) {
     let area = frame.area();
 
     // Split: header (2 lines) | content | help bar (1 line)
@@ -341,13 +341,13 @@ fn render_tab_bar(frame: &mut Frame, area: Rect, active_tab: SettingsSection) {
 mod tests {
     use super::*;
     use crate::protocol::SettingsSection;
-    use crate::tui::ViewState;
+    use crate::tui::app::App;
 
     #[test]
     fn render_llm_tab_does_not_panic() {
         let backend = ratatui::backend::TestBackend::new(80, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        let mut state = ViewState::default();
+        let mut state = App::default();
         state.settings_tab = SettingsSection::LlmConfig;
         terminal
             .draw(|frame| render(frame, &state))
@@ -358,7 +358,7 @@ mod tests {
     fn render_strategy_tab_does_not_panic() {
         let backend = ratatui::backend::TestBackend::new(80, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        let mut state = ViewState::default();
+        let mut state = App::default();
         state.settings_tab = SettingsSection::StrategyConfig;
         terminal
             .draw(|frame| render(frame, &state))
@@ -369,7 +369,7 @@ mod tests {
     fn render_small_terminal_does_not_panic() {
         let backend = ratatui::backend::TestBackend::new(40, 15);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        let mut state = ViewState::default();
+        let mut state = App::default();
         state.settings_tab = SettingsSection::LlmConfig;
         terminal
             .draw(|frame| render(frame, &state))
@@ -380,7 +380,7 @@ mod tests {
     fn render_with_editing_state_does_not_panic() {
         let backend = ratatui::backend::TestBackend::new(80, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        let mut state = ViewState::default();
+        let mut state = App::default();
         state.settings_tab = SettingsSection::LlmConfig;
         state.llm_setup.api_key_editing = true;
         terminal
