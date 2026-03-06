@@ -9,7 +9,7 @@ use ratatui::Frame;
 
 use crate::onboarding::OnboardingStep;
 use crate::protocol::UserCommand;
-use crate::tui::ViewState;
+use crate::tui::app::App;
 
 use self::llm_setup::{LlmSetupMessage, LlmSetupState};
 use self::strategy_setup::{StrategySetupMessage, StrategySetupState};
@@ -54,7 +54,7 @@ pub fn update(
 /// current `OnboardingStep`. The `Complete` step should never be rendered
 /// (the app should have transitioned to `AppMode::Draft` before reaching
 /// this point).
-pub fn render(frame: &mut Frame, step: &OnboardingStep, state: &ViewState) {
+pub fn render(frame: &mut Frame, step: &OnboardingStep, state: &App) {
     // Split: content | help bar (1 line)
     let outer = Layout::vertical([
         Constraint::Min(0),    // content area
@@ -90,13 +90,13 @@ pub fn render(frame: &mut Frame, step: &OnboardingStep, state: &ViewState) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::ViewState;
+    use crate::tui::app::App;
 
     #[test]
     fn render_llm_setup_does_not_panic() {
         let backend = ratatui::backend::TestBackend::new(80, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        let state = ViewState::default();
+        let state = App::default();
         terminal
             .draw(|frame| render(frame, &OnboardingStep::LlmSetup, &state))
             .unwrap();
@@ -106,7 +106,7 @@ mod tests {
     fn render_strategy_placeholder_does_not_panic() {
         let backend = ratatui::backend::TestBackend::new(80, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        let state = ViewState::default();
+        let state = App::default();
         terminal
             .draw(|frame| render(frame, &OnboardingStep::StrategySetup, &state))
             .unwrap();
@@ -116,7 +116,7 @@ mod tests {
     fn render_complete_does_not_panic() {
         let backend = ratatui::backend::TestBackend::new(80, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        let state = ViewState::default();
+        let state = App::default();
         terminal
             .draw(|frame| render(frame, &OnboardingStep::Complete, &state))
             .unwrap();
