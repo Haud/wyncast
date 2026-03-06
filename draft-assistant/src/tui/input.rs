@@ -8,6 +8,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::protocol::{AppMode, OnboardingAction, TabFeature, TabId, UserCommand};
 use crate::tui::draft::draft_log::DraftLogMessage;
+use crate::tui::draft::sidebar::roster::RosterMessage;
 use crate::tui::draft::teams::TeamsMessage;
 use crate::tui::scroll::ScrollDirection;
 use super::{FocusPanel, PositionFilterModal, ViewState};
@@ -1483,6 +1484,17 @@ fn dispatch_scroll_up(view_state: &mut ViewState, lines: usize) {
             .update(TeamsMessage::Scroll(dir));
         return;
     }
+    if key == "roster" {
+        let dir = if lines >= page_size() {
+            ScrollDirection::PageUp
+        } else {
+            ScrollDirection::Up
+        };
+        view_state
+            .roster_panel
+            .update(RosterMessage::Scroll(dir));
+        return;
+    }
     let offset = view_state.scroll_offset.entry(key.to_string()).or_insert(0);
     *offset = offset.saturating_sub(lines);
 }
@@ -1510,6 +1522,17 @@ fn dispatch_scroll_down(view_state: &mut ViewState, lines: usize) {
         view_state
             .teams_panel
             .update(TeamsMessage::Scroll(dir));
+        return;
+    }
+    if key == "roster" {
+        let dir = if lines >= page_size() {
+            ScrollDirection::PageDown
+        } else {
+            ScrollDirection::Down
+        };
+        view_state
+            .roster_panel
+            .update(RosterMessage::Scroll(dir));
         return;
     }
     let offset = view_state.scroll_offset.entry(key.to_string()).or_insert(0);
@@ -1760,7 +1783,7 @@ mod tests {
         handle_key(key(KeyCode::Down), &mut state);
         handle_key(key(KeyCode::Down), &mut state);
 
-        assert_eq!(state.scroll_offset.get("roster"), Some(&2));
+        assert_eq!(state.roster_panel.scroll_offset(), 2);
         // Main panel scroll should not be affected
         assert!(state.scroll_offset.get("analysis").is_none());
     }
@@ -1827,7 +1850,7 @@ mod tests {
 
         handle_key(key(KeyCode::PageDown), &mut state);
 
-        assert_eq!(state.scroll_offset.get("roster"), Some(&20));
+        assert_eq!(state.roster_panel.scroll_offset(), 20);
         assert!(state.scroll_offset.get("analysis").is_none());
     }
 
@@ -2474,7 +2497,7 @@ mod tests {
         // Switch focus to roster and scroll
         state.focused_panel = Some(FocusPanel::Roster);
         handle_key(key(KeyCode::Down), &mut state);
-        assert_eq!(state.scroll_offset.get("roster"), Some(&1));
+        assert_eq!(state.roster_panel.scroll_offset(), 1);
 
         // Main panel scroll should be untouched
         assert_eq!(state.scroll_offset.get("analysis"), Some(&1));

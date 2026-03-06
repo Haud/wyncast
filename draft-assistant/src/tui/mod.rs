@@ -38,6 +38,7 @@ use crate::valuation::scarcity::ScarcityEntry;
 use crate::valuation::zscore::PlayerValuation;
 
 use draft::draft_log::DraftLogPanel;
+use draft::sidebar::roster::RosterPanel;
 use draft::teams::TeamsPanel;
 use layout::build_layout;
 pub use onboarding::llm_setup::LlmSetupState;
@@ -314,6 +315,8 @@ pub struct ViewState {
     pub teams_panel: TeamsPanel,
     /// User's roster slots (position + optional player).
     pub my_roster: Vec<RosterSlot>,
+    /// Roster panel component (owns its own scroll state).
+    pub roster_panel: RosterPanel,
     /// Which panel currently has keyboard focus for scroll routing.
     /// `None` means no panel is focused (scroll goes to active tab by default).
     pub focused_panel: Option<FocusPanel>,
@@ -373,6 +376,7 @@ impl Default for ViewState {
             team_summaries: Vec::new(),
             teams_panel: TeamsPanel::new(),
             my_roster: Vec::new(),
+            roster_panel: RosterPanel::new(),
             focused_panel: None,
             position_filter_modal: PositionFilterModal::default(),
             active_keybinds: Vec::new(),
@@ -1011,7 +1015,9 @@ fn render_draft_frame(frame: &mut Frame, state: &ViewState) {
     }
 
     // Sidebar widgets (each with individual focus)
-    widgets::roster::render(frame, layout.roster, state, roster_focused);
+    let nominated_position = state.current_nomination.as_ref()
+        .and_then(|n| Position::from_str_pos(&n.position));
+    state.roster_panel.view(frame, layout.roster, &state.my_roster, nominated_position.as_ref(), roster_focused);
     widgets::scarcity::render(frame, layout.scarcity, state, scarcity_focused);
     widgets::budget::render(frame, layout.budget, state, budget_focused);
     widgets::nomination_plan::render(frame, layout.nomination_plan, state, nom_plan_focused);
