@@ -9,7 +9,6 @@ pub mod nomination_banner;
 pub mod nomination_plan;
 pub mod position_filter_modal;
 pub mod quit_confirm;
-pub mod scarcity;
 pub mod unsaved_changes_confirm;
 pub mod status_bar;
 
