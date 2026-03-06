@@ -1406,7 +1406,7 @@ fn dispatch_scroll_up(view_state: &mut ViewState, lines: usize) {
             ScrollDirection::Up
         };
         view_state
-            .roster_panel
+            .sidebar.roster
             .update(RosterMessage::Scroll(dir));
         return;
     }
@@ -1417,7 +1417,7 @@ fn dispatch_scroll_up(view_state: &mut ViewState, lines: usize) {
             ScrollDirection::Up
         };
         view_state
-            .scarcity_panel
+            .sidebar.scarcity
             .update(ScarcityPanelMessage::Scroll(dir));
         return;
     }
@@ -1428,7 +1428,7 @@ fn dispatch_scroll_up(view_state: &mut ViewState, lines: usize) {
             ScrollDirection::Up
         };
         view_state
-            .plan_panel
+            .sidebar.plan
             .update(PlanPanelMessage::Scroll(dir));
         return;
     }
@@ -1490,7 +1490,7 @@ fn dispatch_scroll_down(view_state: &mut ViewState, lines: usize) {
             ScrollDirection::Down
         };
         view_state
-            .roster_panel
+            .sidebar.roster
             .update(RosterMessage::Scroll(dir));
         return;
     }
@@ -1501,7 +1501,7 @@ fn dispatch_scroll_down(view_state: &mut ViewState, lines: usize) {
             ScrollDirection::Down
         };
         view_state
-            .scarcity_panel
+            .sidebar.scarcity
             .update(ScarcityPanelMessage::Scroll(dir));
         return;
     }
@@ -1512,7 +1512,7 @@ fn dispatch_scroll_down(view_state: &mut ViewState, lines: usize) {
             ScrollDirection::Down
         };
         view_state
-            .plan_panel
+            .sidebar.plan
             .update(PlanPanelMessage::Scroll(dir));
         return;
     }
@@ -1681,7 +1681,7 @@ mod tests {
         // Analysis panel should not have been scrolled
         assert_eq!(state.main_panel.analysis.scroll_offset(), 0);
         // Nomination plan should not have been scrolled
-        assert_eq!(state.plan_panel.scroll_offset(), 0);
+        assert_eq!(state.sidebar.plan.scroll_offset(), 0);
     }
 
     // -- Panel focus --
@@ -1782,7 +1782,7 @@ mod tests {
         handle_key(key(KeyCode::Down), &mut state);
         handle_key(key(KeyCode::Down), &mut state);
 
-        assert_eq!(state.roster_panel.scroll_offset(), 2);
+        assert_eq!(state.sidebar.roster.scroll_offset(), 2);
         // Analysis panel scroll should not be affected
         assert_eq!(state.main_panel.analysis.scroll_offset(), 0);
     }
@@ -1794,7 +1794,7 @@ mod tests {
 
         handle_key(key(KeyCode::Down), &mut state);
 
-        assert_eq!(state.scarcity_panel.scroll_offset(), 1);
+        assert_eq!(state.sidebar.scarcity.scroll_offset(), 1);
         assert_eq!(state.main_panel.analysis.scroll_offset(), 0);
     }
 
@@ -1816,7 +1816,7 @@ mod tests {
 
         handle_key(key(KeyCode::Down), &mut state);
 
-        assert_eq!(state.plan_panel.scroll_offset(), 1);
+        assert_eq!(state.sidebar.plan.scroll_offset(), 1);
         assert_eq!(state.main_panel.analysis.scroll_offset(), 0);
     }
 
@@ -1849,7 +1849,7 @@ mod tests {
 
         handle_key(key(KeyCode::PageDown), &mut state);
 
-        assert_eq!(state.roster_panel.scroll_offset(), 20);
+        assert_eq!(state.sidebar.roster.scroll_offset(), 20);
         assert_eq!(state.main_panel.analysis.scroll_offset(), 0);
     }
 
@@ -2473,7 +2473,7 @@ mod tests {
         // Switch focus to roster and scroll
         state.focused_panel = Some(FocusPanel::Roster);
         handle_key(key(KeyCode::Down), &mut state);
-        assert_eq!(state.roster_panel.scroll_offset(), 1);
+        assert_eq!(state.sidebar.roster.scroll_offset(), 1);
 
         // Main panel scroll should be untouched
         assert_eq!(state.main_panel.analysis.scroll_offset(), 1);
