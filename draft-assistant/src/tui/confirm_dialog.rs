@@ -156,7 +156,7 @@ impl ConfirmDialog {
 
 /// Convenience constructors for the two standard dialogs.
 impl ConfirmDialog {
-    /// Quit confirmation: "Really quit? (y/n)"
+    /// Quit confirmation: "Really quit? (y/q/n)"
     pub fn quit() -> Self {
         Self::new(
             "Quit?",
@@ -165,6 +165,7 @@ impl ConfirmDialog {
             5,
             vec![
                 ConfirmOption { key: 'y', label: "y".into(), color: Color::Green },
+                ConfirmOption { key: 'q', label: "q".into(), color: Color::Green },
                 ConfirmOption { key: 'n', label: "n".into(), color: Color::Red },
             ],
         )
@@ -237,7 +238,7 @@ mod tests {
         assert_eq!(d.prompt, "Really quit?");
         assert_eq!(d.width, 28);
         assert_eq!(d.height, 5);
-        assert_eq!(d.options.len(), 2);
+        assert_eq!(d.options.len(), 3);
         assert!(!d.open);
     }
 

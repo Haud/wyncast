@@ -4,8 +4,6 @@ use ratatui::style::{Color, Style};
 
 pub mod budget;
 pub mod nomination_banner;
-pub mod quit_confirm;
-pub mod unsaved_changes_confirm;
 pub mod status_bar;
 
 /// Return a cyan border style when focused, otherwise the provided base style.

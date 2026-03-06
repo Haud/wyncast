@@ -725,8 +725,19 @@ fn handle_settings_key(
     use crate::protocol::SettingsSection;
 
     // --- Unsaved changes confirmation modal: intercept all input ---
-    if view_state.confirm_exit_settings {
-        return handle_confirm_exit_settings(key_event, view_state);
+    if view_state.confirm_exit_settings.open {
+        use crate::tui::confirm_dialog::ConfirmResult;
+        if let Some(msg) = view_state.confirm_exit_settings.key_to_message(key_event) {
+            if let Some(result) = view_state.confirm_exit_settings.update(msg) {
+                match result {
+                    ConfirmResult::Confirmed(ch) => {
+                        return handle_confirm_exit_settings_choice(ch, view_state);
+                    }
+                    ConfirmResult::Cancelled => return None,
+                }
+            }
+        }
+        return None;
     }
 
     let active_tab = view_state.settings_tab;
@@ -784,7 +795,8 @@ fn handle_settings_key(
                 || view_state.llm_setup.settings_dirty
                 || view_state.llm_setup.settings_needs_connection_test
             {
-                view_state.confirm_exit_settings = true;
+                use crate::tui::confirm_dialog::ConfirmMessage;
+                view_state.confirm_exit_settings.update(ConfirmMessage::Open);
                 None
             } else {
                 Some(UserCommand::ExitSettings)
@@ -802,20 +814,20 @@ fn handle_settings_key(
     }
 }
 
-/// Handle keyboard input while the unsaved-changes confirmation modal is showing.
+/// Handle the user's choice from the unsaved-changes confirmation dialog.
 ///
-/// - `y`/`Y`: Save all dirty settings and exit to draft mode.
-/// - `n`/`N`: Discard unsaved changes (restore snapshots) and exit.
-/// - `Esc`:   Dismiss the modal and return to settings.
-/// - All other keys: ignored.
-fn handle_confirm_exit_settings(
-    key_event: KeyEvent,
+/// Called after `ConfirmDialog` has already closed itself and returned a
+/// `ConfirmResult::Confirmed(ch)`. This function implements the save/discard
+/// logic for the two option keys:
+///
+/// - `'y'`: Save all dirty settings and exit to draft mode.
+/// - `'n'`: Discard unsaved changes (restore snapshots) and exit.
+fn handle_confirm_exit_settings_choice(
+    ch: char,
     view_state: &mut ViewState,
 ) -> Option<UserCommand> {
-    match key_event.code {
-        KeyCode::Char('y') | KeyCode::Char('Y') => {
-            view_state.confirm_exit_settings = false;
-
+    match ch {
+        'y' => {
             // Gather save payloads for each dirty tab.
             // Only save LLM config when dirty AND not blocked by a pending/failed
             // connection test. If save is blocked, discard LLM changes instead.
@@ -865,8 +877,7 @@ fn handle_confirm_exit_settings(
                 strategy: strategy_save,
             })
         }
-        KeyCode::Char('n') | KeyCode::Char('N') => {
-            view_state.confirm_exit_settings = false;
+        'n' => {
             // Restore snapshots to discard unsaved changes
             if view_state.llm_setup.settings_dirty
                 || view_state.llm_setup.settings_needs_connection_test
@@ -877,11 +888,6 @@ fn handle_confirm_exit_settings(
                 view_state.strategy_setup.restore_settings_snapshot();
             }
             Some(UserCommand::ExitSettings)
-        }
-        KeyCode::Esc => {
-            // Cancel: go back to settings
-            view_state.confirm_exit_settings = false;
-            None
         }
         _ => None,
     }
@@ -1075,7 +1081,8 @@ fn handle_llm_settings_key(
             || view_state.llm_setup.settings_needs_connection_test;
         let strategy_dirty = view_state.strategy_setup.settings_dirty;
         if llm_dirty || strategy_dirty {
-            view_state.confirm_exit_settings = true;
+            use crate::tui::confirm_dialog::ConfirmMessage;
+            view_state.confirm_exit_settings.update(ConfirmMessage::Open);
             return None;
         } else {
             return Some(UserCommand::ExitSettings);
@@ -1188,9 +1195,19 @@ fn handle_draft_key(
     key_event: KeyEvent,
     view_state: &mut ViewState,
 ) -> Option<UserCommand> {
-    // Quit confirmation mode: only y/q confirm, n/Esc cancel, everything else blocked
-    if view_state.confirm_quit {
-        return handle_confirm_quit(key_event, view_state);
+    // Quit confirmation mode: delegate to ConfirmDialog component
+    if view_state.confirm_quit.open {
+        use crate::tui::confirm_dialog::ConfirmResult;
+        if let Some(msg) = view_state.confirm_quit.key_to_message(key_event) {
+            if let Some(result) = view_state.confirm_quit.update(msg) {
+                match result {
+                    ConfirmResult::Confirmed('n') => return None, // 'n' cancels
+                    ConfirmResult::Confirmed(_) => return Some(UserCommand::Quit),
+                    ConfirmResult::Cancelled => return None,
+                }
+            }
+        }
+        return None; // block all other keys
     }
 
     // Filter mode: route keys through the available panel component
@@ -1306,33 +1323,12 @@ fn handle_draft_key(
 
         // Quit: enter confirmation mode instead of quitting immediately
         KeyCode::Char('q') => {
-            view_state.confirm_quit = true;
+            use crate::tui::confirm_dialog::ConfirmMessage;
+            view_state.confirm_quit.update(ConfirmMessage::Open);
             None
         }
 
         _ => None,
-    }
-}
-
-/// Handle key events while in quit confirmation mode.
-///
-/// In quit confirmation mode:
-/// - `y` or `q` confirms quit (sends UserCommand::Quit)
-/// - `n` or `Esc` cancels (returns to normal mode)
-/// - All other keys are blocked (no-op)
-fn handle_confirm_quit(
-    key_event: KeyEvent,
-    view_state: &mut ViewState,
-) -> Option<UserCommand> {
-    match key_event.code {
-        KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Char('q') | KeyCode::Char('Q') => {
-            Some(UserCommand::Quit)
-        }
-        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-            view_state.confirm_quit = false;
-            None
-        }
-        _ => None, // Block all other input
     }
 }
 
@@ -2196,13 +2192,13 @@ mod tests {
         let mut state = ViewState::default();
         let result = handle_key(key(KeyCode::Char('q')), &mut state);
         assert!(result.is_none(), "q should not send Quit immediately");
-        assert!(state.confirm_quit, "q should enter confirm_quit mode");
+        assert!(state.confirm_quit.open,"q should enter confirm_quit mode");
     }
 
     #[test]
     fn confirm_quit_y_sends_quit() {
         let mut state = ViewState::default();
-        state.confirm_quit = true;
+        state.confirm_quit.open = true;
         let result = handle_key(key(KeyCode::Char('y')), &mut state);
         assert_eq!(result, Some(UserCommand::Quit));
     }
@@ -2210,7 +2206,7 @@ mod tests {
     #[test]
     fn confirm_quit_q_sends_quit() {
         let mut state = ViewState::default();
-        state.confirm_quit = true;
+        state.confirm_quit.open = true;
         let result = handle_key(key(KeyCode::Char('q')), &mut state);
         assert_eq!(result, Some(UserCommand::Quit));
     }
@@ -2218,32 +2214,32 @@ mod tests {
     #[test]
     fn confirm_quit_n_cancels() {
         let mut state = ViewState::default();
-        state.confirm_quit = true;
+        state.confirm_quit.open = true;
         let result = handle_key(key(KeyCode::Char('n')), &mut state);
         assert!(result.is_none());
-        assert!(!state.confirm_quit, "n should cancel confirm_quit mode");
+        assert!(!state.confirm_quit.open,"n should cancel confirm_quit mode");
     }
 
     #[test]
     fn confirm_quit_esc_cancels() {
         let mut state = ViewState::default();
-        state.confirm_quit = true;
+        state.confirm_quit.open = true;
         let result = handle_key(key(KeyCode::Esc), &mut state);
         assert!(result.is_none());
-        assert!(!state.confirm_quit, "Esc should cancel confirm_quit mode");
+        assert!(!state.confirm_quit.open,"Esc should cancel confirm_quit mode");
     }
 
     #[test]
     fn confirm_quit_blocks_other_keys() {
         let mut state = ViewState::default();
-        state.confirm_quit = true;
+        state.confirm_quit.open = true;
         state.active_tab = TabId::Analysis;
 
         // Tab switching should be blocked
         let result = handle_key(key(KeyCode::Char('3')), &mut state);
         assert!(result.is_none());
         assert_eq!(state.active_tab, TabId::Analysis, "Tab switch should be blocked");
-        assert!(state.confirm_quit, "confirm_quit should remain active");
+        assert!(state.confirm_quit.open,"confirm_quit should remain active");
 
         // Scrolling should be blocked
         let result = handle_key(key(KeyCode::Down), &mut state);
@@ -2257,7 +2253,7 @@ mod tests {
         // Arbitrary keys should be blocked
         let result = handle_key(key(KeyCode::Char('x')), &mut state);
         assert!(result.is_none());
-        assert!(state.confirm_quit, "confirm_quit should remain active");
+        assert!(state.confirm_quit.open,"confirm_quit should remain active");
     }
 
     #[test]
@@ -2265,13 +2261,13 @@ mod tests {
         let mut state = ViewState::default();
         let result = handle_key(ctrl_key(KeyCode::Char('c')), &mut state);
         assert_eq!(result, Some(UserCommand::Quit));
-        assert!(!state.confirm_quit, "Ctrl+C should not enter confirm_quit mode");
+        assert!(!state.confirm_quit.open,"Ctrl+C should not enter confirm_quit mode");
     }
 
     #[test]
     fn ctrl_c_quits_even_during_confirmation() {
         let mut state = ViewState::default();
-        state.confirm_quit = true;
+        state.confirm_quit.open = true;
         let result = handle_key(ctrl_key(KeyCode::Char('c')), &mut state);
         assert_eq!(result, Some(UserCommand::Quit));
     }
@@ -2279,7 +2275,7 @@ mod tests {
     #[test]
     fn confirm_quit_uppercase_y_sends_quit() {
         let mut state = ViewState::default();
-        state.confirm_quit = true;
+        state.confirm_quit.open = true;
         let result = handle_key(key(KeyCode::Char('Y')), &mut state);
         assert_eq!(result, Some(UserCommand::Quit));
     }
@@ -2287,7 +2283,7 @@ mod tests {
     #[test]
     fn confirm_quit_uppercase_q_sends_quit() {
         let mut state = ViewState::default();
-        state.confirm_quit = true;
+        state.confirm_quit.open = true;
         let result = handle_key(key(KeyCode::Char('Q')), &mut state);
         assert_eq!(result, Some(UserCommand::Quit));
     }
@@ -2295,10 +2291,10 @@ mod tests {
     #[test]
     fn confirm_quit_uppercase_n_cancels() {
         let mut state = ViewState::default();
-        state.confirm_quit = true;
+        state.confirm_quit.open = true;
         let result = handle_key(key(KeyCode::Char('N')), &mut state);
         assert!(result.is_none());
-        assert!(!state.confirm_quit, "N should cancel confirm_quit mode");
+        assert!(!state.confirm_quit.open,"N should cancel confirm_quit mode");
     }
 
     #[test]
@@ -2311,7 +2307,7 @@ mod tests {
         let result = handle_key(key(KeyCode::Char('q')), &mut state);
         assert!(result.is_none(), "q in filter mode should not produce a command");
         assert_eq!(state.available_panel.filter_text().value(), "testq", "q should be appended to filter text");
-        assert!(!state.confirm_quit, "q in filter mode should not set confirm_quit");
+        assert!(!state.confirm_quit.open,"q in filter mode should not set confirm_quit");
     }
 
     #[test]
@@ -2321,7 +2317,7 @@ mod tests {
         // First q: enters confirmation mode
         let result = handle_key(key(KeyCode::Char('q')), &mut state);
         assert!(result.is_none(), "First q should not send Quit");
-        assert!(state.confirm_quit, "First q should enter confirm_quit mode");
+        assert!(state.confirm_quit.open,"First q should enter confirm_quit mode");
 
         // Second q: confirms quit
         let result = handle_key(key(KeyCode::Char('q')), &mut state);
@@ -3148,12 +3144,12 @@ mod tests {
         // Esc should show confirmation modal, not exit
         let result = handle_key(key(KeyCode::Esc), &mut state);
         assert_eq!(result, None);
-        assert!(state.confirm_exit_settings);
+        assert!(state.confirm_exit_settings.open);
 
         // 'n' should discard, revert, and exit
         let result = handle_key(key(KeyCode::Char('n')), &mut state);
         assert_eq!(result, Some(UserCommand::ExitSettings));
-        assert!(!state.confirm_exit_settings);
+        assert!(!state.confirm_exit_settings.open);
         assert!(!state.llm_setup.settings_needs_connection_test);
         assert!(!state.llm_setup.is_save_blocked());
         assert_eq!(state.llm_setup.connection_status, LlmConnectionStatus::Untested);
@@ -3510,12 +3506,12 @@ mod tests {
         // Esc should show confirmation modal, not exit
         let result = handle_key(key(KeyCode::Esc), &mut state);
         assert_eq!(result, None);
-        assert!(state.confirm_exit_settings);
+        assert!(state.confirm_exit_settings.open);
 
         // 'n' should discard, restore, and exit
         let result = handle_key(key(KeyCode::Char('n')), &mut state);
         assert_eq!(result, Some(UserCommand::ExitSettings));
-        assert!(!state.confirm_exit_settings);
+        assert!(!state.confirm_exit_settings.open);
         assert_eq!(state.strategy_setup.strategy_overview, "Original");
         assert_eq!(state.strategy_setup.hitting_budget_pct, 65);
         assert!(!state.strategy_setup.settings_dirty);
@@ -3550,12 +3546,12 @@ mod tests {
         let mut state = ViewState::default();
         state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
         state.settings_tab = SettingsSection::LlmConfig;
-        state.confirm_exit_settings = true;
+        state.confirm_exit_settings.open = true;
 
         // Esc should dismiss the modal and return to settings
         let result = handle_key(key(KeyCode::Esc), &mut state);
         assert_eq!(result, None);
-        assert!(!state.confirm_exit_settings);
+        assert!(!state.confirm_exit_settings.open);
     }
 
     #[test]
@@ -3569,7 +3565,7 @@ mod tests {
         state.llm_setup.confirmed_through = Some(LlmSetupSection::ApiKey);
         state.llm_setup.settings_dirty = true;
         state.llm_setup.api_key_input.set_value("sk-test");
-        state.confirm_exit_settings = true;
+        state.confirm_exit_settings.open = true;
 
         let result = handle_key(key(KeyCode::Char('y')), &mut state);
         assert!(
@@ -3577,7 +3573,7 @@ mod tests {
             "expected SaveAndExitSettings with LLM save, got {:?}",
             result,
         );
-        assert!(!state.confirm_exit_settings);
+        assert!(!state.confirm_exit_settings.open);
         assert!(!state.llm_setup.settings_dirty);
     }
 
@@ -3594,7 +3590,7 @@ mod tests {
         state.llm_setup.api_key_input.set_value("sk-test");
         state.strategy_setup.settings_dirty = true;
         state.strategy_setup.strategy_overview = "My strategy".to_string();
-        state.confirm_exit_settings = true;
+        state.confirm_exit_settings.open = true;
 
         let result = handle_key(key(KeyCode::Char('y')), &mut state);
         assert!(
@@ -3602,7 +3598,7 @@ mod tests {
             "expected SaveAndExitSettings with both saves, got {:?}",
             result,
         );
-        assert!(!state.confirm_exit_settings);
+        assert!(!state.confirm_exit_settings.open);
         assert!(!state.llm_setup.settings_dirty);
         assert!(!state.strategy_setup.settings_dirty);
     }
@@ -3626,11 +3622,11 @@ mod tests {
         state.strategy_setup.strategy_overview = "Modified".to_string();
         state.strategy_setup.settings_dirty = true;
 
-        state.confirm_exit_settings = true;
+        state.confirm_exit_settings.open = true;
 
         let result = handle_key(key(KeyCode::Char('n')), &mut state);
         assert_eq!(result, Some(UserCommand::ExitSettings));
-        assert!(!state.confirm_exit_settings);
+        assert!(!state.confirm_exit_settings.open);
         assert!(!state.llm_setup.settings_dirty);
         assert!(!state.strategy_setup.settings_dirty);
         assert_eq!(state.strategy_setup.strategy_overview, "Original");
@@ -3643,16 +3639,16 @@ mod tests {
         let mut state = ViewState::default();
         state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
         state.settings_tab = SettingsSection::LlmConfig;
-        state.confirm_exit_settings = true;
+        state.confirm_exit_settings.open = true;
 
         // Random keys should be ignored
         let result = handle_key(key(KeyCode::Char('a')), &mut state);
         assert_eq!(result, None);
-        assert!(state.confirm_exit_settings);
+        assert!(state.confirm_exit_settings.open);
 
         let result = handle_key(key(KeyCode::Enter), &mut state);
         assert_eq!(result, None);
-        assert!(state.confirm_exit_settings);
+        assert!(state.confirm_exit_settings.open);
     }
 
     #[test]
@@ -3671,7 +3667,7 @@ mod tests {
 
         let result = handle_key(key(KeyCode::Esc), &mut state);
         assert_eq!(result, Some(UserCommand::ExitSettings));
-        assert!(!state.confirm_exit_settings);
+        assert!(!state.confirm_exit_settings.open);
     }
 
     #[test]
@@ -3689,7 +3685,7 @@ mod tests {
 
         let result = handle_key(key(KeyCode::Esc), &mut state);
         assert_eq!(result, Some(UserCommand::ExitSettings));
-        assert!(!state.confirm_exit_settings);
+        assert!(!state.confirm_exit_settings.open);
     }
 
     #[test]
@@ -3701,7 +3697,7 @@ mod tests {
         state.settings_tab = SettingsSection::StrategyConfig;
         state.strategy_setup.settings_dirty = true;
         state.strategy_setup.strategy_overview = "Test".to_string();
-        state.confirm_exit_settings = true;
+        state.confirm_exit_settings.open = true;
 
         let result = handle_key(key(KeyCode::Char('Y')), &mut state);
         assert!(
@@ -3719,7 +3715,7 @@ mod tests {
         state.app_mode = AppMode::Settings(SettingsSection::StrategyConfig);
         state.settings_tab = SettingsSection::StrategyConfig;
         state.strategy_setup.settings_dirty = true;
-        state.confirm_exit_settings = true;
+        state.confirm_exit_settings.open = true;
 
         let result = handle_key(key(KeyCode::Char('N')), &mut state);
         assert_eq!(result, Some(UserCommand::ExitSettings));
@@ -3738,7 +3734,7 @@ mod tests {
         state.llm_setup.settings_needs_connection_test = true;
         // connection_status defaults to Untested, so is_save_blocked() == true
         state.llm_setup.api_key_input.set_value("sk-test");
-        state.confirm_exit_settings = true;
+        state.confirm_exit_settings.open = true;
 
         // Snapshot original values so restore has something to go back to
         state.llm_setup.settings_saved_provider_idx = state.llm_setup.selected_provider_idx;
@@ -3751,7 +3747,7 @@ mod tests {
             "expected SaveAndExitSettings with no LLM save when blocked, got {:?}",
             result,
         );
-        assert!(!state.confirm_exit_settings);
+        assert!(!state.confirm_exit_settings.open);
         // restore_settings_snapshot should have been called, clearing dirty flags
         assert!(!state.llm_setup.settings_dirty);
         assert!(!state.llm_setup.settings_needs_connection_test);
@@ -3772,7 +3768,7 @@ mod tests {
         state.llm_setup.connection_status =
             LlmConnectionStatus::Success("ok".to_string());
         state.llm_setup.api_key_input.set_value("sk-test");
-        state.confirm_exit_settings = true;
+        state.confirm_exit_settings.open = true;
 
         let result = handle_key(key(KeyCode::Char('y')), &mut state);
         // LLM save should proceed because connection test passed
@@ -3781,7 +3777,7 @@ mod tests {
             "expected SaveAndExitSettings with LLM save when not blocked, got {:?}",
             result,
         );
-        assert!(!state.confirm_exit_settings);
+        assert!(!state.confirm_exit_settings.open);
         assert!(!state.llm_setup.settings_dirty);
     }
 }

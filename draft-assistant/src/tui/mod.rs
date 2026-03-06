@@ -37,6 +37,7 @@ use crate::protocol::{
 use crate::valuation::scarcity::ScarcityEntry;
 use crate::valuation::zscore::PlayerValuation;
 
+use confirm_dialog::ConfirmDialog;
 use draft::draft_log::DraftLogPanel;
 use draft::main_panel::analysis::{AnalysisPanel, AnalysisPanelMessage};
 use draft::main_panel::available::{AvailablePanel, AvailablePanelMessage};
@@ -242,8 +243,8 @@ pub struct ViewState {
     pub scroll_offset: HashMap<String, usize>,
     /// Available players panel component (owns filter state and scroll).
     pub available_panel: AvailablePanel,
-    /// Whether the quit confirmation dialog is showing.
-    pub confirm_quit: bool,
+    /// Quit confirmation dialog component.
+    pub confirm_quit: ConfirmDialog,
     /// Chronological list of completed draft picks.
     pub draft_log: Vec<DraftPick>,
     /// Draft log panel component (owns its own scroll state).
@@ -283,10 +284,10 @@ pub struct ViewState {
     /// that a stray CSI introducer byte (`[`) leaked by the terminal
     /// as a separate key event is not inserted into the input buffer.
     pub suppress_next_bracket: bool,
-    /// Whether the unsaved-changes confirmation dialog is showing on the
-    /// settings screen. When `true`, the modal overlay intercepts all input
-    /// and offers Save / Discard / Cancel options.
-    pub confirm_exit_settings: bool,
+    /// Unsaved-changes confirmation dialog component for the settings screen.
+    /// When open, the modal overlay intercepts all input and offers
+    /// Save / Discard / Cancel options.
+    pub confirm_exit_settings: ConfirmDialog,
 }
 
 impl Default for ViewState {
@@ -307,7 +308,7 @@ impl Default for ViewState {
             active_tab: TabId::Analysis,
             scroll_offset: HashMap::new(),
             available_panel: AvailablePanel::new(),
-            confirm_quit: false,
+            confirm_quit: ConfirmDialog::quit(),
             draft_log: Vec::new(),
             draft_log_panel: DraftLogPanel::new(),
             team_summaries: Vec::new(),
@@ -323,7 +324,7 @@ impl Default for ViewState {
             settings_tab: SettingsSection::LlmConfig,
             llm_configured: true,
             suppress_next_bracket: false,
-            confirm_exit_settings: false,
+            confirm_exit_settings: ConfirmDialog::unsaved_changes(),
         }
     }
 }
@@ -563,7 +564,7 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
             }
         }
         UiUpdate::ModeChanged(mode) => {
-            state.confirm_exit_settings = false;
+            state.confirm_exit_settings.open = false;
             if let AppMode::Settings(section) = &mode {
                 state.settings_tab = *section;
                 // In settings mode, all LLM sections should be visible
@@ -748,7 +749,7 @@ fn compute_onboarding_keybinds(state: &ViewState, step: &crate::onboarding::Onbo
 /// Compute keybind hints for settings mode.
 fn compute_settings_keybinds(state: &ViewState) -> Vec<KeybindHint> {
     // Unsaved changes confirmation modal: override all hints
-    if state.confirm_exit_settings {
+    if state.confirm_exit_settings.open {
         return vec![
             KeybindHint::new("y", "Save & exit"),
             KeybindHint::new("n", "Discard & exit"),
@@ -846,7 +847,7 @@ fn compute_settings_keybinds(state: &ViewState) -> Vec<KeybindHint> {
 /// Compute keybind hints for draft mode.
 fn compute_draft_keybinds(state: &ViewState) -> Vec<KeybindHint> {
     // 1. Quit confirmation overlay: all other input is blocked
-    if state.confirm_quit {
+    if state.confirm_quit.open {
         return vec![
             KeybindHint::new("y/q", "Confirm quit"),
             KeybindHint::new("n/Esc", "Cancel"),
@@ -986,8 +987,8 @@ fn render_draft_frame(frame: &mut Frame, state: &ViewState) {
     }
 
     // Quit confirm dialog rendered last so it appears on top of everything
-    if state.confirm_quit {
-        widgets::quit_confirm::render(frame, frame.area(), state);
+    if state.confirm_quit.open {
+        state.confirm_quit.view(frame, frame.area());
     }
 }
 
@@ -1220,7 +1221,7 @@ mod tests {
         assert!(!state.available_panel.filter_mode());
         assert!(state.available_panel.filter_text().is_empty());
         assert!(state.available_panel.position_filter().is_none());
-        assert!(!state.confirm_quit);
+        assert!(!state.confirm_quit.open);
         assert!(state.draft_log.is_empty());
         assert!(state.team_summaries.is_empty());
         assert!(state.my_roster.is_empty());
@@ -1642,7 +1643,7 @@ mod tests {
     #[test]
     fn compute_keybinds_quit_confirm_mode() {
         let mut state = ViewState::default();
-        state.confirm_quit = true;
+        state.confirm_quit.open = true;
         let hints = compute_keybinds(&state);
         let ks = keys(&hints);
         assert!(ks.contains(&"y/q"), "confirm quit hint should appear");
@@ -1708,7 +1709,7 @@ mod tests {
     fn quit_confirm_takes_priority_over_modal_and_filter_mode() {
         // If somehow both confirm_quit and modal are set, confirm_quit wins
         let mut state = ViewState::default();
-        state.confirm_quit = true;
+        state.confirm_quit.open = true;
         state.position_filter_modal.open = true;
         state.available_panel.update(AvailablePanelMessage::ToggleFilterMode);
         let hints = compute_keybinds(&state);
@@ -1940,11 +1941,11 @@ mod tests {
     #[test]
     fn apply_ui_update_mode_changed_resets_confirm_exit_settings() {
         let mut state = ViewState::default();
-        state.confirm_exit_settings = true;
+        state.confirm_exit_settings.open = true;
 
         apply_ui_update(&mut state, UiUpdate::ModeChanged(AppMode::Draft));
         assert!(
-            !state.confirm_exit_settings,
+            !state.confirm_exit_settings.open,
             "ModeChanged should reset confirm_exit_settings to false"
         );
     }
