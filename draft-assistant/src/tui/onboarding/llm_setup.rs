@@ -10,8 +10,12 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
+use crossterm::event::{KeyCode, KeyEvent};
+
 use crate::llm::provider::{models_for_provider, LlmProvider, ModelOption};
+use crate::protocol::{OnboardingAction, SettingsSection, UserCommand};
 use crate::tui::TextInput;
+use crate::tui::text_input::TextInputMessage;
 
 // ---------------------------------------------------------------------------
 // API key masking
@@ -466,6 +470,487 @@ impl LlmSetupState {
             let visible = raw.chars().take(7).collect::<String>();
             let mask_len = raw.chars().count().saturating_sub(7);
             format!("{}{}", visible, "*".repeat(mask_len))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ELM message API
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum LlmSetupMessage {
+    // Navigation within sections
+    SectionUp,
+    SectionDown,
+    ConfirmSection,
+    GoBackSection,
+    TabNext,
+    TabPrev,
+    // API key editing
+    StartApiKeyEdit,
+    ApiKeyInput(TextInputMessage),
+    FinishApiKeyEdit,
+    CancelApiKeyEdit,
+    // Connection / flow
+    TestConnection,
+    GoNext,
+    Skip,
+    Quit,
+    // Settings-mode field navigation
+    SettingsFieldUp,
+    SettingsFieldDown,
+    SettingsFieldOpen,
+    SettingsFieldConfirm,
+    SettingsFieldCancel,
+    SettingsSave,
+    // Settings-mode tab switching
+    SettingsTabSwitch(SettingsSection),
+    // Settings-mode Esc (needs to check cross-component dirty state, so
+    // the caller provides the combined dirty flag)
+    SettingsExit,
+}
+
+impl LlmSetupState {
+    pub fn key_to_message(&self, key: KeyEvent, settings_mode: bool) -> Option<LlmSetupMessage> {
+        if settings_mode {
+            self.settings_key_to_message(key)
+        } else {
+            self.onboarding_key_to_message(key)
+        }
+    }
+
+    fn onboarding_key_to_message(&self, key: KeyEvent) -> Option<LlmSetupMessage> {
+        if self.api_key_editing {
+            return match key.code {
+                KeyCode::Enter => Some(LlmSetupMessage::FinishApiKeyEdit),
+                KeyCode::Esc => Some(LlmSetupMessage::CancelApiKeyEdit),
+                _ => TextInput::key_to_message(&key).map(LlmSetupMessage::ApiKeyInput),
+            };
+        }
+
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => Some(LlmSetupMessage::SectionUp),
+            KeyCode::Down | KeyCode::Char('j') => Some(LlmSetupMessage::SectionDown),
+            KeyCode::Enter => Some(LlmSetupMessage::ConfirmSection),
+            KeyCode::Char('n') => Some(LlmSetupMessage::GoNext),
+            KeyCode::Char('s') => Some(LlmSetupMessage::Skip),
+            KeyCode::Esc => Some(LlmSetupMessage::GoBackSection),
+            KeyCode::Tab => Some(LlmSetupMessage::TabNext),
+            KeyCode::BackTab => Some(LlmSetupMessage::TabPrev),
+            KeyCode::Char('q') => Some(LlmSetupMessage::Quit),
+            _ => None,
+        }
+    }
+
+    fn settings_key_to_message(&self, key: KeyEvent) -> Option<LlmSetupMessage> {
+        // API key text editing mode
+        if self.api_key_editing {
+            return match key.code {
+                KeyCode::Enter => Some(LlmSetupMessage::FinishApiKeyEdit),
+                KeyCode::Esc => Some(LlmSetupMessage::CancelApiKeyEdit),
+                _ => TextInput::key_to_message(&key).map(LlmSetupMessage::ApiKeyInput),
+            };
+        }
+
+        // Field editing mode (dropdown open)
+        if self.settings_editing_field.is_some() {
+            return match key.code {
+                KeyCode::Up | KeyCode::Char('k') => Some(LlmSetupMessage::SectionUp),
+                KeyCode::Down | KeyCode::Char('j') => Some(LlmSetupMessage::SectionDown),
+                KeyCode::Enter => Some(LlmSetupMessage::SettingsFieldConfirm),
+                KeyCode::Esc => Some(LlmSetupMessage::SettingsFieldCancel),
+                KeyCode::Char('q') => Some(LlmSetupMessage::Quit),
+                _ => None,
+            };
+        }
+
+        // Overview mode — Esc is handled here (not deferred to caller)
+        match key.code {
+            KeyCode::Esc => Some(LlmSetupMessage::SettingsExit),
+            KeyCode::Up | KeyCode::Char('k') => Some(LlmSetupMessage::SettingsFieldUp),
+            KeyCode::Down | KeyCode::Char('j') => Some(LlmSetupMessage::SettingsFieldDown),
+            KeyCode::Enter => Some(LlmSetupMessage::SettingsFieldOpen),
+            KeyCode::Char('s') => Some(LlmSetupMessage::SettingsSave),
+            KeyCode::Char('1') => Some(LlmSetupMessage::SettingsTabSwitch(SettingsSection::LlmConfig)),
+            KeyCode::Char('2') => Some(LlmSetupMessage::SettingsTabSwitch(SettingsSection::StrategyConfig)),
+            KeyCode::Char('q') => Some(LlmSetupMessage::Quit),
+            _ => None,
+        }
+    }
+
+    pub fn update(&mut self, msg: LlmSetupMessage) -> Option<UserCommand> {
+        match msg {
+            // -- API key editing --
+            LlmSetupMessage::FinishApiKeyEdit => {
+                if self.in_settings_mode {
+                    self.update_settings_finish_api_key()
+                } else {
+                    self.update_onboarding_finish_api_key()
+                }
+            }
+            LlmSetupMessage::CancelApiKeyEdit => {
+                self.api_key_input.set_value(&self.api_key_backup.clone());
+                self.api_key_editing = false;
+                if self.in_settings_mode {
+                    self.restore_settings_snapshot();
+                } else {
+                    self.go_back_section();
+                }
+                None
+            }
+            LlmSetupMessage::ApiKeyInput(ti_msg) => {
+                self.api_key_input.update(ti_msg);
+                if self.in_settings_mode {
+                    self.settings_dirty = true;
+                }
+                None
+            }
+            LlmSetupMessage::StartApiKeyEdit => {
+                self.api_key_backup = self.api_key_input.value().to_string();
+                self.api_key_editing = true;
+                None
+            }
+
+            // -- Section navigation (onboarding + settings field editing) --
+            LlmSetupMessage::SectionUp => {
+                if self.in_settings_mode {
+                    if let Some(editing) = self.settings_editing_field {
+                        self.update_settings_dropdown_up(editing);
+                    }
+                } else {
+                    match self.active_section {
+                        LlmSetupSection::Provider => {
+                            self.provider_up();
+                            let provider = self.selected_provider().clone();
+                            return Some(UserCommand::OnboardingAction(
+                                OnboardingAction::SetProvider(provider),
+                            ));
+                        }
+                        LlmSetupSection::Model => {
+                            self.model_up();
+                            if let Some(model) = self.selected_model() {
+                                return Some(UserCommand::OnboardingAction(
+                                    OnboardingAction::SetModel(model.model_id.to_string()),
+                                ));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                None
+            }
+            LlmSetupMessage::SectionDown => {
+                if self.in_settings_mode {
+                    if let Some(editing) = self.settings_editing_field {
+                        self.update_settings_dropdown_down(editing);
+                    }
+                } else {
+                    match self.active_section {
+                        LlmSetupSection::Provider => {
+                            self.provider_down();
+                            let provider = self.selected_provider().clone();
+                            return Some(UserCommand::OnboardingAction(
+                                OnboardingAction::SetProvider(provider),
+                            ));
+                        }
+                        LlmSetupSection::Model => {
+                            self.model_down();
+                            if let Some(model) = self.selected_model() {
+                                return Some(UserCommand::OnboardingAction(
+                                    OnboardingAction::SetModel(model.model_id.to_string()),
+                                ));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                None
+            }
+
+            LlmSetupMessage::ConfirmSection => {
+                self.update_confirm_section()
+            }
+
+            LlmSetupMessage::GoBackSection => {
+                if self.in_settings_mode {
+                    if self.active_section != LlmSetupSection::Provider {
+                        self.active_section = self.active_section.prev();
+                    }
+                    None
+                } else if self.active_section == LlmSetupSection::Provider {
+                    Some(UserCommand::OnboardingAction(OnboardingAction::GoBack))
+                } else {
+                    self.go_back_section();
+                    None
+                }
+            }
+
+            LlmSetupMessage::TabNext => {
+                let next = self.active_section.next();
+                if self.is_section_visible(next) {
+                    self.active_section = next;
+                }
+                None
+            }
+            LlmSetupMessage::TabPrev => {
+                let prev = self.active_section.prev();
+                if self.is_section_visible(prev) && prev < self.active_section {
+                    self.active_section = prev;
+                }
+                None
+            }
+
+            LlmSetupMessage::GoNext => {
+                if self.connection_tested_ok() {
+                    Some(UserCommand::OnboardingAction(OnboardingAction::GoNext))
+                } else {
+                    None
+                }
+            }
+            LlmSetupMessage::Skip => {
+                Some(UserCommand::OnboardingAction(OnboardingAction::Skip))
+            }
+            LlmSetupMessage::Quit => Some(UserCommand::Quit),
+            LlmSetupMessage::TestConnection => {
+                self.confirmed_through = Some(LlmSetupSection::ApiKey);
+                self.connection_status = LlmConnectionStatus::Testing;
+                Some(UserCommand::OnboardingAction(OnboardingAction::TestConnection))
+            }
+
+            // -- Settings field navigation --
+            LlmSetupMessage::SettingsFieldUp => {
+                let idx = self.active_section.step_index();
+                if idx > 0 {
+                    self.active_section = LlmSetupSection::CYCLE[idx - 1];
+                }
+                None
+            }
+            LlmSetupMessage::SettingsFieldDown => {
+                let idx = self.active_section.step_index();
+                if idx + 1 < LlmSetupSection::CYCLE.len() {
+                    self.active_section = LlmSetupSection::CYCLE[idx + 1];
+                }
+                None
+            }
+            LlmSetupMessage::SettingsFieldOpen => {
+                self.snapshot_settings();
+                self.settings_editing_field = Some(self.active_section);
+                if self.active_section == LlmSetupSection::ApiKey {
+                    self.api_key_backup = self.api_key_input.value().to_string();
+                    self.api_key_editing = true;
+                }
+                None
+            }
+            LlmSetupMessage::SettingsFieldConfirm => {
+                self.update_settings_field_confirm()
+            }
+            LlmSetupMessage::SettingsFieldCancel => {
+                self.restore_settings_snapshot();
+                None
+            }
+            LlmSetupMessage::SettingsSave => {
+                if self.is_save_blocked() {
+                    None
+                } else {
+                    let provider = self.selected_provider().clone();
+                    let model_id = self
+                        .selected_model()
+                        .map(|m| m.model_id.to_string())
+                        .unwrap_or_default();
+                    let api_key_val = self.api_key_input.value().to_string();
+                    let api_key = if api_key_val.is_empty() {
+                        None
+                    } else {
+                        Some(api_key_val)
+                    };
+                    self.settings_dirty = false;
+                    self.settings_needs_connection_test = false;
+                    self.snapshot_settings();
+                    Some(UserCommand::OnboardingAction(
+                        OnboardingAction::SaveLlmConfig {
+                            provider,
+                            model_id,
+                            api_key,
+                        },
+                    ))
+                }
+            }
+            LlmSetupMessage::SettingsTabSwitch(section) => {
+                Some(UserCommand::SwitchSettingsTab(section))
+            }
+            LlmSetupMessage::SettingsExit => {
+                // Caller must check cross-component dirty state before sending
+                // this message. If this message arrives, it means exit is safe.
+                Some(UserCommand::ExitSettings)
+            }
+        }
+    }
+
+    fn update_onboarding_finish_api_key(&mut self) -> Option<UserCommand> {
+        self.api_key_editing = false;
+        let key = self.api_key_input.value().to_string();
+        if key.is_empty() {
+            None
+        } else {
+            self.confirmed_through = Some(LlmSetupSection::ApiKey);
+            self.connection_status = LlmConnectionStatus::Testing;
+            Some(UserCommand::OnboardingAction(OnboardingAction::SetApiKey(key)))
+        }
+    }
+
+    fn update_settings_finish_api_key(&mut self) -> Option<UserCommand> {
+        self.api_key_editing = false;
+        self.settings_dirty = true;
+        self.settings_editing_field = None;
+        self.active_section = LlmSetupSection::ApiKey;
+        let new_key = self.api_key_input.value().to_string();
+        let has_key = !new_key.is_empty() || self.has_saved_api_key;
+        if self.has_config_changed_from_snapshot() && has_key {
+            self.settings_needs_connection_test = true;
+            self.connection_status = LlmConnectionStatus::Testing;
+            if !new_key.is_empty() {
+                Some(UserCommand::OnboardingAction(
+                    OnboardingAction::SetApiKey(new_key),
+                ))
+            } else {
+                Some(UserCommand::OnboardingAction(
+                    OnboardingAction::TestConnection,
+                ))
+            }
+        } else {
+            self.settings_needs_connection_test = false;
+            self.connection_status = LlmConnectionStatus::Untested;
+            None
+        }
+    }
+
+    fn update_settings_dropdown_up(&mut self, editing: LlmSetupSection) {
+        match editing {
+            LlmSetupSection::Provider => {
+                let before = self.selected_provider_idx;
+                self.provider_up();
+                if self.selected_provider_idx != before {
+                    self.settings_dirty = true;
+                }
+            }
+            LlmSetupSection::Model => {
+                let before = self.selected_model_idx;
+                self.model_up();
+                if self.selected_model_idx != before {
+                    self.settings_dirty = true;
+                }
+            }
+            LlmSetupSection::ApiKey => {}
+        }
+    }
+
+    fn update_settings_dropdown_down(&mut self, editing: LlmSetupSection) {
+        match editing {
+            LlmSetupSection::Provider => {
+                let before = self.selected_provider_idx;
+                self.provider_down();
+                if self.selected_provider_idx != before {
+                    self.settings_dirty = true;
+                }
+            }
+            LlmSetupSection::Model => {
+                let before = self.selected_model_idx;
+                self.model_down();
+                if self.selected_model_idx != before {
+                    self.settings_dirty = true;
+                }
+            }
+            LlmSetupSection::ApiKey => {}
+        }
+    }
+
+    fn update_settings_field_confirm(&mut self) -> Option<UserCommand> {
+        let editing = match self.settings_editing_field {
+            Some(e) => e,
+            None => return None,
+        };
+        match editing {
+            LlmSetupSection::Provider | LlmSetupSection::Model => {
+                if self.in_settings_mode {
+                    self.settings_editing_field = None;
+                    let has_key = !self.api_key_input.value().is_empty()
+                        || self.has_saved_api_key;
+                    if self.has_config_changed_from_snapshot() && has_key {
+                        self.settings_needs_connection_test = true;
+                        self.connection_status = LlmConnectionStatus::Testing;
+                        let new_key = self.api_key_input.value().to_string();
+                        if !new_key.is_empty() {
+                            return Some(UserCommand::OnboardingAction(
+                                OnboardingAction::SetApiKey(new_key),
+                            ));
+                        } else {
+                            return Some(UserCommand::OnboardingAction(
+                                OnboardingAction::TestConnection,
+                            ));
+                        }
+                    }
+                    None
+                } else {
+                    // Onboarding: advance to next field in sequence
+                    if editing == LlmSetupSection::Provider {
+                        self.active_section = LlmSetupSection::Model;
+                        self.settings_editing_field = Some(LlmSetupSection::Model);
+                    } else {
+                        self.active_section = LlmSetupSection::ApiKey;
+                        self.settings_editing_field = Some(LlmSetupSection::ApiKey);
+                        self.api_key_backup = self.api_key_input.value().to_string();
+                        self.api_key_editing = true;
+                    }
+                    None
+                }
+            }
+            LlmSetupSection::ApiKey => {
+                self.settings_editing_field = None;
+                None
+            }
+        }
+    }
+
+    fn update_confirm_section(&mut self) -> Option<UserCommand> {
+        match self.active_section {
+            LlmSetupSection::Provider => {
+                let provider = self.selected_provider().clone();
+                self.confirm_current_section();
+                Some(UserCommand::OnboardingAction(
+                    OnboardingAction::SetProvider(provider),
+                ))
+            }
+            LlmSetupSection::Model => {
+                let model_id = self
+                    .selected_model()
+                    .map(|m| m.model_id.to_string())
+                    .unwrap_or_default();
+                self.confirm_current_section();
+                Some(UserCommand::OnboardingAction(
+                    OnboardingAction::SetModel(model_id),
+                ))
+            }
+            LlmSetupSection::ApiKey => {
+                if self.connection_tested_ok() {
+                    Some(UserCommand::OnboardingAction(OnboardingAction::GoNext))
+                } else if self.api_key_input.is_empty() {
+                    self.api_key_backup = self.api_key_input.value().to_string();
+                    self.api_key_editing = true;
+                    None
+                } else if matches!(self.connection_status, LlmConnectionStatus::Failed(_)) {
+                    self.api_key_backup = self.api_key_input.value().to_string();
+                    self.api_key_editing = true;
+                    self.connection_status = LlmConnectionStatus::Untested;
+                    None
+                } else {
+                    self.confirmed_through = Some(LlmSetupSection::ApiKey);
+                    self.connection_status = LlmConnectionStatus::Testing;
+                    Some(UserCommand::OnboardingAction(
+                        OnboardingAction::TestConnection,
+                    ))
+                }
+            }
         }
     }
 }
