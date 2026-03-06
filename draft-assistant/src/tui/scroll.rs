@@ -11,50 +11,57 @@ pub enum ScrollDirection {
 }
 
 /// Reusable scroll state for any scrollable panel.
+///
+/// Stores only the scroll offset. Content and viewport dimensions are passed
+/// in at call sites — `scroll()` does NOT clamp against content bounds (the
+/// offset may temporarily exceed the valid range). Use `clamped_offset()` at
+/// render time to obtain a safe value.
 #[derive(Debug, Clone)]
 pub struct ScrollState {
-    pub offset: usize,
-    pub content_height: usize,
-    pub viewport_height: usize,
+    offset: usize,
 }
 
 impl ScrollState {
     pub fn new() -> Self {
-        Self {
-            offset: 0,
-            content_height: 0,
-            viewport_height: 0,
-        }
+        Self { offset: 0 }
     }
 
-    /// Apply a scroll direction, clamping to valid range.
-    pub fn scroll(&mut self, direction: ScrollDirection) {
-        let max_offset = self.content_height.saturating_sub(self.viewport_height);
+    /// Current raw offset (may exceed valid range until clamped).
+    pub fn offset(&self) -> usize {
+        self.offset
+    }
+
+    /// Reset offset to 0.
+    pub fn reset(&mut self) {
+        self.offset = 0;
+    }
+
+    /// Apply a scroll direction.
+    ///
+    /// `viewport_height` is needed for PageUp / PageDown step size.
+    /// No clamping is performed — use `clamped_offset()` at render time.
+    pub fn scroll(&mut self, direction: ScrollDirection, viewport_height: usize) {
         self.offset = match direction {
             ScrollDirection::Up => self.offset.saturating_sub(1),
-            ScrollDirection::Down => (self.offset + 1).min(max_offset),
-            ScrollDirection::PageUp => self.offset.saturating_sub(self.viewport_height),
-            ScrollDirection::PageDown => (self.offset + self.viewport_height).min(max_offset),
+            ScrollDirection::Down => self.offset.saturating_add(1),
+            ScrollDirection::PageUp => self.offset.saturating_sub(viewport_height),
+            ScrollDirection::PageDown => self.offset.saturating_add(viewport_height),
             ScrollDirection::Top => 0,
-            ScrollDirection::Bottom => max_offset,
+            ScrollDirection::Bottom => usize::MAX,
         };
     }
 
-    /// Auto-scroll to bottom (used during LLM streaming).
-    pub fn auto_scroll_to_bottom(&mut self) {
-        let max_offset = self.content_height.saturating_sub(self.viewport_height);
-        self.offset = max_offset;
+    /// Jump to the end. The actual max offset will be resolved by
+    /// `clamped_offset()` at render time.
+    pub fn scroll_to_end(&mut self) {
+        self.offset = usize::MAX;
     }
 
-    /// Update dimensions (called during view/render).
-    pub fn set_viewport(&mut self, content_lines: usize, viewport_lines: usize) {
-        self.content_height = content_lines;
-        self.viewport_height = viewport_lines;
-        // Clamp offset if content shrank
-        let max_offset = self.content_height.saturating_sub(self.viewport_height);
-        if self.offset > max_offset {
-            self.offset = max_offset;
-        }
+    /// Clamp offset to valid range given current content/viewport dimensions.
+    /// Use this in view() to safely read the offset.
+    pub fn clamped_offset(&self, content_height: usize, viewport_height: usize) -> usize {
+        let max_offset = content_height.saturating_sub(viewport_height);
+        self.offset.min(max_offset)
     }
 }
 
@@ -68,177 +75,160 @@ impl Default for ScrollState {
 mod tests {
     use super::*;
 
-    fn state_with(offset: usize, content: usize, viewport: usize) -> ScrollState {
-        ScrollState {
-            offset,
-            content_height: content,
-            viewport_height: viewport,
-        }
-    }
-
     #[test]
-    fn new_initializes_to_zeros() {
+    fn new_initializes_offset_to_zero() {
         let s = ScrollState::new();
-        assert_eq!(s.offset, 0);
-        assert_eq!(s.content_height, 0);
-        assert_eq!(s.viewport_height, 0);
+        assert_eq!(s.offset(), 0);
     }
 
     #[test]
-    fn default_initializes_to_zeros() {
+    fn default_initializes_offset_to_zero() {
         let s = ScrollState::default();
-        assert_eq!(s.offset, 0);
-        assert_eq!(s.content_height, 0);
-        assert_eq!(s.viewport_height, 0);
+        assert_eq!(s.offset(), 0);
+    }
+
+    #[test]
+    fn reset_sets_offset_to_zero() {
+        let mut s = ScrollState::new();
+        s.offset = 42;
+        s.reset();
+        assert_eq!(s.offset(), 0);
     }
 
     #[test]
     fn scroll_up_at_zero_stays_at_zero() {
-        let mut s = state_with(0, 100, 10);
-        s.scroll(ScrollDirection::Up);
-        assert_eq!(s.offset, 0);
+        let mut s = ScrollState::new();
+        s.scroll(ScrollDirection::Up, 10);
+        assert_eq!(s.offset(), 0);
     }
 
     #[test]
     fn scroll_up_decrements_by_one() {
-        let mut s = state_with(5, 100, 10);
-        s.scroll(ScrollDirection::Up);
-        assert_eq!(s.offset, 4);
+        let mut s = ScrollState::new();
+        s.offset = 5;
+        s.scroll(ScrollDirection::Up, 10);
+        assert_eq!(s.offset(), 4);
     }
 
     #[test]
     fn scroll_down_increments_by_one() {
-        let mut s = state_with(0, 100, 10);
-        s.scroll(ScrollDirection::Down);
-        assert_eq!(s.offset, 1);
+        let mut s = ScrollState::new();
+        s.scroll(ScrollDirection::Down, 10);
+        assert_eq!(s.offset(), 1);
     }
 
     #[test]
-    fn scroll_down_clamps_at_max() {
-        // max_offset = 100 - 10 = 90
-        let mut s = state_with(90, 100, 10);
-        s.scroll(ScrollDirection::Down);
-        assert_eq!(s.offset, 90);
+    fn scroll_down_does_not_clamp() {
+        // No clamping in scroll(); clamped_offset() handles it at render time.
+        let mut s = ScrollState::new();
+        s.offset = 90;
+        s.scroll(ScrollDirection::Down, 10);
+        assert_eq!(s.offset(), 91);
     }
 
     #[test]
     fn scroll_page_up_jumps_by_viewport() {
-        let mut s = state_with(25, 100, 10);
-        s.scroll(ScrollDirection::PageUp);
-        assert_eq!(s.offset, 15);
+        let mut s = ScrollState::new();
+        s.offset = 25;
+        s.scroll(ScrollDirection::PageUp, 10);
+        assert_eq!(s.offset(), 15);
     }
 
     #[test]
     fn scroll_page_up_clamps_at_zero() {
-        let mut s = state_with(3, 100, 10);
-        s.scroll(ScrollDirection::PageUp);
-        assert_eq!(s.offset, 0);
+        let mut s = ScrollState::new();
+        s.offset = 3;
+        s.scroll(ScrollDirection::PageUp, 10);
+        assert_eq!(s.offset(), 0);
     }
 
     #[test]
     fn scroll_page_down_jumps_by_viewport() {
-        let mut s = state_with(0, 100, 10);
-        s.scroll(ScrollDirection::PageDown);
-        assert_eq!(s.offset, 10);
+        let mut s = ScrollState::new();
+        s.scroll(ScrollDirection::PageDown, 10);
+        assert_eq!(s.offset(), 10);
     }
 
     #[test]
-    fn scroll_page_down_clamps_at_max() {
-        // max_offset = 100 - 10 = 90
-        let mut s = state_with(85, 100, 10);
-        s.scroll(ScrollDirection::PageDown);
-        assert_eq!(s.offset, 90);
+    fn scroll_page_down_does_not_clamp() {
+        let mut s = ScrollState::new();
+        s.offset = 85;
+        s.scroll(ScrollDirection::PageDown, 10);
+        assert_eq!(s.offset(), 95);
     }
 
     #[test]
     fn scroll_top_goes_to_zero() {
-        let mut s = state_with(50, 100, 10);
-        s.scroll(ScrollDirection::Top);
-        assert_eq!(s.offset, 0);
+        let mut s = ScrollState::new();
+        s.offset = 50;
+        s.scroll(ScrollDirection::Top, 10);
+        assert_eq!(s.offset(), 0);
     }
 
     #[test]
     fn scroll_bottom_goes_to_max() {
-        let mut s = state_with(0, 100, 10);
-        s.scroll(ScrollDirection::Bottom);
-        assert_eq!(s.offset, 90);
-    }
-
-    #[test]
-    fn auto_scroll_to_bottom_sets_max_offset() {
-        let mut s = state_with(0, 50, 10);
-        s.auto_scroll_to_bottom();
-        assert_eq!(s.offset, 40);
-    }
-
-    #[test]
-    fn auto_scroll_to_bottom_when_content_fits() {
-        let mut s = state_with(0, 5, 10);
-        s.auto_scroll_to_bottom();
-        assert_eq!(s.offset, 0);
-    }
-
-    #[test]
-    fn set_viewport_updates_dimensions() {
         let mut s = ScrollState::new();
-        s.set_viewport(50, 10);
-        assert_eq!(s.content_height, 50);
-        assert_eq!(s.viewport_height, 10);
+        s.scroll(ScrollDirection::Bottom, 10);
+        assert_eq!(s.offset(), usize::MAX);
     }
 
     #[test]
-    fn set_viewport_clamps_offset_when_content_shrinks() {
-        let mut s = state_with(80, 100, 10);
-        // Shrink content so max_offset = 50 - 10 = 40
-        s.set_viewport(50, 10);
-        assert_eq!(s.offset, 40);
+    fn scroll_to_end_sets_max() {
+        let mut s = ScrollState::new();
+        s.scroll_to_end();
+        assert_eq!(s.offset(), usize::MAX);
     }
 
     #[test]
-    fn set_viewport_preserves_offset_when_still_valid() {
-        let mut s = state_with(20, 100, 10);
-        s.set_viewport(80, 10);
-        assert_eq!(s.offset, 20);
+    fn clamped_offset_within_bounds() {
+        let mut s = ScrollState::new();
+        s.offset = 5;
+        assert_eq!(s.clamped_offset(100, 10), 5);
     }
 
     #[test]
-    fn content_fits_in_viewport_all_scrolls_stay_at_zero() {
-        let mut s = state_with(0, 5, 10);
-        for dir in [
-            ScrollDirection::Up,
-            ScrollDirection::Down,
-            ScrollDirection::PageUp,
-            ScrollDirection::PageDown,
-            ScrollDirection::Top,
-            ScrollDirection::Bottom,
-        ] {
-            s.scroll(dir);
-            assert_eq!(s.offset, 0, "offset should be 0 for {:?}", dir);
-        }
+    fn clamped_offset_exceeding_bounds() {
+        let mut s = ScrollState::new();
+        s.offset = 95;
+        // max_offset = 100 - 10 = 90
+        assert_eq!(s.clamped_offset(100, 10), 90);
     }
 
     #[test]
-    fn content_height_zero_all_scrolls_stay_at_zero() {
-        let mut s = state_with(0, 0, 10);
-        for dir in [
-            ScrollDirection::Up,
-            ScrollDirection::Down,
-            ScrollDirection::PageUp,
-            ScrollDirection::PageDown,
-            ScrollDirection::Top,
-            ScrollDirection::Bottom,
-        ] {
-            s.scroll(dir);
-            assert_eq!(s.offset, 0, "offset should be 0 for {:?}", dir);
-        }
+    fn clamped_offset_at_usize_max() {
+        let mut s = ScrollState::new();
+        s.scroll_to_end();
+        assert_eq!(s.clamped_offset(100, 10), 90);
     }
 
     #[test]
-    fn content_and_viewport_both_zero() {
-        let mut s = state_with(0, 0, 0);
-        s.scroll(ScrollDirection::Down);
-        assert_eq!(s.offset, 0);
-        s.auto_scroll_to_bottom();
-        assert_eq!(s.offset, 0);
+    fn clamped_offset_content_fits_in_viewport() {
+        let mut s = ScrollState::new();
+        s.offset = 50;
+        // content < viewport => max_offset = 0
+        assert_eq!(s.clamped_offset(5, 10), 0);
+    }
+
+    #[test]
+    fn clamped_offset_zero_content() {
+        let s = ScrollState::new();
+        assert_eq!(s.clamped_offset(0, 10), 0);
+    }
+
+    #[test]
+    fn clamped_offset_zero_content_and_viewport() {
+        let s = ScrollState::new();
+        assert_eq!(s.clamped_offset(0, 0), 0);
+    }
+
+    #[test]
+    fn scroll_with_zero_viewport() {
+        let mut s = ScrollState::new();
+        // PageUp/PageDown with viewport 0 are effectively no-ops on offset
+        s.offset = 5;
+        s.scroll(ScrollDirection::PageUp, 0);
+        assert_eq!(s.offset(), 5);
+        s.scroll(ScrollDirection::PageDown, 0);
+        assert_eq!(s.offset(), 5);
     }
 }

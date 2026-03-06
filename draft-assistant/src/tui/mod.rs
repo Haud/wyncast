@@ -38,6 +38,7 @@ use crate::valuation::scarcity::ScarcityEntry;
 use crate::valuation::zscore::PlayerValuation;
 
 use draft::draft_log::DraftLogPanel;
+use draft::teams::TeamsPanel;
 use layout::build_layout;
 pub use onboarding::llm_setup::LlmSetupState;
 pub use onboarding::strategy_setup::StrategySetupState;
@@ -309,6 +310,8 @@ pub struct ViewState {
     pub draft_log_panel: DraftLogPanel,
     /// Summary of each team's draft state.
     pub team_summaries: Vec<TeamSummary>,
+    /// Teams panel component (owns its own scroll state).
+    pub teams_panel: TeamsPanel,
     /// User's roster slots (position + optional player).
     pub my_roster: Vec<RosterSlot>,
     /// Which panel currently has keyboard focus for scroll routing.
@@ -368,6 +371,7 @@ impl Default for ViewState {
             draft_log: Vec::new(),
             draft_log_panel: DraftLogPanel::new(),
             team_summaries: Vec::new(),
+            teams_panel: TeamsPanel::new(),
             my_roster: Vec::new(),
             focused_panel: None,
             position_filter_modal: PositionFilterModal::default(),
@@ -999,14 +1003,11 @@ fn render_draft_frame(frame: &mut Frame, state: &ViewState) {
         TabId::Analysis => widgets::llm_analysis::render(frame, layout.main_panel, state, main_focused),
         TabId::Available => widgets::available::render(frame, layout.main_panel, state, main_focused),
         TabId::DraftLog => {
-            let props = crate::tui::draft::draft_log::DraftLogProps {
-                picks: &state.draft_log,
-                available_players: &state.available_players,
-                focused: main_focused,
-            };
-            state.draft_log_panel.view(frame, layout.main_panel, &props);
+            state.draft_log_panel.view(frame, layout.main_panel, &state.draft_log, &state.available_players, main_focused);
         }
-        TabId::Teams => widgets::teams::render(frame, layout.main_panel, state, main_focused),
+        TabId::Teams => {
+            state.teams_panel.view(frame, layout.main_panel, &state.team_summaries, main_focused);
+        }
     }
 
     // Sidebar widgets (each with individual focus)

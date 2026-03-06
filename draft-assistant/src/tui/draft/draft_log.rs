@@ -15,13 +15,6 @@ use crate::tui::scroll::{ScrollDirection, ScrollState};
 use crate::tui::widgets::focused_border_style;
 use crate::valuation::zscore::PlayerValuation;
 
-/// Props passed to the DraftLogPanel for rendering.
-pub struct DraftLogProps<'a> {
-    pub picks: &'a [DraftPick],
-    pub available_players: &'a [PlayerValuation],
-    pub focused: bool,
-}
-
 /// Messages handled by the DraftLogPanel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DraftLogMessage {
@@ -30,7 +23,7 @@ pub enum DraftLogMessage {
 
 /// Stateful draft log panel component.
 pub struct DraftLogPanel {
-    pub scroll: ScrollState,
+    scroll: ScrollState,
 }
 
 impl DraftLogPanel {
@@ -40,16 +33,10 @@ impl DraftLogPanel {
         }
     }
 
-    /// Update scroll viewport dimensions so PageUp/PageDown jump by the
-    /// correct amount. Call this from the parent when the layout changes.
-    pub fn set_viewport(&mut self, content_height: usize, viewport_height: usize) {
-        self.scroll.set_viewport(content_height, viewport_height);
-    }
-
     pub fn update(&mut self, msg: DraftLogMessage) -> Option<Action> {
         match msg {
             DraftLogMessage::Scroll(dir) => {
-                self.scroll.scroll(dir);
+                self.scroll.scroll(dir, 0);
                 None
             }
         }
@@ -72,10 +59,10 @@ impl DraftLogPanel {
         }
     }
 
-    pub fn view(&self, frame: &mut Frame, area: Rect, props: &DraftLogProps) {
-        let focus_border = focused_border_style(props.focused, Style::default());
+    pub fn view(&self, frame: &mut Frame, area: Rect, picks: &[DraftPick], available_players: &[PlayerValuation], focused: bool) {
+        let focus_border = focused_border_style(focused, Style::default());
 
-        if props.picks.is_empty() {
+        if picks.is_empty() {
             let paragraph = Paragraph::new("  No picks yet.")
                 .style(Style::default().fg(Color::DarkGray))
                 .block(
@@ -88,17 +75,13 @@ impl DraftLogPanel {
             return;
         }
 
-        let value_map = build_value_map(props.available_players);
+        let value_map = build_value_map(available_players);
 
         let visible_rows = (area.height as usize).saturating_sub(2);
-        let all_picks: Vec<_> = props.picks.iter().rev().collect();
+        let all_picks: Vec<_> = picks.iter().rev().collect();
         let total = all_picks.len();
 
-        // Clamp offset locally for rendering (scroll bounds are enforced by
-        // ScrollState::scroll(); we just need a safe value here without
-        // mutating self).
-        let max_offset = total.saturating_sub(visible_rows);
-        let scroll_offset = self.scroll.offset.min(max_offset);
+        let scroll_offset = self.scroll.clamped_offset(total, visible_rows);
 
         let items: Vec<ListItem> = all_picks
             .into_iter()
@@ -112,7 +95,7 @@ impl DraftLogPanel {
             })
             .collect();
 
-        let title = format!("Draft Log ({})", props.picks.len());
+        let title = format!("Draft Log ({})", picks.len());
 
         let list = List::new(items).block(
             Block::default()
@@ -216,15 +199,13 @@ mod tests {
     #[test]
     fn new_starts_with_zero_scroll() {
         let panel = DraftLogPanel::new();
-        assert_eq!(panel.scroll.offset, 0);
-        assert_eq!(panel.scroll.content_height, 0);
-        assert_eq!(panel.scroll.viewport_height, 0);
+        assert_eq!(panel.scroll.offset(), 0);
     }
 
     #[test]
     fn default_starts_with_zero_scroll() {
         let panel = DraftLogPanel::default();
-        assert_eq!(panel.scroll.offset, 0);
+        assert_eq!(panel.scroll.offset(), 0);
     }
 
     // -- Update --
@@ -232,26 +213,26 @@ mod tests {
     #[test]
     fn update_scroll_down_changes_offset() {
         let mut panel = DraftLogPanel::new();
-        panel.scroll.set_viewport(100, 10);
         let result = panel.update(DraftLogMessage::Scroll(ScrollDirection::Down));
         assert!(result.is_none());
-        assert_eq!(panel.scroll.offset, 1);
+        assert_eq!(panel.scroll.offset(), 1);
     }
 
     #[test]
     fn update_scroll_up_changes_offset() {
         let mut panel = DraftLogPanel::new();
-        panel.scroll.set_viewport(100, 10);
-        panel.scroll.offset = 5;
+        // Scroll down a few times to set offset
+        for _ in 0..5 {
+            panel.update(DraftLogMessage::Scroll(ScrollDirection::Down));
+        }
         let result = panel.update(DraftLogMessage::Scroll(ScrollDirection::Up));
         assert!(result.is_none());
-        assert_eq!(panel.scroll.offset, 4);
+        assert_eq!(panel.scroll.offset(), 4);
     }
 
     #[test]
     fn update_returns_none() {
         let mut panel = DraftLogPanel::new();
-        panel.scroll.set_viewport(100, 10);
         assert!(panel.update(DraftLogMessage::Scroll(ScrollDirection::Down)).is_none());
     }
 
@@ -400,13 +381,8 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(80, 20);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let panel = DraftLogPanel::new();
-        let props = DraftLogProps {
-            picks: &[],
-            available_players: &[],
-            focused: false,
-        };
         terminal
-            .draw(|frame| panel.view(frame, frame.area(), &props))
+            .draw(|frame| panel.view(frame, frame.area(), &[], &[], false))
             .unwrap();
     }
 
@@ -419,13 +395,8 @@ mod tests {
             make_pick(1, "Player 1", "SP", 30),
             make_pick(2, "Player 2", "C", 15),
         ];
-        let props = DraftLogProps {
-            picks: &picks,
-            available_players: &[],
-            focused: false,
-        };
         terminal
-            .draw(|frame| panel.view(frame, frame.area(), &props))
+            .draw(|frame| panel.view(frame, frame.area(), &picks, &[], false))
             .unwrap();
     }
 
@@ -434,13 +405,8 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(80, 20);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let panel = DraftLogPanel::new();
-        let props = DraftLogProps {
-            picks: &[],
-            available_players: &[],
-            focused: true,
-        };
         terminal
-            .draw(|frame| panel.view(frame, frame.area(), &props))
+            .draw(|frame| panel.view(frame, frame.area(), &[], &[], true))
             .unwrap();
     }
 }
