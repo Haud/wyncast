@@ -7,6 +7,7 @@
 pub mod action;
 pub mod input;
 pub mod layout;
+pub mod llm_stream;
 pub mod onboarding;
 pub mod scroll;
 pub mod settings;
