@@ -13,7 +13,6 @@ pub mod roster;
 pub mod scarcity;
 pub mod unsaved_changes_confirm;
 pub mod status_bar;
-pub mod teams;
 
 /// Return a cyan border style when focused, otherwise the provided base style.
 ///

@@ -38,6 +38,7 @@ use crate::valuation::scarcity::ScarcityEntry;
 use crate::valuation::zscore::PlayerValuation;
 
 use draft::draft_log::DraftLogPanel;
+use draft::teams::TeamsPanel;
 use layout::build_layout;
 pub use onboarding::llm_setup::LlmSetupState;
 pub use onboarding::strategy_setup::StrategySetupState;
@@ -309,6 +310,8 @@ pub struct ViewState {
     pub draft_log_panel: DraftLogPanel,
     /// Summary of each team's draft state.
     pub team_summaries: Vec<TeamSummary>,
+    /// Teams panel component (owns its own scroll state).
+    pub teams_panel: TeamsPanel,
     /// User's roster slots (position + optional player).
     pub my_roster: Vec<RosterSlot>,
     /// Which panel currently has keyboard focus for scroll routing.
@@ -368,6 +371,7 @@ impl Default for ViewState {
             draft_log: Vec::new(),
             draft_log_panel: DraftLogPanel::new(),
             team_summaries: Vec::new(),
+            teams_panel: TeamsPanel::new(),
             my_roster: Vec::new(),
             focused_panel: None,
             position_filter_modal: PositionFilterModal::default(),
@@ -1006,7 +1010,13 @@ fn render_draft_frame(frame: &mut Frame, state: &ViewState) {
             };
             state.draft_log_panel.view(frame, layout.main_panel, &props);
         }
-        TabId::Teams => widgets::teams::render(frame, layout.main_panel, state, main_focused),
+        TabId::Teams => {
+            let props = crate::tui::draft::teams::TeamsPanelProps {
+                teams: &state.team_summaries,
+                focused: main_focused,
+            };
+            state.teams_panel.view(frame, layout.main_panel, &props);
+        }
     }
 
     // Sidebar widgets (each with individual focus)
