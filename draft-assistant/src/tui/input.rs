@@ -9,6 +9,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crate::protocol::{AppMode, OnboardingAction, TabFeature, TabId, UserCommand};
 use crate::tui::draft::draft_log::DraftLogMessage;
 use crate::tui::draft::main_panel::analysis::AnalysisPanelMessage;
+use crate::tui::draft::sidebar::plan::PlanPanelMessage;
 use crate::tui::draft::sidebar::roster::RosterMessage;
 use crate::tui::draft::sidebar::scarcity::ScarcityPanelMessage;
 use crate::tui::draft::teams::TeamsMessage;
@@ -1519,6 +1520,17 @@ fn dispatch_scroll_up(view_state: &mut ViewState, lines: usize) {
             .update(ScarcityPanelMessage::Scroll(dir));
         return;
     }
+    if key == "nom_plan" {
+        let dir = if lines >= page_size() {
+            ScrollDirection::PageUp
+        } else {
+            ScrollDirection::Up
+        };
+        view_state
+            .plan_panel
+            .update(PlanPanelMessage::Scroll(dir));
+        return;
+    }
     let offset = view_state.scroll_offset.entry(key.to_string()).or_insert(0);
     *offset = offset.saturating_sub(lines);
 }
@@ -1579,6 +1591,17 @@ fn dispatch_scroll_down(view_state: &mut ViewState, lines: usize) {
         view_state
             .scarcity_panel
             .update(ScarcityPanelMessage::Scroll(dir));
+        return;
+    }
+    if key == "nom_plan" {
+        let dir = if lines >= page_size() {
+            ScrollDirection::PageDown
+        } else {
+            ScrollDirection::Down
+        };
+        view_state
+            .plan_panel
+            .update(PlanPanelMessage::Scroll(dir));
         return;
     }
     let offset = view_state.scroll_offset.entry(key.to_string()).or_insert(0);
@@ -1734,8 +1757,8 @@ mod tests {
         assert_eq!(state.scroll_offset.get("available"), Some(&2));
         // Analysis panel should not have been scrolled
         assert_eq!(state.analysis_panel.scroll_offset(), 0);
-        // Nomination plan is no longer a tab key
-        assert_eq!(state.scroll_offset.get("nom_plan"), None);
+        // Nomination plan should not have been scrolled
+        assert_eq!(state.plan_panel.scroll_offset(), 0);
     }
 
     // -- Panel focus --
@@ -1870,7 +1893,7 @@ mod tests {
 
         handle_key(key(KeyCode::Down), &mut state);
 
-        assert_eq!(state.scroll_offset.get("nom_plan"), Some(&1));
+        assert_eq!(state.plan_panel.scroll_offset(), 1);
         assert_eq!(state.analysis_panel.scroll_offset(), 0);
     }
 

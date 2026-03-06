@@ -31,7 +31,7 @@ use tokio::sync::mpsc;
 use crate::draft::pick::{DraftPick, Position};
 use crate::draft::roster::RosterSlot;
 use crate::protocol::{
-    AppMode, AppSnapshot, ConnectionStatus, InstantAnalysis, LlmStatus, NominationInfo,
+    AppMode, AppSnapshot, ConnectionStatus, InstantAnalysis, NominationInfo,
     SettingsSection, TabFeature, TabId, UiUpdate, UserCommand,
 };
 use crate::valuation::scarcity::ScarcityEntry;
@@ -39,6 +39,7 @@ use crate::valuation::zscore::PlayerValuation;
 
 use draft::draft_log::DraftLogPanel;
 use draft::main_panel::analysis::{AnalysisPanel, AnalysisPanelMessage};
+use draft::sidebar::plan::{PlanPanel, PlanPanelMessage};
 use draft::sidebar::roster::RosterPanel;
 use draft::sidebar::scarcity::ScarcityPanel;
 use draft::teams::TeamsPanel;
@@ -284,10 +285,8 @@ pub struct ViewState {
     pub inflation: f64,
     /// LLM analysis panel component (owns text, status, scroll).
     pub analysis_panel: AnalysisPanel,
-    /// Accumulated LLM nomination plan text (streamed tokens).
-    pub plan_text: String,
-    /// Status of the LLM plan stream.
-    pub plan_status: LlmStatus,
+    /// LLM nomination plan panel component (owns text, status, scroll).
+    pub plan_panel: PlanPanel,
     /// WebSocket connection status.
     pub connection_status: ConnectionStatus,
     /// Number of picks completed.
@@ -362,8 +361,7 @@ impl Default for ViewState {
             budget: BudgetStatus::default(),
             inflation: 1.0,
             analysis_panel: AnalysisPanel::new(),
-            plan_text: String::new(),
-            plan_status: LlmStatus::Idle,
+            plan_panel: PlanPanel::new(),
             connection_status: ConnectionStatus::Disconnected,
             pick_number: 0,
             total_picks: 0,
@@ -504,21 +502,25 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
             ));
         }
         UiUpdate::PlanStarted => {
-            state.plan_text.clear();
-            state.plan_status = LlmStatus::Streaming;
+            state.plan_panel.update(PlanPanelMessage::Stream(LlmStreamMessage::Clear));
+            state.plan_panel.update(PlanPanelMessage::Stream(
+                LlmStreamMessage::TokenReceived(String::new()),
+            ));
         }
         UiUpdate::PlanToken(token) => {
-            state.plan_text.push_str(&token);
-            state.plan_status = LlmStatus::Streaming;
+            state.plan_panel.update(PlanPanelMessage::Stream(
+                LlmStreamMessage::TokenReceived(token),
+            ));
         }
         UiUpdate::PlanComplete(final_text) => {
-            state.plan_text = final_text;
-            state.plan_status = LlmStatus::Complete;
+            state.plan_panel.update(PlanPanelMessage::Stream(
+                LlmStreamMessage::Complete(final_text),
+            ));
         }
         UiUpdate::PlanError(msg) => {
-            state.plan_text.clear();
-            state.plan_text.push_str(&format!("[Error: {}]", msg));
-            state.plan_status = LlmStatus::Error;
+            state.plan_panel.update(PlanPanelMessage::Stream(
+                LlmStreamMessage::Error(msg),
+            ));
         }
         UiUpdate::ConnectionStatus(status) => {
             state.connection_status = status;
@@ -1022,7 +1024,7 @@ fn render_draft_frame(frame: &mut Frame, state: &ViewState) {
     state.roster_panel.view(frame, layout.roster, &state.my_roster, nominated_position.as_ref(), roster_focused);
     state.scarcity_panel.view(frame, layout.scarcity, &state.positional_scarcity, nominated_position.as_ref(), scarcity_focused);
     widgets::budget::render(frame, layout.budget, state, budget_focused);
-    widgets::nomination_plan::render(frame, layout.nomination_plan, state, nom_plan_focused);
+    state.plan_panel.view(frame, layout.nomination_plan, nom_plan_focused);
 
     // Help bar: dumb renderer of the pre-synced active keybind hints
     render_help_bar(frame, layout.help_bar, state, &state.active_keybinds);
@@ -1214,7 +1216,7 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{AppMode, TeamSnapshot};
+    use crate::protocol::{AppMode, LlmStatus, TeamSnapshot};
 
     // -- FocusPanel cycling --
 
@@ -1259,9 +1261,9 @@ mod tests {
         assert_eq!(state.active_tab, TabId::Analysis);
         assert_eq!(state.connection_status, ConnectionStatus::Disconnected);
         assert_eq!(state.analysis_panel.status(), LlmStatus::Idle);
-        assert_eq!(state.plan_status, LlmStatus::Idle);
+        assert_eq!(state.plan_panel.status(), LlmStatus::Idle);
         assert!(state.analysis_panel.text().is_empty());
-        assert!(state.plan_text.is_empty());
+        assert!(state.plan_panel.text().is_empty());
         assert!(state.scroll_offset.is_empty());
         assert!(!state.filter_mode);
         assert!(state.filter_text.is_empty());
@@ -1516,21 +1518,23 @@ mod tests {
     fn apply_ui_update_plan_started_clears_previous_text() {
         let mut state = ViewState::default();
         // Simulate old plan text from a previous invocation
-        state.plan_text = "Old plan from last pick cycle.".to_string();
-        state.plan_status = LlmStatus::Complete;
+        state.plan_panel.update(PlanPanelMessage::Stream(
+            LlmStreamMessage::Complete("Old plan from last pick cycle.".into()),
+        ));
 
         apply_ui_update(&mut state, UiUpdate::PlanStarted);
 
-        // PlanStarted must clear plan_text so new tokens don't append to stale content
-        assert!(state.plan_text.is_empty(), "plan_text should be cleared on PlanStarted");
-        assert_eq!(state.plan_status, LlmStatus::Streaming);
+        // PlanStarted must clear plan text so new tokens don't append to stale content
+        assert!(state.plan_panel.text().is_empty(), "plan text should be cleared on PlanStarted");
+        assert_eq!(state.plan_panel.status(), LlmStatus::Streaming);
     }
 
     #[test]
     fn apply_ui_update_plan_started_then_tokens_replace_not_append() {
         let mut state = ViewState::default();
-        state.plan_text = "Stale plan text.".to_string();
-        state.plan_status = LlmStatus::Complete;
+        state.plan_panel.update(PlanPanelMessage::Stream(
+            LlmStreamMessage::Complete("Stale plan text.".into()),
+        ));
 
         // A new planning cycle begins
         apply_ui_update(&mut state, UiUpdate::PlanStarted);
@@ -1538,8 +1542,8 @@ mod tests {
         apply_ui_update(&mut state, UiUpdate::PlanToken("nominate X".to_string()));
 
         // Result must be only the new tokens, not stale text + new tokens
-        assert_eq!(state.plan_text, "New plan: nominate X");
-        assert_eq!(state.plan_status, LlmStatus::Streaming);
+        assert_eq!(state.plan_panel.text(), "New plan: nominate X");
+        assert_eq!(state.plan_panel.status(), LlmStatus::Streaming);
     }
 
     #[test]
@@ -1547,22 +1551,23 @@ mod tests {
         let mut state = ViewState::default();
         apply_ui_update(&mut state, UiUpdate::PlanToken("Plan: ".to_string()));
         apply_ui_update(&mut state, UiUpdate::PlanToken("nominate X".to_string()));
-        assert_eq!(state.plan_text, "Plan: nominate X");
-        assert_eq!(state.plan_status, LlmStatus::Streaming);
+        assert_eq!(state.plan_panel.text(), "Plan: nominate X");
+        assert_eq!(state.plan_panel.status(), LlmStatus::Streaming);
     }
 
     #[test]
     fn apply_ui_update_plan_complete() {
         let mut state = ViewState::default();
-        state.plan_status = LlmStatus::Streaming;
-        state.plan_text = "partial token".to_string();
+        state.plan_panel.update(PlanPanelMessage::Stream(
+            LlmStreamMessage::TokenReceived("partial token".into()),
+        ));
         apply_ui_update(
             &mut state,
             UiUpdate::PlanComplete("Full plan text.".to_string()),
         );
-        assert_eq!(state.plan_status, LlmStatus::Complete);
+        assert_eq!(state.plan_panel.status(), LlmStatus::Complete);
         // PlanComplete carries the final text, which may include a truncation note
-        assert_eq!(state.plan_text, "Full plan text.");
+        assert_eq!(state.plan_panel.text(), "Full plan text.");
     }
 
     #[test]
