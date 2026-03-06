@@ -15,7 +15,10 @@ use crate::tui::draft::sidebar::roster::RosterMessage;
 use crate::tui::draft::sidebar::scarcity::ScarcityPanelMessage;
 use crate::tui::draft::teams::TeamsMessage;
 use crate::tui::scroll::ScrollDirection;
-use super::{FocusPanel, PositionFilterModal, ViewState};
+use crate::tui::draft::modal::position_filter::{
+    PositionFilterModalAction, PositionFilterModalMessage,
+};
+use super::{FocusPanel, ViewState};
 
 /// Handle a keyboard event.
 ///
@@ -1200,7 +1203,16 @@ fn handle_draft_key(
 
     // Position filter modal: intercept all keys when the modal is open
     if view_state.position_filter_modal.open {
-        return handle_position_filter_modal(key_event, view_state);
+        if let Some(msg) = view_state.position_filter_modal.key_to_message(key_event) {
+            if let Some(action) = view_state.position_filter_modal.update(msg) {
+                if let PositionFilterModalAction::Selected(pos) = action {
+                    view_state
+                        .available_panel
+                        .update(AvailablePanelMessage::SetPositionFilter(pos));
+                }
+            }
+        }
+        return None;
     }
 
     // Normal mode key dispatch
@@ -1277,7 +1289,11 @@ fn handle_draft_key(
         // Position filter modal: only on tabs that support it
         KeyCode::Char('p') => {
             if view_state.active_tab.supports(TabFeature::PositionFilter) {
-                open_position_filter_modal(view_state);
+                view_state.position_filter_modal.update(
+                    PositionFilterModalMessage::Open {
+                        current_filter: view_state.available_panel.position_filter(),
+                    },
+                );
             }
             None
         }
@@ -1320,86 +1336,6 @@ fn handle_confirm_quit(
     }
 }
 
-/// Open the position filter modal, pre-selecting the row that matches the
-/// current active position filter so the user's context is preserved.
-fn open_position_filter_modal(view_state: &mut ViewState) {
-    let modal = &mut view_state.position_filter_modal;
-    modal.open = true;
-    modal.search_text.clear();
-
-    // Pre-select the option that matches the current position_filter
-    let current = view_state.available_panel.position_filter();
-    let idx = PositionFilterModal::OPTIONS
-        .iter()
-        .position(|opt| *opt == current)
-        .unwrap_or(0);
-    view_state.position_filter_modal.selected_index = idx;
-}
-
-/// Handle key events while the position filter modal is open.
-///
-/// - Up/Down arrow: move selection
-/// - Enter: apply the selected option and close
-/// - Escape: close without applying
-/// - Backspace: delete the character before the cursor in search text
-/// - Delete: delete the character at the cursor in search text
-/// - Left/Right: move cursor within search text
-/// - Home/End: jump to start/end of search text
-/// - Printable char: insert at cursor and reset selection to 0
-fn handle_position_filter_modal(
-    key_event: KeyEvent,
-    view_state: &mut ViewState,
-) -> Option<UserCommand> {
-    let options = view_state.position_filter_modal.filtered_options();
-    let option_count = options.len();
-
-    match key_event.code {
-        KeyCode::Esc => {
-            // Cancel: close modal without changing the filter
-            view_state.position_filter_modal.open = false;
-            view_state.position_filter_modal.search_text.clear();
-            None
-        }
-        KeyCode::Enter => {
-            // Apply selected option
-            if !options.is_empty() {
-                let idx = view_state.position_filter_modal.selected_index.min(option_count - 1);
-                view_state.available_panel.update(AvailablePanelMessage::SetPositionFilter(options[idx]));
-            }
-            view_state.position_filter_modal.open = false;
-            view_state.position_filter_modal.search_text.clear();
-            None
-        }
-        KeyCode::Up => {
-            let idx = view_state.position_filter_modal.selected_index;
-            view_state.position_filter_modal.selected_index = idx.saturating_sub(1);
-            None
-        }
-        KeyCode::Down => {
-            if option_count > 0 {
-                let idx = view_state.position_filter_modal.selected_index;
-                view_state.position_filter_modal.selected_index =
-                    (idx + 1).min(option_count - 1);
-            }
-            None
-        }
-        _ => {
-            let modifies_text = matches!(
-                key_event.code,
-                KeyCode::Backspace | KeyCode::Delete | KeyCode::Char(_)
-            );
-            if let Some(msg) = super::TextInput::key_to_message(&key_event) {
-                view_state.position_filter_modal.search_text.update(msg);
-            }
-            if modifies_text {
-                // Reset selection so the user starts at the top of the
-                // (potentially changed) filtered list.
-                view_state.position_filter_modal.selected_index = 0;
-            }
-            None
-        }
-    }
-}
 
 /// Get the widget key for scroll state based on the active tab.
 fn active_widget_key(view_state: &ViewState) -> &'static str {
@@ -2107,17 +2043,14 @@ mod tests {
         let mut state = ViewState::default();
         state.active_tab = TabId::Available;
         state.available_panel.update(AvailablePanelMessage::SetPositionFilter(Some(Position::Catcher)));
-        state.position_filter_modal.open = true;
-        state.position_filter_modal.selected_index = 2; // e.g. "1B"
-        state.position_filter_modal.search_text.set_value("1");
+        // Open via message, then move down twice to select "1B" (index 2)
+        state.position_filter_modal.update(PositionFilterModalMessage::Open {
+            current_filter: Some(Position::Catcher),
+        });
 
         handle_key(key(KeyCode::Esc), &mut state);
 
         assert!(!state.position_filter_modal.open, "Esc should close modal");
-        assert!(
-            state.position_filter_modal.search_text.is_empty(),
-            "Esc should clear search text"
-        );
         // Position filter must NOT have changed
         assert_eq!(
             state.available_panel.position_filter(),
@@ -2130,9 +2063,11 @@ mod tests {
     fn modal_enter_applies_selected_option() {
         let mut state = ViewState::default();
         state.active_tab = TabId::Available;
-        state.position_filter_modal.open = true;
-        // Options (unfiltered): ALL(0), C(1), 1B(2), ...
-        state.position_filter_modal.selected_index = 1; // "C"
+        // Open modal, then move down to index 1 (Catcher)
+        state.position_filter_modal.update(PositionFilterModalMessage::Open {
+            current_filter: None,
+        });
+        handle_key(key(KeyCode::Down), &mut state); // move to index 1 = C
 
         handle_key(key(KeyCode::Enter), &mut state);
 
@@ -2149,8 +2084,10 @@ mod tests {
         let mut state = ViewState::default();
         state.active_tab = TabId::Available;
         state.available_panel.update(AvailablePanelMessage::SetPositionFilter(Some(Position::Catcher)));
-        state.position_filter_modal.open = true;
-        state.position_filter_modal.selected_index = 0; // "ALL"
+        // Open modal: selected_index defaults to 0 = "ALL"
+        state.position_filter_modal.update(PositionFilterModalMessage::Open {
+            current_filter: None,
+        });
 
         handle_key(key(KeyCode::Enter), &mut state);
 
@@ -2162,77 +2099,36 @@ mod tests {
     }
 
     #[test]
-    fn modal_arrow_down_increments_selection() {
+    fn modal_arrow_down_does_not_close() {
         let mut state = ViewState::default();
-        state.position_filter_modal.open = true;
-        state.position_filter_modal.selected_index = 0;
+        state.position_filter_modal.update(PositionFilterModalMessage::Open {
+            current_filter: None,
+        });
 
         handle_key(key(KeyCode::Down), &mut state);
-        assert_eq!(state.position_filter_modal.selected_index, 1);
+        assert!(state.position_filter_modal.open, "Down should not close modal");
     }
 
     #[test]
-    fn modal_arrow_up_decrements_selection() {
+    fn modal_arrow_up_does_not_close() {
         let mut state = ViewState::default();
-        state.position_filter_modal.open = true;
-        state.position_filter_modal.selected_index = 3;
+        state.position_filter_modal.update(PositionFilterModalMessage::Open {
+            current_filter: None,
+        });
 
         handle_key(key(KeyCode::Up), &mut state);
-        assert_eq!(state.position_filter_modal.selected_index, 2);
-    }
-
-    #[test]
-    fn modal_arrow_up_does_not_underflow() {
-        let mut state = ViewState::default();
-        state.position_filter_modal.open = true;
-        state.position_filter_modal.selected_index = 0;
-
-        handle_key(key(KeyCode::Up), &mut state);
-        assert_eq!(state.position_filter_modal.selected_index, 0);
-    }
-
-    #[test]
-    fn modal_arrow_down_does_not_exceed_option_count() {
-        let mut state = ViewState::default();
-        state.position_filter_modal.open = true;
-        let max_idx = crate::tui::PositionFilterModal::OPTIONS.len() - 1;
-        state.position_filter_modal.selected_index = max_idx;
-
-        handle_key(key(KeyCode::Down), &mut state);
-        assert_eq!(state.position_filter_modal.selected_index, max_idx);
-    }
-
-    #[test]
-    fn modal_typing_appends_to_search_and_resets_selection() {
-        let mut state = ViewState::default();
-        state.position_filter_modal.open = true;
-        state.position_filter_modal.selected_index = 3;
-
-        handle_key(key(KeyCode::Char('s')), &mut state);
-        assert_eq!(state.position_filter_modal.search_text.value(), "s");
-        assert_eq!(state.position_filter_modal.selected_index, 0, "Typing resets selection");
-    }
-
-    #[test]
-    fn modal_backspace_removes_char_and_resets_selection() {
-        let mut state = ViewState::default();
-        state.position_filter_modal.open = true;
-        state.position_filter_modal.search_text.set_value("SP");
-        state.position_filter_modal.selected_index = 2;
-
-        handle_key(key(KeyCode::Backspace), &mut state);
-        assert_eq!(state.position_filter_modal.search_text.value(), "S");
-        assert_eq!(state.position_filter_modal.selected_index, 0);
+        assert!(state.position_filter_modal.open, "Up should not close modal");
     }
 
     #[test]
     fn modal_enter_with_filtered_list_applies_correct_option() {
         let mut state = ViewState::default();
-        state.position_filter_modal.open = true;
-        // Type "S" to filter: options with "S" -> SS, SP (and "ALL"? no, ALL doesn't contain S)
-        // Actually: SS contains S, SP contains S
-        state.position_filter_modal.search_text.set_value("SP");
-        state.position_filter_modal.selected_index = 0; // first match
+        state.position_filter_modal.update(PositionFilterModalMessage::Open {
+            current_filter: None,
+        });
+        // Type "SP" to filter
+        handle_key(key(KeyCode::Char('S')), &mut state);
+        handle_key(key(KeyCode::Char('P')), &mut state);
 
         handle_key(key(KeyCode::Enter), &mut state);
 
@@ -2248,18 +2144,24 @@ mod tests {
 
         handle_key(key(KeyCode::Char('p')), &mut state);
 
-        // SP is at index 10 in OPTIONS (0=ALL, 1=C, 2=1B, 3=2B, 4=3B, 5=SS, 6=LF, 7=CF, 8=RF, 9=UTIL, 10=SP, 11=RP)
-        let expected_idx = crate::tui::PositionFilterModal::OPTIONS
-            .iter()
-            .position(|opt| *opt == Some(Position::StartingPitcher))
-            .unwrap();
-        assert_eq!(state.position_filter_modal.selected_index, expected_idx);
+        // Verify the modal opened -- detailed selection index testing is in the
+        // component's own unit tests.
+        assert!(state.position_filter_modal.open);
+        // Confirm by pressing Enter: should apply the pre-selected SP
+        handle_key(key(KeyCode::Enter), &mut state);
+        assert_eq!(
+            state.available_panel.position_filter(),
+            Some(Position::StartingPitcher),
+            "Pre-selected option should match current filter"
+        );
     }
 
     #[test]
     fn modal_ctrl_c_still_quits() {
         let mut state = ViewState::default();
-        state.position_filter_modal.open = true;
+        state.position_filter_modal.update(PositionFilterModalMessage::Open {
+            current_filter: None,
+        });
         let result = handle_key(ctrl_key(KeyCode::Char('c')), &mut state);
         assert_eq!(result, Some(UserCommand::Quit));
     }
@@ -2268,12 +2170,13 @@ mod tests {
     fn modal_blocks_normal_navigation() {
         let mut state = ViewState::default();
         state.active_tab = TabId::Available;
-        state.position_filter_modal.open = true;
+        state.position_filter_modal.update(PositionFilterModalMessage::Open {
+            current_filter: None,
+        });
 
         // '2' should NOT switch tabs while modal is open
         handle_key(key(KeyCode::Char('2')), &mut state);
         // It should have been treated as search text, not tab switch
-        assert_eq!(state.position_filter_modal.search_text.value(), "2");
         assert_eq!(state.active_tab, TabId::Available);
     }
 
