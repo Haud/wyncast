@@ -90,7 +90,7 @@ fn source_files_exist() {
         "src/tui/draft/teams.rs",
         "src/tui/draft/sidebar/mod.rs",
         "src/tui/draft/sidebar/roster.rs",
-        "src/tui/widgets/scarcity.rs",
+        "src/tui/draft/sidebar/scarcity.rs",
         "src/tui/widgets/budget.rs",
         "src/tui/widgets/status_bar.rs",
     ];
