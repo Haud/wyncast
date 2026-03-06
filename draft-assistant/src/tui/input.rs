@@ -7,6 +7,8 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::protocol::{AppMode, OnboardingAction, TabFeature, TabId, UserCommand};
+use crate::tui::draft::draft_log::DraftLogMessage;
+use crate::tui::scroll::ScrollDirection;
 use super::{FocusPanel, PositionFilterModal, ViewState};
 
 /// Handle a keyboard event.
@@ -1458,6 +1460,17 @@ fn focused_scroll_key(view_state: &ViewState) -> &'static str {
 /// Dispatch a scroll-up event to the appropriate panel based on focus state.
 fn dispatch_scroll_up(view_state: &mut ViewState, lines: usize) {
     let key = focused_scroll_key(view_state);
+    if key == "draft_log" {
+        let dir = if lines >= page_size() {
+            ScrollDirection::PageUp
+        } else {
+            ScrollDirection::Up
+        };
+        view_state
+            .draft_log_panel
+            .update(DraftLogMessage::Scroll(dir));
+        return;
+    }
     let offset = view_state.scroll_offset.entry(key.to_string()).or_insert(0);
     *offset = offset.saturating_sub(lines);
 }
@@ -1465,6 +1478,17 @@ fn dispatch_scroll_up(view_state: &mut ViewState, lines: usize) {
 /// Dispatch a scroll-down event to the appropriate panel based on focus state.
 fn dispatch_scroll_down(view_state: &mut ViewState, lines: usize) {
     let key = focused_scroll_key(view_state);
+    if key == "draft_log" {
+        let dir = if lines >= page_size() {
+            ScrollDirection::PageDown
+        } else {
+            ScrollDirection::Down
+        };
+        view_state
+            .draft_log_panel
+            .update(DraftLogMessage::Scroll(dir));
+        return;
+    }
     let offset = view_state.scroll_offset.entry(key.to_string()).or_insert(0);
     *offset = offset.saturating_add(lines);
 }
