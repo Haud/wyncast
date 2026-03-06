@@ -1003,19 +1003,10 @@ fn render_draft_frame(frame: &mut Frame, state: &ViewState) {
         TabId::Analysis => widgets::llm_analysis::render(frame, layout.main_panel, state, main_focused),
         TabId::Available => widgets::available::render(frame, layout.main_panel, state, main_focused),
         TabId::DraftLog => {
-            let props = crate::tui::draft::draft_log::DraftLogProps {
-                picks: &state.draft_log,
-                available_players: &state.available_players,
-                focused: main_focused,
-            };
-            state.draft_log_panel.view(frame, layout.main_panel, &props);
+            state.draft_log_panel.view(frame, layout.main_panel, &state.draft_log, &state.available_players, main_focused);
         }
         TabId::Teams => {
-            let props = crate::tui::draft::teams::TeamsPanelProps {
-                teams: &state.team_summaries,
-                focused: main_focused,
-            };
-            state.teams_panel.view(frame, layout.main_panel, &props);
+            state.teams_panel.view(frame, layout.main_panel, &state.team_summaries, main_focused);
         }
     }
 

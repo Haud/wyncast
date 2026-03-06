@@ -15,13 +15,6 @@ use crate::tui::scroll::{ScrollDirection, ScrollState};
 use crate::tui::widgets::focused_border_style;
 use crate::valuation::zscore::PlayerValuation;
 
-/// Props passed to the DraftLogPanel for rendering.
-pub struct DraftLogProps<'a> {
-    pub picks: &'a [DraftPick],
-    pub available_players: &'a [PlayerValuation],
-    pub focused: bool,
-}
-
 /// Messages handled by the DraftLogPanel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DraftLogMessage {
@@ -72,10 +65,10 @@ impl DraftLogPanel {
         }
     }
 
-    pub fn view(&self, frame: &mut Frame, area: Rect, props: &DraftLogProps) {
-        let focus_border = focused_border_style(props.focused, Style::default());
+    pub fn view(&self, frame: &mut Frame, area: Rect, picks: &[DraftPick], available_players: &[PlayerValuation], focused: bool) {
+        let focus_border = focused_border_style(focused, Style::default());
 
-        if props.picks.is_empty() {
+        if picks.is_empty() {
             let paragraph = Paragraph::new("  No picks yet.")
                 .style(Style::default().fg(Color::DarkGray))
                 .block(
@@ -88,10 +81,10 @@ impl DraftLogPanel {
             return;
         }
 
-        let value_map = build_value_map(props.available_players);
+        let value_map = build_value_map(available_players);
 
         let visible_rows = (area.height as usize).saturating_sub(2);
-        let all_picks: Vec<_> = props.picks.iter().rev().collect();
+        let all_picks: Vec<_> = picks.iter().rev().collect();
         let total = all_picks.len();
 
         // Clamp offset locally for rendering (scroll bounds are enforced by
@@ -112,7 +105,7 @@ impl DraftLogPanel {
             })
             .collect();
 
-        let title = format!("Draft Log ({})", props.picks.len());
+        let title = format!("Draft Log ({})", picks.len());
 
         let list = List::new(items).block(
             Block::default()
@@ -400,13 +393,8 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(80, 20);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let panel = DraftLogPanel::new();
-        let props = DraftLogProps {
-            picks: &[],
-            available_players: &[],
-            focused: false,
-        };
         terminal
-            .draw(|frame| panel.view(frame, frame.area(), &props))
+            .draw(|frame| panel.view(frame, frame.area(), &[], &[], false))
             .unwrap();
     }
 
@@ -419,13 +407,8 @@ mod tests {
             make_pick(1, "Player 1", "SP", 30),
             make_pick(2, "Player 2", "C", 15),
         ];
-        let props = DraftLogProps {
-            picks: &picks,
-            available_players: &[],
-            focused: false,
-        };
         terminal
-            .draw(|frame| panel.view(frame, frame.area(), &props))
+            .draw(|frame| panel.view(frame, frame.area(), &picks, &[], false))
             .unwrap();
     }
 
@@ -434,13 +417,8 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(80, 20);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let panel = DraftLogPanel::new();
-        let props = DraftLogProps {
-            picks: &[],
-            available_players: &[],
-            focused: true,
-        };
         terminal
-            .draw(|frame| panel.view(frame, frame.area(), &props))
+            .draw(|frame| panel.view(frame, frame.area(), &[], &[], true))
             .unwrap();
     }
 }

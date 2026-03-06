@@ -11,12 +11,6 @@ use crate::tui::scroll::{ScrollDirection, ScrollState};
 use crate::tui::widgets::focused_border_style;
 use crate::tui::TeamSummary;
 
-/// Props passed to the TeamsPanel for rendering.
-pub struct TeamsPanelProps<'a> {
-    pub teams: &'a [TeamSummary],
-    pub focused: bool,
-}
-
 /// Messages handled by the TeamsPanel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TeamsMessage {
@@ -67,7 +61,7 @@ impl TeamsPanel {
         }
     }
 
-    pub fn view(&self, frame: &mut Frame, area: Rect, props: &TeamsPanelProps) {
+    pub fn view(&self, frame: &mut Frame, area: Rect, teams: &[TeamSummary], focused: bool) {
         // Visible row count: subtract 2 (borders) + 1 (header)
         let visible_rows = (area.height as usize).saturating_sub(3);
 
@@ -84,7 +78,7 @@ impl TeamsPanel {
         )
         .bottom_margin(0);
 
-        let total = props.teams.len();
+        let total = teams.len();
 
         // Clamp scroll offset locally for rendering (scroll bounds are enforced
         // by ScrollState::scroll(); we just need a safe value here without
@@ -92,11 +86,10 @@ impl TeamsPanel {
         let max_offset = total.saturating_sub(visible_rows);
         let scroll_offset = self.scroll.offset.min(max_offset);
 
-        let rows: Vec<Row> = if props.teams.is_empty() {
+        let rows: Vec<Row> = if teams.is_empty() {
             vec![Row::new(vec![Cell::from("  No team data available")])]
         } else {
-            props
-                .teams
+            teams
                 .iter()
                 .skip(scroll_offset)
                 .take(visible_rows.max(1))
@@ -119,7 +112,7 @@ impl TeamsPanel {
             Constraint::Length(10),
         ];
 
-        let focus_border = focused_border_style(props.focused, Style::default());
+        let focus_border = focused_border_style(focused, Style::default());
 
         let table = Table::new(rows, widths).header(header).block(
             Block::default()
@@ -318,12 +311,8 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(80, 20);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let panel = TeamsPanel::new();
-        let props = TeamsPanelProps {
-            teams: &[],
-            focused: false,
-        };
         terminal
-            .draw(|frame| panel.view(frame, frame.area(), &props))
+            .draw(|frame| panel.view(frame, frame.area(), &[], false))
             .unwrap();
     }
 
@@ -346,12 +335,8 @@ mod tests {
                 total_slots: 26,
             },
         ];
-        let props = TeamsPanelProps {
-            teams: &teams,
-            focused: false,
-        };
         terminal
-            .draw(|frame| panel.view(frame, frame.area(), &props))
+            .draw(|frame| panel.view(frame, frame.area(), &teams, false))
             .unwrap();
     }
 
@@ -360,12 +345,8 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(80, 20);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let panel = TeamsPanel::new();
-        let props = TeamsPanelProps {
-            teams: &[],
-            focused: true,
-        };
         terminal
-            .draw(|frame| panel.view(frame, frame.area(), &props))
+            .draw(|frame| panel.view(frame, frame.area(), &[], true))
             .unwrap();
     }
 }
