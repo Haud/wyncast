@@ -93,7 +93,7 @@ fn is_text_editing_active(view_state: &ViewState) -> bool {
     view_state.main_panel.available.filter_mode()
         || view_state.llm_setup.api_key_editing
         || strategy_editing
-        || view_state.position_filter_modal.open
+        || view_state.modal_layer.position_filter.open
 }
 
 /// Handle keyboard input during the onboarding wizard.
@@ -1197,10 +1197,10 @@ fn handle_draft_key(
     view_state: &mut ViewState,
 ) -> Option<UserCommand> {
     // Quit confirmation mode: delegate to ConfirmDialog component
-    if view_state.confirm_quit.open {
+    if view_state.modal_layer.quit_confirm.open {
         use crate::tui::confirm_dialog::ConfirmResult;
-        if let Some(msg) = view_state.confirm_quit.key_to_message(key_event) {
-            if let Some(result) = view_state.confirm_quit.update(msg) {
+        if let Some(msg) = view_state.modal_layer.quit_confirm.key_to_message(key_event) {
+            if let Some(result) = view_state.modal_layer.quit_confirm.update(msg) {
                 match result {
                     ConfirmResult::Confirmed('n') => return None, // 'n' cancels
                     ConfirmResult::Confirmed(_) => return Some(UserCommand::Quit),
@@ -1220,9 +1220,9 @@ fn handle_draft_key(
     }
 
     // Position filter modal: intercept all keys when the modal is open
-    if view_state.position_filter_modal.open {
-        if let Some(msg) = view_state.position_filter_modal.key_to_message(key_event) {
-            if let Some(action) = view_state.position_filter_modal.update(msg) {
+    if view_state.modal_layer.position_filter.open {
+        if let Some(msg) = view_state.modal_layer.position_filter.key_to_message(key_event) {
+            if let Some(action) = view_state.modal_layer.position_filter.update(msg) {
                 if let PositionFilterModalAction::Selected(pos) = action {
                     view_state
                         .main_panel.available
@@ -1307,7 +1307,7 @@ fn handle_draft_key(
         // Position filter modal: only on tabs that support it
         KeyCode::Char('p') => {
             if view_state.main_panel.active_tab().supports(TabFeature::PositionFilter) {
-                view_state.position_filter_modal.update(
+                view_state.modal_layer.position_filter.update(
                     PositionFilterModalMessage::Open {
                         current_filter: view_state.main_panel.available.position_filter(),
                     },
@@ -1325,7 +1325,7 @@ fn handle_draft_key(
         // Quit: enter confirmation mode instead of quitting immediately
         KeyCode::Char('q') => {
             use crate::tui::confirm_dialog::ConfirmMessage;
-            view_state.confirm_quit.update(ConfirmMessage::Open);
+            view_state.modal_layer.quit_confirm.update(ConfirmMessage::Open);
             None
         }
 
@@ -2016,9 +2016,9 @@ mod tests {
     fn p_opens_modal_on_available_tab() {
         let mut state = ViewState::default();
         state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
-        assert!(!state.position_filter_modal.open);
+        assert!(!state.modal_layer.position_filter.open);
         handle_key(key(KeyCode::Char('p')), &mut state);
-        assert!(state.position_filter_modal.open, "p should open the modal on Available tab");
+        assert!(state.modal_layer.position_filter.open, "p should open the modal on Available tab");
     }
 
     #[test]
@@ -2028,7 +2028,7 @@ mod tests {
             state.main_panel.update(MainPanelMessage::SwitchTab(tab));
             handle_key(key(KeyCode::Char('p')), &mut state);
             assert!(
-                !state.position_filter_modal.open,
+                !state.modal_layer.position_filter.open,
                 "p on {:?} should not open modal",
                 tab
             );
@@ -2041,13 +2041,13 @@ mod tests {
         state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
         state.main_panel.available.update(AvailablePanelMessage::SetPositionFilter(Some(Position::Catcher)));
         // Open via message, then move down twice to select "1B" (index 2)
-        state.position_filter_modal.update(PositionFilterModalMessage::Open {
+        state.modal_layer.position_filter.update(PositionFilterModalMessage::Open {
             current_filter: Some(Position::Catcher),
         });
 
         handle_key(key(KeyCode::Esc), &mut state);
 
-        assert!(!state.position_filter_modal.open, "Esc should close modal");
+        assert!(!state.modal_layer.position_filter.open, "Esc should close modal");
         // Position filter must NOT have changed
         assert_eq!(
             state.main_panel.available.position_filter(),
@@ -2061,14 +2061,14 @@ mod tests {
         let mut state = ViewState::default();
         state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
         // Open modal, then move down to index 1 (Catcher)
-        state.position_filter_modal.update(PositionFilterModalMessage::Open {
+        state.modal_layer.position_filter.update(PositionFilterModalMessage::Open {
             current_filter: None,
         });
         handle_key(key(KeyCode::Down), &mut state); // move to index 1 = C
 
         handle_key(key(KeyCode::Enter), &mut state);
 
-        assert!(!state.position_filter_modal.open, "Enter should close modal");
+        assert!(!state.modal_layer.position_filter.open, "Enter should close modal");
         assert_eq!(
             state.main_panel.available.position_filter(),
             Some(Position::Catcher),
@@ -2082,13 +2082,13 @@ mod tests {
         state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
         state.main_panel.available.update(AvailablePanelMessage::SetPositionFilter(Some(Position::Catcher)));
         // Open modal: selected_index defaults to 0 = "ALL"
-        state.position_filter_modal.update(PositionFilterModalMessage::Open {
+        state.modal_layer.position_filter.update(PositionFilterModalMessage::Open {
             current_filter: None,
         });
 
         handle_key(key(KeyCode::Enter), &mut state);
 
-        assert!(!state.position_filter_modal.open);
+        assert!(!state.modal_layer.position_filter.open);
         assert!(
             state.main_panel.available.position_filter().is_none(),
             "Selecting ALL should clear position filter"
@@ -2098,29 +2098,29 @@ mod tests {
     #[test]
     fn modal_arrow_down_does_not_close() {
         let mut state = ViewState::default();
-        state.position_filter_modal.update(PositionFilterModalMessage::Open {
+        state.modal_layer.position_filter.update(PositionFilterModalMessage::Open {
             current_filter: None,
         });
 
         handle_key(key(KeyCode::Down), &mut state);
-        assert!(state.position_filter_modal.open, "Down should not close modal");
+        assert!(state.modal_layer.position_filter.open, "Down should not close modal");
     }
 
     #[test]
     fn modal_arrow_up_does_not_close() {
         let mut state = ViewState::default();
-        state.position_filter_modal.update(PositionFilterModalMessage::Open {
+        state.modal_layer.position_filter.update(PositionFilterModalMessage::Open {
             current_filter: None,
         });
 
         handle_key(key(KeyCode::Up), &mut state);
-        assert!(state.position_filter_modal.open, "Up should not close modal");
+        assert!(state.modal_layer.position_filter.open, "Up should not close modal");
     }
 
     #[test]
     fn modal_enter_with_filtered_list_applies_correct_option() {
         let mut state = ViewState::default();
-        state.position_filter_modal.update(PositionFilterModalMessage::Open {
+        state.modal_layer.position_filter.update(PositionFilterModalMessage::Open {
             current_filter: None,
         });
         // Type "SP" to filter
@@ -2129,7 +2129,7 @@ mod tests {
 
         handle_key(key(KeyCode::Enter), &mut state);
 
-        assert!(!state.position_filter_modal.open);
+        assert!(!state.modal_layer.position_filter.open);
         assert_eq!(state.main_panel.available.position_filter(), Some(Position::StartingPitcher));
     }
 
@@ -2143,7 +2143,7 @@ mod tests {
 
         // Verify the modal opened -- detailed selection index testing is in the
         // component's own unit tests.
-        assert!(state.position_filter_modal.open);
+        assert!(state.modal_layer.position_filter.open);
         // Confirm by pressing Enter: should apply the pre-selected SP
         handle_key(key(KeyCode::Enter), &mut state);
         assert_eq!(
@@ -2156,7 +2156,7 @@ mod tests {
     #[test]
     fn modal_ctrl_c_still_quits() {
         let mut state = ViewState::default();
-        state.position_filter_modal.update(PositionFilterModalMessage::Open {
+        state.modal_layer.position_filter.update(PositionFilterModalMessage::Open {
             current_filter: None,
         });
         let result = handle_key(ctrl_key(KeyCode::Char('c')), &mut state);
@@ -2167,7 +2167,7 @@ mod tests {
     fn modal_blocks_normal_navigation() {
         let mut state = ViewState::default();
         state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
-        state.position_filter_modal.update(PositionFilterModalMessage::Open {
+        state.modal_layer.position_filter.update(PositionFilterModalMessage::Open {
             current_filter: None,
         });
 
@@ -2193,13 +2193,13 @@ mod tests {
         let mut state = ViewState::default();
         let result = handle_key(key(KeyCode::Char('q')), &mut state);
         assert!(result.is_none(), "q should not send Quit immediately");
-        assert!(state.confirm_quit.open,"q should enter confirm_quit mode");
+        assert!(state.modal_layer.quit_confirm.open,"q should enter confirm_quit mode");
     }
 
     #[test]
     fn confirm_quit_y_sends_quit() {
         let mut state = ViewState::default();
-        state.confirm_quit.open = true;
+        state.modal_layer.quit_confirm.open = true;
         let result = handle_key(key(KeyCode::Char('y')), &mut state);
         assert_eq!(result, Some(UserCommand::Quit));
     }
@@ -2207,7 +2207,7 @@ mod tests {
     #[test]
     fn confirm_quit_q_sends_quit() {
         let mut state = ViewState::default();
-        state.confirm_quit.open = true;
+        state.modal_layer.quit_confirm.open = true;
         let result = handle_key(key(KeyCode::Char('q')), &mut state);
         assert_eq!(result, Some(UserCommand::Quit));
     }
@@ -2215,32 +2215,32 @@ mod tests {
     #[test]
     fn confirm_quit_n_cancels() {
         let mut state = ViewState::default();
-        state.confirm_quit.open = true;
+        state.modal_layer.quit_confirm.open = true;
         let result = handle_key(key(KeyCode::Char('n')), &mut state);
         assert!(result.is_none());
-        assert!(!state.confirm_quit.open,"n should cancel confirm_quit mode");
+        assert!(!state.modal_layer.quit_confirm.open,"n should cancel confirm_quit mode");
     }
 
     #[test]
     fn confirm_quit_esc_cancels() {
         let mut state = ViewState::default();
-        state.confirm_quit.open = true;
+        state.modal_layer.quit_confirm.open = true;
         let result = handle_key(key(KeyCode::Esc), &mut state);
         assert!(result.is_none());
-        assert!(!state.confirm_quit.open,"Esc should cancel confirm_quit mode");
+        assert!(!state.modal_layer.quit_confirm.open,"Esc should cancel confirm_quit mode");
     }
 
     #[test]
     fn confirm_quit_blocks_other_keys() {
         let mut state = ViewState::default();
-        state.confirm_quit.open = true;
+        state.modal_layer.quit_confirm.open = true;
         state.main_panel.update(MainPanelMessage::SwitchTab(TabId::Analysis));
 
         // Tab switching should be blocked
         let result = handle_key(key(KeyCode::Char('3')), &mut state);
         assert!(result.is_none());
         assert_eq!(state.main_panel.active_tab(), TabId::Analysis, "Tab switch should be blocked");
-        assert!(state.confirm_quit.open,"confirm_quit should remain active");
+        assert!(state.modal_layer.quit_confirm.open,"confirm_quit should remain active");
 
         // Scrolling should be blocked
         let result = handle_key(key(KeyCode::Down), &mut state);
@@ -2254,7 +2254,7 @@ mod tests {
         // Arbitrary keys should be blocked
         let result = handle_key(key(KeyCode::Char('x')), &mut state);
         assert!(result.is_none());
-        assert!(state.confirm_quit.open,"confirm_quit should remain active");
+        assert!(state.modal_layer.quit_confirm.open,"confirm_quit should remain active");
     }
 
     #[test]
@@ -2262,13 +2262,13 @@ mod tests {
         let mut state = ViewState::default();
         let result = handle_key(ctrl_key(KeyCode::Char('c')), &mut state);
         assert_eq!(result, Some(UserCommand::Quit));
-        assert!(!state.confirm_quit.open,"Ctrl+C should not enter confirm_quit mode");
+        assert!(!state.modal_layer.quit_confirm.open,"Ctrl+C should not enter confirm_quit mode");
     }
 
     #[test]
     fn ctrl_c_quits_even_during_confirmation() {
         let mut state = ViewState::default();
-        state.confirm_quit.open = true;
+        state.modal_layer.quit_confirm.open = true;
         let result = handle_key(ctrl_key(KeyCode::Char('c')), &mut state);
         assert_eq!(result, Some(UserCommand::Quit));
     }
@@ -2276,7 +2276,7 @@ mod tests {
     #[test]
     fn confirm_quit_uppercase_y_sends_quit() {
         let mut state = ViewState::default();
-        state.confirm_quit.open = true;
+        state.modal_layer.quit_confirm.open = true;
         let result = handle_key(key(KeyCode::Char('Y')), &mut state);
         assert_eq!(result, Some(UserCommand::Quit));
     }
@@ -2284,7 +2284,7 @@ mod tests {
     #[test]
     fn confirm_quit_uppercase_q_sends_quit() {
         let mut state = ViewState::default();
-        state.confirm_quit.open = true;
+        state.modal_layer.quit_confirm.open = true;
         let result = handle_key(key(KeyCode::Char('Q')), &mut state);
         assert_eq!(result, Some(UserCommand::Quit));
     }
@@ -2292,10 +2292,10 @@ mod tests {
     #[test]
     fn confirm_quit_uppercase_n_cancels() {
         let mut state = ViewState::default();
-        state.confirm_quit.open = true;
+        state.modal_layer.quit_confirm.open = true;
         let result = handle_key(key(KeyCode::Char('N')), &mut state);
         assert!(result.is_none());
-        assert!(!state.confirm_quit.open,"N should cancel confirm_quit mode");
+        assert!(!state.modal_layer.quit_confirm.open,"N should cancel confirm_quit mode");
     }
 
     #[test]
@@ -2308,7 +2308,7 @@ mod tests {
         let result = handle_key(key(KeyCode::Char('q')), &mut state);
         assert!(result.is_none(), "q in filter mode should not produce a command");
         assert_eq!(state.main_panel.available.filter_text().value(), "testq", "q should be appended to filter text");
-        assert!(!state.confirm_quit.open,"q in filter mode should not set confirm_quit");
+        assert!(!state.modal_layer.quit_confirm.open,"q in filter mode should not set confirm_quit");
     }
 
     #[test]
@@ -2318,7 +2318,7 @@ mod tests {
         // First q: enters confirmation mode
         let result = handle_key(key(KeyCode::Char('q')), &mut state);
         assert!(result.is_none(), "First q should not send Quit");
-        assert!(state.confirm_quit.open,"First q should enter confirm_quit mode");
+        assert!(state.modal_layer.quit_confirm.open,"First q should enter confirm_quit mode");
 
         // Second q: confirms quit
         let result = handle_key(key(KeyCode::Char('q')), &mut state);

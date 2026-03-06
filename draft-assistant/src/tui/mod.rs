@@ -203,7 +203,8 @@ pub struct TeamSummary {
 // ViewState
 // ---------------------------------------------------------------------------
 
-// PositionFilterModal re-export from its Elm Architecture component module.
+// Re-exports from draft modal layer.
+pub use draft::modal::ModalLayer;
 pub use draft::modal::position_filter::PositionFilterModal;
 
 /// TUI-local state that mirrors the application state for rendering.
@@ -237,8 +238,8 @@ pub struct ViewState {
     pub total_picks: usize,
     /// Per-widget scroll offsets (keyed by widget name).
     pub scroll_offset: HashMap<String, usize>,
-    /// Quit confirmation dialog component.
-    pub confirm_quit: ConfirmDialog,
+    /// Draft-mode modal overlays (position filter + quit confirmation).
+    pub modal_layer: ModalLayer,
     /// Chronological list of completed draft picks.
     pub draft_log: Vec<DraftPick>,
     /// Summary of each team's draft state.
@@ -248,8 +249,6 @@ pub struct ViewState {
     /// Which panel currently has keyboard focus for scroll routing.
     /// `None` means no panel is focused (scroll goes to active tab by default).
     pub focused_panel: Option<FocusPanel>,
-    /// Position filter modal state.
-    pub position_filter_modal: PositionFilterModal,
     /// Active keybind hints displayed in the help bar.
     ///
     /// Recomputed on every render frame by [`compute_keybinds`] based on the
@@ -292,12 +291,11 @@ impl Default for ViewState {
             pick_number: 0,
             total_picks: 0,
             scroll_offset: HashMap::new(),
-            confirm_quit: ConfirmDialog::quit(),
+            modal_layer: ModalLayer::new(),
             draft_log: Vec::new(),
             team_summaries: Vec::new(),
             my_roster: Vec::new(),
             focused_panel: None,
-            position_filter_modal: PositionFilterModal::default(),
             active_keybinds: Vec::new(),
             llm_setup: LlmSetupState::default(),
             strategy_setup: StrategySetupState::default(),
@@ -827,7 +825,7 @@ fn compute_settings_keybinds(state: &ViewState) -> Vec<KeybindHint> {
 /// Compute keybind hints for draft mode.
 fn compute_draft_keybinds(state: &ViewState) -> Vec<KeybindHint> {
     // 1. Quit confirmation overlay: all other input is blocked
-    if state.confirm_quit.open {
+    if state.modal_layer.quit_confirm.open {
         return vec![
             KeybindHint::new("y/q", "Confirm quit"),
             KeybindHint::new("n/Esc", "Cancel"),
@@ -835,7 +833,7 @@ fn compute_draft_keybinds(state: &ViewState) -> Vec<KeybindHint> {
     }
 
     // 2. Position filter modal
-    if state.position_filter_modal.open {
+    if state.modal_layer.position_filter.open {
         return vec![
             KeybindHint::new("↑↓", "Navigate"),
             KeybindHint::new("Enter", "Select"),
@@ -974,15 +972,8 @@ fn render_draft_frame(frame: &mut Frame, state: &ViewState) {
     // Help bar: dumb renderer of the pre-synced active keybind hints
     render_help_bar(frame, layout.help_bar, state, &state.active_keybinds);
 
-    // Position filter modal overlay
-    if state.position_filter_modal.open {
-        state.position_filter_modal.view(frame, frame.area());
-    }
-
-    // Quit confirm dialog rendered last so it appears on top of everything
-    if state.confirm_quit.open {
-        state.confirm_quit.view(frame, frame.area());
-    }
+    // Modal overlay layer (position filter + quit confirm)
+    state.modal_layer.view(frame, frame.area());
 }
 
 
@@ -1214,12 +1205,12 @@ mod tests {
         assert!(!state.main_panel.available.filter_mode());
         assert!(state.main_panel.available.filter_text().is_empty());
         assert!(state.main_panel.available.position_filter().is_none());
-        assert!(!state.confirm_quit.open);
+        assert!(!state.modal_layer.quit_confirm.open);
         assert!(state.draft_log.is_empty());
         assert!(state.team_summaries.is_empty());
         assert!(state.my_roster.is_empty());
         assert!(state.focused_panel.is_none());
-        assert!(!state.position_filter_modal.open);
+        assert!(!state.modal_layer.position_filter.open);
     }
 
     #[test]
@@ -1623,7 +1614,7 @@ mod tests {
     #[test]
     fn compute_keybinds_position_modal_open() {
         let mut state = ViewState::default();
-        state.position_filter_modal.open = true;
+        state.modal_layer.position_filter.open = true;
         let hints = compute_keybinds(&state);
         let ks = keys(&hints);
         assert!(ks.contains(&"↑↓"), "modal should show navigate hint");
@@ -1636,7 +1627,7 @@ mod tests {
     #[test]
     fn compute_keybinds_quit_confirm_mode() {
         let mut state = ViewState::default();
-        state.confirm_quit.open = true;
+        state.modal_layer.quit_confirm.open = true;
         let hints = compute_keybinds(&state);
         let ks = keys(&hints);
         assert!(ks.contains(&"y/q"), "confirm quit hint should appear");
@@ -1702,8 +1693,8 @@ mod tests {
     fn quit_confirm_takes_priority_over_modal_and_filter_mode() {
         // If somehow both confirm_quit and modal are set, confirm_quit wins
         let mut state = ViewState::default();
-        state.confirm_quit.open = true;
-        state.position_filter_modal.open = true;
+        state.modal_layer.quit_confirm.open = true;
+        state.modal_layer.position_filter.open = true;
         state.main_panel.available.update(AvailablePanelMessage::ToggleFilterMode);
         let hints = compute_keybinds(&state);
         let ks = keys(&hints);
