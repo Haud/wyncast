@@ -9,7 +9,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crate::protocol::{AppMode, OnboardingAction, TabFeature, TabId, UserCommand};
 use crate::tui::draft::draft_log::DraftLogMessage;
 use crate::tui::draft::sidebar::roster::RosterMessage;
-use crate::tui::draft::sidebar::scarcity::ScarcityMessage;
+use crate::tui::draft::sidebar::scarcity::ScarcityPanelMessage;
 use crate::tui::draft::teams::TeamsMessage;
 use crate::tui::scroll::ScrollDirection;
 use super::{FocusPanel, PositionFilterModal, ViewState};
@@ -1504,7 +1504,7 @@ fn dispatch_scroll_up(view_state: &mut ViewState, lines: usize) {
         };
         view_state
             .scarcity_panel
-            .update(ScarcityMessage::Scroll(dir));
+            .update(ScarcityPanelMessage::Scroll(dir));
         return;
     }
     let offset = view_state.scroll_offset.entry(key.to_string()).or_insert(0);
@@ -1555,7 +1555,7 @@ fn dispatch_scroll_down(view_state: &mut ViewState, lines: usize) {
         };
         view_state
             .scarcity_panel
-            .update(ScarcityMessage::Scroll(dir));
+            .update(ScarcityPanelMessage::Scroll(dir));
         return;
     }
     let offset = view_state.scroll_offset.entry(key.to_string()).or_insert(0);

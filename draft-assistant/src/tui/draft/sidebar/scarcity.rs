@@ -22,7 +22,7 @@ use crate::valuation::scarcity::{ScarcityEntry, ScarcityUrgency};
 
 /// Messages handled by the ScarcityPanel.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ScarcityMessage {
+pub enum ScarcityPanelMessage {
     Scroll(ScrollDirection),
 }
 
@@ -38,9 +38,9 @@ impl ScarcityPanel {
         }
     }
 
-    pub fn update(&mut self, msg: ScarcityMessage) -> Option<Action> {
+    pub fn update(&mut self, msg: ScarcityPanelMessage) -> Option<Action> {
         match msg {
-            ScarcityMessage::Scroll(dir) => {
+            ScarcityPanelMessage::Scroll(dir) => {
                 self.scroll.scroll(dir, Self::DEFAULT_PAGE_SIZE);
                 None
             }
@@ -50,19 +50,19 @@ impl ScarcityPanel {
     /// Default page size for PageUp/PageDown scrolling.
     const DEFAULT_PAGE_SIZE: usize = 20;
 
-    /// Convert a key event to a ScarcityMessage.
-    pub fn key_to_message(&self, key: KeyEvent) -> Option<ScarcityMessage> {
+    /// Convert a key event to a ScarcityPanelMessage.
+    pub fn key_to_message(&self, key: KeyEvent) -> Option<ScarcityPanelMessage> {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
-                Some(ScarcityMessage::Scroll(ScrollDirection::Up))
+                Some(ScarcityPanelMessage::Scroll(ScrollDirection::Up))
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                Some(ScarcityMessage::Scroll(ScrollDirection::Down))
+                Some(ScarcityPanelMessage::Scroll(ScrollDirection::Down))
             }
-            KeyCode::PageUp => Some(ScarcityMessage::Scroll(ScrollDirection::PageUp)),
-            KeyCode::PageDown => Some(ScarcityMessage::Scroll(ScrollDirection::PageDown)),
-            KeyCode::Home => Some(ScarcityMessage::Scroll(ScrollDirection::Top)),
-            KeyCode::End => Some(ScarcityMessage::Scroll(ScrollDirection::Bottom)),
+            KeyCode::PageUp => Some(ScarcityPanelMessage::Scroll(ScrollDirection::PageUp)),
+            KeyCode::PageDown => Some(ScarcityPanelMessage::Scroll(ScrollDirection::PageDown)),
+            KeyCode::Home => Some(ScarcityPanelMessage::Scroll(ScrollDirection::Top)),
+            KeyCode::End => Some(ScarcityPanelMessage::Scroll(ScrollDirection::Bottom)),
             _ => None,
         }
     }
@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn update_scroll_down_changes_offset() {
         let mut panel = ScarcityPanel::new();
-        let result = panel.update(ScarcityMessage::Scroll(ScrollDirection::Down));
+        let result = panel.update(ScarcityPanelMessage::Scroll(ScrollDirection::Down));
         assert!(result.is_none());
         assert_eq!(panel.scroll.offset(), 1);
     }
@@ -257,9 +257,9 @@ mod tests {
     fn update_scroll_up_changes_offset() {
         let mut panel = ScarcityPanel::new();
         for _ in 0..5 {
-            panel.update(ScarcityMessage::Scroll(ScrollDirection::Down));
+            panel.update(ScarcityPanelMessage::Scroll(ScrollDirection::Down));
         }
-        let result = panel.update(ScarcityMessage::Scroll(ScrollDirection::Up));
+        let result = panel.update(ScarcityPanelMessage::Scroll(ScrollDirection::Up));
         assert!(result.is_none());
         assert_eq!(panel.scroll.offset(), 4);
     }
@@ -268,7 +268,7 @@ mod tests {
     fn update_returns_none() {
         let mut panel = ScarcityPanel::new();
         assert!(panel
-            .update(ScarcityMessage::Scroll(ScrollDirection::Down))
+            .update(ScarcityPanelMessage::Scroll(ScrollDirection::Down))
             .is_none());
     }
 
@@ -279,7 +279,7 @@ mod tests {
         let panel = ScarcityPanel::new();
         assert_eq!(
             panel.key_to_message(key(KeyCode::Up)),
-            Some(ScarcityMessage::Scroll(ScrollDirection::Up))
+            Some(ScarcityPanelMessage::Scroll(ScrollDirection::Up))
         );
     }
 
@@ -288,7 +288,7 @@ mod tests {
         let panel = ScarcityPanel::new();
         assert_eq!(
             panel.key_to_message(key(KeyCode::Down)),
-            Some(ScarcityMessage::Scroll(ScrollDirection::Down))
+            Some(ScarcityPanelMessage::Scroll(ScrollDirection::Down))
         );
     }
 
@@ -297,7 +297,7 @@ mod tests {
         let panel = ScarcityPanel::new();
         assert_eq!(
             panel.key_to_message(key(KeyCode::Char('k'))),
-            Some(ScarcityMessage::Scroll(ScrollDirection::Up))
+            Some(ScarcityPanelMessage::Scroll(ScrollDirection::Up))
         );
     }
 
@@ -306,7 +306,7 @@ mod tests {
         let panel = ScarcityPanel::new();
         assert_eq!(
             panel.key_to_message(key(KeyCode::Char('j'))),
-            Some(ScarcityMessage::Scroll(ScrollDirection::Down))
+            Some(ScarcityPanelMessage::Scroll(ScrollDirection::Down))
         );
     }
 
@@ -315,7 +315,7 @@ mod tests {
         let panel = ScarcityPanel::new();
         assert_eq!(
             panel.key_to_message(key(KeyCode::PageUp)),
-            Some(ScarcityMessage::Scroll(ScrollDirection::PageUp))
+            Some(ScarcityPanelMessage::Scroll(ScrollDirection::PageUp))
         );
     }
 
@@ -324,7 +324,7 @@ mod tests {
         let panel = ScarcityPanel::new();
         assert_eq!(
             panel.key_to_message(key(KeyCode::PageDown)),
-            Some(ScarcityMessage::Scroll(ScrollDirection::PageDown))
+            Some(ScarcityPanelMessage::Scroll(ScrollDirection::PageDown))
         );
     }
 
@@ -333,7 +333,7 @@ mod tests {
         let panel = ScarcityPanel::new();
         assert_eq!(
             panel.key_to_message(key(KeyCode::Home)),
-            Some(ScarcityMessage::Scroll(ScrollDirection::Top))
+            Some(ScarcityPanelMessage::Scroll(ScrollDirection::Top))
         );
     }
 
@@ -342,7 +342,7 @@ mod tests {
         let panel = ScarcityPanel::new();
         assert_eq!(
             panel.key_to_message(key(KeyCode::End)),
-            Some(ScarcityMessage::Scroll(ScrollDirection::Bottom))
+            Some(ScarcityPanelMessage::Scroll(ScrollDirection::Bottom))
         );
     }
 
