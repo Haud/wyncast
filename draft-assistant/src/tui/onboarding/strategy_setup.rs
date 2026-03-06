@@ -16,7 +16,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
+use crossterm::event::{KeyCode, KeyEvent};
+
+use crate::protocol::{OnboardingAction, UserCommand};
 use crate::tui::TextInput;
+use crate::tui::text_input::TextInputMessage;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -406,6 +410,396 @@ impl StrategySetupState {
         self.overview_input.clear();
         self.editing_field = None;
         self.field_input.clear();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ELM message API
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum StrategySetupMessage {
+    // Input step
+    StartEditing,
+    TextInput(TextInputMessage),
+    StopEditing,
+    SubmitText,
+    // Generating step
+    Retry,
+    GoBackToInput,
+    // Review step: navigation
+    NavigateUp,
+    NavigateDown,
+    NavigateLeft,
+    NavigateRight,
+    // Review step: overview editing
+    StartOverviewEdit,
+    OverviewInput(TextInputMessage),
+    SubmitOverview,
+    CancelOverviewEdit,
+    // Review step: field editing
+    FieldDigit(char),
+    FieldInput(TextInputMessage),
+    ConfirmFieldEdit,
+    CancelFieldEdit,
+    // Review step: edit field (enter on a section)
+    EditField,
+    // Review step: flow
+    AdvanceToConfirm,
+    SkipStep,
+    CancelGeneration,
+    // Confirm step
+    ToggleSelection,
+    ConfirmYes,
+    ConfirmNo,
+    GoBackToReview,
+    // General
+    GoBack,
+    Quit,
+}
+
+impl StrategySetupState {
+    pub fn key_to_message(&self, key: KeyEvent) -> Option<StrategySetupMessage> {
+        match self.step {
+            StrategyWizardStep::Input => self.input_key_to_message(key),
+            StrategyWizardStep::Generating => self.generating_key_to_message(key),
+            StrategyWizardStep::Review => self.review_key_to_message(key),
+            StrategyWizardStep::Confirm => self.confirm_key_to_message(key),
+        }
+    }
+
+    fn input_key_to_message(&self, key: KeyEvent) -> Option<StrategySetupMessage> {
+        if self.input_editing {
+            return match key.code {
+                KeyCode::Esc => Some(StrategySetupMessage::StopEditing),
+                KeyCode::Enter => Some(StrategySetupMessage::SubmitText),
+                _ => TextInput::key_to_message(&key).map(StrategySetupMessage::TextInput),
+            };
+        }
+        match key.code {
+            KeyCode::Enter => Some(StrategySetupMessage::SubmitText),
+            KeyCode::Char('e') => Some(StrategySetupMessage::StartEditing),
+            KeyCode::Esc => Some(StrategySetupMessage::GoBack),
+            KeyCode::Char('q') => Some(StrategySetupMessage::Quit),
+            _ => None,
+        }
+    }
+
+    fn generating_key_to_message(&self, key: KeyEvent) -> Option<StrategySetupMessage> {
+        if self.generation_error.is_some() {
+            match key.code {
+                KeyCode::Enter => Some(StrategySetupMessage::Retry),
+                KeyCode::Esc => Some(StrategySetupMessage::GoBackToInput),
+                KeyCode::Char('q') => Some(StrategySetupMessage::Quit),
+                _ => None,
+            }
+        } else {
+            match key.code {
+                KeyCode::Char('q') => Some(StrategySetupMessage::Quit),
+                _ => None,
+            }
+        }
+    }
+
+    fn review_key_to_message(&self, key: KeyEvent) -> Option<StrategySetupMessage> {
+        if self.overview_editing {
+            return match key.code {
+                KeyCode::Enter => Some(StrategySetupMessage::SubmitOverview),
+                KeyCode::Esc => Some(StrategySetupMessage::CancelOverviewEdit),
+                _ => TextInput::key_to_message(&key).map(StrategySetupMessage::OverviewInput),
+            };
+        }
+        if self.generating {
+            return match key.code {
+                KeyCode::Esc => Some(StrategySetupMessage::CancelGeneration),
+                KeyCode::Enter if self.generation_error.is_some() => Some(StrategySetupMessage::Retry),
+                KeyCode::Char('q') => Some(StrategySetupMessage::Quit),
+                _ => None,
+            };
+        }
+        if self.generation_error.is_some() {
+            return match key.code {
+                KeyCode::Esc => Some(StrategySetupMessage::CancelGeneration),
+                KeyCode::Enter => Some(StrategySetupMessage::Retry),
+                KeyCode::Char('q') => Some(StrategySetupMessage::Quit),
+                _ => None,
+            };
+        }
+        if self.editing_field.is_some() {
+            return match key.code {
+                KeyCode::Enter => Some(StrategySetupMessage::ConfirmFieldEdit),
+                KeyCode::Esc => Some(StrategySetupMessage::CancelFieldEdit),
+                KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => {
+                    Some(StrategySetupMessage::FieldDigit(c))
+                }
+                KeyCode::Char(_) => None,
+                _ => TextInput::key_to_message(&key).map(StrategySetupMessage::FieldInput),
+            };
+        }
+        // Normal review navigation
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => Some(StrategySetupMessage::NavigateUp),
+            KeyCode::Down | KeyCode::Char('j') => Some(StrategySetupMessage::NavigateDown),
+            KeyCode::Left | KeyCode::Char('h') => Some(StrategySetupMessage::NavigateLeft),
+            KeyCode::Right | KeyCode::Char('l') => Some(StrategySetupMessage::NavigateRight),
+            KeyCode::Enter => Some(StrategySetupMessage::EditField),
+            KeyCode::Char('s') => Some(StrategySetupMessage::AdvanceToConfirm),
+            KeyCode::Char('S') => Some(StrategySetupMessage::SkipStep),
+            KeyCode::Esc => Some(StrategySetupMessage::GoBack),
+            KeyCode::Char('q') => Some(StrategySetupMessage::Quit),
+            _ => None,
+        }
+    }
+
+    fn confirm_key_to_message(&self, key: KeyEvent) -> Option<StrategySetupMessage> {
+        match key.code {
+            KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l') => {
+                Some(StrategySetupMessage::ToggleSelection)
+            }
+            KeyCode::Char('y') => Some(StrategySetupMessage::ConfirmYes),
+            KeyCode::Char('n') => Some(StrategySetupMessage::ConfirmNo),
+            KeyCode::Enter => {
+                if self.confirm_yes {
+                    Some(StrategySetupMessage::ConfirmYes)
+                } else {
+                    Some(StrategySetupMessage::GoBackToReview)
+                }
+            }
+            KeyCode::Esc => Some(StrategySetupMessage::GoBackToReview),
+            KeyCode::Char('q') => Some(StrategySetupMessage::Quit),
+            _ => None,
+        }
+    }
+
+    pub fn update(&mut self, msg: StrategySetupMessage) -> Option<UserCommand> {
+        match msg {
+            // -- Input step --
+            StrategySetupMessage::StartEditing => {
+                self.input_editing = true;
+                None
+            }
+            StrategySetupMessage::StopEditing => {
+                self.input_editing = false;
+                None
+            }
+            StrategySetupMessage::TextInput(ti_msg) => {
+                self.strategy_input.update(ti_msg);
+                None
+            }
+            StrategySetupMessage::SubmitText => {
+                if !self.strategy_input.value().trim().is_empty() {
+                    self.input_editing = false;
+                    self.step = StrategyWizardStep::Generating;
+                    self.generating = true;
+                    self.generation_output.clear();
+                    self.generation_error = None;
+                    let text = self.strategy_input.value().to_string();
+                    Some(UserCommand::OnboardingAction(
+                        OnboardingAction::ConfigureStrategyWithLlm(text),
+                    ))
+                } else if self.input_editing {
+                    // Already editing, text empty — do nothing
+                    None
+                } else {
+                    // Not editing, no text — enter edit mode
+                    self.input_editing = true;
+                    None
+                }
+            }
+
+            // -- Generating step --
+            StrategySetupMessage::Retry => {
+                self.generating = true;
+                self.generation_output.clear();
+                self.generation_error = None;
+                let text = self.strategy_input.value().to_string();
+                Some(UserCommand::OnboardingAction(
+                    OnboardingAction::ConfigureStrategyWithLlm(text),
+                ))
+            }
+            StrategySetupMessage::GoBackToInput => {
+                self.step = StrategyWizardStep::Input;
+                self.input_editing = true;
+                self.generating = false;
+                self.generation_error = None;
+                None
+            }
+
+            // -- Review: overview editing --
+            StrategySetupMessage::StartOverviewEdit => {
+                self.start_overview_editing();
+                None
+            }
+            StrategySetupMessage::OverviewInput(ti_msg) => {
+                self.overview_input.update(ti_msg);
+                None
+            }
+            StrategySetupMessage::SubmitOverview => {
+                let text = self.overview_input.value().to_string();
+                if !text.trim().is_empty() {
+                    self.overview_editing = false;
+                    self.generating = true;
+                    self.generation_output.clear();
+                    self.generation_error = None;
+                    self.strategy_input.set_value(&text);
+                    Some(UserCommand::OnboardingAction(
+                        OnboardingAction::ConfigureStrategyWithLlm(text),
+                    ))
+                } else {
+                    None
+                }
+            }
+            StrategySetupMessage::CancelOverviewEdit => {
+                self.cancel_overview_editing();
+                None
+            }
+
+            // -- Review: cancel generation --
+            StrategySetupMessage::CancelGeneration => {
+                if self.generating || self.generation_error.is_some() {
+                    self.generating = false;
+                    self.generation_error = None;
+                    self.start_overview_editing();
+                }
+                None
+            }
+
+            // -- Review: field editing --
+            StrategySetupMessage::FieldDigit(c) => {
+                self.field_input.insert_char(c);
+                None
+            }
+            StrategySetupMessage::FieldInput(ti_msg) => {
+                self.field_input.update(ti_msg);
+                None
+            }
+            StrategySetupMessage::ConfirmFieldEdit => {
+                if self.confirm_edit() {
+                    self.settings_dirty = true;
+                }
+                None
+            }
+            StrategySetupMessage::CancelFieldEdit => {
+                self.cancel_edit();
+                None
+            }
+            StrategySetupMessage::EditField => {
+                match self.review_section {
+                    ReviewSection::Overview => {
+                        self.start_overview_editing();
+                    }
+                    ReviewSection::BudgetField => {
+                        let current = format!("{}", self.hitting_budget_pct);
+                        self.start_editing("budget", &current);
+                    }
+                    ReviewSection::CategoryWeights => {
+                        let idx = self.selected_weight_idx;
+                        if idx < CATEGORIES.len() {
+                            let cat_name = CATEGORIES[idx];
+                            let current = format!("{:.1}", self.category_weights.get(idx));
+                            self.start_editing(cat_name, &current);
+                        }
+                    }
+                }
+                None
+            }
+
+            // -- Review: navigation --
+            StrategySetupMessage::NavigateUp => {
+                match self.review_section {
+                    ReviewSection::Overview => {}
+                    ReviewSection::BudgetField => {
+                        self.review_section = ReviewSection::Overview;
+                    }
+                    ReviewSection::CategoryWeights => {
+                        if self.selected_weight_idx < WEIGHT_COLS {
+                            self.review_section = ReviewSection::BudgetField;
+                        } else {
+                            self.weight_up();
+                        }
+                    }
+                }
+                None
+            }
+            StrategySetupMessage::NavigateDown => {
+                match self.review_section {
+                    ReviewSection::Overview => {
+                        self.review_section = ReviewSection::BudgetField;
+                    }
+                    ReviewSection::BudgetField => {
+                        self.review_section = ReviewSection::CategoryWeights;
+                    }
+                    ReviewSection::CategoryWeights => {
+                        self.weight_down();
+                    }
+                }
+                None
+            }
+            StrategySetupMessage::NavigateLeft => {
+                if self.review_section == ReviewSection::CategoryWeights {
+                    self.weight_left();
+                }
+                None
+            }
+            StrategySetupMessage::NavigateRight => {
+                if self.review_section == ReviewSection::CategoryWeights {
+                    self.weight_right();
+                }
+                None
+            }
+
+            // -- Review: flow --
+            StrategySetupMessage::AdvanceToConfirm => {
+                self.step = StrategyWizardStep::Confirm;
+                self.confirm_yes = true;
+                None
+            }
+            StrategySetupMessage::SkipStep => {
+                Some(UserCommand::OnboardingAction(OnboardingAction::Skip))
+            }
+
+            // -- Confirm step --
+            StrategySetupMessage::ToggleSelection => {
+                self.confirm_yes = !self.confirm_yes;
+                None
+            }
+            StrategySetupMessage::ConfirmYes => {
+                let weights = self.category_weights.clone();
+                let pct = self.hitting_budget_pct;
+                let overview = if self.strategy_overview.is_empty() {
+                    None
+                } else {
+                    Some(self.strategy_overview.clone())
+                };
+                Some(UserCommand::OnboardingAction(
+                    OnboardingAction::SaveStrategyConfig {
+                        hitting_budget_pct: pct,
+                        category_weights: weights,
+                        strategy_overview: overview,
+                    },
+                ))
+            }
+            StrategySetupMessage::ConfirmNo | StrategySetupMessage::GoBackToReview => {
+                self.step = StrategyWizardStep::Review;
+                None
+            }
+
+            // -- General --
+            StrategySetupMessage::GoBack => {
+                match self.step {
+                    StrategyWizardStep::Input => {
+                        Some(UserCommand::OnboardingAction(OnboardingAction::GoBack))
+                    }
+                    StrategyWizardStep::Review => {
+                        self.step = StrategyWizardStep::Input;
+                        self.input_editing = true;
+                        None
+                    }
+                    _ => None,
+                }
+            }
+            StrategySetupMessage::Quit => Some(UserCommand::Quit),
+        }
     }
 }
 

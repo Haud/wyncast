@@ -1,13 +1,52 @@
-// Onboarding screen dispatcher: routes rendering to the correct step screen.
+// Onboarding screen dispatcher: routes rendering and input to the correct step.
 
 pub mod llm_setup;
 pub mod strategy_setup;
 
+use crossterm::event::KeyEvent;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::Frame;
 
 use crate::onboarding::OnboardingStep;
+use crate::protocol::UserCommand;
 use crate::tui::ViewState;
+
+use self::llm_setup::{LlmSetupMessage, LlmSetupState};
+use self::strategy_setup::{StrategySetupMessage, StrategySetupState};
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum OnboardingMessage {
+    LlmSetup(LlmSetupMessage),
+    Strategy(StrategySetupMessage),
+}
+
+pub fn key_to_message(
+    step: &OnboardingStep,
+    llm_setup: &LlmSetupState,
+    strategy_setup: &StrategySetupState,
+    key: KeyEvent,
+) -> Option<OnboardingMessage> {
+    match step {
+        OnboardingStep::LlmSetup => {
+            llm_setup.key_to_message(key, false).map(OnboardingMessage::LlmSetup)
+        }
+        OnboardingStep::StrategySetup | OnboardingStep::Complete => {
+            strategy_setup.key_to_message(key).map(OnboardingMessage::Strategy)
+        }
+    }
+}
+
+pub fn update(
+    _step: &OnboardingStep,
+    llm_setup: &mut LlmSetupState,
+    strategy_setup: &mut StrategySetupState,
+    msg: OnboardingMessage,
+) -> Option<UserCommand> {
+    match msg {
+        OnboardingMessage::LlmSetup(m) => llm_setup.update(m),
+        OnboardingMessage::Strategy(m) => strategy_setup.update(m),
+    }
+}
 
 /// Render the active onboarding step.
 ///

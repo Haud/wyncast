@@ -91,627 +91,38 @@ fn handle_onboarding_key(
     key_event: KeyEvent,
     view_state: &mut ViewState,
 ) -> Option<UserCommand> {
-    use crate::onboarding::OnboardingStep;
+    use super::onboarding;
 
-    match &view_state.app_mode {
-        AppMode::Onboarding(OnboardingStep::LlmSetup) => {
-            handle_llm_setup_key(key_event, view_state, false)
-        }
-        AppMode::Onboarding(OnboardingStep::StrategySetup) |
-        AppMode::Onboarding(OnboardingStep::Complete) => {
-            handle_strategy_setup_key(key_event, view_state)
-        }
-        _ => None,
-    }
-}
-
-/// Handle keyboard input on the strategy setup wizard (onboarding step 2).
-///
-/// Dispatches to step-specific handlers based on the current wizard step:
-/// - Input: text editing for strategy description
-/// - Generating: wait for LLM, handle errors
-/// - Review: navigate/edit budget and category weights
-/// - Confirm: Yes/No selection
-fn handle_strategy_setup_key(
-    key_event: KeyEvent,
-    view_state: &mut ViewState,
-) -> Option<UserCommand> {
-    use super::onboarding::strategy_setup::{
-        ReviewSection, StrategyWizardStep, CATEGORIES, WEIGHT_COLS,
+    let step = match &view_state.app_mode {
+        AppMode::Onboarding(step) => step.clone(),
+        _ => return None,
     };
-
-    let state = &mut view_state.strategy_setup;
-
-    match state.step {
-        // ----- Step 1: Input -----
-        StrategyWizardStep::Input => {
-            if state.input_editing {
-                // Text editing mode
-                return match key_event.code {
-                    KeyCode::Esc => {
-                        state.input_editing = false;
-                        None
-                    }
-                    KeyCode::Enter => {
-                        // Submit text to LLM if non-empty
-                        if !state.strategy_input.value().trim().is_empty() {
-                            state.input_editing = false;
-                            state.step = StrategyWizardStep::Generating;
-                            state.generating = true;
-                            state.generation_output.clear();
-                            state.generation_error = None;
-                            let text = state.strategy_input.value().to_string();
-                            Some(UserCommand::OnboardingAction(
-                                OnboardingAction::ConfigureStrategyWithLlm(text),
-                            ))
-                        } else {
-                            None
-                        }
-                    }
-                    _ => {
-                        if let Some(msg) = super::TextInput::key_to_message(&key_event) {
-                            state.strategy_input.update(msg);
-                        }
-                        None
-                    }
-                };
-            }
-
-            // Not editing text
-            match key_event.code {
-                KeyCode::Enter => {
-                    // Send to LLM if there's text
-                    if !state.strategy_input.value().trim().is_empty() {
-                        state.step = StrategyWizardStep::Generating;
-                        state.generating = true;
-                        state.generation_output.clear();
-                        state.generation_error = None;
-                        let text = state.strategy_input.value().to_string();
-                        Some(UserCommand::OnboardingAction(
-                            OnboardingAction::ConfigureStrategyWithLlm(text),
-                        ))
-                    } else {
-                        // No text, enter edit mode
-                        state.input_editing = true;
-                        None
-                    }
-                }
-                KeyCode::Char('e') => {
-                    state.input_editing = true;
-                    None
-                }
-                KeyCode::Esc => {
-                    Some(UserCommand::OnboardingAction(OnboardingAction::GoBack))
-                }
-                KeyCode::Char('q') => Some(UserCommand::Quit),
-                _ => None,
-            }
-        }
-
-        // ----- Step 2: Generating -----
-        StrategyWizardStep::Generating => {
-            // If there's an error, allow retry or go back
-            if state.generation_error.is_some() {
-                match key_event.code {
-                    KeyCode::Enter => {
-                        // Retry
-                        state.generating = true;
-                        state.generation_output.clear();
-                        state.generation_error = None;
-                        let text = state.strategy_input.value().to_string();
-                        Some(UserCommand::OnboardingAction(
-                            OnboardingAction::ConfigureStrategyWithLlm(text),
-                        ))
-                    }
-                    KeyCode::Esc => {
-                        // Go back to input
-                        state.step = StrategyWizardStep::Input;
-                        state.input_editing = true;
-                        state.generating = false;
-                        state.generation_error = None;
-                        None
-                    }
-                    KeyCode::Char('q') => Some(UserCommand::Quit),
-                    _ => None,
-                }
-            } else {
-                // Still generating, no input allowed except quit
-                match key_event.code {
-                    KeyCode::Char('q') => Some(UserCommand::Quit),
-                    _ => None,
-                }
-            }
-        }
-
-        // ----- Step 3: Review -----
-        StrategyWizardStep::Review => {
-            // Overview editing mode (text input for strategy overview)
-            if state.overview_editing {
-                return match key_event.code {
-                    KeyCode::Enter => {
-                        // Submit overview text to LLM for regeneration
-                        let text = state.overview_input.value().to_string();
-                        if !text.trim().is_empty() {
-                            state.overview_editing = false;
-                            state.generating = true;
-                            state.generation_output.clear();
-                            state.generation_error = None;
-                            // Copy the edited text as the strategy input for the LLM
-                            state.strategy_input.set_value(&text);
-                            Some(UserCommand::OnboardingAction(
-                                OnboardingAction::ConfigureStrategyWithLlm(text),
-                            ))
-                        } else {
-                            None
-                        }
-                    }
-                    KeyCode::Esc => {
-                        state.cancel_overview_editing();
-                        None
-                    }
-                    _ => {
-                        if let Some(msg) = super::TextInput::key_to_message(&key_event) {
-                            state.overview_input.update(msg);
-                        }
-                        None
-                    }
-                };
-            }
-
-            // Generating mode within review (LLM regenerating strategy)
-            if state.generating {
-                return match key_event.code {
-                    KeyCode::Esc => {
-                        state.generating = false;
-                        state.generation_error = None;
-                        state.start_overview_editing();
-                        None
-                    }
-                    KeyCode::Enter if state.generation_error.is_some() => {
-                        // Retry generation
-                        state.generating = true;
-                        state.generation_output.clear();
-                        state.generation_error = None;
-                        let text = state.strategy_input.value().to_string();
-                        Some(UserCommand::OnboardingAction(
-                            OnboardingAction::ConfigureStrategyWithLlm(text),
-                        ))
-                    }
-                    KeyCode::Char('q') => Some(UserCommand::Quit),
-                    _ => None,
-                };
-            }
-
-            // Error state: LLM generation failed (generating is false, but error is set)
-            if state.generation_error.is_some() {
-                return match key_event.code {
-                    KeyCode::Esc => {
-                        state.generation_error = None;
-                        state.start_overview_editing();
-                        None
-                    }
-                    KeyCode::Enter => {
-                        // Retry: resubmit the last input
-                        let text = state.strategy_input.value().to_string();
-                        state.generation_error = None;
-                        state.generating = true;
-                        state.generation_output.clear();
-                        Some(UserCommand::OnboardingAction(
-                            OnboardingAction::ConfigureStrategyWithLlm(text),
-                        ))
-                    }
-                    KeyCode::Char('q') => Some(UserCommand::Quit),
-                    _ => None,
-                };
-            }
-
-            // Numeric field editing mode
-            if state.editing_field.is_some() {
-                return match key_event.code {
-                    KeyCode::Enter => {
-                        if state.confirm_edit() {
-                            state.settings_dirty = true;
-                        }
-                        None
-                    }
-                    KeyCode::Esc => {
-                        state.cancel_edit();
-                        None
-                    }
-                    KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => {
-                        state.field_input.insert_char(c);
-                        None
-                    }
-                    KeyCode::Char(_) => None,
-                    _ => {
-                        if let Some(msg) = super::TextInput::key_to_message(&key_event) {
-                            state.field_input.update(msg);
-                        }
-                        None
-                    }
-                };
-            }
-
-            // Normal review navigation
-            match key_event.code {
-                // Up/Down: move between sections naturally
-                KeyCode::Up | KeyCode::Char('k') => {
-                    match state.review_section {
-                        ReviewSection::Overview => {} // already at top
-                        ReviewSection::BudgetField => {
-                            state.review_section = ReviewSection::Overview;
-                        }
-                        ReviewSection::CategoryWeights => {
-                            // If in top row of grid, move up to budget
-                            if state.selected_weight_idx < WEIGHT_COLS {
-                                state.review_section = ReviewSection::BudgetField;
-                            } else {
-                                state.weight_up();
-                            }
-                        }
-                    }
-                    None
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    match state.review_section {
-                        ReviewSection::Overview => {
-                            state.review_section = ReviewSection::BudgetField;
-                        }
-                        ReviewSection::BudgetField => {
-                            state.review_section = ReviewSection::CategoryWeights;
-                        }
-                        ReviewSection::CategoryWeights => {
-                            state.weight_down();
-                        }
-                    }
-                    None
-                }
-                KeyCode::Left | KeyCode::Char('h') => {
-                    if state.review_section == ReviewSection::CategoryWeights {
-                        state.weight_left();
-                    }
-                    None
-                }
-                KeyCode::Right | KeyCode::Char('l') => {
-                    if state.review_section == ReviewSection::CategoryWeights {
-                        state.weight_right();
-                    }
-                    None
-                }
-                // Enter: edit field or advance to confirm
-                KeyCode::Enter => {
-                    match state.review_section {
-                        ReviewSection::Overview => {
-                            // Enter editing mode for strategy overview
-                            state.start_overview_editing();
-                            None
-                        }
-                        ReviewSection::BudgetField => {
-                            let current = format!("{}", state.hitting_budget_pct);
-                            state.start_editing("budget", &current);
-                            None
-                        }
-                        ReviewSection::CategoryWeights => {
-                            let idx = state.selected_weight_idx;
-                            if idx < CATEGORIES.len() {
-                                let cat_name = CATEGORIES[idx];
-                                let current = format!("{:.1}", state.category_weights.get(idx));
-                                state.start_editing(cat_name, &current);
-                            }
-                            None
-                        }
-                    }
-                }
-                // s: save (advance to confirm)
-                KeyCode::Char('s') => {
-                    state.step = StrategyWizardStep::Confirm;
-                    state.confirm_yes = true;
-                    None
-                }
-                // S: skip this step
-                KeyCode::Char('S') => {
-                    Some(UserCommand::OnboardingAction(OnboardingAction::Skip))
-                }
-                // Esc: go back to Input step (keep values)
-                KeyCode::Esc => {
-                    state.step = StrategyWizardStep::Input;
-                    state.input_editing = true;
-                    None
-                }
-                KeyCode::Char('q') => Some(UserCommand::Quit),
-                _ => None,
-            }
-        }
-
-        // ----- Step 4: Confirm -----
-        StrategyWizardStep::Confirm => {
-            match key_event.code {
-                KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l') => {
-                    state.confirm_yes = !state.confirm_yes;
-                    None
-                }
-                // 'y' is an absolute shortcut: always confirms regardless of button selection
-                KeyCode::Char('y') => {
-                    let weights = state.category_weights.clone();
-                    let pct = state.hitting_budget_pct;
-                    let overview = if state.strategy_overview.is_empty() {
-                        None
-                    } else {
-                        Some(state.strategy_overview.clone())
-                    };
-                    Some(UserCommand::OnboardingAction(
-                        OnboardingAction::SaveStrategyConfig {
-                            hitting_budget_pct: pct,
-                            category_weights: weights,
-                            strategy_overview: overview,
-                        },
-                    ))
-                }
-                // 'n' is an absolute shortcut: always goes back regardless of button selection
-                KeyCode::Char('n') => {
-                    state.step = StrategyWizardStep::Review;
-                    None
-                }
-                // Enter confirms whichever button is currently selected
-                KeyCode::Enter if state.confirm_yes => {
-                    let weights = state.category_weights.clone();
-                    let pct = state.hitting_budget_pct;
-                    let overview = if state.strategy_overview.is_empty() {
-                        None
-                    } else {
-                        Some(state.strategy_overview.clone())
-                    };
-                    Some(UserCommand::OnboardingAction(
-                        OnboardingAction::SaveStrategyConfig {
-                            hitting_budget_pct: pct,
-                            category_weights: weights,
-                            strategy_overview: overview,
-                        },
-                    ))
-                }
-                KeyCode::Enter if !state.confirm_yes => {
-                    // Go back to review
-                    state.step = StrategyWizardStep::Review;
-                    None
-                }
-                KeyCode::Esc => {
-                    // Go back to review
-                    state.step = StrategyWizardStep::Review;
-                    None
-                }
-                KeyCode::Char('q') => Some(UserCommand::Quit),
-                _ => None,
-            }
-        }
-    }
-}
-
-/// Handle keyboard input on the LLM setup screen (onboarding step 1).
-///
-/// Uses progressive disclosure: sections are revealed one at a time as each
-/// is confirmed via Enter. Input handling depends on the active section and
-/// whether the API key text input is in edit mode:
-/// - When editing API key: captures typed characters, Enter confirms and
-///   triggers a connection test, Esc restores the backup and navigates back
-/// - Provider/Model sections: Up/Down select within lists, Enter confirms
-///   the current section and reveals the next
-/// - ApiKey section (not editing): Enter behavior is context-sensitive based
-///   on connection status (input key / test / edit key / continue)
-///
-/// Provider and model selections dispatch `SetProvider`/`SetModel` commands to
-/// the app orchestrator immediately on each arrow key press. This keeps
-/// `OnboardingProgress` in sync so that when `GoNext` fires, the app already
-/// has the correct values and only needs to persist the API key and advance.
-fn handle_llm_setup_key(
-    key_event: KeyEvent,
-    view_state: &mut ViewState,
-    settings_mode: bool,
-) -> Option<UserCommand> {
-    use super::onboarding::llm_setup::{LlmConnectionStatus, LlmSetupSection};
-
-    let state = &mut view_state.llm_setup;
-
-    // --- API key editing mode ---
-    if state.api_key_editing {
-        return match key_event.code {
-            KeyCode::Enter => {
-                state.api_key_editing = false;
-                // Sync the key to the backend on confirm. The backend will
-                // automatically trigger a connection test after receiving
-                // SetApiKey, so we set Testing status here for immediate
-                // visual feedback.
-                let key = state.api_key_input.value().to_string();
-                if key.is_empty() {
-                    None
-                } else {
-                    state.confirmed_through = Some(LlmSetupSection::ApiKey);
-                    state.connection_status = LlmConnectionStatus::Testing;
-                    Some(UserCommand::OnboardingAction(OnboardingAction::SetApiKey(key)))
-                }
-            }
-            KeyCode::Esc => {
-                // Esc while editing: go back to Model (linear back navigation)
-                state.api_key_input.set_value(&state.api_key_backup.clone());
-                state.api_key_editing = false;
-                if settings_mode {
-                    // In settings mode, just exit editing, don't navigate back
-                    None
-                } else {
-                    state.go_back_section();
-                    None
-                }
-            }
-            _ => {
-                if let Some(msg) = super::TextInput::key_to_message(&key_event) {
-                    state.api_key_input.update(msg);
-                }
-                None
-            }
-        };
-    }
-
-    // --- Normal navigation mode ---
-    match key_event.code {
-        // Up/Down: select within the active list section
-        KeyCode::Up | KeyCode::Char('k') => {
-            match state.active_section {
-                LlmSetupSection::Provider => {
-                    state.provider_up();
-                    let provider = state.selected_provider().clone();
-                    return Some(UserCommand::OnboardingAction(
-                        OnboardingAction::SetProvider(provider),
-                    ));
-                }
-                LlmSetupSection::Model => {
-                    state.model_up();
-                    if let Some(model) = state.selected_model() {
-                        return Some(UserCommand::OnboardingAction(
-                            OnboardingAction::SetModel(model.model_id.to_string()),
-                        ));
-                    }
-                }
-                _ => {}
-            }
-            None
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            match state.active_section {
-                LlmSetupSection::Provider => {
-                    state.provider_down();
-                    let provider = state.selected_provider().clone();
-                    return Some(UserCommand::OnboardingAction(
-                        OnboardingAction::SetProvider(provider),
-                    ));
-                }
-                LlmSetupSection::Model => {
-                    state.model_down();
-                    if let Some(model) = state.selected_model() {
-                        return Some(UserCommand::OnboardingAction(
-                            OnboardingAction::SetModel(model.model_id.to_string()),
-                        ));
-                    }
-                }
-                _ => {}
-            }
-            None
-        }
-        // Enter: progressive disclosure — confirm current section and reveal next
-        KeyCode::Enter => {
-            match state.active_section {
-                LlmSetupSection::Provider => {
-                    // Confirm provider, reveal model list
-                    let provider = state.selected_provider().clone();
-                    state.confirm_current_section();
-                    Some(UserCommand::OnboardingAction(
-                        OnboardingAction::SetProvider(provider),
-                    ))
-                }
-                LlmSetupSection::Model => {
-                    // Confirm model, reveal API key input
-                    let model_id = state
-                        .selected_model()
-                        .map(|m| m.model_id.to_string())
-                        .unwrap_or_default();
-                    state.confirm_current_section();
-                    Some(UserCommand::OnboardingAction(
-                        OnboardingAction::SetModel(model_id),
-                    ))
-                }
-                LlmSetupSection::ApiKey => {
-                    if state.connection_tested_ok() {
-                        // Connection test passed — advance to next step
-                        Some(UserCommand::OnboardingAction(OnboardingAction::GoNext))
-                    } else if state.api_key_input.is_empty() {
-                        // Enter edit mode if no key entered yet
-                        state.api_key_backup = state.api_key_input.value().to_string();
-                        state.api_key_editing = true;
-                        None
-                    } else if matches!(state.connection_status, LlmConnectionStatus::Failed(_)) {
-                        // Connection test failed — re-enter editing so the user
-                        // can fix their key rather than re-triggering the same
-                        // failing test.
-                        state.api_key_backup = state.api_key_input.value().to_string();
-                        state.api_key_editing = true;
-                        state.connection_status = LlmConnectionStatus::Untested;
-                        None
-                    } else {
-                        // Key already entered — trigger connection test
-                        state.confirmed_through = Some(LlmSetupSection::ApiKey);
-                        state.connection_status = LlmConnectionStatus::Testing;
-                        Some(UserCommand::OnboardingAction(
-                            OnboardingAction::TestConnection,
-                        ))
-                    }
-                }
-            }
-        }
-        // n: no longer used for advancing (Enter handles it now), but keep
-        // for backward compatibility in case muscle memory persists
-        KeyCode::Char('n') => {
-            if state.connection_tested_ok() {
-                Some(UserCommand::OnboardingAction(OnboardingAction::GoNext))
-            } else {
-                None
-            }
-        }
-        // s: skip this step (always available)
-        KeyCode::Char('s') => {
-            Some(UserCommand::OnboardingAction(OnboardingAction::Skip))
-        }
-        // Esc: go back to previous section, or go back in onboarding if at first section
-        KeyCode::Esc => {
-            if settings_mode {
-                // In settings mode, all sections are always visible.
-                // Esc just moves focus to the previous section without
-                // un-confirming anything (preserves the "all visible" invariant).
-                if state.active_section != LlmSetupSection::Provider {
-                    state.active_section = state.active_section.prev();
-                }
-                None
-            } else if state.active_section == LlmSetupSection::Provider {
-                // At the first section — propagate GoBack to onboarding flow
-                Some(UserCommand::OnboardingAction(OnboardingAction::GoBack))
-            } else {
-                // Go back to previous section within LLM setup
-                state.go_back_section();
-                None
-            }
-        }
-        // Tab: advance to next section (only within visible/confirmed sections)
-        KeyCode::Tab => {
-            let next = state.active_section.next();
-            if state.is_section_visible(next) {
-                state.active_section = next;
-            }
-            None
-        }
-        // Shift+Tab: go to previous section
-        KeyCode::BackTab => {
-            let prev = state.active_section.prev();
-            // Only go back if the prev section is visible (always true since
-            // we can only go to earlier sections which are always visible)
-            if state.is_section_visible(prev) && prev < state.active_section {
-                state.active_section = prev;
-            }
-            None
-        }
-        // q: quit
-        KeyCode::Char('q') => Some(UserCommand::Quit),
-        _ => None,
+    let msg = onboarding::key_to_message(
+        &step,
+        &view_state.llm_setup,
+        &view_state.strategy_setup,
+        key_event,
+    );
+    match msg {
+        Some(m) => onboarding::update(
+            &step,
+            &mut view_state.llm_setup,
+            &mut view_state.strategy_setup,
+            m,
+        ),
+        None => None,
     }
 }
 
 /// Handle keyboard input on the settings screen.
 ///
 /// Dispatches to the appropriate handler depending on the active settings tab.
-/// The LLM tab uses a dedicated settings-mode handler with field-level
-/// navigation (Up/Down between fields, Enter to open, Esc to cancel, 's' to
-/// save). The Strategy tab reuses the onboarding handler.
 fn handle_settings_key(
     key_event: KeyEvent,
     view_state: &mut ViewState,
 ) -> Option<UserCommand> {
     use crate::protocol::SettingsSection;
+    use super::onboarding::llm_setup::LlmSetupMessage;
 
     // --- Unsaved changes confirmation modal: intercept all input ---
     if view_state.confirm_exit_settings.open {
@@ -731,24 +142,39 @@ fn handle_settings_key(
 
     let active_tab = view_state.settings_tab;
 
-    // --- LLM tab: dedicated settings-mode handler ---
+    // --- LLM tab: use component key_to_message + update ---
     if active_tab == SettingsSection::LlmConfig {
-        return handle_llm_settings_key(key_event, view_state);
+        if let Some(msg) = view_state.llm_setup.key_to_message(key_event, true) {
+            // Intercept SettingsExit to check cross-component dirty state
+            if matches!(msg, LlmSetupMessage::SettingsExit) {
+                let llm_dirty = view_state.llm_setup.settings_dirty
+                    || view_state.llm_setup.settings_needs_connection_test;
+                let strategy_dirty = view_state.strategy_setup.settings_dirty;
+                if llm_dirty || strategy_dirty {
+                    use crate::tui::confirm_dialog::ConfirmMessage;
+                    view_state.confirm_exit_settings.update(ConfirmMessage::Open);
+                    return None;
+                }
+            }
+            return view_state.llm_setup.update(msg);
+        }
+        return None;
     }
 
-    // --- Strategy tab: delegate to onboarding handler ---
-    // Check if we're in an editing sub-mode (text input, overview editing,
-    // generating). If so, delegate fully to the strategy handler.
+    // --- Strategy tab ---
+    // In editing sub-modes, delegate fully to the strategy component
     if view_state.settings_is_editing()
         || view_state.strategy_setup.generating
     {
-        let cmd = handle_strategy_setup_key(key_event, view_state);
-        return filter_onboarding_commands(cmd);
+        if let Some(msg) = view_state.strategy_setup.key_to_message(key_event) {
+            let cmd = view_state.strategy_setup.update(msg);
+            return filter_onboarding_commands(cmd);
+        }
+        return None;
     }
 
     // Not editing: handle settings-level keys first, then delegate
     match key_event.code {
-        // Tab switching between LLM and Strategy tabs
         KeyCode::Char('1') => {
             Some(UserCommand::SwitchSettingsTab(SettingsSection::LlmConfig))
         }
@@ -767,7 +193,6 @@ fn handle_settings_key(
                 Some(state.strategy_overview.clone())
             };
             state.settings_dirty = false;
-            // Update snapshot to reflect saved state
             state.snapshot_settings();
             Some(UserCommand::OnboardingAction(
                 OnboardingAction::SaveStrategyConfig {
@@ -792,34 +217,27 @@ fn handle_settings_key(
             }
         }
 
-        // q: quit the application
         KeyCode::Char('q') => Some(UserCommand::Quit),
 
-        // For all other keys, delegate to the strategy tab's handler
+        // Delegate other keys to strategy component
         _ => {
-            let cmd = handle_strategy_setup_key(key_event, view_state);
-            filter_onboarding_commands(cmd)
+            if let Some(msg) = view_state.strategy_setup.key_to_message(key_event) {
+                let cmd = view_state.strategy_setup.update(msg);
+                filter_onboarding_commands(cmd)
+            } else {
+                None
+            }
         }
     }
 }
 
 /// Handle the user's choice from the unsaved-changes confirmation dialog.
-///
-/// Called after `ConfirmDialog` has already closed itself and returned a
-/// `ConfirmResult::Confirmed(ch)`. This function implements the save/discard
-/// logic for the two option keys:
-///
-/// - `'y'`: Save all dirty settings and exit to draft mode.
-/// - `'n'`: Discard unsaved changes (restore snapshots) and exit.
 fn handle_confirm_exit_settings_choice(
     ch: char,
     view_state: &mut ViewState,
 ) -> Option<UserCommand> {
     match ch {
         'y' => {
-            // Gather save payloads for each dirty tab.
-            // Only save LLM config when dirty AND not blocked by a pending/failed
-            // connection test. If save is blocked, discard LLM changes instead.
             let llm_save = if view_state.llm_setup.settings_dirty
                 && !view_state.llm_setup.is_save_blocked()
             {
@@ -867,7 +285,6 @@ fn handle_confirm_exit_settings_choice(
             })
         }
         'n' => {
-            // Restore snapshots to discard unsaved changes
             if view_state.llm_setup.settings_dirty
                 || view_state.llm_setup.settings_needs_connection_test
             {
@@ -878,283 +295,6 @@ fn handle_confirm_exit_settings_choice(
             }
             Some(UserCommand::ExitSettings)
         }
-        _ => None,
-    }
-}
-
-/// Handle keyboard input on the LLM settings tab.
-///
-/// Implements a field-based navigation model:
-/// - **Overview mode** (`settings_editing_field == None`): Up/Down navigate
-///   between the three fields (Provider, Model, API Key). Enter opens the
-///   focused field's dropdown/editor. 's' saves all settings. Esc exits
-///   settings and returns to draft.
-/// - **Field editing mode** (`settings_editing_field == Some(section)`):
-///   Only the active field's dropdown/editor is shown. Up/Down select within
-///   the list. Enter confirms the field and advances to the next field in
-///   sequence. Esc resets to the last saved values and returns to overview.
-fn handle_llm_settings_key(
-    key_event: KeyEvent,
-    view_state: &mut ViewState,
-) -> Option<UserCommand> {
-    use crate::protocol::SettingsSection;
-    use super::onboarding::llm_setup::LlmSetupSection;
-
-    let state = &mut view_state.llm_setup;
-
-    // --- API key text editing mode (typing characters) ---
-    if state.api_key_editing {
-        return match key_event.code {
-            KeyCode::Enter => {
-                state.api_key_editing = false;
-                state.settings_dirty = true;
-                // ApiKey is the last field — return to overview
-                state.settings_editing_field = None;
-                state.active_section = LlmSetupSection::ApiKey;
-                // If any config field (provider, model, or API key) changed
-                // from the saved snapshot, require a connection test before
-                // allowing save.
-                let new_key = state.api_key_input.value().to_string();
-                let has_key = !new_key.is_empty() || state.has_saved_api_key;
-                if state.has_config_changed_from_snapshot() && has_key {
-                    state.settings_needs_connection_test = true;
-                    state.connection_status =
-                        super::onboarding::llm_setup::LlmConnectionStatus::Testing;
-                    if !new_key.is_empty() {
-                        // Key text is present — send SetApiKey which
-                        // auto-triggers a test on the backend.
-                        Some(UserCommand::OnboardingAction(
-                            OnboardingAction::SetApiKey(new_key),
-                        ))
-                    } else {
-                        // Key input is empty but a saved key exists on disk.
-                        // Trigger a connection test directly using the
-                        // persisted key.
-                        Some(UserCommand::OnboardingAction(
-                            OnboardingAction::TestConnection,
-                        ))
-                    }
-                } else {
-                    state.settings_needs_connection_test = false;
-                    state.connection_status = super::onboarding::llm_setup::LlmConnectionStatus::Untested;
-                    None
-                }
-            }
-            KeyCode::Esc => {
-                // Reset to saved snapshot and return to overview
-                state.restore_settings_snapshot();
-                None
-            }
-            _ => {
-                if let Some(msg) = super::TextInput::key_to_message(&key_event) {
-                    state.api_key_input.update(msg);
-                    state.settings_dirty = true;
-                }
-                None
-            }
-        };
-    }
-
-    // --- Field editing mode (dropdown open for Provider or Model) ---
-    if let Some(editing) = state.settings_editing_field {
-        return match key_event.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                match editing {
-                    LlmSetupSection::Provider => {
-                        let before = state.selected_provider_idx;
-                        state.provider_up();
-                        if state.selected_provider_idx != before {
-                            state.settings_dirty = true;
-                        }
-                    }
-                    LlmSetupSection::Model => {
-                        let before = state.selected_model_idx;
-                        state.model_up();
-                        if state.selected_model_idx != before {
-                            state.settings_dirty = true;
-                        }
-                    }
-                    LlmSetupSection::ApiKey => {
-                        // Should not reach here; API key editing is handled above
-                    }
-                }
-                None
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                match editing {
-                    LlmSetupSection::Provider => {
-                        let before = state.selected_provider_idx;
-                        state.provider_down();
-                        if state.selected_provider_idx != before {
-                            state.settings_dirty = true;
-                        }
-                    }
-                    LlmSetupSection::Model => {
-                        let before = state.selected_model_idx;
-                        state.model_down();
-                        if state.selected_model_idx != before {
-                            state.settings_dirty = true;
-                        }
-                    }
-                    LlmSetupSection::ApiKey => {}
-                }
-                None
-            }
-            KeyCode::Enter => {
-                // Confirm the current field.
-                // In settings mode (not onboarding), return to overview and
-                // trigger a connection test if the config has changed and a
-                // key is available. In onboarding, advance to the next field.
-                match editing {
-                    LlmSetupSection::Provider | LlmSetupSection::Model => {
-                        if state.in_settings_mode {
-                            // Return to overview mode
-                            state.settings_editing_field = None;
-                            // Check whether config changed and an API key exists
-                            let has_key = !state.api_key_input.value().is_empty()
-                                || state.has_saved_api_key;
-                            if state.has_config_changed_from_snapshot() && has_key {
-                                state.settings_needs_connection_test = true;
-                                state.connection_status =
-                                    super::onboarding::llm_setup::LlmConnectionStatus::Testing;
-                                let new_key = state.api_key_input.value().to_string();
-                                if !new_key.is_empty() {
-                                    return Some(UserCommand::OnboardingAction(
-                                        OnboardingAction::SetApiKey(new_key),
-                                    ));
-                                } else {
-                                    return Some(UserCommand::OnboardingAction(
-                                        OnboardingAction::TestConnection,
-                                    ));
-                                }
-                            }
-                            return None;
-                        }
-                        // Onboarding: advance to next field in sequence
-                        if editing == LlmSetupSection::Provider {
-                            state.active_section = LlmSetupSection::Model;
-                            state.settings_editing_field = Some(LlmSetupSection::Model);
-                        } else {
-                            // Model -> ApiKey
-                            state.active_section = LlmSetupSection::ApiKey;
-                            state.settings_editing_field = Some(LlmSetupSection::ApiKey);
-                            state.api_key_backup = state.api_key_input.value().to_string();
-                            state.api_key_editing = true;
-                        }
-                        None
-                    }
-                    LlmSetupSection::ApiKey => {
-                        // Last field — return to overview (should not reach here,
-                        // handled in api_key_editing block above)
-                        state.settings_editing_field = None;
-                        None
-                    }
-                }
-            }
-            KeyCode::Esc => {
-                // Reset to saved snapshot and return to overview
-                state.restore_settings_snapshot();
-                None
-            }
-            KeyCode::Char('q') => Some(UserCommand::Quit),
-            _ => None,
-        };
-    }
-
-    // --- Overview mode (no field editing, all fields shown as summaries) ---
-
-    // Handle Esc before the main match so we can access `view_state` fields
-    // outside the `llm_setup` borrow (strategy_setup, confirm_exit_settings).
-    if key_event.code == KeyCode::Esc {
-        let llm_dirty = view_state.llm_setup.settings_dirty
-            || view_state.llm_setup.settings_needs_connection_test;
-        let strategy_dirty = view_state.strategy_setup.settings_dirty;
-        if llm_dirty || strategy_dirty {
-            use crate::tui::confirm_dialog::ConfirmMessage;
-            view_state.confirm_exit_settings.update(ConfirmMessage::Open);
-            return None;
-        } else {
-            return Some(UserCommand::ExitSettings);
-        }
-    }
-
-    match key_event.code {
-        // Up/Down: navigate between the three fields (clamped, no wrapping)
-        KeyCode::Up | KeyCode::Char('k') => {
-            let idx = state.active_section.step_index();
-            if idx > 0 {
-                state.active_section = LlmSetupSection::CYCLE[idx - 1];
-            }
-            None
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            let idx = state.active_section.step_index();
-            if idx + 1 < LlmSetupSection::CYCLE.len() {
-                state.active_section = LlmSetupSection::CYCLE[idx + 1];
-            }
-            None
-        }
-
-        // Enter: open the focused field's dropdown/editor
-        KeyCode::Enter => {
-            // Snapshot current state for Escape restoration
-            state.snapshot_settings();
-            state.settings_editing_field = Some(state.active_section);
-            // If opening ApiKey, enter text editing mode
-            if state.active_section == LlmSetupSection::ApiKey {
-                state.api_key_backup = state.api_key_input.value().to_string();
-                state.api_key_editing = true;
-            }
-            None
-        }
-
-        // s: save all settings (blocked while connection test is pending/failed)
-        KeyCode::Char('s') => {
-            if state.is_save_blocked() {
-                // Save is gated on a successful connection test — ignore
-                None
-            } else {
-                let provider = state.selected_provider().clone();
-                let model_id = state
-                    .selected_model()
-                    .map(|m| m.model_id.to_string())
-                    .unwrap_or_default();
-                let api_key_val = state.api_key_input.value().to_string();
-                let api_key = if api_key_val.is_empty() {
-                    None
-                } else {
-                    Some(api_key_val)
-                };
-
-                state.settings_dirty = false;
-                state.settings_needs_connection_test = false;
-                // Update the saved snapshot to reflect the saved state
-                state.snapshot_settings();
-
-                Some(UserCommand::OnboardingAction(
-                    OnboardingAction::SaveLlmConfig {
-                        provider,
-                        model_id,
-                        api_key,
-                    },
-                ))
-            }
-        }
-
-        // Tab switching between LLM and Strategy tabs
-        KeyCode::Char('1') => {
-            Some(UserCommand::SwitchSettingsTab(SettingsSection::LlmConfig))
-        }
-        KeyCode::Char('2') => {
-            Some(UserCommand::SwitchSettingsTab(SettingsSection::StrategyConfig))
-        }
-
-        // Esc is handled above, before the match (to avoid borrow conflicts)
-        KeyCode::Esc => unreachable!(),
-
-        // q: quit
-        KeyCode::Char('q') => Some(UserCommand::Quit),
-
         _ => None,
     }
 }
@@ -2552,6 +1692,7 @@ mod tests {
         let mut state = ViewState::default();
         state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
         state.settings_tab = SettingsSection::LlmConfig;
+        state.llm_setup.in_settings_mode = true;
         // In settings mode, all sections are visible and we start in overview
         state.llm_setup.confirmed_through = Some(LlmSetupSection::ApiKey);
         state.llm_setup.settings_editing_field = None;
@@ -2650,6 +1791,7 @@ mod tests {
         let mut state = ViewState::default();
         state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
         state.settings_tab = SettingsSection::LlmConfig;
+        state.llm_setup.in_settings_mode = true;
         state.llm_setup.confirmed_through = Some(LlmSetupSection::ApiKey);
         state.llm_setup.settings_editing_field = Some(LlmSetupSection::ApiKey);
         state.llm_setup.api_key_editing = true;
@@ -2687,6 +1829,7 @@ mod tests {
         let mut state = ViewState::default();
         state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
         state.settings_tab = SettingsSection::LlmConfig;
+        state.llm_setup.in_settings_mode = true;
         state.llm_setup.confirmed_through = Some(LlmSetupSection::ApiKey);
         state.llm_setup.settings_editing_field = Some(LlmSetupSection::ApiKey);
         state.llm_setup.api_key_editing = true;
@@ -2910,6 +2053,7 @@ mod tests {
         let mut state = ViewState::default();
         state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
         state.settings_tab = SettingsSection::LlmConfig;
+        state.llm_setup.in_settings_mode = true;
         state.llm_setup.confirmed_through = Some(LlmSetupSection::ApiKey);
 
         // Saved state: provider=0, model=0, key="sk-same"
@@ -2946,6 +2090,7 @@ mod tests {
         let mut state = ViewState::default();
         state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
         state.settings_tab = SettingsSection::LlmConfig;
+        state.llm_setup.in_settings_mode = true;
         state.llm_setup.confirmed_through = Some(LlmSetupSection::ApiKey);
 
         // A saved key exists on disk but the input field is empty (masked display)
