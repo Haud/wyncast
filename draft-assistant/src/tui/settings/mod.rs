@@ -4,14 +4,248 @@
 // delegates to the same render functions used by the onboarding wizard, avoiding
 // code duplication.
 
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::protocol::SettingsSection;
+use crate::protocol::{OnboardingAction, SettingsSection, UserCommand};
 use crate::tui::ViewState;
+use crate::tui::confirm_dialog::{ConfirmDialog, ConfirmMessage, ConfirmResult};
+use crate::tui::onboarding::llm_setup::{LlmSetupMessage, LlmSetupState};
+use crate::tui::onboarding::strategy_setup::{StrategySetupMessage, StrategySetupState};
+
+// ---------------------------------------------------------------------------
+// SettingsMessage
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SettingsMessage {
+    SwitchTab(SettingsSection),
+    LlmConfig(LlmSetupMessage),
+    Strategy(StrategySetupMessage),
+    SaveStrategy,
+    ExitSettings,
+    ConfirmExit(ConfirmMessage),
+    Quit,
+}
+
+// ---------------------------------------------------------------------------
+// key_to_message
+// ---------------------------------------------------------------------------
+
+pub fn key_to_message(
+    settings_tab: SettingsSection,
+    llm_setup: &LlmSetupState,
+    strategy_setup: &StrategySetupState,
+    confirm_exit_settings: &ConfirmDialog,
+    key: KeyEvent,
+) -> Option<SettingsMessage> {
+    // Confirm dialog intercepts all input when open
+    if confirm_exit_settings.open {
+        return confirm_exit_settings
+            .key_to_message(key)
+            .map(SettingsMessage::ConfirmExit);
+    }
+
+    match settings_tab {
+        SettingsSection::LlmConfig => {
+            llm_setup
+                .key_to_message(key, true)
+                .map(SettingsMessage::LlmConfig)
+        }
+        SettingsSection::StrategyConfig => {
+            let is_editing = strategy_setup.is_editing();
+            let is_generating = strategy_setup.generating;
+
+            if is_editing || is_generating {
+                return strategy_setup
+                    .key_to_message(key)
+                    .map(SettingsMessage::Strategy);
+            }
+
+            // Not editing: handle settings-level keys first
+            match key.code {
+                KeyCode::Char('1') => {
+                    Some(SettingsMessage::SwitchTab(SettingsSection::LlmConfig))
+                }
+                KeyCode::Char('2') => {
+                    Some(SettingsMessage::SwitchTab(SettingsSection::StrategyConfig))
+                }
+                KeyCode::Char('s') => Some(SettingsMessage::SaveStrategy),
+                KeyCode::Esc => Some(SettingsMessage::ExitSettings),
+                KeyCode::Char('q') => Some(SettingsMessage::Quit),
+                _ => {
+                    strategy_setup
+                        .key_to_message(key)
+                        .map(SettingsMessage::Strategy)
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// update
+// ---------------------------------------------------------------------------
+
+pub fn update(
+    _settings_tab: SettingsSection,
+    llm_setup: &mut LlmSetupState,
+    strategy_setup: &mut StrategySetupState,
+    confirm_exit_settings: &mut ConfirmDialog,
+    msg: SettingsMessage,
+) -> Option<UserCommand> {
+    match msg {
+        SettingsMessage::ConfirmExit(confirm_msg) => {
+            if let Some(result) = confirm_exit_settings.update(confirm_msg) {
+                match result {
+                    ConfirmResult::Confirmed(ch) => {
+                        handle_confirm_exit_choice(ch, llm_setup, strategy_setup)
+                    }
+                    ConfirmResult::Cancelled => None,
+                }
+            } else {
+                None
+            }
+        }
+
+        SettingsMessage::LlmConfig(lm) => {
+            // Intercept SettingsExit to check cross-component dirty state
+            if matches!(lm, LlmSetupMessage::SettingsExit) {
+                let llm_dirty =
+                    llm_setup.settings_dirty || llm_setup.settings_needs_connection_test;
+                let strategy_dirty = strategy_setup.settings_dirty;
+                if llm_dirty || strategy_dirty {
+                    confirm_exit_settings.update(ConfirmMessage::Open);
+                    return None;
+                }
+            }
+            llm_setup.update(lm)
+        }
+
+        SettingsMessage::Strategy(sm) => {
+            let cmd = strategy_setup.update(sm);
+            filter_onboarding_commands(cmd)
+        }
+
+        SettingsMessage::SwitchTab(tab) => {
+            Some(UserCommand::SwitchSettingsTab(tab))
+        }
+
+        SettingsMessage::SaveStrategy => {
+            let weights = strategy_setup.category_weights.clone();
+            let pct = strategy_setup.hitting_budget_pct;
+            let overview = if strategy_setup.strategy_overview.is_empty() {
+                None
+            } else {
+                Some(strategy_setup.strategy_overview.clone())
+            };
+            strategy_setup.settings_dirty = false;
+            strategy_setup.snapshot_settings();
+            Some(UserCommand::OnboardingAction(
+                OnboardingAction::SaveStrategyConfig {
+                    hitting_budget_pct: pct,
+                    category_weights: weights,
+                    strategy_overview: overview,
+                },
+            ))
+        }
+
+        SettingsMessage::ExitSettings => {
+            if strategy_setup.settings_dirty
+                || llm_setup.settings_dirty
+                || llm_setup.settings_needs_connection_test
+            {
+                confirm_exit_settings.update(ConfirmMessage::Open);
+                None
+            } else {
+                Some(UserCommand::ExitSettings)
+            }
+        }
+
+        SettingsMessage::Quit => Some(UserCommand::Quit),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+fn handle_confirm_exit_choice(
+    ch: char,
+    llm_setup: &mut LlmSetupState,
+    strategy_setup: &mut StrategySetupState,
+) -> Option<UserCommand> {
+    match ch {
+        'y' => {
+            let llm_save = if llm_setup.settings_dirty && !llm_setup.is_save_blocked() {
+                let provider = llm_setup.selected_provider().clone();
+                let model_id = llm_setup
+                    .selected_model()
+                    .map(|m| m.model_id.to_string())
+                    .unwrap_or_default();
+                let api_key_val = llm_setup.api_key_input.value().to_string();
+                let api_key = if api_key_val.is_empty() {
+                    None
+                } else {
+                    Some(api_key_val)
+                };
+                llm_setup.settings_dirty = false;
+                llm_setup.settings_needs_connection_test = false;
+                llm_setup.snapshot_settings();
+                Some((provider, model_id, api_key))
+            } else {
+                if llm_setup.is_save_blocked() {
+                    llm_setup.restore_settings_snapshot();
+                }
+                None
+            };
+
+            let strategy_save = if strategy_setup.settings_dirty {
+                let pct = strategy_setup.hitting_budget_pct;
+                let weights = strategy_setup.category_weights.clone();
+                let overview = if strategy_setup.strategy_overview.is_empty() {
+                    None
+                } else {
+                    Some(strategy_setup.strategy_overview.clone())
+                };
+                strategy_setup.settings_dirty = false;
+                strategy_setup.snapshot_settings();
+                Some((pct, weights, overview))
+            } else {
+                None
+            };
+
+            Some(UserCommand::SaveAndExitSettings {
+                llm: llm_save,
+                strategy: strategy_save,
+            })
+        }
+        'n' => {
+            if llm_setup.settings_dirty || llm_setup.settings_needs_connection_test {
+                llm_setup.restore_settings_snapshot();
+            }
+            if strategy_setup.settings_dirty {
+                strategy_setup.restore_settings_snapshot();
+            }
+            Some(UserCommand::ExitSettings)
+        }
+        _ => None,
+    }
+}
+
+fn filter_onboarding_commands(cmd: Option<UserCommand>) -> Option<UserCommand> {
+    match &cmd {
+        Some(UserCommand::OnboardingAction(action)) => match action {
+            OnboardingAction::GoBack | OnboardingAction::GoNext | OnboardingAction::Skip => None,
+            _ => cmd,
+        },
+        _ => cmd,
+    }
+}
 
 /// Render the settings screen into the given frame.
 ///
