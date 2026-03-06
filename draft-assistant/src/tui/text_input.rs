@@ -1,3 +1,5 @@
+use crossterm::event::{KeyCode, KeyEvent};
+
 // Text input widget with cursor movement, backspace/delete, and insert/overwrite mode.
 //
 // `TextInput` wraps a `String` buffer and a byte-level cursor position, providing
@@ -183,6 +185,51 @@ impl TextInput {
     }
 }
 
+/// Messages for the TextInput component.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TextInputMessage {
+    InsertChar(char),
+    Backspace,
+    Delete,
+    MoveLeft,
+    MoveRight,
+    MoveHome,
+    MoveEnd,
+    ToggleOverwrite,
+}
+
+impl TextInput {
+    /// Process a message, updating internal state.
+    pub fn update(&mut self, msg: TextInputMessage) {
+        match msg {
+            TextInputMessage::InsertChar(c) => self.insert_char(c),
+            TextInputMessage::Backspace => self.backspace(),
+            TextInputMessage::Delete => self.delete(),
+            TextInputMessage::MoveLeft => self.move_left(),
+            TextInputMessage::MoveRight => self.move_right(),
+            TextInputMessage::MoveHome => self.move_home(),
+            TextInputMessage::MoveEnd => self.move_end(),
+            TextInputMessage::ToggleOverwrite => self.toggle_overwrite(),
+        }
+    }
+
+    /// Convert a key event to a TextInputMessage, if relevant.
+    /// Returns None for keys not handled by text input (Enter, Esc, etc.)
+    pub fn key_to_message(key: &KeyEvent) -> Option<TextInputMessage> {
+        match key.code {
+            KeyCode::Backspace => Some(TextInputMessage::Backspace),
+            KeyCode::Delete => Some(TextInputMessage::Delete),
+            KeyCode::Left => Some(TextInputMessage::MoveLeft),
+            KeyCode::Right => Some(TextInputMessage::MoveRight),
+            KeyCode::Home => Some(TextInputMessage::MoveHome),
+            KeyCode::End => Some(TextInputMessage::MoveEnd),
+            KeyCode::Insert => Some(TextInputMessage::ToggleOverwrite),
+            KeyCode::Char(c) => Some(TextInputMessage::InsertChar(c)),
+            _ => None,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -342,5 +389,125 @@ mod tests {
         assert_eq!(ti.cursor_pos(), 1);
         ti.delete();
         assert_eq!(ti.value(), "α");
+    }
+
+    // -----------------------------------------------------------------------
+    // ELM message API tests
+    // -----------------------------------------------------------------------
+
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
+    }
+
+    #[test]
+    fn key_to_message_char() {
+        assert_eq!(
+            TextInput::key_to_message(&key(KeyCode::Char('a'))),
+            Some(TextInputMessage::InsertChar('a'))
+        );
+    }
+
+    #[test]
+    fn key_to_message_backspace() {
+        assert_eq!(
+            TextInput::key_to_message(&key(KeyCode::Backspace)),
+            Some(TextInputMessage::Backspace)
+        );
+    }
+
+    #[test]
+    fn key_to_message_delete() {
+        assert_eq!(
+            TextInput::key_to_message(&key(KeyCode::Delete)),
+            Some(TextInputMessage::Delete)
+        );
+    }
+
+    #[test]
+    fn key_to_message_movement_keys() {
+        assert_eq!(
+            TextInput::key_to_message(&key(KeyCode::Left)),
+            Some(TextInputMessage::MoveLeft)
+        );
+        assert_eq!(
+            TextInput::key_to_message(&key(KeyCode::Right)),
+            Some(TextInputMessage::MoveRight)
+        );
+        assert_eq!(
+            TextInput::key_to_message(&key(KeyCode::Home)),
+            Some(TextInputMessage::MoveHome)
+        );
+        assert_eq!(
+            TextInput::key_to_message(&key(KeyCode::End)),
+            Some(TextInputMessage::MoveEnd)
+        );
+    }
+
+    #[test]
+    fn key_to_message_insert() {
+        assert_eq!(
+            TextInput::key_to_message(&key(KeyCode::Insert)),
+            Some(TextInputMessage::ToggleOverwrite)
+        );
+    }
+
+    #[test]
+    fn key_to_message_returns_none_for_unhandled_keys() {
+        assert_eq!(TextInput::key_to_message(&key(KeyCode::Enter)), None);
+        assert_eq!(TextInput::key_to_message(&key(KeyCode::Esc)), None);
+        assert_eq!(TextInput::key_to_message(&key(KeyCode::Tab)), None);
+        assert_eq!(TextInput::key_to_message(&key(KeyCode::F(1))), None);
+        assert_eq!(TextInput::key_to_message(&key(KeyCode::Up)), None);
+        assert_eq!(TextInput::key_to_message(&key(KeyCode::Down)), None);
+    }
+
+    #[test]
+    fn update_insert_char() {
+        let mut ti = TextInput::new();
+        ti.update(TextInputMessage::InsertChar('h'));
+        ti.update(TextInputMessage::InsertChar('i'));
+        assert_eq!(ti.value(), "hi");
+        assert_eq!(ti.cursor_pos(), 2);
+    }
+
+    #[test]
+    fn update_backspace_and_delete() {
+        let mut ti = TextInput::with_value("abc");
+        ti.update(TextInputMessage::Backspace);
+        assert_eq!(ti.value(), "ab");
+        ti.update(TextInputMessage::MoveHome);
+        ti.update(TextInputMessage::Delete);
+        assert_eq!(ti.value(), "b");
+    }
+
+    #[test]
+    fn update_movement() {
+        let mut ti = TextInput::with_value("hello");
+        ti.update(TextInputMessage::MoveHome);
+        assert_eq!(ti.cursor_pos(), 0);
+        ti.update(TextInputMessage::MoveRight);
+        assert_eq!(ti.cursor_pos(), 1);
+        ti.update(TextInputMessage::MoveEnd);
+        assert_eq!(ti.cursor_pos(), 5);
+        ti.update(TextInputMessage::MoveLeft);
+        assert_eq!(ti.cursor_pos(), 4);
+    }
+
+    #[test]
+    fn update_toggle_overwrite() {
+        let mut ti = TextInput::with_value("ab");
+        assert!(!ti.is_overwrite());
+        ti.update(TextInputMessage::ToggleOverwrite);
+        assert!(ti.is_overwrite());
+        ti.update(TextInputMessage::MoveHome);
+        ti.update(TextInputMessage::InsertChar('X'));
+        assert_eq!(ti.value(), "Xb");
     }
 }
