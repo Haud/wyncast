@@ -13,6 +13,7 @@ pub mod llm_stream;
 pub mod onboarding;
 pub mod scroll;
 pub mod settings;
+pub mod subscription;
 pub mod text_input;
 pub mod widgets;
 
