@@ -85,7 +85,7 @@ fn source_files_exist() {
         "src/tui/draft/main_panel/mod.rs",
         "src/tui/draft/main_panel/analysis.rs",
         "src/tui/draft/sidebar/plan.rs",
-        "src/tui/widgets/available.rs",
+        "src/tui/draft/main_panel/available.rs",
         "src/tui/draft/mod.rs",
         "src/tui/draft/draft_log.rs",
         "src/tui/draft/teams.rs",

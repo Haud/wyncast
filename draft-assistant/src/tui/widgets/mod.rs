@@ -2,7 +2,6 @@
 
 use ratatui::style::{Color, Style};
 
-pub mod available;
 pub mod budget;
 pub mod nomination_banner;
 pub mod position_filter_modal;

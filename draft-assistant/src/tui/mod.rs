@@ -39,6 +39,7 @@ use crate::valuation::zscore::PlayerValuation;
 
 use draft::draft_log::DraftLogPanel;
 use draft::main_panel::analysis::{AnalysisPanel, AnalysisPanelMessage};
+use draft::main_panel::available::{AvailablePanel, AvailablePanelMessage};
 use draft::sidebar::plan::{PlanPanel, PlanPanelMessage};
 use draft::sidebar::roster::RosterPanel;
 use draft::sidebar::scarcity::ScarcityPanel;
@@ -297,12 +298,8 @@ pub struct ViewState {
     pub active_tab: TabId,
     /// Per-widget scroll offsets (keyed by widget name).
     pub scroll_offset: HashMap<String, usize>,
-    /// Current filter/search text.
-    pub filter_text: TextInput,
-    /// Whether the filter input is active.
-    pub filter_mode: bool,
-    /// Position filter for the available players table.
-    pub position_filter: Option<Position>,
+    /// Available players panel component (owns filter state and scroll).
+    pub available_panel: AvailablePanel,
     /// Whether the quit confirmation dialog is showing.
     pub confirm_quit: bool,
     /// Chronological list of completed draft picks.
@@ -367,9 +364,7 @@ impl Default for ViewState {
             total_picks: 0,
             active_tab: TabId::Analysis,
             scroll_offset: HashMap::new(),
-            filter_text: TextInput::new(),
-            filter_mode: false,
-            position_filter: None,
+            available_panel: AvailablePanel::new(),
             confirm_quit: false,
             draft_log: Vec::new(),
             draft_log_panel: DraftLogPanel::new(),
@@ -472,9 +467,11 @@ fn apply_ui_update(state: &mut ViewState, update: UiUpdate) {
             state.instant_analysis = None;
             // Clear focused panel to avoid a stale cyan border on the new nomination
             state.focused_panel = None;
-            // Reset main panel scroll offsets so the new nomination context is visible from the top.
+            // Reset available panel scroll so the new nomination context is visible from the top.
             // This ensures the nominated player highlight in the Available tab is not scrolled off screen.
-            state.scroll_offset.insert("available".to_string(), 0);
+            state.available_panel.update(AvailablePanelMessage::Scroll(
+                crate::tui::scroll::ScrollDirection::Top,
+            ));
         }
         UiUpdate::BidUpdate(nomination) => {
             // Update nomination info (new bid) but preserve LLM streaming text
@@ -924,7 +921,7 @@ fn compute_draft_keybinds(state: &ViewState) -> Vec<KeybindHint> {
     }
 
     // 3. Text filter mode (the inline filter input bar)
-    if state.filter_mode {
+    if state.available_panel.filter_mode() {
         return vec![
             KeybindHint::new("Enter", "Apply"),
             KeybindHint::new("Esc", "Cancel"),
@@ -955,9 +952,9 @@ fn compute_draft_keybinds(state: &ViewState) -> Vec<KeybindHint> {
 
     // Active filter reminder: shown as a trailing hint when the Available tab
     // has a non-empty filter so the user knows results are currently filtered.
-    if !state.filter_text.is_empty() && state.active_tab == TabId::Available {
+    if !state.available_panel.filter_text().is_empty() && state.active_tab == TabId::Available {
         hints.push(KeybindHint::new(
-            format!("filter:\"{}\"", state.filter_text.value()),
+            format!("filter:\"{}\"", state.available_panel.filter_text().value()),
             "active",
         ));
     }
@@ -1009,7 +1006,19 @@ fn render_draft_frame(frame: &mut Frame, state: &ViewState) {
     // Main panel: tab-dependent content
     match state.active_tab {
         TabId::Analysis => state.analysis_panel.view(frame, layout.main_panel, main_focused),
-        TabId::Available => widgets::available::render(frame, layout.main_panel, state, main_focused),
+        TabId::Available => {
+            let nominated_name = state
+                .current_nomination
+                .as_ref()
+                .map(|n| n.player_name.as_str());
+            state.available_panel.view(
+                frame,
+                layout.main_panel,
+                &state.available_players,
+                nominated_name,
+                main_focused,
+            );
+        }
         TabId::DraftLog => {
             state.draft_log_panel.view(frame, layout.main_panel, &state.draft_log, &state.available_players, main_focused);
         }
@@ -1058,7 +1067,7 @@ pub(crate) fn render_help_bar(
     // This is handled here (not in compute_keybinds) because the input bar
     // embeds the live filter_text content, which is display state rather than
     // a keybind description.
-    if state.filter_mode {
+    if state.available_panel.filter_mode() {
         let spans = vec![
             Span::styled(
                 " FILTER ",
@@ -1069,7 +1078,7 @@ pub(crate) fn render_help_bar(
             ),
             Span::styled(" ", Style::default()),
             Span::styled(
-                state.filter_text.value().to_string(),
+                state.available_panel.filter_text().value().to_string(),
                 Style::default()
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD),
@@ -1217,6 +1226,7 @@ pub async fn run(
 mod tests {
     use super::*;
     use crate::protocol::{AppMode, LlmStatus, TeamSnapshot};
+    use crossterm::event::KeyCode;
 
     // -- FocusPanel cycling --
 
@@ -1265,9 +1275,9 @@ mod tests {
         assert!(state.analysis_panel.text().is_empty());
         assert!(state.plan_panel.text().is_empty());
         assert!(state.scroll_offset.is_empty());
-        assert!(!state.filter_mode);
-        assert!(state.filter_text.is_empty());
-        assert!(state.position_filter.is_none());
+        assert!(!state.available_panel.filter_mode());
+        assert!(state.available_panel.filter_text().is_empty());
+        assert!(state.available_panel.position_filter().is_none());
         assert!(!state.confirm_quit);
         assert!(state.draft_log.is_empty());
         assert!(state.team_summaries.is_empty());
@@ -1417,9 +1427,9 @@ mod tests {
         assert_eq!(state.analysis_panel.status(), LlmStatus::Idle);
         // instant_analysis should also be cleared to avoid stale data from previous nomination
         assert!(state.instant_analysis.is_none());
-        // Scroll offsets for available panel should be reset so the nominated
+        // Available panel scroll should be reset so the nominated
         // player highlight is visible from the top of the list.
-        assert_eq!(state.scroll_offset.get("available").copied(), Some(0));
+        assert_eq!(state.available_panel.scroll_offset(), 0);
     }
 
     #[test]
@@ -1665,7 +1675,7 @@ mod tests {
     #[test]
     fn compute_keybinds_filter_mode() {
         let mut state = ViewState::default();
-        state.filter_mode = true;
+        state.available_panel.update(AvailablePanelMessage::ToggleFilterMode);
         let hints = compute_keybinds(&state);
         let ks = keys(&hints);
         // Filter mode shows only Enter/Esc
@@ -1705,7 +1715,17 @@ mod tests {
     fn compute_keybinds_active_filter_reminder_on_available_tab() {
         let mut state = ViewState::default();
         state.active_tab = TabId::Available;
-        state.filter_text.set_value("trout");
+        // Set filter text via FilterKeyPress messages
+        for ch in "trout".chars() {
+            state.available_panel.update(AvailablePanelMessage::FilterKeyPress(
+                crossterm::event::KeyEvent {
+                    code: KeyCode::Char(ch),
+                    modifiers: crossterm::event::KeyModifiers::NONE,
+                    kind: crossterm::event::KeyEventKind::Press,
+                    state: crossterm::event::KeyEventState::NONE,
+                },
+            ));
+        }
         let hints = compute_keybinds(&state);
         // There should be a hint whose key contains the filter text
         let has_reminder = hints.iter().any(|h| h.key.contains("trout"));
@@ -1716,7 +1736,16 @@ mod tests {
     fn compute_keybinds_no_filter_reminder_on_analysis_tab() {
         let mut state = ViewState::default();
         state.active_tab = TabId::Analysis;
-        state.filter_text.set_value("trout");
+        for ch in "trout".chars() {
+            state.available_panel.update(AvailablePanelMessage::FilterKeyPress(
+                crossterm::event::KeyEvent {
+                    code: KeyCode::Char(ch),
+                    modifiers: crossterm::event::KeyModifiers::NONE,
+                    kind: crossterm::event::KeyEventKind::Press,
+                    state: crossterm::event::KeyEventState::NONE,
+                },
+            ));
+        }
         let hints = compute_keybinds(&state);
         // Filter reminder should only appear on Available tab
         let has_reminder = hints.iter().any(|h| h.key.contains("trout"));
@@ -1741,7 +1770,7 @@ mod tests {
         let mut state = ViewState::default();
         state.confirm_quit = true;
         state.position_filter_modal.open = true;
-        state.filter_mode = true;
+        state.available_panel.update(AvailablePanelMessage::ToggleFilterMode);
         let hints = compute_keybinds(&state);
         let ks = keys(&hints);
         assert!(ks.contains(&"y/q"), "quit confirm should take highest priority");
