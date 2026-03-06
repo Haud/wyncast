@@ -47,7 +47,7 @@ use llm_stream::LlmStreamMessage;
 use layout::build_layout;
 pub use onboarding::llm_setup::LlmSetupState;
 pub use onboarding::strategy_setup::StrategySetupState;
-pub use text_input::TextInput;
+pub use text_input::{TextInput, TextInputMessage};
 
 // ---------------------------------------------------------------------------
 // FocusPanel

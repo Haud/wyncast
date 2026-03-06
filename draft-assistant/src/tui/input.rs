@@ -91,26 +91,6 @@ fn is_text_editing_active(view_state: &ViewState) -> bool {
         || view_state.position_filter_modal.open
 }
 
-/// Dispatches common text editing keys to a [`TextInput`]. Returns `true` if
-/// the key was handled.
-///
-/// Handles: Backspace, Delete, Left, Right, Home, End, Insert, Char.
-/// Does **not** handle Enter or Esc — callers should match those before
-/// falling through to this helper.
-fn dispatch_text_input_key(key: &KeyEvent, input: &mut super::TextInput) -> bool {
-    match key.code {
-        KeyCode::Backspace => { input.backspace(); true }
-        KeyCode::Delete => { input.delete(); true }
-        KeyCode::Left => { input.move_left(); true }
-        KeyCode::Right => { input.move_right(); true }
-        KeyCode::Home => { input.move_home(); true }
-        KeyCode::End => { input.move_end(); true }
-        KeyCode::Insert => { input.toggle_overwrite(); true }
-        KeyCode::Char(c) => { input.insert_char(c); true }
-        _ => false,
-    }
-}
-
 /// Handle keyboard input during the onboarding wizard.
 ///
 /// Dispatches to step-specific handlers based on the current onboarding step.
@@ -175,8 +155,12 @@ fn handle_strategy_setup_key(
                             None
                         }
                     }
-                    _ if dispatch_text_input_key(&key_event, &mut state.strategy_input) => None,
-                    _ => None,
+                    _ => {
+                        if let Some(msg) = super::TextInput::key_to_message(&key_event) {
+                            state.strategy_input.update(msg);
+                        }
+                        None
+                    }
                 };
             }
 
@@ -272,8 +256,12 @@ fn handle_strategy_setup_key(
                         state.cancel_overview_editing();
                         None
                     }
-                    _ if dispatch_text_input_key(&key_event, &mut state.overview_input) => None,
-                    _ => None,
+                    _ => {
+                        if let Some(msg) = super::TextInput::key_to_message(&key_event) {
+                            state.overview_input.update(msg);
+                        }
+                        None
+                    }
                 };
             }
 
@@ -342,8 +330,12 @@ fn handle_strategy_setup_key(
                         None
                     }
                     KeyCode::Char(_) => None,
-                    _ if dispatch_text_input_key(&key_event, &mut state.field_input) => None,
-                    _ => None,
+                    _ => {
+                        if let Some(msg) = super::TextInput::key_to_message(&key_event) {
+                            state.field_input.update(msg);
+                        }
+                        None
+                    }
                 };
             }
 
@@ -556,8 +548,12 @@ fn handle_llm_setup_key(
                     None
                 }
             }
-            _ if dispatch_text_input_key(&key_event, &mut state.api_key_input) => None,
-            _ => None,
+            _ => {
+                if let Some(msg) = super::TextInput::key_to_message(&key_event) {
+                    state.api_key_input.update(msg);
+                }
+                None
+            }
         };
     }
 
@@ -950,11 +946,13 @@ fn handle_llm_settings_key(
                 state.restore_settings_snapshot();
                 None
             }
-            _ if dispatch_text_input_key(&key_event, &mut state.api_key_input) => {
-                state.settings_dirty = true;
+            _ => {
+                if let Some(msg) = super::TextInput::key_to_message(&key_event) {
+                    state.api_key_input.update(msg);
+                    state.settings_dirty = true;
+                }
                 None
             }
-            _ => None,
         };
     }
 
@@ -1345,7 +1343,9 @@ fn handle_filter_mode(
             None
         }
         _ => {
-            dispatch_text_input_key(&key_event, &mut view_state.filter_text);
+            if let Some(msg) = super::TextInput::key_to_message(&key_event) {
+                view_state.filter_text.update(msg);
+            }
             None
         }
     }
@@ -1419,10 +1419,9 @@ fn handle_position_filter_modal(
                 key_event.code,
                 KeyCode::Backspace | KeyCode::Delete | KeyCode::Char(_)
             );
-            dispatch_text_input_key(
-                &key_event,
-                &mut view_state.position_filter_modal.search_text,
-            );
+            if let Some(msg) = super::TextInput::key_to_message(&key_event) {
+                view_state.position_filter_modal.search_text.update(msg);
+            }
             if modifies_text {
                 // Reset selection so the user starts at the top of the
                 // (potentially changed) filtered list.
