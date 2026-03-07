@@ -70,6 +70,17 @@ pub trait Recipe: 'static {
     /// Stable identity for this subscription.
     fn id(&self) -> SubscriptionId;
 
+    /// Higher priority listeners receive events first.
+    fn priority(&self) -> u8 {
+        0
+    }
+
+    /// If true, lower-priority listeners do not receive the event even when
+    /// this listener returns `None`.
+    fn captures(&self) -> bool {
+        false
+    }
+
     /// Consume the recipe and produce a live listener.
     fn into_listener(self: Box<Self>) -> Box<dyn Listener<Output = Self::Output>>;
 }
@@ -88,17 +99,6 @@ pub trait Listener {
 
     /// Process one event. Returns `Some(msg)` if the event was consumed.
     fn process(&mut self, event: &AppEvent) -> Option<Self::Output>;
-
-    /// Higher priority listeners receive events first.
-    fn priority(&self) -> u8 {
-        0
-    }
-
-    /// If true, lower-priority listeners do not receive the event even when
-    /// this listener returns `None`.
-    fn captures(&self) -> bool {
-        false
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +170,14 @@ impl<A: 'static, B: 'static> Recipe for MapRecipe<A, B> {
         self.inner.id()
     }
 
+    fn priority(&self) -> u8 {
+        self.inner.priority()
+    }
+
+    fn captures(&self) -> bool {
+        self.inner.captures()
+    }
+
     fn into_listener(self: Box<Self>) -> Box<dyn Listener<Output = B>> {
         Box::new(MapListener {
             inner: self.inner.into_listener(),
@@ -190,14 +198,6 @@ impl<A: 'static, B: 'static> Listener for MapListener<A, B> {
     fn process(&mut self, event: &AppEvent) -> Option<B> {
         self.inner.process(event).map(self.f)
     }
-
-    fn priority(&self) -> u8 {
-        self.inner.priority()
-    }
-
-    fn captures(&self) -> bool {
-        self.inner.captures()
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +217,7 @@ pub struct SubscriptionManager<M: 'static> {
 struct ActiveEntry<M> {
     listener: Box<dyn Listener<Output = M>>,
     priority: u8,
+    captures: bool,
 }
 
 impl<M: 'static> SubscriptionManager<M> {
@@ -249,9 +250,10 @@ impl<M: 'static> SubscriptionManager<M> {
 
         // Activate new listeners.
         for (id, recipe) in to_start {
+            let priority = recipe.priority();
+            let captures = recipe.captures();
             let listener = recipe.into_listener();
-            let priority = listener.priority();
-            self.active.insert(id, ActiveEntry { listener, priority });
+            self.active.insert(id, ActiveEntry { listener, priority, captures });
         }
     }
 
@@ -268,7 +270,7 @@ impl<M: 'static> SubscriptionManager<M> {
             if let Some(msg) = entry.listener.process(event) {
                 return Some(msg);
             }
-            if entry.listener.captures() {
+            if entry.captures {
                 return None;
             }
         }
@@ -342,6 +344,14 @@ mod tests {
             self.0.id
         }
 
+        fn priority(&self) -> u8 {
+            self.0.priority
+        }
+
+        fn captures(&self) -> bool {
+            self.0.captures
+        }
+
         fn into_listener(self: Box<Self>) -> Box<dyn Listener<Output = TestMsg>> {
             Box::new(TestListener(self.0))
         }
@@ -358,14 +368,6 @@ mod tests {
                 AppEvent::Key(k) if k.code == self.0.respond_to => Some(self.0.msg.clone()),
                 _ => None,
             }
-        }
-
-        fn priority(&self) -> u8 {
-            self.0.priority
-        }
-
-        fn captures(&self) -> bool {
-            self.0.captures
         }
     }
 
