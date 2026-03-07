@@ -25,8 +25,8 @@ use super::draft::main_panel::MainPanelMessage;
 use super::draft::sidebar::plan::PlanPanelMessage;
 use super::draft::{DraftScreen, DraftScreenMessage};
 use super::llm_stream::LlmStreamMessage;
-use super::onboarding;
-use super::settings;
+use super::onboarding::{self, OnboardingMessage};
+use super::settings::{self, SettingsMessage};
 use super::{BudgetStatus, LlmSetupState, StrategySetupState, TeamSummary};
 use crate::tui::subscription::keybinding::KeybindHint;
 
@@ -323,6 +323,10 @@ pub enum AppMessage {
     Quit,
     /// Delegate a message to the draft screen.
     Draft(DraftScreenMessage),
+    /// Delegate a message to the settings screen.
+    Settings(SettingsMessage),
+    /// Delegate a message to the onboarding screen.
+    Onboarding(OnboardingMessage),
     /// Fired by the 500ms `TimerRecipe`. Used for blinking indicators and
     /// other periodic UI refreshes. Increments `App::tick_count`.
     Tick,
@@ -339,6 +343,29 @@ impl App {
         match msg {
             AppMessage::Quit => Some(Action::Quit),
             AppMessage::Draft(m) => self.draft_screen.update(m),
+            AppMessage::Settings(m) => {
+                settings::update(
+                    self.settings_tab,
+                    &mut self.llm_setup,
+                    &mut self.strategy_setup,
+                    &mut self.confirm_exit_settings,
+                    m,
+                )
+                .map(Action::Command)
+            }
+            AppMessage::Onboarding(m) => {
+                let step = match &self.app_mode {
+                    AppMode::Onboarding(s) => s.clone(),
+                    _ => return None,
+                };
+                onboarding::update(
+                    &step,
+                    &mut self.llm_setup,
+                    &mut self.strategy_setup,
+                    m,
+                )
+                .map(Action::Command)
+            }
             AppMessage::Tick => {
                 self.tick_count = self.tick_count.wrapping_add(1);
                 None
@@ -378,9 +405,21 @@ impl App {
                 .draft_screen
                 .subscription(kb)
                 .map(AppMessage::Draft),
-            // Onboarding and Settings modes do not have subscription()
-            // implementations yet — they still use handle_key().
-            AppMode::Onboarding(_) | AppMode::Settings(_) => Subscription::none(),
+            AppMode::Settings(_) => settings::subscription(
+                self.settings_tab,
+                &self.llm_setup,
+                &self.strategy_setup,
+                &self.confirm_exit_settings,
+                kb,
+            )
+            .map(AppMessage::Settings),
+            AppMode::Onboarding(step) => onboarding::subscription(
+                step,
+                &self.llm_setup,
+                &self.strategy_setup,
+                kb,
+            )
+            .map(AppMessage::Onboarding),
         };
 
         Subscription::batch([global, timer_sub, mode_sub])
