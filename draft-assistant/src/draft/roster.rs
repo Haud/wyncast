@@ -182,8 +182,18 @@ impl Roster {
         assigned_slot: Option<u16>,
         espn_player_id: Option<&str>,
     ) -> bool {
-        // Fall back to single-position logic if no slot data provided at all
-        if eligible_slots.is_empty() && assigned_slot.is_none() {
+        // Fall back to single-position logic when there's no actionable slot data:
+        // - eligible_slots is empty (no data from the live auction API)
+        // - AND assigned_slot is either None or a combo slot that doesn't resolve to a Position
+        //
+        // DOM-scraped picks always arrive with eligible_slots=[] and an assigned_slot that is a
+        // combo slot (e.g. 5=OF, 6=MI, 7=CI, 13=P). position_from_espn_slot() returns None for
+        // combo slots, so there is no authoritative single-position to use. Falling back to
+        // add_player() lets the OF/SP/etc. position_str drive correct slot placement.
+        let assigned_maps_to_position = assigned_slot
+            .map(|s| position_from_espn_slot(s).is_some())
+            .unwrap_or(false);
+        if eligible_slots.is_empty() && !assigned_maps_to_position {
             return self.add_player(name, position_str, price, espn_player_id);
         }
 
@@ -978,5 +988,87 @@ mod tests {
             .find(|s| s.position == Position::StartingPitcher && s.player.is_some())
             .unwrap();
         assert_eq!(sp_slot.player.as_ref().unwrap().name, "SP Player");
+    }
+
+    // -- DOM-scraped picks: eligible_slots=[] with combo assigned_slot --
+
+    #[test]
+    fn dom_scraped_of_with_combo_assigned_slot_lands_in_of_slot() {
+        // Regression test for the DOM-scraping bug:
+        // eligible_slots=[], assigned_slot=Some(5) (ESPN_SLOT_OF, a combo slot).
+        // position_from_espn_slot(5) returns None, so there is no authoritative
+        // single slot. The function must fall back to add_player("OF") which maps
+        // "OF" -> CenterField and then places into LF/CF/RF roster slots — NOT UTIL
+        // or bench.
+        let mut roster = Roster::new(&test_roster_config());
+        let assigned = Some(super::super::pick::ESPN_SLOT_OF); // slot 5 — combo
+        assert!(roster.add_player_with_slots(
+            "Juan Soto",
+            "OF",
+            50,
+            &[],
+            assigned,
+            None
+        ));
+
+        // Must be in one of the OF slots
+        let of_filled: Vec<_> = roster
+            .slots
+            .iter()
+            .filter(|s| {
+                matches!(
+                    s.position,
+                    Position::LeftField | Position::CenterField | Position::RightField
+                ) && s.player.is_some()
+            })
+            .collect();
+        assert_eq!(of_filled.len(), 1, "Player should be in an OF slot");
+        assert_eq!(of_filled[0].player.as_ref().unwrap().name, "Juan Soto");
+
+        // UTIL and bench must remain empty
+        let util = roster
+            .slots
+            .iter()
+            .find(|s| s.position == Position::Utility)
+            .unwrap();
+        assert!(util.player.is_none(), "UTIL should not be used for OF fallback");
+    }
+
+    #[test]
+    fn dom_scraped_of_with_combo_assigned_slot_assigned_slot_none_still_falls_back() {
+        // existing behavior: eligible_slots=[], assigned_slot=None -> fallback -> add_player
+        let mut roster = Roster::new(&test_roster_config());
+        assert!(roster.add_player_with_slots("Mike Trout", "CF", 45, &[], None, None));
+        let cf = roster
+            .slots
+            .iter()
+            .find(|s| s.position == Position::CenterField)
+            .unwrap();
+        assert!(cf.player.is_some());
+        assert_eq!(cf.player.as_ref().unwrap().name, "Mike Trout");
+    }
+
+    #[test]
+    fn dom_scraped_sp_with_real_assigned_slot_uses_authoritative_placement() {
+        // When eligible_slots=[] but assigned_slot is a real (non-combo) slot like SP (14),
+        // position_from_espn_slot(14) returns Some(StartingPitcher), so the authoritative
+        // path is taken and the player lands in SP — NOT the fallback.
+        let mut roster = Roster::new(&test_roster_config());
+        let assigned = Some(super::super::pick::ESPN_SLOT_SP); // slot 14 — real slot
+        assert!(roster.add_player_with_slots(
+            "Corbin Burnes",
+            "SP",
+            30,
+            &[],
+            assigned,
+            None
+        ));
+
+        let sp_slot = roster
+            .slots
+            .iter()
+            .find(|s| s.position == Position::StartingPitcher && s.player.is_some())
+            .unwrap();
+        assert_eq!(sp_slot.player.as_ref().unwrap().name, "Corbin Burnes");
     }
 }
