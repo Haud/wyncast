@@ -242,6 +242,13 @@ pub enum OnboardingUpdate {
 // ---------------------------------------------------------------------------
 
 /// Events produced by the LLM streaming client.
+/// Which LLM task produced an event, used to route tokens to the correct panel.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LlmTaskKind {
+    Analysis,
+    Plan,
+}
+
 ///
 /// Each event carries a `generation` counter that identifies which LLM task
 /// produced it. The app orchestrator increments the generation each time it
@@ -251,7 +258,7 @@ pub enum OnboardingUpdate {
 #[derive(Debug, Clone, PartialEq)]
 pub enum LlmEvent {
     /// A single token of streamed output.
-    Token { text: String, generation: u64 },
+    Token { text: String, generation: u64, kind: LlmTaskKind },
     /// The LLM response is complete.
     Complete {
         full_text: String,
@@ -260,9 +267,10 @@ pub enum LlmEvent {
         /// The stop reason from the API (e.g. "end_turn" or "max_tokens").
         stop_reason: Option<String>,
         generation: u64,
+        kind: LlmTaskKind,
     },
     /// An error occurred during LLM interaction.
-    Error { message: String, generation: u64 },
+    Error { message: String, generation: u64, kind: LlmTaskKind },
 }
 
 /// Commands sent from the TUI to the app orchestrator.

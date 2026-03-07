@@ -2743,7 +2743,7 @@ async fn multiple_sequential_llm_analysis_requests() {
     let handle = tokio::spawn(async move {
         let mut state = state;
         // Simulate nomination 1: set mode and generation
-        state.llm_generation = 1;
+        state.analysis_generation = 1;
         state.llm_mode = Some(app::LlmMode::NominationAnalysis {
             player_name: "Player A".into(),
             player_id: "1".into(),
@@ -2760,6 +2760,7 @@ async fn multiple_sequential_llm_analysis_requests() {
         .send(LlmEvent::Token {
             text: "Analysis A: ".into(),
             generation: 1,
+            kind: LlmTaskKind::Analysis,
         })
         .await
         .unwrap();
@@ -2770,6 +2771,7 @@ async fn multiple_sequential_llm_analysis_requests() {
             output_tokens: 5,
             stop_reason: Some("end_turn".into()),
             generation: 1,
+            kind: LlmTaskKind::Analysis,
         })
         .await
         .unwrap();
@@ -2797,6 +2799,7 @@ async fn multiple_sequential_llm_analysis_requests() {
         .send(LlmEvent::Token {
             text: "Orphan token".into(),
             generation: 2,
+            kind: LlmTaskKind::Analysis,
         })
         .await
         .unwrap();
@@ -2882,7 +2885,7 @@ async fn cancel_analysis_and_start_new_one() {
     let handle = tokio::spawn(async move {
         let mut state = state;
         // Task 1: generation 1
-        state.llm_generation = 1;
+        state.analysis_generation = 1;
         state.llm_mode = Some(app::LlmMode::NominationAnalysis {
             player_name: "Player A".into(),
             player_id: "1".into(),
@@ -2899,6 +2902,7 @@ async fn cancel_analysis_and_start_new_one() {
         .send(LlmEvent::Token {
             text: "Old ".into(),
             generation: 1,
+            kind: LlmTaskKind::Analysis,
         })
         .await
         .unwrap();
@@ -2922,6 +2926,7 @@ async fn cancel_analysis_and_start_new_one() {
             output_tokens: 5,
             stop_reason: Some("end_turn".into()),
             generation: 1,
+            kind: LlmTaskKind::Analysis,
         })
         .await
         .unwrap();
@@ -2939,6 +2944,7 @@ async fn cancel_analysis_and_start_new_one() {
         .send(LlmEvent::Token {
             text: "Stale!".into(),
             generation: 0,
+            kind: LlmTaskKind::Analysis,
         })
         .await
         .unwrap();
@@ -3265,7 +3271,7 @@ async fn error_recovery_allows_subsequent_analyses() {
     let handle = tokio::spawn(async move {
         let mut state = state;
         // Start with generation 1
-        state.llm_generation = 1;
+        state.analysis_generation = 1;
         state.llm_mode = Some(app::LlmMode::NominationAnalysis {
             player_name: "Player A".into(),
             player_id: "1".into(),
@@ -3282,6 +3288,7 @@ async fn error_recovery_allows_subsequent_analyses() {
         .send(LlmEvent::Error {
             message: "API rate limited".into(),
             generation: 1,
+            kind: LlmTaskKind::Analysis,
         })
         .await
         .unwrap();
@@ -3299,11 +3306,12 @@ async fn error_recovery_allows_subsequent_analyses() {
     }
 
     // After error, mode is reset to None. Further events (even matching gen)
-    // should be discarded because mode is None.
+    // should be discarded because gen doesn't match current analysis_generation.
     llm_tx
         .send(LlmEvent::Token {
             text: "After error".into(),
             generation: 1,
+            kind: LlmTaskKind::Analysis,
         })
         .await
         .unwrap();
@@ -3330,7 +3338,7 @@ async fn llm_channel_stays_open_across_nominations() {
 
     let handle = tokio::spawn(async move {
         let mut state = state;
-        state.llm_generation = 1;
+        state.analysis_generation = 1;
         state.llm_mode = Some(app::LlmMode::NominationAnalysis {
             player_name: "Player A".into(),
             player_id: "1".into(),
@@ -3350,6 +3358,7 @@ async fn llm_channel_stays_open_across_nominations() {
             output_tokens: 5,
             stop_reason: Some("end_turn".into()),
             generation: 1,
+            kind: LlmTaskKind::Analysis,
         })
         .await
         .unwrap();
@@ -3364,6 +3373,7 @@ async fn llm_channel_stays_open_across_nominations() {
         .send(LlmEvent::Token {
             text: "test".into(),
             generation: 2,
+            kind: LlmTaskKind::Analysis,
         })
         .await;
     assert!(
@@ -3376,6 +3386,7 @@ async fn llm_channel_stays_open_across_nominations() {
         .send(LlmEvent::Error {
             message: "test error".into(),
             generation: 3,
+            kind: LlmTaskKind::Analysis,
         })
         .await;
     assert!(
@@ -3494,7 +3505,7 @@ async fn stale_generation_events_discarded() {
     let handle = tokio::spawn(async move {
         let mut state = state;
         // Current generation is 5
-        state.llm_generation = 5;
+        state.analysis_generation = 5;
         state.llm_mode = Some(app::LlmMode::NominationAnalysis {
             player_name: "Current Player".into(),
             player_id: "1".into(),
@@ -3513,6 +3524,7 @@ async fn stale_generation_events_discarded() {
             .send(LlmEvent::Token {
                 text: format!("stale gen {}", old_gen),
                 generation: old_gen,
+                kind: LlmTaskKind::Analysis,
             })
             .await
             .unwrap();
@@ -3523,6 +3535,7 @@ async fn stale_generation_events_discarded() {
         .send(LlmEvent::Token {
             text: "Current gen".into(),
             generation: 5,
+            kind: LlmTaskKind::Analysis,
         })
         .await
         .unwrap();
@@ -3550,7 +3563,7 @@ async fn planning_error_surfaced_to_tui() {
 
     let handle = tokio::spawn(async move {
         let mut state = state;
-        state.llm_generation = 1;
+        state.plan_generation = 1;
         state.llm_mode = Some(app::LlmMode::NominationPlanning);
         app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state).await
     });
@@ -3562,6 +3575,7 @@ async fn planning_error_surfaced_to_tui() {
         .send(LlmEvent::Token {
             text: "Plan: ".into(),
             generation: 1,
+            kind: LlmTaskKind::Plan,
         })
         .await
         .unwrap();
@@ -3577,6 +3591,7 @@ async fn planning_error_surfaced_to_tui() {
         .send(LlmEvent::Error {
             message: "Network timeout".into(),
             generation: 1,
+            kind: LlmTaskKind::Plan,
         })
         .await
         .unwrap();

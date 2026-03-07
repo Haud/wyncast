@@ -11,7 +11,7 @@ use tracing::{debug, warn};
 
 use crate::config::Config;
 use crate::llm::provider::LlmProvider;
-use crate::protocol::LlmEvent;
+use crate::protocol::{LlmEvent, LlmTaskKind};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -78,11 +78,12 @@ impl LlmClient {
         max_tokens: u32,
         tx: mpsc::Sender<LlmEvent>,
         generation: u64,
+        kind: LlmTaskKind,
     ) -> anyhow::Result<()> {
         match self {
             LlmClient::Active(client) => {
                 client
-                    .stream_message(system, user_content, max_tokens, tx, generation)
+                    .stream_message(system, user_content, max_tokens, tx, generation, kind)
                     .await
             }
             LlmClient::Disabled => {
@@ -90,6 +91,7 @@ impl LlmClient {
                     .send(LlmEvent::Error {
                         message: "LLM not configured".to_string(),
                         generation,
+                        kind,
                     })
                     .await;
                 Ok(())
@@ -157,12 +159,14 @@ impl GenericLlmClient {
         max_tokens: u32,
         tx: mpsc::Sender<LlmEvent>,
         generation: u64,
+        kind: LlmTaskKind,
     ) -> anyhow::Result<()> {
         if self.cfg.api_key.is_empty() {
             let _ = tx
                 .send(LlmEvent::Error {
                     message: "API key not configured".to_string(),
                     generation,
+                    kind,
                 })
                 .await;
             return Ok(());
@@ -170,15 +174,15 @@ impl GenericLlmClient {
 
         match &self.cfg.provider {
             LlmProvider::Anthropic => {
-                self.stream_anthropic(system, user_content, max_tokens, tx, generation)
+                self.stream_anthropic(system, user_content, max_tokens, tx, generation, kind)
                     .await
             }
             LlmProvider::Google => {
-                self.stream_google(system, user_content, max_tokens, tx, generation)
+                self.stream_google(system, user_content, max_tokens, tx, generation, kind)
                     .await
             }
             LlmProvider::OpenAI => {
-                self.stream_openai(system, user_content, max_tokens, tx, generation)
+                self.stream_openai(system, user_content, max_tokens, tx, generation, kind)
                     .await
             }
         }
@@ -195,6 +199,7 @@ impl GenericLlmClient {
         max_tokens: u32,
         tx: mpsc::Sender<LlmEvent>,
         generation: u64,
+        kind: LlmTaskKind,
     ) -> anyhow::Result<()> {
         let body = serde_json::json!({
             "model": self.cfg.model,
@@ -212,7 +217,7 @@ impl GenericLlmClient {
             .header("content-type", "application/json")
             .json(&body);
 
-        stream_anthropic_sse(request, tx, generation).await
+        stream_anthropic_sse(request, tx, generation, kind).await
     }
 
     // -----------------------------------------------------------------------
@@ -226,6 +231,7 @@ impl GenericLlmClient {
         max_tokens: u32,
         tx: mpsc::Sender<LlmEvent>,
         generation: u64,
+        kind: LlmTaskKind,
     ) -> anyhow::Result<()> {
         // Google's streaming endpoint uses `?key=<api_key>&alt=sse` for
         // server-sent events.
@@ -250,7 +256,7 @@ impl GenericLlmClient {
             .header("content-type", "application/json")
             .json(&body);
 
-        stream_google_sse(request, tx, generation).await
+        stream_google_sse(request, tx, generation, kind).await
     }
 
     // -----------------------------------------------------------------------
@@ -264,6 +270,7 @@ impl GenericLlmClient {
         max_tokens: u32,
         tx: mpsc::Sender<LlmEvent>,
         generation: u64,
+        kind: LlmTaskKind,
     ) -> anyhow::Result<()> {
         let body = serde_json::json!({
             "model": self.cfg.model,
@@ -282,7 +289,7 @@ impl GenericLlmClient {
             .header("content-type", "application/json")
             .json(&body);
 
-        stream_openai_sse(request, tx, generation).await
+        stream_openai_sse(request, tx, generation, kind).await
     }
 }
 
@@ -295,6 +302,7 @@ async fn stream_anthropic_sse(
     request: reqwest::RequestBuilder,
     tx: mpsc::Sender<LlmEvent>,
     generation: u64,
+    kind: LlmTaskKind,
 ) -> anyhow::Result<()> {
     let mut es = match request.eventsource() {
         Ok(es) => es,
@@ -303,6 +311,7 @@ async fn stream_anthropic_sse(
                 .send(LlmEvent::Error {
                     message: format!("Failed to create event source: {e}"),
                     generation,
+                    kind,
                 })
                 .await;
             return Ok(());
@@ -335,7 +344,7 @@ async fn stream_anthropic_sse(
                         if let Some(text) = parse_delta_text(data) {
                             full_text.push_str(&text);
                             if tx
-                                .send(LlmEvent::Token { text, generation })
+                                .send(LlmEvent::Token { text, generation, kind: kind.clone() })
                                 .await
                                 .is_err()
                             {
@@ -361,6 +370,7 @@ async fn stream_anthropic_sse(
                                 output_tokens,
                                 stop_reason,
                                 generation,
+                                kind,
                             })
                             .await;
                         es.close();
@@ -378,6 +388,7 @@ async fn stream_anthropic_sse(
                     .send(LlmEvent::Error {
                         message: error_message,
                         generation,
+                        kind,
                     })
                     .await;
                 es.close();
@@ -392,6 +403,7 @@ async fn stream_anthropic_sse(
             .send(LlmEvent::Error {
                 message: "Stream ended unexpectedly without any content".to_string(),
                 generation,
+                kind,
             })
             .await;
     } else {
@@ -402,6 +414,7 @@ async fn stream_anthropic_sse(
                 output_tokens,
                 stop_reason,
                 generation,
+                kind,
             })
             .await;
     }
@@ -426,6 +439,7 @@ async fn stream_google_sse(
     request: reqwest::RequestBuilder,
     tx: mpsc::Sender<LlmEvent>,
     generation: u64,
+    kind: LlmTaskKind,
 ) -> anyhow::Result<()> {
     let mut es = match request.eventsource() {
         Ok(es) => es,
@@ -434,6 +448,7 @@ async fn stream_google_sse(
                 .send(LlmEvent::Error {
                     message: format!("Failed to create event source: {e}"),
                     generation,
+                    kind,
                 })
                 .await;
             return Ok(());
@@ -469,6 +484,7 @@ async fn stream_google_sse(
                             .send(LlmEvent::Token {
                                 text,
                                 generation,
+                                kind: kind.clone(),
                             })
                             .await
                             .is_err()
@@ -522,6 +538,7 @@ async fn stream_google_sse(
                                 output_tokens,
                                 stop_reason,
                                 generation,
+                                kind,
                             })
                             .await;
                         es.close();
@@ -536,6 +553,7 @@ async fn stream_google_sse(
                     .send(LlmEvent::Error {
                         message: error_message,
                         generation,
+                        kind,
                     })
                     .await;
                 es.close();
@@ -550,6 +568,7 @@ async fn stream_google_sse(
             .send(LlmEvent::Error {
                 message: "Google stream ended without any content".to_string(),
                 generation,
+                kind,
             })
             .await;
     } else {
@@ -560,6 +579,7 @@ async fn stream_google_sse(
                 output_tokens,
                 stop_reason,
                 generation,
+                kind,
             })
             .await;
     }
@@ -578,6 +598,7 @@ async fn stream_openai_sse(
     request: reqwest::RequestBuilder,
     tx: mpsc::Sender<LlmEvent>,
     generation: u64,
+    kind: LlmTaskKind,
 ) -> anyhow::Result<()> {
     let mut es = match request.eventsource() {
         Ok(es) => es,
@@ -586,6 +607,7 @@ async fn stream_openai_sse(
                 .send(LlmEvent::Error {
                     message: format!("Failed to create event source: {e}"),
                     generation,
+                    kind,
                 })
                 .await;
             return Ok(());
@@ -615,6 +637,7 @@ async fn stream_openai_sse(
                             output_tokens,
                             stop_reason,
                             generation,
+                            kind,
                         })
                         .await;
                     es.close();
@@ -636,6 +659,7 @@ async fn stream_openai_sse(
                             .send(LlmEvent::Token {
                                 text,
                                 generation,
+                                kind: kind.clone(),
                             })
                             .await
                             .is_err()
@@ -676,6 +700,7 @@ async fn stream_openai_sse(
                     .send(LlmEvent::Error {
                         message: error_message,
                         generation,
+                        kind,
                     })
                     .await;
                 es.close();
@@ -690,6 +715,7 @@ async fn stream_openai_sse(
             .send(LlmEvent::Error {
                 message: "OpenAI stream ended without [DONE]".to_string(),
                 generation,
+                kind,
             })
             .await;
     } else {
@@ -700,6 +726,7 @@ async fn stream_openai_sse(
                 output_tokens,
                 stop_reason,
                 generation,
+                kind,
             })
             .await;
     }
@@ -941,7 +968,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
 
         client
-            .stream_message("system", "user", 100, tx, 1)
+            .stream_message("system", "user", 100, tx, 1, LlmTaskKind::Analysis)
             .await
             .expect("should not fail");
 
@@ -951,6 +978,7 @@ mod tests {
             LlmEvent::Error {
                 message: "LLM not configured".to_string(),
                 generation: 1,
+                kind: LlmTaskKind::Analysis,
             }
         );
 
@@ -970,7 +998,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
 
         client
-            .stream_message("system", "user", 100, tx, 42)
+            .stream_message("system", "user", 100, tx, 42, LlmTaskKind::Analysis)
             .await
             .expect("should not fail");
 
@@ -980,6 +1008,7 @@ mod tests {
             LlmEvent::Error {
                 message: "API key not configured".to_string(),
                 generation: 42,
+                kind: LlmTaskKind::Analysis,
             }
         );
     }
@@ -1080,6 +1109,7 @@ mod tests {
                 .send(LlmEvent::Token {
                     text: text1.clone(),
                     generation: gen,
+                    kind: LlmTaskKind::Analysis,
                 })
                 .await;
 
@@ -1094,6 +1124,7 @@ mod tests {
                 .send(LlmEvent::Token {
                     text: text2.clone(),
                     generation: gen,
+                    kind: LlmTaskKind::Analysis,
                 })
                 .await;
 
@@ -1116,6 +1147,7 @@ mod tests {
                     output_tokens,
                     stop_reason,
                     generation: gen,
+                    kind: LlmTaskKind::Analysis,
                 })
                 .await;
         });
@@ -1129,6 +1161,7 @@ mod tests {
             LlmEvent::Token {
                 text: "Hello".to_string(),
                 generation: gen,
+                kind: LlmTaskKind::Analysis,
             }
         );
 
@@ -1138,6 +1171,7 @@ mod tests {
             LlmEvent::Token {
                 text: " world".to_string(),
                 generation: gen,
+                kind: LlmTaskKind::Analysis,
             }
         );
 
@@ -1150,6 +1184,7 @@ mod tests {
                 output_tokens: 10,
                 stop_reason: Some("end_turn".to_string()),
                 generation: gen,
+                kind: LlmTaskKind::Analysis,
             }
         );
 
@@ -1271,6 +1306,7 @@ mod tests {
                                     .send(LlmEvent::Token {
                                         text,
                                         generation: gen,
+                                        kind: LlmTaskKind::Analysis,
                                     })
                                     .await;
                             }
@@ -1288,6 +1324,7 @@ mod tests {
                                     output_tokens,
                                     stop_reason: stop_reason.clone(),
                                     generation: gen,
+                                    kind: LlmTaskKind::Analysis,
                                 })
                                 .await;
                             es.close();
@@ -1300,6 +1337,7 @@ mod tests {
                             .send(LlmEvent::Error {
                                 message: format!("Stream error: {err}"),
                                 generation: gen,
+                                kind: LlmTaskKind::Analysis,
                             })
                             .await;
                         es.close();
@@ -1326,6 +1364,7 @@ mod tests {
             LlmEvent::Token {
                 text: "Draft".to_string(),
                 generation: gen,
+                kind: LlmTaskKind::Analysis,
             }
         );
         assert_eq!(
@@ -1333,6 +1372,7 @@ mod tests {
             LlmEvent::Token {
                 text: " analysis".to_string(),
                 generation: gen,
+                kind: LlmTaskKind::Analysis,
             }
         );
         assert_eq!(
@@ -1343,6 +1383,7 @@ mod tests {
                 output_tokens: 7,
                 stop_reason: Some("end_turn".to_string()),
                 generation: gen,
+                kind: LlmTaskKind::Analysis,
             }
         );
     }
@@ -1396,6 +1437,7 @@ mod tests {
                             .send(LlmEvent::Error {
                                 message: error_message,
                                 generation: gen,
+                                kind: LlmTaskKind::Analysis,
                             })
                             .await;
                         es.close();
@@ -1407,7 +1449,7 @@ mod tests {
 
         let event = rx.recv().await.expect("should receive error event");
         match event {
-            LlmEvent::Error { message: msg, generation } => {
+            LlmEvent::Error { message: msg, generation, .. } => {
                 assert_eq!(generation, gen);
                 assert!(
                     msg.contains("401") || msg.contains("status") || msg.contains("error"),

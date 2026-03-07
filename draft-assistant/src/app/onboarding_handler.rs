@@ -340,10 +340,10 @@ pub(super) async fn handle_onboarding_action(
                         .await;
                 }
                 LlmClient::Active(_) => {
-                    // Increment generation counter BEFORE spawning the task
-                    // to prevent race conditions with stale events.
-                    state.llm_generation += 1;
-                    let generation = state.llm_generation;
+                    // Increment analysis generation counter BEFORE spawning the
+                    // task to prevent race conditions with stale events.
+                    state.analysis_generation += 1;
+                    let generation = state.analysis_generation;
                     let tx = ui_tx.clone();
 
                     // Build the prompt for strategy configuration
@@ -374,14 +374,14 @@ pub(super) async fn handle_onboarding_action(
                         let sys = system.to_string();
                         let usr = user_content.clone();
                         tokio::spawn(async move {
-                            let _ = client.stream_message(&sys, &usr, 1024, stream_tx, generation).await;
+                            let _ = client.stream_message(&sys, &usr, 1024, stream_tx, generation, crate::protocol::LlmTaskKind::Analysis).await;
                         });
 
                         let mut full_text = String::new();
 
                         while let Some(event) = stream_rx.recv().await {
                             match event {
-                                crate::protocol::LlmEvent::Token { text, generation: g } => {
+                                crate::protocol::LlmEvent::Token { text, generation: g, .. } => {
                                     if g == generation {
                                         full_text.push_str(&text);
                                         let _ = tx
@@ -397,7 +397,7 @@ pub(super) async fn handle_onboarding_action(
                                         break;
                                     }
                                 }
-                                crate::protocol::LlmEvent::Error { message, generation: g } => {
+                                crate::protocol::LlmEvent::Error { message, generation: g, .. } => {
                                     if g == generation {
                                         let _ = tx
                                             .send(UiUpdate::OnboardingUpdate(

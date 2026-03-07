@@ -27,7 +27,7 @@ use crate::llm::client::LlmClient;
 use crate::llm::prompt;
 use crate::onboarding::{OnboardingManager, OnboardingProgress, RealFileSystem};
 use crate::protocol::{
-    AppMode, AppSnapshot, ConnectionStatus, LlmEvent, LlmStatus, NominationInfo,
+    AppMode, AppSnapshot, ConnectionStatus, LlmEvent, LlmStatus, LlmTaskKind, NominationInfo,
     TabId, TeamSnapshot, UiUpdate, UserCommand,
 };
 use crate::valuation::analysis::{compute_instant_analysis, CategoryNeeds, InstantAnalysis};
@@ -99,15 +99,18 @@ pub struct AppState {
     /// with a non-null `draftId`.
     pub espn_draft_id: Option<String>,
     pub previous_extension_state: Option<StateUpdatePayload>,
-    pub current_llm_task: Option<tokio::task::JoinHandle<()>>,
+    pub current_analysis_task: Option<tokio::task::JoinHandle<()>>,
+    pub current_plan_task: Option<tokio::task::JoinHandle<()>>,
     pub llm_mode: Option<LlmMode>,
-    /// Monotonically increasing counter identifying the current LLM task.
-    /// Incremented each time a new task is spawned. Events from stale
+    /// Monotonically increasing counter for the analysis LLM task.
+    /// Incremented each time a new analysis task is spawned. Events from stale
     /// generations are discarded in `handle_llm_event`.
     ///
     /// u64 overflow is not a practical concern: at one increment per second
     /// it would take ~584 billion years to wrap.
-    pub llm_generation: u64,
+    pub analysis_generation: u64,
+    /// Monotonically increasing counter for the planning LLM task.
+    pub plan_generation: u64,
     pub nomination_analysis_text: String,
     pub nomination_analysis_status: LlmStatus,
     pub nomination_plan_text: String,
@@ -179,9 +182,11 @@ impl AppState {
             draft_id,
             espn_draft_id: None,
             previous_extension_state: None,
-            current_llm_task: None,
+            current_analysis_task: None,
+            current_plan_task: None,
             llm_mode: None,
-            llm_generation: 0,
+            analysis_generation: 0,
+            plan_generation: 0,
             nomination_analysis_text: String::new(),
             nomination_analysis_status: LlmStatus::Idle,
             nomination_plan_text: String::new(),
@@ -403,7 +408,11 @@ impl AppState {
     /// can send `UiUpdate::PlanStarted` to clear stale plan text in the TUI.
     pub fn handle_nomination_cleared(&mut self) -> bool {
         self.draft_state.current_nomination = None;
-        self.cancel_llm_task();
+        // Only cancel the analysis task; the plan task may be running
+        // concurrently and should continue uninterrupted.
+        if let Some(h) = self.current_analysis_task.take() {
+            h.abort();
+        }
         self.llm_mode = None;
         self.nomination_analysis_text.clear();
         self.nomination_analysis_status = LlmStatus::Idle;
@@ -418,11 +427,15 @@ impl AppState {
         false
     }
 
-    /// Cancel the current LLM task if one is running.
+    /// Cancel both LLM tasks if any are running (used for full reset scenarios).
     pub fn cancel_llm_task(&mut self) {
-        if let Some(handle) = self.current_llm_task.take() {
+        if let Some(handle) = self.current_analysis_task.take() {
             handle.abort();
-            info!("Cancelled previous LLM task");
+            info!("Cancelled analysis LLM task");
+        }
+        if let Some(handle) = self.current_plan_task.take() {
+            handle.abort();
+            info!("Cancelled planning LLM task");
         }
     }
 
@@ -452,7 +465,11 @@ impl AppState {
             }
         }
 
-        self.cancel_llm_task();
+        // Only cancel the previous analysis task; the plan task may be running
+        // concurrently and should continue uninterrupted.
+        if let Some(h) = self.current_analysis_task.take() {
+            h.abort();
+        }
 
         let my_team = match self.draft_state.my_team() {
             Some(t) => t,
@@ -516,29 +533,23 @@ impl AppState {
         let client = Arc::clone(&self.llm_client);
         let tx = self.llm_tx.clone();
 
-        // Drain any stale events from a previous task that are sitting in the
-        // channel. Without this, leftover Token/Complete/Error events from an
-        // aborted task would be attributed to the new analysis.
-        // Note: we can't drain here because we don't own the receiver.
-        // Instead we rely on the generation counter to discard stale events.
-
-        // Increment the generation counter so stale events from previous tasks
-        // are discarded in handle_llm_event.
-        self.llm_generation += 1;
-        let generation = self.llm_generation;
+        // Increment the analysis generation counter so stale events from
+        // previous analysis tasks are discarded in handle_llm_event.
+        self.analysis_generation += 1;
+        let generation = self.analysis_generation;
 
         self.nomination_analysis_status = LlmStatus::Streaming;
 
         let handle = tokio::spawn(async move {
             if let Err(e) = client
-                .stream_message(&system, &user_content, max_tokens, tx, generation)
+                .stream_message(&system, &user_content, max_tokens, tx, generation, LlmTaskKind::Analysis)
                 .await
             {
                 warn!("LLM analysis task failed: {}", e);
             }
         });
 
-        self.current_llm_task = Some(handle);
+        self.current_analysis_task = Some(handle);
         info!(
             "Triggered LLM nomination analysis for {} (bid: ${}, gen: {})",
             nomination.player_name, nomination.current_bid, generation
@@ -555,7 +566,11 @@ impl AppState {
     /// `true` should send `UiUpdate::PlanStarted` to clear stale plan text in
     /// the TUI before the first token arrives.
     pub fn trigger_nomination_planning(&mut self) -> bool {
-        self.cancel_llm_task();
+        // Only cancel the previous plan task; the analysis task may be running
+        // concurrently and should continue uninterrupted.
+        if let Some(h) = self.current_plan_task.take() {
+            h.abort();
+        }
 
         let my_team = match self.draft_state.my_team() {
             Some(t) => t,
@@ -583,19 +598,21 @@ impl AppState {
         let client = Arc::clone(&self.llm_client);
         let tx = self.llm_tx.clone();
 
-        self.llm_generation += 1;
-        let generation = self.llm_generation;
+        // Increment the plan generation counter so stale events from previous
+        // planning tasks are discarded in handle_llm_event.
+        self.plan_generation += 1;
+        let generation = self.plan_generation;
 
         let handle = tokio::spawn(async move {
             if let Err(e) = client
-                .stream_message(&system, &user_content, max_tokens, tx, generation)
+                .stream_message(&system, &user_content, max_tokens, tx, generation, LlmTaskKind::Plan)
                 .await
             {
                 warn!("LLM planning task failed: {}", e);
             }
         });
 
-        self.current_llm_task = Some(handle);
+        self.current_plan_task = Some(handle);
         info!("Triggered LLM nomination planning (gen: {})", generation);
         true
     }
@@ -1734,7 +1751,7 @@ mod tests {
 
         // The generation must match what AppState expects (starts at 0,
         // but trigger_* would increment it; here we manually set mode
-        // so we use generation 0 to match the initial state).
+        // and analysis_generation=0 so we use generation 0 to match).
         let gen = 0u64;
 
         let handle = tokio::spawn(async move {
@@ -1752,11 +1769,12 @@ mod tests {
         // Give the loop a moment to start
         tokio::task::yield_now().await;
 
-        // Send LLM token with matching generation
+        // Send LLM token with matching generation and Analysis kind
         llm_tx
             .send(LlmEvent::Token {
                 text: "Hello ".into(),
                 generation: gen,
+                kind: crate::protocol::LlmTaskKind::Analysis,
             })
             .await
             .unwrap();

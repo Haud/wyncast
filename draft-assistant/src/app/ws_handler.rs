@@ -224,9 +224,7 @@ pub(super) async fn handle_state_update(
                 state.previous_extension_state = None;
                 // Clear LLM state so stale analysis from the previous draft
                 // doesn't bleed into the new session.
-                if let Some(handle) = state.current_llm_task.take() {
-                    handle.abort();
-                }
+                state.cancel_llm_task();
                 state.llm_mode = None;
                 state.nomination_analysis_text.clear();
                 state.nomination_analysis_status = LlmStatus::Idle;
