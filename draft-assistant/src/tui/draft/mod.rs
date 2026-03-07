@@ -88,6 +88,10 @@ pub struct DraftScreen {
     /// Whether the LLM client is configured (has a valid API key).
     /// Used by the status bar to show a "No LLM configured" hint.
     pub llm_configured: bool,
+    /// Active analysis LLM request ID (for routing LlmUpdate events).
+    pub analysis_request_id: Option<u64>,
+    /// Active plan LLM request ID (for routing LlmUpdate events).
+    pub plan_request_id: Option<u64>,
     /// Per-widget scroll offsets (keyed by widget name).
     pub scroll_offset: HashMap<String, usize>,
     /// Stable base ID used to derive state-dependent subscription IDs for
@@ -117,6 +121,8 @@ impl DraftScreen {
             my_roster: Vec::new(),
             positional_scarcity: Vec::new(),
             llm_configured: true,
+            analysis_request_id: None,
+            plan_request_id: None,
             scroll_offset: HashMap::new(),
             sub_id_base: SubscriptionId::unique(),
         }

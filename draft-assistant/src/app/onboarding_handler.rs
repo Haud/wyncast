@@ -340,10 +340,9 @@ pub(super) async fn handle_onboarding_action(
                         .await;
                 }
                 LlmClient::Active(_) => {
-                    // Increment generation counter BEFORE spawning the task
+                    // Allocate a unique generation ID BEFORE spawning the task
                     // to prevent race conditions with stale events.
-                    state.llm_generation += 1;
-                    let generation = state.llm_generation;
+                    let generation = state.llm_requests.allocate_id();
                     let tx = ui_tx.clone();
 
                     // Build the prompt for strategy configuration

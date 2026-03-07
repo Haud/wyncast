@@ -76,8 +76,9 @@ impl App {
             UiUpdate::StateSnapshot(snapshot) => {
                 self.apply_snapshot(*snapshot);
             }
-            UiUpdate::NominationUpdate(nomination) => {
-                self.draft_screen.current_nomination = Some(*nomination);
+            UiUpdate::NominationUpdate { info, analysis_request_id } => {
+                self.draft_screen.current_nomination = Some(*info);
+                self.draft_screen.analysis_request_id = analysis_request_id;
                 self.draft_screen.main_panel.analysis.update(AnalysisPanelMessage::Stream(LlmStreamMessage::Clear));
                 self.draft_screen.instant_analysis = None;
                 self.draft_screen.focused_panel = None;
@@ -91,44 +92,29 @@ impl App {
             UiUpdate::NominationCleared => {
                 self.draft_screen.current_nomination = None;
                 self.draft_screen.instant_analysis = None;
+                self.draft_screen.analysis_request_id = None;
                 self.draft_screen.main_panel.analysis.update(AnalysisPanelMessage::Stream(LlmStreamMessage::Clear));
                 self.draft_screen.focused_panel = None;
             }
-            UiUpdate::AnalysisToken(token) => {
-                self.draft_screen.main_panel.analysis.update(AnalysisPanelMessage::Stream(
-                    LlmStreamMessage::TokenReceived(token),
-                ));
-            }
-            UiUpdate::AnalysisComplete(final_text) => {
-                self.draft_screen.main_panel.analysis.update(AnalysisPanelMessage::Stream(
-                    LlmStreamMessage::Complete(final_text),
-                ));
-            }
-            UiUpdate::AnalysisError(msg) => {
-                self.draft_screen.main_panel.analysis.update(AnalysisPanelMessage::Stream(
-                    LlmStreamMessage::Error(msg),
-                ));
-            }
-            UiUpdate::PlanStarted => {
+            UiUpdate::PlanStarted { request_id } => {
+                self.draft_screen.plan_request_id = Some(request_id);
                 self.draft_screen.sidebar.plan.update(PlanPanelMessage::Stream(LlmStreamMessage::Clear));
                 self.draft_screen.sidebar.plan.update(PlanPanelMessage::Stream(
                     LlmStreamMessage::TokenReceived(String::new()),
                 ));
             }
-            UiUpdate::PlanToken(token) => {
-                self.draft_screen.sidebar.plan.update(PlanPanelMessage::Stream(
-                    LlmStreamMessage::TokenReceived(token),
-                ));
-            }
-            UiUpdate::PlanComplete(final_text) => {
-                self.draft_screen.sidebar.plan.update(PlanPanelMessage::Stream(
-                    LlmStreamMessage::Complete(final_text),
-                ));
-            }
-            UiUpdate::PlanError(msg) => {
-                self.draft_screen.sidebar.plan.update(PlanPanelMessage::Stream(
-                    LlmStreamMessage::Error(msg),
-                ));
+            UiUpdate::LlmUpdate { request_id, update } => {
+                let stream_msg = match update {
+                    crate::protocol::LlmStreamUpdate::Token(text) => LlmStreamMessage::TokenReceived(text),
+                    crate::protocol::LlmStreamUpdate::Complete(text) => LlmStreamMessage::Complete(text),
+                    crate::protocol::LlmStreamUpdate::Error(msg) => LlmStreamMessage::Error(msg),
+                };
+                if self.draft_screen.analysis_request_id == Some(request_id) {
+                    self.draft_screen.main_panel.analysis.update(AnalysisPanelMessage::Stream(stream_msg));
+                } else if self.draft_screen.plan_request_id == Some(request_id) {
+                    self.draft_screen.sidebar.plan.update(PlanPanelMessage::Stream(stream_msg));
+                }
+                // else: stale request ID, discard
             }
             UiUpdate::ConnectionStatus(status) => {
                 self.draft_screen.connection_status = status;

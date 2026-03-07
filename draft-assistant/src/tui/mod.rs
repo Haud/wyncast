@@ -415,7 +415,7 @@ pub async fn run(
 mod tests {
     use super::*;
     use crate::protocol::{
-        AppMode, ConnectionStatus, LlmStatus, NominationInfo, TabId, TeamSnapshot,
+        AppMode, ConnectionStatus, LlmStatus, LlmStreamUpdate, NominationInfo, TabId, TeamSnapshot,
     };
     use draft::main_panel::analysis::AnalysisPanelMessage;
     use draft::main_panel::MainPanelMessage;
@@ -605,7 +605,7 @@ mod tests {
             time_remaining: Some(30),
             eligible_slots: vec![],
         };
-        app.apply_update(UiUpdate::NominationUpdate(Box::new(nom)));
+        app.apply_update(UiUpdate::NominationUpdate { info: Box::new(nom), analysis_request_id: None });
 
         assert!(app.draft_screen.current_nomination.is_some());
         assert_eq!(
@@ -679,8 +679,9 @@ mod tests {
     #[test]
     fn apply_update_analysis_token() {
         let mut app = app::App::default();
-        app.apply_update(UiUpdate::AnalysisToken("Hello ".to_string()));
-        app.apply_update(UiUpdate::AnalysisToken("World".to_string()));
+        app.draft_screen.analysis_request_id = Some(1);
+        app.apply_update(UiUpdate::LlmUpdate { request_id: 1, update: LlmStreamUpdate::Token("Hello ".to_string()) });
+        app.apply_update(UiUpdate::LlmUpdate { request_id: 1, update: LlmStreamUpdate::Token("World".to_string()) });
         assert_eq!(app.draft_screen.main_panel.analysis.text(), "Hello World");
         assert_eq!(app.draft_screen.main_panel.analysis.status(), LlmStatus::Streaming);
     }
@@ -688,10 +689,11 @@ mod tests {
     #[test]
     fn apply_update_analysis_complete() {
         let mut app = app::App::default();
+        app.draft_screen.analysis_request_id = Some(1);
         app.draft_screen.main_panel.analysis.update(AnalysisPanelMessage::Stream(
             LlmStreamMessage::TokenReceived("partial token".into()),
         ));
-        app.apply_update(UiUpdate::AnalysisComplete("Full analysis text.".to_string()));
+        app.apply_update(UiUpdate::LlmUpdate { request_id: 1, update: LlmStreamUpdate::Complete("Full analysis text.".to_string()) });
         assert_eq!(app.draft_screen.main_panel.analysis.status(), LlmStatus::Complete);
         assert_eq!(app.draft_screen.main_panel.analysis.text(), "Full analysis text.");
     }
@@ -703,10 +705,11 @@ mod tests {
             LlmStreamMessage::Complete("Old plan from last pick cycle.".into()),
         ));
 
-        app.apply_update(UiUpdate::PlanStarted);
+        app.apply_update(UiUpdate::PlanStarted { request_id: 1 });
 
         assert!(app.draft_screen.sidebar.plan.text().is_empty(), "plan text should be cleared on PlanStarted");
         assert_eq!(app.draft_screen.sidebar.plan.status(), LlmStatus::Streaming);
+        assert_eq!(app.draft_screen.plan_request_id, Some(1));
     }
 
     #[test]
@@ -716,9 +719,9 @@ mod tests {
             LlmStreamMessage::Complete("Stale plan text.".into()),
         ));
 
-        app.apply_update(UiUpdate::PlanStarted);
-        app.apply_update(UiUpdate::PlanToken("New plan: ".to_string()));
-        app.apply_update(UiUpdate::PlanToken("nominate X".to_string()));
+        app.apply_update(UiUpdate::PlanStarted { request_id: 1 });
+        app.apply_update(UiUpdate::LlmUpdate { request_id: 1, update: LlmStreamUpdate::Token("New plan: ".to_string()) });
+        app.apply_update(UiUpdate::LlmUpdate { request_id: 1, update: LlmStreamUpdate::Token("nominate X".to_string()) });
 
         assert_eq!(app.draft_screen.sidebar.plan.text(), "New plan: nominate X");
         assert_eq!(app.draft_screen.sidebar.plan.status(), LlmStatus::Streaming);
@@ -727,8 +730,9 @@ mod tests {
     #[test]
     fn apply_update_plan_token() {
         let mut app = app::App::default();
-        app.apply_update(UiUpdate::PlanToken("Plan: ".to_string()));
-        app.apply_update(UiUpdate::PlanToken("nominate X".to_string()));
+        app.draft_screen.plan_request_id = Some(1);
+        app.apply_update(UiUpdate::LlmUpdate { request_id: 1, update: LlmStreamUpdate::Token("Plan: ".to_string()) });
+        app.apply_update(UiUpdate::LlmUpdate { request_id: 1, update: LlmStreamUpdate::Token("nominate X".to_string()) });
         assert_eq!(app.draft_screen.sidebar.plan.text(), "Plan: nominate X");
         assert_eq!(app.draft_screen.sidebar.plan.status(), LlmStatus::Streaming);
     }
@@ -736,10 +740,11 @@ mod tests {
     #[test]
     fn apply_update_plan_complete() {
         let mut app = app::App::default();
+        app.draft_screen.plan_request_id = Some(1);
         app.draft_screen.sidebar.plan.update(PlanPanelMessage::Stream(
             LlmStreamMessage::TokenReceived("partial token".into()),
         ));
-        app.apply_update(UiUpdate::PlanComplete("Full plan text.".to_string()));
+        app.apply_update(UiUpdate::LlmUpdate { request_id: 1, update: LlmStreamUpdate::Complete("Full plan text.".to_string()) });
         assert_eq!(app.draft_screen.sidebar.plan.status(), LlmStatus::Complete);
         assert_eq!(app.draft_screen.sidebar.plan.text(), "Full plan text.");
     }

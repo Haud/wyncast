@@ -7,7 +7,7 @@ use crate::draft::state::{
     StateUpdatePayload,
 };
 use crate::protocol::{
-    ExtensionMessage, LlmStatus, NominationInfo, UiUpdate,
+    ExtensionMessage, NominationInfo, UiUpdate,
 };
 use crate::valuation;
 use crate::valuation::analysis::CategoryNeeds;
@@ -78,12 +78,12 @@ pub(super) async fn handle_full_state_sync(
     // a periodic keyframe; if the nomination is unchanged, we should NOT cancel
     // the in-progress LLM analysis or allow it to restart.
     let incoming_nom = ext_payload.current_nomination.as_ref();
-    let preserve_llm = match (&state.llm_mode, incoming_nom) {
-        (Some(super::LlmMode::NominationAnalysis { player_name, player_id, .. }), Some(inc)) => {
-            if !player_id.is_empty() && !inc.player_id.is_empty() {
-                player_id == &inc.player_id
+    let preserve_llm = match (&state.analysis_player, incoming_nom) {
+        (Some(ap), Some(inc)) => {
+            if !ap.player_id.is_empty() && !inc.player_id.is_empty() {
+                ap.player_id == inc.player_id
             } else {
-                player_name == &inc.player_name
+                ap.player_name == inc.player_name
             }
         }
         _ => false,
@@ -144,11 +144,6 @@ pub(super) async fn handle_full_state_sync(
         // handle_state_update can start fresh.
         state.previous_extension_state = None;
         state.cancel_llm_task();
-        state.llm_mode = None;
-        state.nomination_analysis_text.clear();
-        state.nomination_analysis_status = LlmStatus::Idle;
-        state.nomination_plan_text.clear();
-        state.nomination_plan_status = LlmStatus::Idle;
     }
 
     // Now process the snapshot as a regular state update.  When preserve_llm
@@ -224,14 +219,10 @@ pub(super) async fn handle_state_update(
                 state.previous_extension_state = None;
                 // Clear LLM state so stale analysis from the previous draft
                 // doesn't bleed into the new session.
-                if let Some(handle) = state.current_llm_task.take() {
-                    handle.abort();
-                }
-                state.llm_mode = None;
-                state.nomination_analysis_text.clear();
-                state.nomination_analysis_status = LlmStatus::Idle;
-                state.nomination_plan_text.clear();
-                state.nomination_plan_status = LlmStatus::Idle;
+                state.llm_requests.cancel_all();
+                state.analysis_request_id = None;
+                state.plan_request_id = None;
+                state.analysis_player = None;
                 state.category_needs = CategoryNeeds::default();
             }
             None => {
@@ -314,8 +305,8 @@ pub(super) async fn handle_state_update(
             info!("Nomination cleared");
             let planning_started = state.handle_nomination_cleared();
             let _ = ui_tx.send(UiUpdate::NominationCleared).await;
-            if planning_started {
-                let _ = ui_tx.send(UiUpdate::PlanStarted).await;
+            if let Some(plan_id) = planning_started {
+                let _ = ui_tx.send(UiUpdate::PlanStarted { request_id: plan_id }).await;
             }
         } else if let Some(ref nomination) = diff.new_nomination {
             info!(
@@ -334,7 +325,7 @@ pub(super) async fn handle_state_update(
                 eligible_slots: nomination.eligible_slots.clone(),
             };
             let _ = ui_tx
-                .send(UiUpdate::NominationUpdate(Box::new(nom_info)))
+                .send(UiUpdate::NominationUpdate { info: Box::new(nom_info), analysis_request_id: state.analysis_request_id })
                 .await;
 
             // If we have an analysis, we could send it too (future: embedded in snapshot)
@@ -377,7 +368,7 @@ pub(super) async fn handle_state_update(
     //    update now registers teams, but the diff sees the same nomination
     //    (no change) so nomination handling is skipped. We detect this by
     //    checking the payload's current_nomination directly.
-    if teams_just_registered && state.llm_mode.is_none() {
+    if teams_just_registered && state.analysis_request_id.is_none() {
         if let Some(ref nom_payload) = internal_payload.current_nomination {
             let nomination = ActiveNomination {
                 player_name: nom_payload.player_name.clone(),
@@ -405,7 +396,7 @@ pub(super) async fn handle_state_update(
                 eligible_slots: nomination.eligible_slots.clone(),
             };
             let _ = ui_tx
-                .send(UiUpdate::NominationUpdate(Box::new(nom_info)))
+                .send(UiUpdate::NominationUpdate { info: Box::new(nom_info), analysis_request_id: state.analysis_request_id })
                 .await;
 
             if let Some(_analysis) = analysis {
