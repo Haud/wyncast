@@ -43,6 +43,17 @@ impl SubscriptionId {
         static COUNTER: AtomicU64 = AtomicU64::new(1);
         Self(COUNTER.fetch_add(1, Ordering::Relaxed))
     }
+
+    /// Construct a `SubscriptionId` from a raw `u64`.
+    ///
+    /// Use this when you need a *deterministic* ID derived from application
+    /// state (e.g., by hashing a stable base ID together with state fields).
+    /// The resulting ID changes whenever the hashed inputs change, which causes
+    /// the [`SubscriptionManager`] to tear down and rebuild the listener —
+    /// useful for state-dependent keybinding sets in composite components.
+    pub fn from_u64(v: u64) -> Self {
+        Self(v)
+    }
 }
 
 // ---------------------------------------------------------------------------

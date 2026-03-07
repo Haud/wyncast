@@ -9,6 +9,8 @@ use crate::draft::pick::Position;
 use crate::draft::roster::RosterSlot;
 use crate::tui::action::Action;
 use crate::tui::BudgetStatus;
+use crate::tui::subscription::Subscription;
+use crate::tui::subscription::keybinding::KeybindManager;
 use crate::tui::widgets;
 use crate::valuation::scarcity::ScarcityEntry;
 
@@ -48,6 +50,16 @@ impl Sidebar {
             scarcity: ScarcityPanel::new(),
             plan: PlanPanel::new(),
         }
+    }
+
+    /// Declare keybindings for the subscription system.
+    ///
+    /// Sidebar children (roster, scarcity, plan) are stateful scroll components
+    /// with no subscription declarations yet. This method is a forward-compatible
+    /// placeholder that composes child subscriptions as they are added.
+    pub fn subscription(&self, _kb: &mut KeybindManager) -> Subscription<SidebarMessage> {
+        // No child subscriptions exist yet. Return none.
+        Subscription::none()
     }
 
     pub fn update(&mut self, msg: SidebarMessage) -> Option<Action> {

@@ -10,6 +10,10 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::Frame;
 
 use crate::protocol::{AppMode, AppSnapshot, SettingsSection, UiUpdate, UserCommand};
+use crate::tui::subscription::{Subscription, SubscriptionId};
+use crate::tui::subscription::keybinding::{
+    ctrl, KeyBindingRecipe, KeybindManager, PRIORITY_MODAL,
+};
 use super::action::Action;
 use super::confirm_dialog::ConfirmDialog;
 use super::draft::main_panel::analysis::AnalysisPanelMessage;
@@ -35,6 +39,8 @@ pub struct App {
     pub settings_tab: SettingsSection,
     pub suppress_next_bracket: bool,
     pub confirm_exit_settings: ConfirmDialog,
+    /// Stable ID for the global Ctrl+C subscription (never changes).
+    sub_id_global: SubscriptionId,
 }
 
 impl App {
@@ -48,6 +54,7 @@ impl App {
             settings_tab: SettingsSection::LlmConfig,
             suppress_next_bracket: false,
             confirm_exit_settings: ConfirmDialog::unsaved_changes(),
+            sub_id_global: SubscriptionId::unique(),
         }
     }
 
@@ -1215,5 +1222,35 @@ impl App {
             AppMessage::Quit => Some(Action::Quit),
             AppMessage::Draft(m) => self.draft_screen.update(m),
         }
+    }
+
+    /// Declare keybindings for the subscription system.
+    ///
+    /// Global Ctrl+C is registered first (highest precedence) so it fires even
+    /// when a modal is open. The active screen's subscriptions follow.
+    pub fn subscription(&self, kb: &mut KeybindManager) -> Subscription<AppMessage> {
+        // Global: Ctrl+C → Quit (above PRIORITY_MODAL so it's always reachable).
+        let global = kb.subscribe(
+            KeyBindingRecipe::new(self.sub_id_global)
+                .priority(PRIORITY_MODAL + 10)
+                .capture()
+                .bind(
+                    ctrl(KeyCode::Char('c')),
+                    |_| AppMessage::Quit,
+                    None,
+                ),
+        );
+
+        let mode_sub = match &self.app_mode {
+            AppMode::Draft => self
+                .draft_screen
+                .subscription(kb)
+                .map(AppMessage::Draft),
+            // Onboarding and Settings modes do not have subscription()
+            // implementations yet — they still use handle_key().
+            AppMode::Onboarding(_) | AppMode::Settings(_) => Subscription::none(),
+        };
+
+        Subscription::batch([global, mode_sub])
     }
 }

@@ -5,6 +5,8 @@ pub mod sidebar;
 pub mod teams;
 
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
@@ -16,6 +18,10 @@ use crate::protocol::{
 };
 use crate::tui::layout::build_layout;
 use crate::tui::scroll::ScrollDirection;
+use crate::tui::subscription::{Subscription, SubscriptionId};
+use crate::tui::subscription::keybinding::{
+    exact, KeyBindingRecipe, KeybindHint as KbHint, KeybindManager, PRIORITY_NORMAL,
+};
 use crate::tui::widgets;
 use crate::tui::{BudgetStatus, FocusPanel, KeybindHint, TeamSummary};
 use crate::valuation::scarcity::ScarcityEntry;
@@ -84,6 +90,11 @@ pub struct DraftScreen {
     pub llm_configured: bool,
     /// Per-widget scroll offsets (keyed by widget name).
     pub scroll_offset: HashMap<String, usize>,
+    /// Stable base ID used to derive state-dependent subscription IDs for
+    /// DraftScreen's own keybindings. The actual ID is hashed from this plus
+    /// `focused_panel` and `active_tab` so the listener is rebuilt when those
+    /// change (updating the binding set).
+    sub_id_base: SubscriptionId,
 }
 
 impl DraftScreen {
@@ -107,6 +118,7 @@ impl DraftScreen {
             positional_scarcity: Vec::new(),
             llm_configured: true,
             scroll_offset: HashMap::new(),
+            sub_id_base: SubscriptionId::unique(),
         }
     }
 
@@ -594,6 +606,206 @@ impl DraftScreen {
 impl Default for DraftScreen {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl DraftScreen {
+    /// Declare keybindings for the subscription system.
+    ///
+    /// Composes:
+    /// 1. `modal_layer` — highest precedence (quit confirm + position filter).
+    /// 2. `main_panel` — active tab subscription (e.g. Available filter mode).
+    /// 3. `sidebar` — child subscriptions (currently none).
+    /// 4. DraftScreen's own normal-mode bindings — state-dependent ID so the
+    ///    listener is rebuilt when `focused_panel` or `active_tab` changes.
+    pub fn subscription(&self, kb: &mut KeybindManager) -> Subscription<DraftScreenMessage> {
+        // 1. Modal layer (highest precedence — maps child types to ModalLayerMessage).
+        let modal_sub = self
+            .modal_layer
+            .subscription(kb)
+            .map(DraftScreenMessage::Modal);
+
+        // 2. Main panel (active tab).
+        let main_sub = self
+            .main_panel
+            .subscription(kb)
+            .map(DraftScreenMessage::MainPanel);
+
+        // 3. Sidebar (no child subscriptions yet).
+        let sidebar_sub = self
+            .sidebar
+            .subscription(kb)
+            .map(DraftScreenMessage::Sidebar);
+
+        // 4. DraftScreen's own normal-mode bindings.
+        //    State-dependent ID: rebuild listener when focus or tab changes.
+        let own_sub = {
+            let mut hasher = DefaultHasher::new();
+            self.sub_id_base.hash(&mut hasher);
+            // Hash the discriminant of focused_panel (as u8 or None=0).
+            let fp_disc: u8 = match self.focused_panel {
+                None => 0,
+                Some(FocusPanel::MainPanel) => 1,
+                Some(FocusPanel::Roster) => 2,
+                Some(FocusPanel::Scarcity) => 3,
+                Some(FocusPanel::Budget) => 4,
+                Some(FocusPanel::NominationPlan) => 5,
+            };
+            fp_disc.hash(&mut hasher);
+            // Hash active tab.
+            let tab_disc: u8 = match self.main_panel.active_tab() {
+                TabId::Analysis => 0,
+                TabId::Available => 1,
+                TabId::DraftLog => 2,
+                TabId::Teams => 3,
+            };
+            tab_disc.hash(&mut hasher);
+            let own_id = SubscriptionId::from_u64(hasher.finish());
+
+            let supports_filter = self.main_panel.active_tab().supports(TabFeature::Filter);
+            let supports_pos_filter = self
+                .main_panel
+                .active_tab()
+                .supports(TabFeature::PositionFilter);
+            let has_focus = self.focused_panel.is_some();
+
+            let mut recipe = KeyBindingRecipe::<DraftScreenMessage>::new(own_id)
+                .priority(PRIORITY_NORMAL)
+                // Always-present bindings
+                .bind(
+                    exact(KeyCode::Char('q')),
+                    |_| DraftScreenMessage::RequestQuit,
+                    KbHint::new("q", "Quit"),
+                )
+                .bind(
+                    exact(KeyCode::Char('r')),
+                    |_| DraftScreenMessage::RequestResync,
+                    KbHint::new("r", "Resync"),
+                )
+                .bind(
+                    exact(KeyCode::Char(',')),
+                    |_| DraftScreenMessage::OpenSettings,
+                    KbHint::new(",", "Settings"),
+                )
+                .bind(
+                    exact(KeyCode::Char('1')),
+                    |_| DraftScreenMessage::SwitchTab(TabId::Analysis),
+                    KbHint::new("1-4", "Tabs"),
+                )
+                .bind(
+                    exact(KeyCode::Char('2')),
+                    |_| DraftScreenMessage::SwitchTab(TabId::Available),
+                    None,
+                )
+                .bind(
+                    exact(KeyCode::Char('3')),
+                    |_| DraftScreenMessage::SwitchTab(TabId::DraftLog),
+                    None,
+                )
+                .bind(
+                    exact(KeyCode::Char('4')),
+                    |_| DraftScreenMessage::SwitchTab(TabId::Teams),
+                    None,
+                )
+                .bind(
+                    exact(KeyCode::Tab),
+                    |_| DraftScreenMessage::FocusNext,
+                    KbHint::new("Tab", "Focus"),
+                )
+                .bind(
+                    exact(KeyCode::BackTab),
+                    |_| DraftScreenMessage::FocusPrev,
+                    None,
+                );
+
+            // Scroll bindings: only when a panel is focused
+            if has_focus {
+                recipe = recipe
+                    .bind(
+                        exact(KeyCode::Up),
+                        |_| DraftScreenMessage::ScrollFocused(ScrollDirection::Up),
+                        KbHint::new("↑↓/j/k/PgUp/PgDn", "Scroll"),
+                    )
+                    .bind(
+                        exact(KeyCode::Char('k')),
+                        |_| DraftScreenMessage::ScrollFocused(ScrollDirection::Up),
+                        None,
+                    )
+                    .bind(
+                        exact(KeyCode::Down),
+                        |_| DraftScreenMessage::ScrollFocused(ScrollDirection::Down),
+                        None,
+                    )
+                    .bind(
+                        exact(KeyCode::Char('j')),
+                        |_| DraftScreenMessage::ScrollFocused(ScrollDirection::Down),
+                        None,
+                    )
+                    .bind(
+                        exact(KeyCode::PageUp),
+                        |_| DraftScreenMessage::ScrollFocused(ScrollDirection::PageUp),
+                        None,
+                    )
+                    .bind(
+                        exact(KeyCode::PageDown),
+                        |_| DraftScreenMessage::ScrollFocused(ScrollDirection::PageDown),
+                        None,
+                    );
+            } else {
+                // No focus: scroll routes to the active tab (still via ScrollFocused)
+                recipe = recipe
+                    .bind(
+                        exact(KeyCode::Up),
+                        |_| DraftScreenMessage::ScrollFocused(ScrollDirection::Up),
+                        None,
+                    )
+                    .bind(
+                        exact(KeyCode::Char('k')),
+                        |_| DraftScreenMessage::ScrollFocused(ScrollDirection::Up),
+                        None,
+                    )
+                    .bind(
+                        exact(KeyCode::Down),
+                        |_| DraftScreenMessage::ScrollFocused(ScrollDirection::Down),
+                        None,
+                    )
+                    .bind(
+                        exact(KeyCode::Char('j')),
+                        |_| DraftScreenMessage::ScrollFocused(ScrollDirection::Down),
+                        None,
+                    )
+                    .bind(
+                        exact(KeyCode::PageUp),
+                        |_| DraftScreenMessage::ScrollFocused(ScrollDirection::PageUp),
+                        None,
+                    )
+                    .bind(
+                        exact(KeyCode::PageDown),
+                        |_| DraftScreenMessage::ScrollFocused(ScrollDirection::PageDown),
+                        None,
+                    );
+            }
+
+            // Filter bindings: only on tabs that support filtering
+            if supports_filter {
+                recipe = recipe.bind(
+                    exact(KeyCode::Char('/')),
+                    |_| DraftScreenMessage::ToggleFilter,
+                    KbHint::new("/", "Filter"),
+                );
+            }
+            if supports_pos_filter {
+                recipe = recipe.bind(
+                    exact(KeyCode::Char('p')),
+                    |_| DraftScreenMessage::OpenPositionFilter,
+                    KbHint::new("p", "Pos filter"),
+                );
+            }
+
+            kb.subscribe(recipe)
+        };
+
+        Subscription::batch([modal_sub, main_sub, sidebar_sub, own_sub])
     }
 }
 

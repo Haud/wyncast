@@ -8,6 +8,8 @@ use crate::draft::pick::DraftPick;
 use crate::protocol::TabId;
 use crate::tui::TeamSummary;
 use crate::tui::action::Action;
+use crate::tui::subscription::Subscription;
+use crate::tui::subscription::keybinding::KeybindManager;
 use crate::valuation::zscore::PlayerValuation;
 
 use analysis::{AnalysisPanel, AnalysisPanelMessage};
@@ -48,6 +50,21 @@ impl MainPanel {
     /// The currently active tab.
     pub fn active_tab(&self) -> TabId {
         self.active_tab
+    }
+
+    /// Declare keybindings for the subscription system.
+    ///
+    /// Only the active tab's subscription is returned — inactive panels are
+    /// not visible and don't need to listen for events.
+    pub fn subscription(&self, kb: &mut KeybindManager) -> Subscription<MainPanelMessage> {
+        match self.active_tab {
+            TabId::Available => self
+                .available
+                .subscription(kb)
+                .map(MainPanelMessage::Available),
+            // Other tabs have no subscriptions yet.
+            TabId::Analysis | TabId::DraftLog | TabId::Teams => Subscription::none(),
+        }
     }
 
     pub fn update(&mut self, msg: MainPanelMessage) -> Option<Action> {
