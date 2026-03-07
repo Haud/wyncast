@@ -35,7 +35,11 @@ pub fn key_to_message(
             None
         }
         OnboardingStep::StrategySetup | OnboardingStep::Complete => {
-            strategy_setup.key_to_message(key).map(OnboardingMessage::Strategy)
+            // StrategySetupState key routing is handled by the subscription system
+            // via StrategySetupState::subscription(). This function is retained for
+            // non-subscription callers but StrategySetup routing is a no-op here.
+            let _ = (strategy_setup, key);
+            None
         }
     }
 }

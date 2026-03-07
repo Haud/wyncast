@@ -10,17 +10,25 @@
 // When accessed from the Settings screen (after onboarding is complete), the
 // wizard shows the Review step directly with all values editable.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::protocol::{OnboardingAction, UserCommand};
 use crate::tui::TextInput;
 use crate::tui::text_input::TextInputMessage;
+use crate::tui::subscription::{Subscription, SubscriptionId};
+use crate::tui::subscription::keybinding::{
+    exact, KeyBindingRecipe, KeybindHint, KeybindManager, KeyTrigger, PRIORITY_CAPTURE,
+    PRIORITY_NORMAL,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -264,6 +272,10 @@ pub struct StrategySetupState {
     pub snapshot_budget: u8,
     /// Snapshot of category weights for Esc restore in settings mode.
     pub snapshot_weights: CategoryWeights,
+    /// Stable base ID used to derive state-dependent subscription IDs.
+    /// The actual ID is hashed from this plus relevant state fields so the
+    /// listener is rebuilt when the active mode/state changes.
+    sub_id: SubscriptionId,
 }
 
 impl Default for StrategySetupState {
@@ -289,6 +301,7 @@ impl Default for StrategySetupState {
             snapshot_overview: String::new(),
             snapshot_budget: 65,
             snapshot_weights: CategoryWeights::default(),
+            sub_id: SubscriptionId::unique(),
         }
     }
 }
@@ -421,7 +434,7 @@ impl StrategySetupState {
 pub enum StrategySetupMessage {
     // Input step
     StartEditing,
-    TextInput(TextInputMessage),
+    TextInput(KeyEvent),
     StopEditing,
     SubmitText,
     // Generating step
@@ -434,7 +447,7 @@ pub enum StrategySetupMessage {
     NavigateRight,
     // Review step: overview editing
     StartOverviewEdit,
-    OverviewInput(TextInputMessage),
+    OverviewInput(KeyEvent),
     SubmitOverview,
     CancelOverviewEdit,
     // Review step: field editing
@@ -459,115 +472,356 @@ pub enum StrategySetupMessage {
 }
 
 impl StrategySetupState {
-    pub fn key_to_message(&self, key: KeyEvent) -> Option<StrategySetupMessage> {
+    /// Declare keybindings for the subscription system.
+    ///
+    /// State-dependent subscription ID: the listener is rebuilt whenever
+    /// `step`, `input_editing`, `overview_editing`, `generating`,
+    /// `generation_error`, `editing_field`, or `confirm_yes` changes,
+    /// so the correct binding set is always active.
+    pub fn subscription(
+        &self,
+        kb: &mut KeybindManager,
+    ) -> Subscription<StrategySetupMessage> {
+        // Derive state-dependent ID so the listener is rebuilt on state changes.
+        let mut hasher = DefaultHasher::new();
+        self.sub_id.hash(&mut hasher);
+        (self.step as u8).hash(&mut hasher);
+        (self.input_editing as u8).hash(&mut hasher);
+        (self.overview_editing as u8).hash(&mut hasher);
+        (self.generating as u8).hash(&mut hasher);
+        (self.generation_error.is_some() as u8).hash(&mut hasher);
+        (self.editing_field.is_some() as u8).hash(&mut hasher);
+        (self.confirm_yes as u8).hash(&mut hasher);
+        let sub_id = SubscriptionId::from_u64(hasher.finish());
+
         match self.step {
-            StrategyWizardStep::Input => self.input_key_to_message(key),
-            StrategyWizardStep::Generating => self.generating_key_to_message(key),
-            StrategyWizardStep::Review => self.review_key_to_message(key),
-            StrategyWizardStep::Confirm => self.confirm_key_to_message(key),
-        }
-    }
-
-    fn input_key_to_message(&self, key: KeyEvent) -> Option<StrategySetupMessage> {
-        if self.input_editing {
-            return match key.code {
-                KeyCode::Esc => Some(StrategySetupMessage::StopEditing),
-                KeyCode::Enter => Some(StrategySetupMessage::SubmitText),
-                _ => TextInput::key_to_message(&key).map(StrategySetupMessage::TextInput),
-            };
-        }
-        match key.code {
-            KeyCode::Enter => Some(StrategySetupMessage::SubmitText),
-            KeyCode::Char('e') => Some(StrategySetupMessage::StartEditing),
-            KeyCode::Esc => Some(StrategySetupMessage::GoBack),
-            KeyCode::Char('q') => Some(StrategySetupMessage::Quit),
-            _ => None,
-        }
-    }
-
-    fn generating_key_to_message(&self, key: KeyEvent) -> Option<StrategySetupMessage> {
-        if self.generation_error.is_some() {
-            match key.code {
-                KeyCode::Enter => Some(StrategySetupMessage::Retry),
-                KeyCode::Esc => Some(StrategySetupMessage::GoBackToInput),
-                KeyCode::Char('q') => Some(StrategySetupMessage::Quit),
-                _ => None,
-            }
-        } else {
-            match key.code {
-                KeyCode::Char('q') => Some(StrategySetupMessage::Quit),
-                _ => None,
-            }
-        }
-    }
-
-    fn review_key_to_message(&self, key: KeyEvent) -> Option<StrategySetupMessage> {
-        if self.overview_editing {
-            return match key.code {
-                KeyCode::Enter => Some(StrategySetupMessage::SubmitOverview),
-                KeyCode::Esc => Some(StrategySetupMessage::CancelOverviewEdit),
-                _ => TextInput::key_to_message(&key).map(StrategySetupMessage::OverviewInput),
-            };
-        }
-        if self.generating {
-            return match key.code {
-                KeyCode::Esc => Some(StrategySetupMessage::CancelGeneration),
-                KeyCode::Enter if self.generation_error.is_some() => Some(StrategySetupMessage::Retry),
-                KeyCode::Char('q') => Some(StrategySetupMessage::Quit),
-                _ => None,
-            };
-        }
-        if self.generation_error.is_some() {
-            return match key.code {
-                KeyCode::Esc => Some(StrategySetupMessage::CancelGeneration),
-                KeyCode::Enter => Some(StrategySetupMessage::Retry),
-                KeyCode::Char('q') => Some(StrategySetupMessage::Quit),
-                _ => None,
-            };
-        }
-        if self.editing_field.is_some() {
-            return match key.code {
-                KeyCode::Enter => Some(StrategySetupMessage::ConfirmFieldEdit),
-                KeyCode::Esc => Some(StrategySetupMessage::CancelFieldEdit),
-                KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => {
-                    Some(StrategySetupMessage::FieldDigit(c))
-                }
-                KeyCode::Char(_) => None,
-                _ => TextInput::key_to_message(&key).map(StrategySetupMessage::FieldInput),
-            };
-        }
-        // Normal review navigation
-        match key.code {
-            KeyCode::Up | KeyCode::Char('k') => Some(StrategySetupMessage::NavigateUp),
-            KeyCode::Down | KeyCode::Char('j') => Some(StrategySetupMessage::NavigateDown),
-            KeyCode::Left | KeyCode::Char('h') => Some(StrategySetupMessage::NavigateLeft),
-            KeyCode::Right | KeyCode::Char('l') => Some(StrategySetupMessage::NavigateRight),
-            KeyCode::Enter => Some(StrategySetupMessage::EditField),
-            KeyCode::Char('s') => Some(StrategySetupMessage::AdvanceToConfirm),
-            KeyCode::Char('S') => Some(StrategySetupMessage::SkipStep),
-            KeyCode::Esc => Some(StrategySetupMessage::GoBack),
-            KeyCode::Char('q') => Some(StrategySetupMessage::Quit),
-            _ => None,
-        }
-    }
-
-    fn confirm_key_to_message(&self, key: KeyEvent) -> Option<StrategySetupMessage> {
-        match key.code {
-            KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l') => {
-                Some(StrategySetupMessage::ToggleSelection)
-            }
-            KeyCode::Char('y') => Some(StrategySetupMessage::ConfirmYes),
-            KeyCode::Char('n') => Some(StrategySetupMessage::ConfirmNo),
-            KeyCode::Enter => {
-                if self.confirm_yes {
-                    Some(StrategySetupMessage::ConfirmYes)
+            StrategyWizardStep::Input => {
+                if self.input_editing {
+                    // CAPTURE mode: Esc and Enter are handled explicitly;
+                    // everything else is forwarded as TextInput(key).
+                    let recipe = KeyBindingRecipe::new(sub_id)
+                        .priority(PRIORITY_CAPTURE)
+                        .capture()
+                        .bind(
+                            exact(KeyCode::Esc),
+                            |_| StrategySetupMessage::StopEditing,
+                            KeybindHint::new("Esc", "Stop editing"),
+                        )
+                        .bind(
+                            exact(KeyCode::Enter),
+                            |_| StrategySetupMessage::SubmitText,
+                            KeybindHint::new("Enter", "Submit"),
+                        )
+                        .bind(
+                            KeyTrigger::Any,
+                            StrategySetupMessage::TextInput,
+                            None,
+                        );
+                    kb.subscribe(recipe)
                 } else {
-                    Some(StrategySetupMessage::GoBackToReview)
+                    let recipe = KeyBindingRecipe::new(sub_id)
+                        .priority(PRIORITY_NORMAL)
+                        .bind(
+                            exact(KeyCode::Enter),
+                            |_| StrategySetupMessage::SubmitText,
+                            KeybindHint::new("Enter", "Submit"),
+                        )
+                        .bind(
+                            exact(KeyCode::Char('e')),
+                            |_| StrategySetupMessage::StartEditing,
+                            KeybindHint::new("e", "Edit"),
+                        )
+                        .bind(
+                            exact(KeyCode::Esc),
+                            |_| StrategySetupMessage::GoBack,
+                            KeybindHint::new("Esc", "Back"),
+                        )
+                        .bind(
+                            exact(KeyCode::Char('q')),
+                            |_| StrategySetupMessage::Quit,
+                            KeybindHint::new("q", "Quit"),
+                        );
+                    kb.subscribe(recipe)
                 }
             }
-            KeyCode::Esc => Some(StrategySetupMessage::GoBackToReview),
-            KeyCode::Char('q') => Some(StrategySetupMessage::Quit),
-            _ => None,
+
+            StrategyWizardStep::Generating => {
+                if self.generation_error.is_some() {
+                    let recipe = KeyBindingRecipe::new(sub_id)
+                        .priority(PRIORITY_NORMAL)
+                        .bind(
+                            exact(KeyCode::Enter),
+                            |_| StrategySetupMessage::Retry,
+                            KeybindHint::new("Enter", "Retry"),
+                        )
+                        .bind(
+                            exact(KeyCode::Esc),
+                            |_| StrategySetupMessage::GoBackToInput,
+                            KeybindHint::new("Esc", "Back"),
+                        )
+                        .bind(
+                            exact(KeyCode::Char('q')),
+                            |_| StrategySetupMessage::Quit,
+                            KeybindHint::new("q", "Quit"),
+                        );
+                    kb.subscribe(recipe)
+                } else {
+                    // No error: only quit is available while generating.
+                    let recipe = KeyBindingRecipe::new(sub_id)
+                        .priority(PRIORITY_NORMAL)
+                        .bind(
+                            exact(KeyCode::Char('q')),
+                            |_| StrategySetupMessage::Quit,
+                            KeybindHint::new("q", "Quit"),
+                        );
+                    kb.subscribe(recipe)
+                }
+            }
+
+            StrategyWizardStep::Review => {
+                if self.overview_editing {
+                    // CAPTURE mode: forward all keys through overview input.
+                    let recipe = KeyBindingRecipe::new(sub_id)
+                        .priority(PRIORITY_CAPTURE)
+                        .capture()
+                        .bind(
+                            exact(KeyCode::Enter),
+                            |_| StrategySetupMessage::SubmitOverview,
+                            KeybindHint::new("Enter", "Submit"),
+                        )
+                        .bind(
+                            exact(KeyCode::Esc),
+                            |_| StrategySetupMessage::CancelOverviewEdit,
+                            KeybindHint::new("Esc", "Cancel"),
+                        )
+                        .bind(
+                            KeyTrigger::Any,
+                            StrategySetupMessage::OverviewInput,
+                            None,
+                        );
+                    return kb.subscribe(recipe);
+                }
+
+                if self.editing_field.is_some() {
+                    // Field editing mode: digits and cursor keys for field_input.
+                    let recipe = KeyBindingRecipe::new(sub_id)
+                        .priority(PRIORITY_NORMAL)
+                        .bind(
+                            exact(KeyCode::Enter),
+                            |_| StrategySetupMessage::ConfirmFieldEdit,
+                            KeybindHint::new("Enter", "Confirm"),
+                        )
+                        .bind(
+                            exact(KeyCode::Esc),
+                            |_| StrategySetupMessage::CancelFieldEdit,
+                            KeybindHint::new("Esc", "Cancel"),
+                        )
+                        .bind(
+                            KeyTrigger::AnyChar,
+                            |key| {
+                                if let KeyCode::Char(c) = key.code {
+                                    StrategySetupMessage::FieldDigit(c)
+                                } else {
+                                    // AnyChar always gives Char(_), but satisfy exhaustiveness
+                                    StrategySetupMessage::FieldDigit('\0')
+                                }
+                            },
+                            None,
+                        )
+                        .bind(
+                            exact(KeyCode::Up),
+                            |_| StrategySetupMessage::FieldInput(TextInputMessage::MoveHome),
+                            None,
+                        )
+                        .bind(
+                            exact(KeyCode::Down),
+                            |_| StrategySetupMessage::FieldInput(TextInputMessage::MoveEnd),
+                            None,
+                        )
+                        .bind(
+                            exact(KeyCode::Left),
+                            |_| StrategySetupMessage::FieldInput(TextInputMessage::MoveLeft),
+                            KeybindHint::new("←/→", "Move cursor"),
+                        )
+                        .bind(
+                            exact(KeyCode::Right),
+                            |_| StrategySetupMessage::FieldInput(TextInputMessage::MoveRight),
+                            None,
+                        )
+                        .bind(
+                            exact(KeyCode::Home),
+                            |_| StrategySetupMessage::FieldInput(TextInputMessage::MoveHome),
+                            None,
+                        )
+                        .bind(
+                            exact(KeyCode::End),
+                            |_| StrategySetupMessage::FieldInput(TextInputMessage::MoveEnd),
+                            None,
+                        )
+                        .bind(
+                            exact(KeyCode::Backspace),
+                            |_| StrategySetupMessage::FieldInput(TextInputMessage::Backspace),
+                            KeybindHint::new("Bksp/Del", "Delete"),
+                        )
+                        .bind(
+                            exact(KeyCode::Delete),
+                            |_| StrategySetupMessage::FieldInput(TextInputMessage::Delete),
+                            None,
+                        );
+                    return kb.subscribe(recipe);
+                }
+
+                if self.generating {
+                    let mut recipe = KeyBindingRecipe::new(sub_id)
+                        .priority(PRIORITY_NORMAL)
+                        .bind(
+                            exact(KeyCode::Esc),
+                            |_| StrategySetupMessage::CancelGeneration,
+                            KeybindHint::new("Esc", "Cancel"),
+                        );
+                    if self.generation_error.is_some() {
+                        recipe = recipe.bind(
+                            exact(KeyCode::Enter),
+                            |_| StrategySetupMessage::Retry,
+                            KeybindHint::new("Enter", "Retry"),
+                        );
+                    }
+                    recipe = recipe.bind(
+                        exact(KeyCode::Char('q')),
+                        |_| StrategySetupMessage::Quit,
+                        KeybindHint::new("q", "Quit"),
+                    );
+                    return kb.subscribe(recipe);
+                }
+
+                // Normal review navigation
+                let recipe = KeyBindingRecipe::new(sub_id)
+                    .priority(PRIORITY_NORMAL)
+                    .bind(
+                        exact(KeyCode::Up),
+                        |_| StrategySetupMessage::NavigateUp,
+                        KeybindHint::new("↑/k", "Up"),
+                    )
+                    .bind(
+                        exact(KeyCode::Char('k')),
+                        |_| StrategySetupMessage::NavigateUp,
+                        None,
+                    )
+                    .bind(
+                        exact(KeyCode::Down),
+                        |_| StrategySetupMessage::NavigateDown,
+                        KeybindHint::new("↓/j", "Down"),
+                    )
+                    .bind(
+                        exact(KeyCode::Char('j')),
+                        |_| StrategySetupMessage::NavigateDown,
+                        None,
+                    )
+                    .bind(
+                        exact(KeyCode::Left),
+                        |_| StrategySetupMessage::NavigateLeft,
+                        KeybindHint::new("←/h", "Left"),
+                    )
+                    .bind(
+                        exact(KeyCode::Char('h')),
+                        |_| StrategySetupMessage::NavigateLeft,
+                        None,
+                    )
+                    .bind(
+                        exact(KeyCode::Right),
+                        |_| StrategySetupMessage::NavigateRight,
+                        KeybindHint::new("→/l", "Right"),
+                    )
+                    .bind(
+                        exact(KeyCode::Char('l')),
+                        |_| StrategySetupMessage::NavigateRight,
+                        None,
+                    )
+                    .bind(
+                        exact(KeyCode::Enter),
+                        |_| StrategySetupMessage::EditField,
+                        KeybindHint::new("Enter", "Edit field"),
+                    )
+                    .bind(
+                        exact(KeyCode::Char('s')),
+                        |_| StrategySetupMessage::AdvanceToConfirm,
+                        KeybindHint::new("s", "Save/Continue"),
+                    )
+                    .bind(
+                        KeyTrigger::Exact(KeyCode::Char('S'), KeyModifiers::SHIFT),
+                        |_| StrategySetupMessage::SkipStep,
+                        KeybindHint::new("S", "Skip"),
+                    )
+                    .bind(
+                        exact(KeyCode::Esc),
+                        |_| StrategySetupMessage::GoBack,
+                        KeybindHint::new("Esc", "Back"),
+                    )
+                    .bind(
+                        exact(KeyCode::Char('q')),
+                        |_| StrategySetupMessage::Quit,
+                        KeybindHint::new("q", "Quit"),
+                    );
+                kb.subscribe(recipe)
+            }
+
+            StrategyWizardStep::Confirm => {
+                // confirm_yes is hashed into sub_id, so this recipe is rebuilt
+                // when confirm_yes changes, letting us pick the correct Enter handler.
+                let enter_msg: fn(KeyEvent) -> StrategySetupMessage = if self.confirm_yes {
+                    |_| StrategySetupMessage::ConfirmYes
+                } else {
+                    |_| StrategySetupMessage::GoBackToReview
+                };
+                let recipe = KeyBindingRecipe::new(sub_id)
+                    .priority(PRIORITY_NORMAL)
+                    .bind(
+                        exact(KeyCode::Left),
+                        |_| StrategySetupMessage::ToggleSelection,
+                        KeybindHint::new("←/→", "Toggle"),
+                    )
+                    .bind(
+                        exact(KeyCode::Right),
+                        |_| StrategySetupMessage::ToggleSelection,
+                        None,
+                    )
+                    .bind(
+                        exact(KeyCode::Char('h')),
+                        |_| StrategySetupMessage::ToggleSelection,
+                        None,
+                    )
+                    .bind(
+                        exact(KeyCode::Char('l')),
+                        |_| StrategySetupMessage::ToggleSelection,
+                        None,
+                    )
+                    .bind(
+                        exact(KeyCode::Char('y')),
+                        |_| StrategySetupMessage::ConfirmYes,
+                        KeybindHint::new("y/n", "Yes/No"),
+                    )
+                    .bind(
+                        exact(KeyCode::Char('n')),
+                        |_| StrategySetupMessage::ConfirmNo,
+                        None,
+                    )
+                    .bind(
+                        exact(KeyCode::Enter),
+                        enter_msg,
+                        KeybindHint::new("Enter", "Confirm"),
+                    )
+                    .bind(
+                        exact(KeyCode::Esc),
+                        |_| StrategySetupMessage::GoBackToReview,
+                        KeybindHint::new("Esc", "Back"),
+                    )
+                    .bind(
+                        exact(KeyCode::Char('q')),
+                        |_| StrategySetupMessage::Quit,
+                        KeybindHint::new("q", "Quit"),
+                    );
+                kb.subscribe(recipe)
+            }
         }
     }
 
@@ -582,8 +836,10 @@ impl StrategySetupState {
                 self.input_editing = false;
                 None
             }
-            StrategySetupMessage::TextInput(ti_msg) => {
-                self.strategy_input.update(ti_msg);
+            StrategySetupMessage::TextInput(key) => {
+                if let Some(ti_msg) = TextInput::key_to_message(&key) {
+                    self.strategy_input.update(ti_msg);
+                }
                 None
             }
             StrategySetupMessage::SubmitText => {
@@ -630,8 +886,10 @@ impl StrategySetupState {
                 self.start_overview_editing();
                 None
             }
-            StrategySetupMessage::OverviewInput(ti_msg) => {
-                self.overview_input.update(ti_msg);
+            StrategySetupMessage::OverviewInput(key) => {
+                if let Some(ti_msg) = TextInput::key_to_message(&key) {
+                    self.overview_input.update(ti_msg);
+                }
                 None
             }
             StrategySetupMessage::SubmitOverview => {
@@ -666,6 +924,9 @@ impl StrategySetupState {
 
             // -- Review: field editing --
             StrategySetupMessage::FieldDigit(c) => {
+                if !(c.is_ascii_digit() || c == '.') {
+                    return None;
+                }
                 self.field_input.insert_char(c);
                 None
             }
