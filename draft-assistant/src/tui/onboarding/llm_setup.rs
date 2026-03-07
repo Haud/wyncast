@@ -506,8 +506,6 @@ pub enum LlmSetupMessage {
     CancelApiKeyEdit,
     // Connection / flow
     TestConnection,
-    GoNext,
-    Skip,
     Quit,
     // Settings-mode field navigation
     SettingsFieldUp,
@@ -706,16 +704,6 @@ impl LlmSetupState {
                 KeybindHint::new("Esc", "Back"),
             )
             .bind(
-                exact(KeyCode::Char('n')),
-                |_| LlmSetupMessage::GoNext,
-                KeybindHint::new("n", "Next"),
-            )
-            .bind(
-                exact(KeyCode::Char('s')),
-                |_| LlmSetupMessage::Skip,
-                KeybindHint::new("s", "Skip"),
-            )
-            .bind(
                 exact(KeyCode::Tab),
                 |_| LlmSetupMessage::TabNext,
                 KeybindHint::new("Tab", "Next section"),
@@ -857,16 +845,6 @@ impl LlmSetupState {
                 None
             }
 
-            LlmSetupMessage::GoNext => {
-                if self.connection_tested_ok() {
-                    Some(UserCommand::OnboardingAction(OnboardingAction::GoNext))
-                } else {
-                    None
-                }
-            }
-            LlmSetupMessage::Skip => {
-                Some(UserCommand::OnboardingAction(OnboardingAction::Skip))
-            }
             LlmSetupMessage::Quit => Some(UserCommand::Quit),
             LlmSetupMessage::TestConnection => {
                 self.confirmed_through = Some(LlmSetupSection::ApiKey);
