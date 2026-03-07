@@ -8,6 +8,9 @@ mod ws_handler;
 mod llm_handler;
 mod command_handler;
 mod onboarding_handler;
+mod llm_request_manager;
+
+pub use llm_request_manager::LlmRequestManager;
 
 use std::sync::atomic::{AtomicI8, AtomicU64};
 use std::sync::Arc;
@@ -27,7 +30,7 @@ use crate::llm::client::LlmClient;
 use crate::llm::prompt;
 use crate::onboarding::{OnboardingManager, OnboardingProgress, RealFileSystem};
 use crate::protocol::{
-    AppMode, AppSnapshot, ConnectionStatus, LlmEvent, LlmStatus, NominationInfo,
+    AppMode, AppSnapshot, ConnectionStatus, LlmEvent, NominationInfo,
     TabId, TeamSnapshot, UiUpdate, UserCommand,
 };
 use crate::valuation::analysis::{compute_instant_analysis, CategoryNeeds, InstantAnalysis};
@@ -41,18 +44,12 @@ use crate::ws_server::WsEvent;
 // Supporting types
 // ---------------------------------------------------------------------------
 
-/// What the LLM is currently working on.
+/// Tracks which player is currently being analyzed by the LLM.
+/// Used by the preserve_llm guard in ws_handler and duplicate-check in trigger_nomination_analysis.
 #[derive(Debug, Clone, PartialEq)]
-pub enum LlmMode {
-    /// Analyzing a specific nominated player.
-    NominationAnalysis {
-        player_name: String,
-        player_id: String,
-        nominated_by: String,
-        current_bid: u32,
-    },
-    /// Generating a nomination plan (what to nominate next).
-    NominationPlanning,
+pub struct AnalysisPlayer {
+    pub player_name: String,
+    pub player_id: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -99,19 +96,10 @@ pub struct AppState {
     /// with a non-null `draftId`.
     pub espn_draft_id: Option<String>,
     pub previous_extension_state: Option<StateUpdatePayload>,
-    pub current_llm_task: Option<tokio::task::JoinHandle<()>>,
-    pub llm_mode: Option<LlmMode>,
-    /// Monotonically increasing counter identifying the current LLM task.
-    /// Incremented each time a new task is spawned. Events from stale
-    /// generations are discarded in `handle_llm_event`.
-    ///
-    /// u64 overflow is not a practical concern: at one increment per second
-    /// it would take ~584 billion years to wrap.
-    pub llm_generation: u64,
-    pub nomination_analysis_text: String,
-    pub nomination_analysis_status: LlmStatus,
-    pub nomination_plan_text: String,
-    pub nomination_plan_status: LlmStatus,
+    pub llm_requests: LlmRequestManager,
+    pub analysis_request_id: Option<u64>,
+    pub plan_request_id: Option<u64>,
+    pub analysis_player: Option<AnalysisPlayer>,
     pub connection_status: ConnectionStatus,
     /// Timestamp of the last WebSocket message (or connection event) received.
     /// `None` when not connected. Used to detect stale connections when the
@@ -179,13 +167,10 @@ impl AppState {
             draft_id,
             espn_draft_id: None,
             previous_extension_state: None,
-            current_llm_task: None,
-            llm_mode: None,
-            llm_generation: 0,
-            nomination_analysis_text: String::new(),
-            nomination_analysis_status: LlmStatus::Idle,
-            nomination_plan_text: String::new(),
-            nomination_plan_status: LlmStatus::Idle,
+            llm_requests: LlmRequestManager::new(),
+            analysis_request_id: None,
+            plan_request_id: None,
+            analysis_player: None,
             connection_status: ConnectionStatus::Disconnected,
             last_ws_message_time: None,
             active_tab: TabId::Analysis,
@@ -399,14 +384,14 @@ impl AppState {
 
     /// Handle nomination cleared (pick completed for the nominated player).
     ///
-    /// Returns `true` if a nomination planning task was started, so callers
-    /// can send `UiUpdate::PlanStarted` to clear stale plan text in the TUI.
-    pub fn handle_nomination_cleared(&mut self) -> bool {
+    /// Returns `Some(plan_request_id)` if a nomination planning task was started,
+    /// so callers can send `UiUpdate::PlanStarted` to clear stale plan text in the TUI.
+    pub fn handle_nomination_cleared(&mut self) -> Option<u64> {
         self.draft_state.current_nomination = None;
-        self.cancel_llm_task();
-        self.llm_mode = None;
-        self.nomination_analysis_text.clear();
-        self.nomination_analysis_status = LlmStatus::Idle;
+        if let Some(id) = self.analysis_request_id.take() {
+            self.llm_requests.cancel(id);
+        }
+        self.analysis_player = None;
 
         // Auto-trigger nomination planning between picks so the plan panel
         // is populated before the user needs to nominate. Only fire when the
@@ -415,33 +400,35 @@ impl AppState {
             info!("Auto-triggering nomination planning (prefire_planning=true)");
             return self.trigger_nomination_planning();
         }
-        false
+        None
     }
 
-    /// Cancel the current LLM task if one is running.
+    /// Cancel all active LLM tasks.
     pub fn cancel_llm_task(&mut self) {
-        if let Some(handle) = self.current_llm_task.take() {
-            handle.abort();
-            info!("Cancelled previous LLM task");
+        if let Some(id) = self.analysis_request_id.take() {
+            self.llm_requests.cancel(id);
         }
+        if let Some(id) = self.plan_request_id.take() {
+            self.llm_requests.cancel(id);
+        }
+        self.analysis_player = None;
+        info!("Cancelled LLM tasks");
     }
 
     /// Trigger LLM nomination analysis for a nominated player.
     ///
-    /// Cancels any in-flight LLM task, sets `llm_mode` to
-    /// `NominationAnalysis`, builds the analysis prompt from current
-    /// state, and spawns a streaming task that sends tokens through the
-    /// LLM event channel.
+    /// Cancels any in-flight analysis task, builds the analysis prompt from
+    /// current state, and spawns a streaming task via the request manager.
     pub fn trigger_nomination_analysis(&mut self, nomination: &ActiveNomination) {
         // Secondary guard: if already analyzing this exact player, skip to avoid
         // canceling and restarting the active LLM task. This is a backstop for
         // cases where preserve_llm in handle_full_state_sync doesn't fully prevent
         // nomination_changed from firing (e.g., when saved_nomination is None).
-        if let Some(LlmMode::NominationAnalysis { ref player_name, ref player_id, .. }) = self.llm_mode {
-            let same = if !player_id.is_empty() && !nomination.player_id.is_empty() {
-                player_id == &nomination.player_id
+        if let Some(ref ap) = self.analysis_player {
+            let same = if !ap.player_id.is_empty() && !nomination.player_id.is_empty() {
+                ap.player_id == nomination.player_id
             } else {
-                player_name == &nomination.player_name
+                ap.player_name == nomination.player_name
             };
             if same {
                 info!(
@@ -452,7 +439,10 @@ impl AppState {
             }
         }
 
-        self.cancel_llm_task();
+        // Cancel only previous analysis
+        if let Some(id) = self.analysis_request_id.take() {
+            self.llm_requests.cancel(id);
+        }
 
         let my_team = match self.draft_state.my_team() {
             Some(t) => t,
@@ -479,16 +469,11 @@ impl AppState {
             }
         };
 
-        // Set mode and clear previous text (consolidated here so all callers
-        // get consistent behavior).
-        self.llm_mode = Some(LlmMode::NominationAnalysis {
+        // Track which player is being analyzed
+        self.analysis_player = Some(AnalysisPlayer {
             player_name: nomination.player_name.clone(),
             player_id: nomination.player_id.clone(),
-            nominated_by: nomination.nominated_by.clone(),
-            current_bid: nomination.current_bid,
         });
-        self.nomination_analysis_text.clear();
-        self.nomination_analysis_status = LlmStatus::Idle;
 
         let nom_info = NominationInfo {
             player_name: nomination.player_name.clone(),
@@ -516,58 +501,36 @@ impl AppState {
         let client = Arc::clone(&self.llm_client);
         let tx = self.llm_tx.clone();
 
-        // Drain any stale events from a previous task that are sitting in the
-        // channel. Without this, leftover Token/Complete/Error events from an
-        // aborted task would be attributed to the new analysis.
-        // Note: we can't drain here because we don't own the receiver.
-        // Instead we rely on the generation counter to discard stale events.
-
-        // Increment the generation counter so stale events from previous tasks
-        // are discarded in handle_llm_event.
-        self.llm_generation += 1;
-        let generation = self.llm_generation;
-
-        self.nomination_analysis_status = LlmStatus::Streaming;
-
-        let handle = tokio::spawn(async move {
-            if let Err(e) = client
-                .stream_message(&system, &user_content, max_tokens, tx, generation)
-                .await
-            {
-                warn!("LLM analysis task failed: {}", e);
-            }
-        });
-
-        self.current_llm_task = Some(handle);
+        let id = self.llm_requests.start(client, system, user_content, max_tokens, tx);
+        self.analysis_request_id = Some(id);
         info!(
-            "Triggered LLM nomination analysis for {} (bid: ${}, gen: {})",
-            nomination.player_name, nomination.current_bid, generation
+            "Triggered LLM nomination analysis for {} (bid: ${}, request_id: {})",
+            nomination.player_name, nomination.current_bid, id
         );
     }
 
     /// Trigger LLM nomination planning (what to nominate next).
     ///
-    /// Cancels any in-flight LLM task, builds the planning prompt from
-    /// current state, and spawns a streaming task.
+    /// Cancels any in-flight plan task, builds the planning prompt from
+    /// current state, and spawns a streaming task via the request manager.
     ///
-    /// Returns `true` if a planning task was successfully started, `false` if
-    /// it was skipped (e.g. teams not yet registered). Callers that receive
-    /// `true` should send `UiUpdate::PlanStarted` to clear stale plan text in
-    /// the TUI before the first token arrives.
-    pub fn trigger_nomination_planning(&mut self) -> bool {
-        self.cancel_llm_task();
+    /// Returns `Some(request_id)` if a planning task was successfully started,
+    /// `None` if it was skipped (e.g. teams not yet registered). Callers that
+    /// receive `Some` should send `UiUpdate::PlanStarted` to clear stale plan
+    /// text in the TUI before the first token arrives.
+    pub fn trigger_nomination_planning(&mut self) -> Option<u64> {
+        // Cancel only previous plan
+        if let Some(id) = self.plan_request_id.take() {
+            self.llm_requests.cancel(id);
+        }
 
         let my_team = match self.draft_state.my_team() {
             Some(t) => t,
             None => {
                 warn!("trigger_nomination_planning called before teams registered, skipping");
-                return false;
+                return None;
             }
         };
-
-        self.llm_mode = Some(LlmMode::NominationPlanning);
-        self.nomination_plan_text.clear();
-        self.nomination_plan_status = LlmStatus::Streaming;
 
         let system = prompt::system_prompt(self.config.strategy.strategy_overview.as_deref());
         let user_content = prompt::build_nomination_planning_prompt(
@@ -583,21 +546,10 @@ impl AppState {
         let client = Arc::clone(&self.llm_client);
         let tx = self.llm_tx.clone();
 
-        self.llm_generation += 1;
-        let generation = self.llm_generation;
-
-        let handle = tokio::spawn(async move {
-            if let Err(e) = client
-                .stream_message(&system, &user_content, max_tokens, tx, generation)
-                .await
-            {
-                warn!("LLM planning task failed: {}", e);
-            }
-        });
-
-        self.current_llm_task = Some(handle);
-        info!("Triggered LLM nomination planning (gen: {})", generation);
-        true
+        let id = self.llm_requests.start(client, system, user_content, max_tokens, tx);
+        self.plan_request_id = Some(id);
+        info!("Triggered LLM nomination planning (request_id: {})", id);
+        Some(id)
     }
 
     /// Convert extension PickData format to our internal StateUpdatePayload format.
@@ -799,7 +751,7 @@ pub async fn run(
     }
 
     // Cleanup
-    state.cancel_llm_task();
+    state.llm_requests.cancel_all();
     info!("Application event loop exiting");
     Ok(())
 }
@@ -825,7 +777,7 @@ mod tests {
     use crate::db::Database;
     use crate::draft::pick::{DraftPick, Position};
     use crate::draft::state::{ActiveNomination, DraftState};
-    use crate::protocol::{LlmEvent, LlmStatus, OnboardingAction, OnboardingUpdate, UserCommand};
+    use crate::protocol::{LlmEvent, OnboardingAction, OnboardingUpdate, UserCommand};
     use crate::valuation::auction::InflationTracker;
     use crate::valuation::projections::{AllProjections, PitcherType};
     use crate::valuation::zscore::{
@@ -1474,23 +1426,12 @@ mod tests {
 
         let _analysis = state.handle_nomination(&nomination);
 
-        // LLM mode should be set to NominationAnalysis
-        assert!(matches!(
-            state.llm_mode,
-            Some(LlmMode::NominationAnalysis { .. })
-        ));
-        if let Some(LlmMode::NominationAnalysis {
-            player_name,
-            player_id,
-            nominated_by,
-            current_bid,
-        }) = &state.llm_mode
-        {
-            assert_eq!(player_name, "H_Star");
-            assert_eq!(player_id, "espn_1");
-            assert_eq!(nominated_by, "Team 2");
-            assert_eq!(*current_bid, 5);
-        }
+        // analysis_player and analysis_request_id should be set
+        assert!(state.analysis_player.is_some());
+        assert!(state.analysis_request_id.is_some());
+        let ap = state.analysis_player.as_ref().unwrap();
+        assert_eq!(ap.player_name, "H_Star");
+        assert_eq!(ap.player_id, "espn_1");
     }
 
     #[tokio::test]
@@ -1557,8 +1498,6 @@ mod tests {
             eligible_slots: vec![],
         };
         state.handle_nomination(&nom1);
-        state.nomination_analysis_text = "Some previous analysis...".into();
-        state.nomination_analysis_status = LlmStatus::Streaming;
 
         // Second nomination (should cancel first)
         let nom2 = ActiveNomination {
@@ -1573,16 +1512,9 @@ mod tests {
         };
         state.handle_nomination(&nom2);
 
-        // Analysis text should be cleared and new streaming started
-        assert!(state.nomination_analysis_text.is_empty());
-        assert_eq!(state.nomination_analysis_status, LlmStatus::Streaming);
-
-        // LLM mode should be updated to the new nomination
-        if let Some(LlmMode::NominationAnalysis { player_name, .. }) = &state.llm_mode {
-            assert_eq!(player_name, "H_Good");
-        } else {
-            panic!("Expected NominationAnalysis mode");
-        }
+        // analysis_player should be updated to the new nomination
+        let ap = state.analysis_player.as_ref().expect("Expected analysis_player to be set");
+        assert_eq!(ap.player_name, "H_Good");
     }
 
     #[tokio::test]
@@ -1601,24 +1533,20 @@ mod tests {
             eligible_slots: vec![],
         };
         state.handle_nomination(&nom);
-        state.nomination_analysis_text = "Analysis text".into();
-        state.nomination_analysis_status = LlmStatus::Streaming;
 
         // Clear the nomination
-        state.handle_nomination_cleared();
+        let plan_id = state.handle_nomination_cleared();
 
         assert!(state.draft_state.current_nomination.is_none());
-        // Analysis state should be fully reset
-        assert!(state.nomination_analysis_text.is_empty());
-        assert_eq!(state.nomination_analysis_status, LlmStatus::Idle);
+        assert!(state.analysis_player.is_none());
+        assert!(state.analysis_request_id.is_none());
         // With prefire_planning=true and teams registered, planning should
         // auto-trigger so the plan panel is populated between nominations.
         assert!(
-            matches!(state.llm_mode, Some(LlmMode::NominationPlanning)),
-            "expected NominationPlanning mode after clearing (prefire_planning=true), got {:?}",
-            state.llm_mode
+            state.plan_request_id.is_some(),
+            "expected plan_request_id to be set after clearing (prefire_planning=true)"
         );
-        assert_eq!(state.nomination_plan_status, LlmStatus::Streaming);
+        assert!(plan_id.is_some());
     }
 
     #[tokio::test]
@@ -1637,15 +1565,11 @@ mod tests {
             eligible_slots: vec![],
         };
         state.handle_nomination(&nom);
-        state.nomination_analysis_text = "Analysis text".into();
-        state.nomination_analysis_status = LlmStatus::Streaming;
 
         state.handle_nomination_cleared();
 
         assert!(state.draft_state.current_nomination.is_none());
-        assert!(state.llm_mode.is_none());
-        assert!(state.nomination_analysis_text.is_empty());
-        assert_eq!(state.nomination_analysis_status, LlmStatus::Idle);
+        assert!(state.plan_request_id.is_none());
     }
 
     #[tokio::test]
@@ -1654,7 +1578,7 @@ mod tests {
 
         state.handle_nomination_cleared();
 
-        assert!(state.llm_mode.is_none());
+        assert!(state.plan_request_id.is_none());
     }
 
     // -----------------------------------------------------------------------
@@ -1732,19 +1656,16 @@ mod tests {
         let (cmd_tx, cmd_rx) = mpsc::channel(16);
         let (ui_tx, mut ui_rx) = mpsc::channel(64);
 
-        // The generation must match what AppState expects (starts at 0,
-        // but trigger_* would increment it; here we manually set mode
-        // so we use generation 0 to match the initial state).
-        let gen = 0u64;
+        let gen = 42u64;
 
         let handle = tokio::spawn(async move {
             let mut state = state;
-            // Set up LLM mode before entering the loop
-            state.llm_mode = Some(LlmMode::NominationAnalysis {
+            // Register a test request so the handler recognises the event
+            state.llm_requests.track_test_id(gen);
+            state.analysis_request_id = Some(gen);
+            state.analysis_player = Some(AnalysisPlayer {
                 player_name: "Test".into(),
                 player_id: "1".into(),
-                nominated_by: "Team".into(),
-                current_bid: 5,
             });
             run(ws_rx, llm_rx, cmd_rx, ui_tx, state).await
         });
@@ -1763,8 +1684,11 @@ mod tests {
 
         let update = ui_rx.recv().await.unwrap();
         match update {
-            UiUpdate::AnalysisToken(token) => assert_eq!(token, "Hello "),
-            other => panic!("Expected AnalysisToken, got {:?}", other),
+            UiUpdate::LlmUpdate { request_id, update } => {
+                assert_eq!(request_id, gen);
+                assert_eq!(update, crate::protocol::LlmStreamUpdate::Token("Hello ".into()));
+            }
+            other => panic!("Expected LlmUpdate, got {:?}", other),
         }
 
         // Clean up
@@ -1834,7 +1758,7 @@ mod tests {
         // Then receive the NominationUpdate
         let update = ui_rx.recv().await.unwrap();
         match update {
-            UiUpdate::NominationUpdate(info) => {
+            UiUpdate::NominationUpdate { info, .. } => {
                 assert_eq!(info.player_name, "H_Good");
                 assert_eq!(info.current_bid, 5);
             }
@@ -1882,7 +1806,7 @@ mod tests {
         let (ui_tx, mut ui_rx) = mpsc::channel(64);
 
         assert!(state.draft_state.teams.is_empty(), "Teams should start empty");
-        assert!(state.llm_mode.is_none(), "LLM mode should start as None");
+        assert!(state.analysis_request_id.is_none(), "analysis_request_id should start as None");
 
         // Simulate the first STATE_UPDATE with teams + nomination
         let ext_payload = crate::protocol::StateUpdatePayload {
@@ -1921,15 +1845,12 @@ mod tests {
         // Teams should now be registered
         assert_eq!(state.draft_state.teams.len(), 2);
 
-        // LLM mode should be set (nomination analysis was triggered)
+        // Analysis should have been triggered
         assert!(
-            state.llm_mode.is_some(),
-            "LLM mode should be set after first nomination with teams in same update"
+            state.analysis_request_id.is_some(),
+            "analysis_request_id should be set after first nomination with teams in same update"
         );
-        assert!(matches!(
-            state.llm_mode,
-            Some(LlmMode::NominationAnalysis { .. })
-        ));
+        assert!(state.analysis_player.is_some());
 
         // current_nomination should be set on the draft state
         assert!(state.draft_state.current_nomination.is_some());
@@ -1941,7 +1862,7 @@ mod tests {
         // Drain UI updates and verify we got a NominationUpdate
         let mut got_nomination_update = false;
         while let Ok(update) = ui_rx.try_recv() {
-            if let UiUpdate::NominationUpdate(info) = update {
+            if let UiUpdate::NominationUpdate { info, .. } = update {
                 assert_eq!(info.player_name, "H_Star");
                 got_nomination_update = true;
             }
@@ -1988,10 +1909,10 @@ mod tests {
 
         // Teams should still be empty
         assert!(state.draft_state.teams.is_empty());
-        // LLM mode should be None (nomination was skipped)
+        // analysis should be None (nomination was skipped)
         assert!(
-            state.llm_mode.is_none(),
-            "LLM mode should be None since teams aren't registered"
+            state.analysis_request_id.is_none(),
+            "analysis_request_id should be None since teams aren't registered"
         );
         // current_nomination should NOT be set (handle_nomination returned early)
         assert!(
@@ -2039,15 +1960,12 @@ mod tests {
         // Teams should now be registered
         assert_eq!(state.draft_state.teams.len(), 2);
 
-        // LLM mode should now be set (retry triggered the analysis)
+        // Analysis should now be set (retry triggered the analysis)
         assert!(
-            state.llm_mode.is_some(),
-            "LLM mode should be set after teams registered with pending nomination"
+            state.analysis_request_id.is_some(),
+            "analysis_request_id should be set after teams registered with pending nomination"
         );
-        assert!(matches!(
-            state.llm_mode,
-            Some(LlmMode::NominationAnalysis { .. })
-        ));
+        assert!(state.analysis_player.is_some());
 
         // current_nomination should now be set
         assert!(state.draft_state.current_nomination.is_some());
@@ -2059,7 +1977,7 @@ mod tests {
         // Verify we got a NominationUpdate from the retry
         let mut got_nomination_update = false;
         while let Ok(update) = ui_rx.try_recv() {
-            if let UiUpdate::NominationUpdate(info) = update {
+            if let UiUpdate::NominationUpdate { info, .. } = update {
                 assert_eq!(info.player_name, "H_Star");
                 got_nomination_update = true;
             }
@@ -2116,7 +2034,7 @@ mod tests {
         // (from the normal flow, not doubled by the retry)
         let mut nomination_update_count = 0;
         while let Ok(update) = ui_rx.try_recv() {
-            if matches!(update, UiUpdate::NominationUpdate(_)) {
+            if matches!(update, UiUpdate::NominationUpdate { .. }) {
                 nomination_update_count += 1;
             }
         }

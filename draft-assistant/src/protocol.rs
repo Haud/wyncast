@@ -265,6 +265,17 @@ pub enum LlmEvent {
     Error { message: String, generation: u64 },
 }
 
+impl LlmEvent {
+    /// Extract the request ID (generation) from any event variant.
+    pub fn request_id(&self) -> u64 {
+        match self {
+            LlmEvent::Token { generation, .. } => *generation,
+            LlmEvent::Complete { generation, .. } => *generation,
+            LlmEvent::Error { generation, .. } => *generation,
+        }
+    }
+}
+
 /// Commands sent from the TUI to the app orchestrator.
 #[derive(Debug, Clone, PartialEq)]
 pub enum UserCommand {
@@ -308,36 +319,35 @@ pub enum UserCommand {
     Quit,
 }
 
+/// Generic LLM stream update, routed by request ID.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LlmStreamUpdate {
+    /// A new token of streamed output.
+    Token(String),
+    /// Streaming is complete with the final text.
+    Complete(String),
+    /// An error occurred during streaming.
+    Error(String),
+}
+
 /// Updates pushed from the app orchestrator to the TUI render loop.
 #[derive(Debug, Clone)]
 pub enum UiUpdate {
     /// Full state snapshot for a complete redraw.
     StateSnapshot(Box<AppSnapshot>),
-    /// A new token for the analysis panel.
-    AnalysisToken(String),
-    /// Analysis streaming is complete.
-    /// Carries the full final analysis text (may include a truncation note).
-    AnalysisComplete(String),
-    /// An error occurred during LLM analysis.
-    AnalysisError(String),
-    /// A new nomination plan stream is starting; clears any previous plan text.
-    PlanStarted,
-    /// A new token for the nomination plan panel.
-    PlanToken(String),
-    /// Nomination plan streaming is complete.
-    /// Carries the full final plan text (may include a truncation note).
-    PlanComplete(String),
-    /// An error occurred during LLM planning.
-    PlanError(String),
+    /// Generic LLM stream update, routed by request ID.
+    LlmUpdate { request_id: u64, update: LlmStreamUpdate },
     /// Extension connection status changed.
     ConnectionStatus(ConnectionStatus),
-    /// A new nomination is active.
-    NominationUpdate(Box<NominationInfo>),
+    /// A new nomination is active. Carries the analysis request ID if one was started.
+    NominationUpdate { info: Box<NominationInfo>, analysis_request_id: Option<u64> },
     /// Bid updated on the current nomination (same player, new bid amount).
     /// Unlike NominationUpdate, this does NOT clear accumulated LLM text.
     BidUpdate(Box<NominationInfo>),
     /// The current nomination was cleared (pick completed).
     NominationCleared,
+    /// A new nomination plan stream is starting. Carries the plan request ID.
+    PlanStarted { request_id: u64 },
     /// An update for the onboarding wizard (e.g. connection test result).
     OnboardingUpdate(OnboardingUpdate),
     /// The app mode has changed (e.g. onboarding -> draft).

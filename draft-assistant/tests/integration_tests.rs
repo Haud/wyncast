@@ -1040,7 +1040,7 @@ async fn event_loop_processes_state_update_with_picks() {
     // Then receive the NominationUpdate
     let update = ui_rx.recv().await.unwrap();
     match update {
-        UiUpdate::NominationUpdate(info) => {
+        UiUpdate::NominationUpdate { info, .. } => {
             assert_eq!(info.player_name, "Aaron Judge");
             assert_eq!(info.current_bid, 1);
         }
@@ -1123,7 +1123,7 @@ async fn event_loop_incremental_state_updates() {
     // Then receive NominationUpdate for Aaron Judge
     let update = ui_rx.recv().await.unwrap();
     match &update {
-        UiUpdate::NominationUpdate(info) => {
+        UiUpdate::NominationUpdate { info, .. } => {
             assert_eq!(info.player_name, "Aaron Judge");
         }
         other => panic!("Expected NominationUpdate, got {:?}", other),
@@ -1152,13 +1152,13 @@ async fn event_loop_incremental_state_updates() {
             // Previous nomination was cleared; next should be the new one
             let update3 = ui_rx.recv().await.unwrap();
             match &update3 {
-                UiUpdate::NominationUpdate(info) => {
+                UiUpdate::NominationUpdate { info, .. } => {
                     assert_eq!(info.player_name, "Juan Soto");
                 }
                 other => panic!("Expected NominationUpdate for Juan Soto after NominationCleared, got {:?}", other),
             }
         }
-        UiUpdate::NominationUpdate(info) => {
+        UiUpdate::NominationUpdate { info, .. } => {
             assert_eq!(info.player_name, "Juan Soto");
         }
         other => panic!("Expected NominationCleared or NominationUpdate for Juan Soto, got {:?}", other),
@@ -2037,7 +2037,7 @@ async fn event_loop_budget_only_update_triggers_snapshot() {
     );
     let update2 = ui_rx.recv().await.unwrap();
     assert!(
-        matches!(&update2, UiUpdate::NominationUpdate(_)),
+        matches!(&update2, UiUpdate::NominationUpdate { .. }),
         "Expected NominationUpdate from first update, got {:?}", update2
     );
 
@@ -2708,7 +2708,7 @@ async fn event_loop_premature_nomination_does_not_trigger_update() {
     ).await;
 
     match maybe_update {
-        Ok(Some(UiUpdate::NominationUpdate(info))) => {
+        Ok(Some(UiUpdate::NominationUpdate { info, .. })) => {
             panic!(
                 "Premature nomination should not trigger NominationUpdate, but got one for '{}'",
                 info.player_name
@@ -2729,8 +2729,8 @@ async fn event_loop_premature_nomination_does_not_trigger_update() {
 
 /// Verify that multiple sequential LLM analysis requests work correctly.
 ///
-/// Simulates 3 nominations in sequence, each producing tokens and completing.
-/// Events from each task should be routed correctly and the generation counter
+/// Simulates a nomination producing tokens and completing.
+/// Events from the task should be routed correctly and the request manager
 /// should ensure clean handoffs between tasks.
 #[tokio::test]
 async fn multiple_sequential_llm_analysis_requests() {
@@ -2742,13 +2742,12 @@ async fn multiple_sequential_llm_analysis_requests() {
 
     let handle = tokio::spawn(async move {
         let mut state = state;
-        // Simulate nomination 1: set mode and generation
-        state.llm_generation = 1;
-        state.llm_mode = Some(app::LlmMode::NominationAnalysis {
+        // Register a tracked request
+        state.llm_requests.track_test_id(1);
+        state.analysis_request_id = Some(1);
+        state.analysis_player = Some(app::AnalysisPlayer {
             player_name: "Player A".into(),
             player_id: "1".into(),
-            nominated_by: "Team 2".into(),
-            current_bid: 5,
         });
         app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state).await
     });
@@ -2777,22 +2776,22 @@ async fn multiple_sequential_llm_analysis_requests() {
     // Receive the token
     let update = ui_rx.recv().await.unwrap();
     assert!(
-        matches!(update, UiUpdate::AnalysisToken(ref t) if t == "Analysis A: "),
-        "Expected AnalysisToken for nom 1, got {:?}",
+        matches!(update, UiUpdate::LlmUpdate { request_id: 1, update: LlmStreamUpdate::Token(ref t) } if t == "Analysis A: "),
+        "Expected LlmUpdate Token for nom 1, got {:?}",
         update,
     );
 
     // Receive the completion
     let update = ui_rx.recv().await.unwrap();
     assert!(
-        matches!(update, UiUpdate::AnalysisComplete(_)),
-        "Expected AnalysisComplete for nom 1, got {:?}",
+        matches!(update, UiUpdate::LlmUpdate { request_id: 1, update: LlmStreamUpdate::Complete(_) }),
+        "Expected LlmUpdate Complete for nom 1, got {:?}",
         update,
     );
 
-    // After completion, llm_mode should be reset to None internally.
+    // After completion, the request is no longer active.
     // Verify by sending events for a NEW generation (2) that should be
-    // discarded (no mode set from outside the event loop).
+    // discarded (not tracked by the request manager).
     llm_tx
         .send(LlmEvent::Token {
             text: "Orphan token".into(),
@@ -2805,8 +2804,8 @@ async fn multiple_sequential_llm_analysis_requests() {
     tokio::task::yield_now().await;
     tokio::task::yield_now().await;
 
-    // Should not receive any token (discarded because generation doesn't match
-    // or mode is None). Clean up.
+    // Should not receive any token (discarded because request not active).
+    // Clean up.
     cmd_tx.send(UserCommand::Quit).await.unwrap();
     let _ = handle.await;
 }
@@ -2855,7 +2854,7 @@ async fn event_loop_confirmed_nomination_triggers_update() {
     // Then should receive NominationUpdate for the confirmed nomination
     let update2 = ui_rx.recv().await.unwrap();
     match update2 {
-        UiUpdate::NominationUpdate(info) => {
+        UiUpdate::NominationUpdate { info, .. } => {
             assert_eq!(info.player_name, "Michael King");
             assert_eq!(info.current_bid, 2);
             assert_eq!(info.current_bidder, Some("Team 3".into()));
@@ -2869,7 +2868,7 @@ async fn event_loop_confirmed_nomination_triggers_update() {
 
 /// Verify that cancelling one analysis and starting another works correctly.
 ///
-/// Events from the cancelled (old generation) task should be discarded.
+/// Events from the cancelled (old) request should be discarded.
 /// Events from the new task should be processed normally.
 #[tokio::test]
 async fn cancel_analysis_and_start_new_one() {
@@ -2881,20 +2880,19 @@ async fn cancel_analysis_and_start_new_one() {
 
     let handle = tokio::spawn(async move {
         let mut state = state;
-        // Task 1: generation 1
-        state.llm_generation = 1;
-        state.llm_mode = Some(app::LlmMode::NominationAnalysis {
+        // Task 1: request_id 1
+        state.llm_requests.track_test_id(1);
+        state.analysis_request_id = Some(1);
+        state.analysis_player = Some(app::AnalysisPlayer {
             player_name: "Player A".into(),
             player_id: "1".into(),
-            nominated_by: "Team 2".into(),
-            current_bid: 5,
         });
         app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state).await
     });
 
     tokio::task::yield_now().await;
 
-    // Send a token from task 1 (gen 1) -- should be processed
+    // Send a token from task 1 -- should be processed
     llm_tx
         .send(LlmEvent::Token {
             text: "Old ".into(),
@@ -2905,16 +2903,12 @@ async fn cancel_analysis_and_start_new_one() {
 
     let update = ui_rx.recv().await.unwrap();
     assert!(
-        matches!(update, UiUpdate::AnalysisToken(ref t) if t == "Old "),
-        "Expected AnalysisToken from gen 1, got {:?}",
+        matches!(update, UiUpdate::LlmUpdate { request_id: 1, update: LlmStreamUpdate::Token(ref t) } if t == "Old "),
+        "Expected LlmUpdate Token from request 1, got {:?}",
         update,
     );
 
-    // Now simulate cancellation + new task: the app would increment generation
-    // to 2 and set new mode. We simulate this by sending a gen-1 Complete
-    // (which resets mode to None), then sending gen-0 stale tokens.
-
-    // Task 1 completes
+    // Task 1 completes (marks request as done in manager)
     llm_tx
         .send(LlmEvent::Complete {
             full_text: "Old full text".into(),
@@ -2928,13 +2922,13 @@ async fn cancel_analysis_and_start_new_one() {
 
     let update = ui_rx.recv().await.unwrap();
     assert!(
-        matches!(update, UiUpdate::AnalysisComplete(_)),
-        "Expected AnalysisComplete, got {:?}",
+        matches!(update, UiUpdate::LlmUpdate { request_id: 1, update: LlmStreamUpdate::Complete(_) }),
+        "Expected LlmUpdate Complete, got {:?}",
         update,
     );
 
-    // After completion, mode is None. Send a stale event (gen 0) -- should be
-    // silently discarded because gen 0 != current gen 1 and mode is None.
+    // After completion, request 1 is no longer active. Send a stale event
+    // (gen 0) -- should be silently discarded because it's not tracked.
     llm_tx
         .send(LlmEvent::Token {
             text: "Stale!".into(),
@@ -3203,7 +3197,7 @@ async fn premature_then_confirmed_nomination_same_player() {
         ui_rx.recv(),
     ).await;
     match maybe_nom {
-        Ok(Some(UiUpdate::NominationUpdate(info))) => {
+        Ok(Some(UiUpdate::NominationUpdate { info, .. })) => {
             panic!(
                 "Premature nomination should not trigger NominationUpdate, but got one for '{}'",
                 info.player_name
@@ -3240,7 +3234,7 @@ async fn premature_then_confirmed_nomination_same_player() {
     .expect("channel should not be closed");
 
     match update2 {
-        UiUpdate::NominationUpdate(info) => {
+        UiUpdate::NominationUpdate { info, .. } => {
             assert_eq!(info.player_name, "Michael King");
             assert_eq!(info.current_bid, 1);
             assert_eq!(info.nominated_by, "Team 3");
@@ -3252,8 +3246,8 @@ async fn premature_then_confirmed_nomination_same_player() {
     let _ = handle.await;
 }
 
-/// Verify that LLM errors are surfaced to the TUI as AnalysisError and
-/// that subsequent analyses can proceed normally after an error.
+/// Verify that LLM errors are surfaced to the TUI as LlmUpdate::Error and
+/// that subsequent events for the same request are discarded (terminal).
 #[tokio::test]
 async fn error_recovery_allows_subsequent_analyses() {
     let state = create_test_app_state_from_fixtures();
@@ -3264,13 +3258,11 @@ async fn error_recovery_allows_subsequent_analyses() {
 
     let handle = tokio::spawn(async move {
         let mut state = state;
-        // Start with generation 1
-        state.llm_generation = 1;
-        state.llm_mode = Some(app::LlmMode::NominationAnalysis {
+        state.llm_requests.track_test_id(1);
+        state.analysis_request_id = Some(1);
+        state.analysis_player = Some(app::AnalysisPlayer {
             player_name: "Player A".into(),
             player_id: "1".into(),
-            nominated_by: "Team 2".into(),
-            current_bid: 5,
         });
         app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state).await
     });
@@ -3288,18 +3280,18 @@ async fn error_recovery_allows_subsequent_analyses() {
 
     let update = ui_rx.recv().await.unwrap();
     match update {
-        UiUpdate::AnalysisError(msg) => {
+        UiUpdate::LlmUpdate { request_id: 1, update: LlmStreamUpdate::Error(msg) } => {
             assert!(
                 msg.contains("rate limited"),
                 "Error should contain 'rate limited', got: {}",
                 msg
             );
         }
-        other => panic!("Expected AnalysisError, got {:?}", other),
+        other => panic!("Expected LlmUpdate Error, got {:?}", other),
     }
 
-    // After error, mode is reset to None. Further events (even matching gen)
-    // should be discarded because mode is None.
+    // After error, request 1 is completed (removed from active).
+    // Further events should be discarded.
     llm_tx
         .send(LlmEvent::Token {
             text: "After error".into(),
@@ -3330,12 +3322,11 @@ async fn llm_channel_stays_open_across_nominations() {
 
     let handle = tokio::spawn(async move {
         let mut state = state;
-        state.llm_generation = 1;
-        state.llm_mode = Some(app::LlmMode::NominationAnalysis {
+        state.llm_requests.track_test_id(1);
+        state.analysis_request_id = Some(1);
+        state.analysis_player = Some(app::AnalysisPlayer {
             player_name: "Player A".into(),
             player_id: "1".into(),
-            nominated_by: "Team 2".into(),
-            current_bid: 5,
         });
         app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state).await
     });
@@ -3355,10 +3346,10 @@ async fn llm_channel_stays_open_across_nominations() {
         .unwrap();
 
     let update = ui_rx.recv().await.unwrap();
-    assert!(matches!(update, UiUpdate::AnalysisComplete(_)));
+    assert!(matches!(update, UiUpdate::LlmUpdate { request_id: 1, update: LlmStreamUpdate::Complete(_) }));
 
     // Verify the channel is still open by sending more events.
-    // The events won't produce UI updates (mode is None), but the send
+    // The events won't produce UI updates (request not active), but the send
     // should succeed (channel not closed).
     let send_result = llm_tx
         .send(LlmEvent::Token {
@@ -3432,7 +3423,7 @@ async fn premature_player_a_then_confirmed_player_b() {
         ui_rx.recv(),
     ).await;
     match maybe_nom_a {
-        Ok(Some(UiUpdate::NominationUpdate(info))) => {
+        Ok(Some(UiUpdate::NominationUpdate { info, .. })) => {
             panic!(
                 "Premature nomination for Player A should not trigger NominationUpdate, got '{}'",
                 info.player_name
@@ -3468,7 +3459,7 @@ async fn premature_player_a_then_confirmed_player_b() {
     .expect("channel should not be closed");
 
     match update2 {
-        UiUpdate::NominationUpdate(info) => {
+        UiUpdate::NominationUpdate { info, .. } => {
             assert_eq!(info.player_name, "Gunnar Henderson",
                 "NominationUpdate should be for Player B, not Player A");
             assert_eq!(info.current_bid, 3);
@@ -3481,8 +3472,8 @@ async fn premature_player_a_then_confirmed_player_b() {
     let _ = handle.await;
 }
 
-/// Verify that stale events from a previous generation are discarded when
-/// a new generation is active.
+/// Verify that stale events from a previous request are discarded when
+/// a new request is active.
 #[tokio::test]
 async fn stale_generation_events_discarded() {
     let state = create_test_app_state_from_fixtures();
@@ -3493,20 +3484,19 @@ async fn stale_generation_events_discarded() {
 
     let handle = tokio::spawn(async move {
         let mut state = state;
-        // Current generation is 5
-        state.llm_generation = 5;
-        state.llm_mode = Some(app::LlmMode::NominationAnalysis {
+        // Current request is 5
+        state.llm_requests.track_test_id(5);
+        state.analysis_request_id = Some(5);
+        state.analysis_player = Some(app::AnalysisPlayer {
             player_name: "Current Player".into(),
             player_id: "1".into(),
-            nominated_by: "Team 2".into(),
-            current_bid: 10,
         });
         app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state).await
     });
 
     tokio::task::yield_now().await;
 
-    // Send stale events from old generations (1, 3, 4) -- should all be
+    // Send stale events from old request IDs (1, 3, 4) -- should all be
     // silently discarded
     for old_gen in [1, 3, 4] {
         llm_tx
@@ -3518,7 +3508,7 @@ async fn stale_generation_events_discarded() {
             .unwrap();
     }
 
-    // Send current generation event -- should be processed
+    // Send current request event -- should be processed
     llm_tx
         .send(LlmEvent::Token {
             text: "Current gen".into(),
@@ -3527,11 +3517,11 @@ async fn stale_generation_events_discarded() {
         .await
         .unwrap();
 
-    // The first (and only) UI event should be from generation 5
+    // The first (and only) UI event should be from request 5
     let update = ui_rx.recv().await.unwrap();
     assert!(
-        matches!(update, UiUpdate::AnalysisToken(ref t) if t == "Current gen"),
-        "Expected AnalysisToken with 'Current gen', got {:?}",
+        matches!(update, UiUpdate::LlmUpdate { request_id: 5, update: LlmStreamUpdate::Token(ref t) } if t == "Current gen"),
+        "Expected LlmUpdate Token with 'Current gen', got {:?}",
         update,
     );
 
@@ -3550,8 +3540,8 @@ async fn planning_error_surfaced_to_tui() {
 
     let handle = tokio::spawn(async move {
         let mut state = state;
-        state.llm_generation = 1;
-        state.llm_mode = Some(app::LlmMode::NominationPlanning);
+        state.llm_requests.track_test_id(1);
+        state.plan_request_id = Some(1);
         app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state).await
     });
 
@@ -3568,8 +3558,8 @@ async fn planning_error_surfaced_to_tui() {
 
     let update = ui_rx.recv().await.unwrap();
     assert!(
-        matches!(update, UiUpdate::PlanToken(ref t) if t == "Plan: "),
-        "Expected PlanToken, got {:?}",
+        matches!(update, UiUpdate::LlmUpdate { request_id: 1, update: LlmStreamUpdate::Token(ref t) } if t == "Plan: "),
+        "Expected LlmUpdate Token, got {:?}",
         update,
     );
 
@@ -3583,14 +3573,14 @@ async fn planning_error_surfaced_to_tui() {
 
     let update = ui_rx.recv().await.unwrap();
     match update {
-        UiUpdate::PlanError(msg) => {
+        UiUpdate::LlmUpdate { request_id: 1, update: LlmStreamUpdate::Error(msg) } => {
             assert!(
                 msg.contains("Network timeout"),
                 "Error should contain 'Network timeout', got: {}",
                 msg,
             );
         }
-        other => panic!("Expected PlanError, got {:?}", other),
+        other => panic!("Expected LlmUpdate Error, got {:?}", other),
     }
 
     cmd_tx.send(UserCommand::Quit).await.unwrap();
