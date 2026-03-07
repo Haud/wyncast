@@ -170,6 +170,9 @@ impl App {
                                         Some(onboarding::llm_setup::LlmSetupSection::Model);
                                     self.llm_setup.active_section =
                                         onboarding::llm_setup::LlmSetupSection::ApiKey;
+                                    self.llm_setup.api_key_backup =
+                                        self.llm_setup.api_key_input.value().to_string();
+                                    self.llm_setup.api_key_editing = true;
                                 }
                             }
                         }
