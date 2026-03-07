@@ -16,6 +16,12 @@ use ratatui::Frame;
 use crate::draft::pick::Position;
 use crate::tui::action::Action;
 use crate::tui::scroll::{ScrollDirection, ScrollState};
+use crate::tui::subscription::{
+    Subscription, SubscriptionId,
+    keybinding::{
+        exact, KeyBindingRecipe, KeybindHint, KeybindManager, KeyTrigger, PRIORITY_CAPTURE,
+    },
+};
 use crate::tui::text_input::TextInput;
 use crate::tui::widgets::focused_border_style;
 use crate::valuation::zscore::PlayerValuation;
@@ -40,6 +46,7 @@ pub struct AvailablePanel {
     filter_text: TextInput,
     filter_mode: bool,
     position_filter: Option<Position>,
+    sub_id: SubscriptionId,
 }
 
 impl AvailablePanel {
@@ -49,7 +56,41 @@ impl AvailablePanel {
             filter_text: TextInput::new(),
             filter_mode: false,
             position_filter: None,
+            sub_id: SubscriptionId::unique(),
         }
+    }
+
+    /// Declare keybindings for the subscription system.
+    ///
+    /// When filter mode is active, returns a capturing
+    /// `Subscription<AvailablePanelMessage>` at `PRIORITY_CAPTURE` that
+    /// handles Esc (cancel), Enter (apply), and character input.
+    /// When filter mode is inactive, returns `Subscription::none()`.
+    pub fn subscription(&self, kb: &mut KeybindManager) -> Subscription<AvailablePanelMessage> {
+        if !self.filter_mode {
+            return Subscription::none();
+        }
+
+        let recipe = KeyBindingRecipe::new(self.sub_id)
+            .priority(PRIORITY_CAPTURE)
+            .capture()
+            .bind(
+                exact(KeyCode::Esc),
+                |_| AvailablePanelMessage::ExitFilterMode { clear: true },
+                KeybindHint::new("Esc", "Cancel filter"),
+            )
+            .bind(
+                exact(KeyCode::Enter),
+                |_| AvailablePanelMessage::ExitFilterMode { clear: false },
+                KeybindHint::new("Enter", "Apply filter"),
+            )
+            .bind(
+                KeyTrigger::AnyChar,
+                |k| AvailablePanelMessage::FilterKeyPress(k),
+                KeybindHint::new("a-z", "Type to filter"),
+            );
+
+        kb.subscribe(recipe)
     }
 
     pub fn update(&mut self, msg: AvailablePanelMessage) -> Option<Action> {

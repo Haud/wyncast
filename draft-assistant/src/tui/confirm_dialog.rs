@@ -11,6 +11,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
+use crate::tui::subscription::{
+    Subscription, SubscriptionId,
+    keybinding::{exact, KeyBindingRecipe, KeybindHint, KeybindManager, KeyTrigger, PRIORITY_MODAL},
+};
+
 /// A confirmation option: the key character, its display label, and its color.
 #[derive(Debug, Clone)]
 pub struct ConfirmOption {
@@ -51,6 +56,7 @@ pub struct ConfirmDialog {
     width: u16,
     height: u16,
     options: Vec<ConfirmOption>,
+    sub_id: SubscriptionId,
 }
 
 impl ConfirmDialog {
@@ -68,7 +74,54 @@ impl ConfirmDialog {
             width,
             height,
             options,
+            sub_id: SubscriptionId::unique(),
         }
+    }
+
+    /// Declare keybindings for the subscription system.
+    ///
+    /// Returns a capturing `Subscription<ConfirmMessage>` at `PRIORITY_MODAL`
+    /// when the dialog is open, or `Subscription::none()` when closed.
+    ///
+    /// Uses `KeyTrigger::AnyChar` to capture all character keys (case
+    /// normalisation and option validation remain in `key_to_message` /
+    /// `update` — this method only ensures the dialog swallows all char keys
+    /// and Esc while open).
+    pub fn subscription(&self, kb: &mut KeybindManager) -> Subscription<ConfirmMessage> {
+        if !self.open {
+            return Subscription::none();
+        }
+
+        // Build hint labels from the configured options.
+        let option_hints: String = self
+            .options
+            .iter()
+            .filter(|o| o.key != '\0')
+            .map(|o| o.label.as_str())
+            .collect::<Vec<_>>()
+            .join("/");
+
+        let recipe = KeyBindingRecipe::new(self.sub_id)
+            .priority(PRIORITY_MODAL)
+            .capture()
+            .bind(
+                exact(KeyCode::Esc),
+                |_| ConfirmMessage::Cancel,
+                KeybindHint::new("Esc", "Cancel"),
+            )
+            .bind(
+                KeyTrigger::AnyChar,
+                |k| {
+                    if let KeyCode::Char(ch) = k.code {
+                        ConfirmMessage::Confirm(ch.to_ascii_lowercase())
+                    } else {
+                        ConfirmMessage::Cancel
+                    }
+                },
+                KeybindHint::new(option_hints, "Confirm"),
+            );
+
+        kb.subscribe(recipe)
     }
 
     /// Process a message. Returns `Some(ConfirmResult)` when a choice is made.

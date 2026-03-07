@@ -16,6 +16,12 @@ use ratatui::Frame;
 
 use crate::draft::pick::Position;
 use crate::tui::text_input::TextInput;
+use crate::tui::subscription::{
+    Subscription, SubscriptionId,
+    keybinding::{
+        exact, KeyBindingRecipe, KeybindHint, KeybindManager, KeyTrigger, PRIORITY_MODAL,
+    },
+};
 
 // ---------------------------------------------------------------------------
 // Action
@@ -60,7 +66,7 @@ pub enum PositionFilterModalMessage {
 const MODAL_WIDTH: u16 = 30;
 
 /// State for the position filter modal overlay.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct PositionFilterModal {
     /// Whether the modal is currently visible.
     pub open: bool,
@@ -68,6 +74,18 @@ pub struct PositionFilterModal {
     search_text: TextInput,
     /// Index into the *filtered* list of options that is currently highlighted.
     selected_index: usize,
+    sub_id: SubscriptionId,
+}
+
+impl Default for PositionFilterModal {
+    fn default() -> Self {
+        Self {
+            open: false,
+            search_text: TextInput::default(),
+            selected_index: 0,
+            sub_id: SubscriptionId::unique(),
+        }
+    }
 }
 
 impl PositionFilterModal {
@@ -132,6 +150,51 @@ impl PositionFilterModal {
                 }
             }
         }
+    }
+
+    /// Declare keybindings for the subscription system.
+    ///
+    /// Returns a capturing `Subscription<PositionFilterModalMessage>` at
+    /// `PRIORITY_MODAL` when the modal is open, or `Subscription::none()` when
+    /// closed.
+    pub fn subscription(
+        &self,
+        kb: &mut KeybindManager,
+    ) -> Subscription<PositionFilterModalMessage> {
+        if !self.open {
+            return Subscription::none();
+        }
+
+        let recipe = KeyBindingRecipe::new(self.sub_id)
+            .priority(PRIORITY_MODAL)
+            .capture()
+            .bind(
+                exact(KeyCode::Esc),
+                |_| PositionFilterModalMessage::Close,
+                KeybindHint::new("Esc", "Cancel"),
+            )
+            .bind(
+                exact(KeyCode::Enter),
+                |_| PositionFilterModalMessage::Confirm,
+                KeybindHint::new("Enter", "Select"),
+            )
+            .bind(
+                exact(KeyCode::Up),
+                |_| PositionFilterModalMessage::MoveUp,
+                KeybindHint::new("↑", "Up"),
+            )
+            .bind(
+                exact(KeyCode::Down),
+                |_| PositionFilterModalMessage::MoveDown,
+                KeybindHint::new("↓", "Down"),
+            )
+            .bind(
+                KeyTrigger::AnyChar,
+                |k| PositionFilterModalMessage::SearchKey(k),
+                KeybindHint::new("a-z", "Search"),
+            );
+
+        kb.subscribe(recipe)
     }
 
     /// Process a message and return an optional action for the parent.
