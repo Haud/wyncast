@@ -51,13 +51,20 @@ pub(super) async fn handle_ws_message(
 
 /// Handle a full state sync from the extension (on connect or reconnect).
 ///
-/// Resets the in-memory draft state (picks, rosters, budgets) and rebuilds it
-/// entirely from the snapshot payload. After the reset, delegates to
-/// `handle_state_update` with `previous_extension_state` cleared so that
-/// `compute_state_diff` treats every pick in the snapshot as new (applied
-/// against an empty baseline). This prevents corrupted state that would
-/// result from applying incremental diffs against a blank slate when resuming
-/// a mid-draft session.
+/// ESPN virtualizes the pick list in the draft DOM, so the extension can only
+/// scrape a window of recent picks — not the full history. If we reset all
+/// in-memory state and tried to rebuild from this incomplete pick list,
+/// earlier picks (keepers, early draft picks) would be lost, leaving rosters
+/// empty and the available-players pool stale.
+///
+/// Instead of resetting, this function preserves the existing draft state
+/// (picks, rosters, available players, scarcity, inflation, category needs)
+/// and clears `previous_extension_state` so that `compute_state_diff` treats
+/// all incoming picks as potentially new. The existing dedup logic in
+/// `record_pick` (matching on player_name + team_name, or espn_player_id)
+/// ensures already-known picks are skipped, while truly new picks (that
+/// happened during a disconnect) are applied. Team budgets are still
+/// reconciled from ESPN's authoritative data via `reconcile_budgets`.
 ///
 /// The extension also sends FULL_STATE_SYNC every 10 seconds as a periodic
 /// keyframe. To avoid restarting a streaming LLM analysis every time one of
@@ -69,7 +76,7 @@ pub(super) async fn handle_full_state_sync(
     ui_tx: &mpsc::Sender<UiUpdate>,
 ) {
     info!(
-        "Received FULL_STATE_SYNC with {} picks — resetting draft state",
+        "Received FULL_STATE_SYNC with {} picks",
         ext_payload.picks.len()
     );
 
@@ -89,36 +96,30 @@ pub(super) async fn handle_full_state_sync(
         _ => false,
     };
 
-    // Save current nomination before resetting so we can restore it (and use
-    // it as a stub baseline for compute_state_diff) when the nomination is
-    // unchanged.
+    // Save current nomination so we can use it as a stub baseline for
+    // compute_state_diff when the nomination is unchanged.
     let saved_nomination = state.draft_state.current_nomination.clone();
 
-    // Reset in-memory draft state so the snapshot is applied from scratch.
-    // Preserve salary_cap and roster_config (stored inside DraftState).
-    state.draft_state = DraftState::new(
-        state.config.league.salary_cap,
-        &state.config.league.roster,
-    );
-
-    // Reset valuation pool and derived state so they're rebuilt cleanly
-    // after all snapshot picks are applied.
-    state.available_players =
-        valuation::compute_initial(&state.all_projections, &state.config)
-            .unwrap_or_default();
-    state.scarcity = compute_scarcity(&state.available_players, &state.config.league);
-    state.inflation = InflationTracker::new();
-    state.category_needs = CategoryNeeds::default();
+    // DO NOT reset draft_state, available_players, scarcity, inflation, or
+    // category_needs. ESPN's pick list is virtualized — only a window of
+    // recent picks is present in the DOM, so resetting would destroy
+    // known-good state (keepers, early picks) that cannot be recovered from
+    // the payload. Instead, clear previous_extension_state so
+    // compute_state_diff treats all incoming picks as potentially new, and
+    // rely on record_pick's existing dedup logic (player_name + team_name,
+    // or espn_player_id) to skip already-known picks. Team budgets are
+    // still reconciled from ESPN's authoritative data via reconcile_budgets.
 
     if preserve_llm {
         // Same nomination is still active: keep the LLM task and mode so
         // streaming continues uninterrupted.
         //
         // Build a stub previous state for compute_state_diff.  Empty picks
-        // ensures all snapshot picks are treated as new (correct for rebuild).
-        // Preserved nomination prevents compute_state_diff from treating the
-        // same player as a new nomination (which would fire NominationUpdate
-        // and restart the LLM analysis).
+        // ensures all snapshot picks are treated as potentially new (dedup
+        // in record_pick will skip known ones). Preserved nomination
+        // prevents compute_state_diff from treating the same player as a
+        // new nomination (which would fire NominationUpdate and restart
+        // the LLM analysis).
         state.previous_extension_state = saved_nomination.as_ref().map(|nom| StateUpdatePayload {
             picks: vec![],
             current_nomination: Some(NominationPayload {
@@ -140,8 +141,9 @@ pub(super) async fn handle_full_state_sync(
             saved_nomination.as_ref().map(|n| n.player_name.as_str()).unwrap_or("unknown")
         );
     } else {
-        // Nomination changed or no active analysis: clear all LLM state so
-        // handle_state_update can start fresh.
+        // Nomination changed or no active analysis: clear previous state
+        // so compute_state_diff re-evaluates all picks. record_pick's
+        // dedup will skip already-known picks.
         state.previous_extension_state = None;
         state.cancel_llm_task();
         state.llm_mode = None;
@@ -157,9 +159,9 @@ pub(super) async fn handle_full_state_sync(
     // NominationUpdate will not be sent to the TUI.
     handle_state_update(state, ext_payload, ui_tx).await;
 
-    // Restore current_nomination after the draft state reset if it wasn't set
-    // by handle_state_update (happens when bid/bidder also didn't change, so
-    // neither nomination_changed nor bid_updated fired).
+    // Restore current_nomination if it wasn't set by handle_state_update
+    // (happens when bid/bidder also didn't change, so neither
+    // nomination_changed nor bid_updated fired).
     if preserve_llm && state.draft_state.current_nomination.is_none() {
         state.draft_state.current_nomination = saved_nomination;
     }

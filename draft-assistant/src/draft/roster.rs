@@ -182,8 +182,15 @@ impl Roster {
         assigned_slot: Option<u16>,
         espn_player_id: Option<&str>,
     ) -> bool {
-        // Fall back to single-position logic if no slot data provided at all
-        if eligible_slots.is_empty() && assigned_slot.is_none() {
+        // Fall back to single-position logic if no slot data provided, or if
+        // the only slot info is a combo assigned_slot (OF/MI/CI/P) that
+        // position_from_espn_slot returns None for — the authoritative path
+        // below would fail silently, placing the player in UTIL/bench instead
+        // of the correct position slot.
+        let assigned_maps_to_position = assigned_slot
+            .map(|s| position_from_espn_slot(s).is_some())
+            .unwrap_or(false);
+        if eligible_slots.is_empty() && !assigned_maps_to_position {
             return self.add_player(name, position_str, price, espn_player_id);
         }
 
@@ -978,5 +985,74 @@ mod tests {
             .find(|s| s.position == Position::StartingPitcher && s.player.is_some())
             .unwrap();
         assert_eq!(sp_slot.player.as_ref().unwrap().name, "SP Player");
+    }
+
+    // -- Combo assigned_slot fallback tests --
+
+    #[test]
+    fn add_player_with_slots_combo_assigned_slot_falls_back_to_single_position() {
+        // DOM-scraped picks have eligible_slots=[] and assigned_slot is the ESPN
+        // slot the player occupies. For outfielders this is ESPN_SLOT_OF (5), a
+        // combo slot that position_from_espn_slot returns None for. Without the
+        // fallback fix, the authoritative path silently fails and the player
+        // ends up in UTIL/bench instead of an OF slot.
+        let mut roster = Roster::new(&test_roster_config());
+        let assigned = Some(super::super::pick::ESPN_SLOT_OF); // combo slot 5
+        assert!(roster.add_player_with_slots("Juan Soto", "RF", 45, &[], assigned, None));
+
+        // Should be in RF via single-position fallback (not UTIL or bench)
+        let rf_slot = roster
+            .slots
+            .iter()
+            .find(|s| s.position == Position::RightField)
+            .unwrap();
+        assert!(
+            rf_slot.player.is_some(),
+            "OF player with combo assigned_slot should land in RF via fallback"
+        );
+        assert_eq!(rf_slot.player.as_ref().unwrap().name, "Juan Soto");
+
+        let util = roster
+            .slots
+            .iter()
+            .find(|s| s.position == Position::Utility)
+            .unwrap();
+        assert!(util.player.is_none(), "UTIL should remain empty");
+    }
+
+    #[test]
+    fn add_player_with_slots_combo_assigned_slot_mi_falls_back() {
+        // MI (slot 6) is also a combo slot. A 2B player with assigned_slot=MI
+        // and empty eligible_slots should fall back to single-position logic.
+        let mut roster = Roster::new(&test_roster_config());
+        let assigned = Some(super::super::pick::ESPN_SLOT_MI); // combo slot 6
+        assert!(roster.add_player_with_slots("Jose Altuve", "2B", 30, &[], assigned, None));
+
+        let slot_2b = roster
+            .slots
+            .iter()
+            .find(|s| s.position == Position::SecondBase)
+            .unwrap();
+        assert!(
+            slot_2b.player.is_some(),
+            "2B player with MI assigned_slot should land in 2B via fallback"
+        );
+        assert_eq!(slot_2b.player.as_ref().unwrap().name, "Jose Altuve");
+    }
+
+    #[test]
+    fn add_player_with_slots_real_assigned_slot_uses_authoritative_path() {
+        // When assigned_slot maps to a real position (e.g., SP slot 14),
+        // the authoritative path should be used, NOT the fallback.
+        let mut roster = Roster::new(&test_roster_config());
+        let assigned = Some(super::super::pick::ESPN_SLOT_SP); // real slot 14
+        assert!(roster.add_player_with_slots("Corbin Burnes", "SP", 30, &[], assigned, None));
+
+        let sp_slot = roster
+            .slots
+            .iter()
+            .find(|s| s.position == Position::StartingPitcher && s.player.is_some())
+            .unwrap();
+        assert_eq!(sp_slot.player.as_ref().unwrap().name, "Corbin Burnes");
     }
 }
