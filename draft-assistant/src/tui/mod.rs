@@ -372,6 +372,23 @@ pub async fn run(
 
             // Render tick
             _ = render_tick.tick() => {
+                // Fire a Tick event for timer subscriptions before rebuilding.
+                // This allows TimerRecipe listeners to fire on the render cadence.
+                let now = std::time::Instant::now();
+                if let Some(msg) = sub_manager.process(&AppEvent::Tick(now)) {
+                    if let Some(action) = app.update(msg) {
+                        match action {
+                            Action::Quit => {
+                                let _ = cmd_tx.send(UserCommand::Quit).await;
+                                break;
+                            }
+                            Action::Command(cmd) => {
+                                let _ = cmd_tx.send(cmd).await;
+                            }
+                        }
+                    }
+                }
+
                 // Clear and rebuild hint registry + sync subscriptions.
                 kb_manager.clear();
                 let sub = app.subscription(&mut kb_manager);

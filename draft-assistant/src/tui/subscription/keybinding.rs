@@ -190,8 +190,10 @@ impl<M: 'static> Listener for KeyBindingListener<M> {
     type Output = M;
 
     fn process(&mut self, event: &AppEvent) -> Option<M> {
+        // Only key events are relevant for keybinding subscriptions.
         let key = match event {
             AppEvent::Key(k) => k,
+            AppEvent::Tick(_) => return None,
         };
         for entry in &self.entries {
             if entry.trigger.matches(key) {

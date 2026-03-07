@@ -6,6 +6,8 @@
 // - `subscription()` — declare keybindings for the subscription system
 // - `view()` — render dispatch
 
+use std::time::Duration;
+
 use crossterm::event::KeyCode;
 use ratatui::Frame;
 
@@ -14,6 +16,7 @@ use crate::tui::subscription::{Subscription, SubscriptionId};
 use crate::tui::subscription::keybinding::{
     ctrl, KeyBindingRecipe, KeybindManager, PRIORITY_MODAL,
 };
+use crate::tui::subscription::timer::TimerRecipe;
 use super::action::Action;
 use super::confirm_dialog::ConfirmDialog;
 use super::draft::main_panel::analysis::AnalysisPanelMessage;
@@ -41,6 +44,11 @@ pub struct App {
     pub confirm_exit_settings: ConfirmDialog,
     /// Stable ID for the global Ctrl+C subscription (never changes).
     sub_id_global: SubscriptionId,
+    /// Stable ID for the 500ms timer subscription (never changes).
+    sub_id_tick: SubscriptionId,
+    /// Monotonically incrementing counter advanced on each 500ms timer tick.
+    /// Useful for blinking indicators or periodic UI refresh.
+    pub tick_count: u64,
 }
 
 impl App {
@@ -54,6 +62,8 @@ impl App {
             settings_tab: SettingsSection::LlmConfig,
             confirm_exit_settings: ConfirmDialog::unsaved_changes(),
             sub_id_global: SubscriptionId::unique(),
+            sub_id_tick: SubscriptionId::unique(),
+            tick_count: 0,
         }
     }
 
@@ -313,6 +323,9 @@ pub enum AppMessage {
     Quit,
     /// Delegate a message to the draft screen.
     Draft(DraftScreenMessage),
+    /// Fired by the 500ms `TimerRecipe`. Used for blinking indicators and
+    /// other periodic UI refreshes. Increments `App::tick_count`.
+    Tick,
 }
 
 impl App {
@@ -326,6 +339,10 @@ impl App {
         match msg {
             AppMessage::Quit => Some(Action::Quit),
             AppMessage::Draft(m) => self.draft_screen.update(m),
+            AppMessage::Tick => {
+                self.tick_count = self.tick_count.wrapping_add(1);
+                None
+            }
         }
     }
 
@@ -346,6 +363,14 @@ impl App {
                 ),
         );
 
+        // 500ms timer — bypasses KeybindManager entirely (no hints).
+        let timer_sub = TimerRecipe::new(
+            self.sub_id_tick,
+            Duration::from_millis(500),
+            || AppMessage::Tick,
+        )
+        .build();
+
         let mode_sub = match &self.app_mode {
             AppMode::Draft => self
                 .draft_screen
@@ -356,6 +381,6 @@ impl App {
             AppMode::Onboarding(_) | AppMode::Settings(_) => Subscription::none(),
         };
 
-        Subscription::batch([global, mode_sub])
+        Subscription::batch([global, timer_sub, mode_sub])
     }
 }
