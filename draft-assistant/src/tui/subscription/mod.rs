@@ -16,6 +16,8 @@
 // - [`Subscription<M>`] — generic container of recipes; supports `none`, `batch`, `map`
 // - [`SubscriptionManager<M>`] — diffs subscriptions, activates/drops listeners, routes events
 
+pub mod keybinding;
+
 use std::collections::HashSet;
 
 // ---------------------------------------------------------------------------
