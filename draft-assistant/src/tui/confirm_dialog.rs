@@ -2,9 +2,9 @@
 //
 // Extracts the shared pattern from quit_confirm and unsaved_changes_confirm
 // into a configurable, self-contained component with its own state, update,
-// view, and key-to-message mapping.
+// subscription, and view.
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -142,29 +142,6 @@ impl ConfirmDialog {
         }
     }
 
-    /// Convert a key event to a message, if relevant.
-    ///
-    /// Returns `None` if the dialog is closed or the key doesn't match any
-    /// option or Esc.
-    pub fn key_to_message(&self, key: KeyEvent) -> Option<ConfirmMessage> {
-        if !self.open {
-            return None;
-        }
-        match key.code {
-            KeyCode::Esc => Some(ConfirmMessage::Cancel),
-            KeyCode::Char(ch) => {
-                // Match case-insensitively against option keys
-                let lower = ch.to_ascii_lowercase();
-                if self.options.iter().any(|o| o.key.to_ascii_lowercase() == lower) {
-                    Some(ConfirmMessage::Confirm(lower))
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
-    }
-
     /// Render the dialog centered on the given area.
     pub fn view(&self, frame: &mut Frame, area: Rect) {
         if !self.open {
@@ -227,8 +204,8 @@ impl ConfirmDialog {
     /// Unsaved changes confirmation: "Save changes? (y/n/Esc)"
     ///
     /// The Esc option is displayed but uses a sentinel key (`'\0'`) that will
-    /// never match a `KeyCode::Char`. Esc is handled separately by
-    /// `key_to_message` (via `KeyCode::Esc`), so the sentinel is purely for
+    /// never match a `KeyCode::Char`. Esc is handled separately by the
+    /// subscription (via `KeyCode::Esc`), so the sentinel is purely for
     /// display purposes.
     pub fn unsaved_changes() -> Self {
         Self::new(
@@ -270,11 +247,6 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::KeyModifiers;
-
-    fn key(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::NONE)
-    }
 
     // -- Constructor tests --
 
@@ -332,53 +304,6 @@ mod tests {
         let result = d.update(ConfirmMessage::Cancel);
         assert!(!d.open);
         assert_eq!(result, Some(ConfirmResult::Cancelled));
-    }
-
-    // -- key_to_message tests --
-
-    #[test]
-    fn key_to_message_when_closed_returns_none() {
-        let d = ConfirmDialog::quit();
-        assert!(!d.open);
-        assert!(d.key_to_message(key(KeyCode::Char('y'))).is_none());
-    }
-
-    #[test]
-    fn key_to_message_matching_option() {
-        let mut d = ConfirmDialog::quit();
-        d.open = true;
-        assert_eq!(
-            d.key_to_message(key(KeyCode::Char('y'))),
-            Some(ConfirmMessage::Confirm('y'))
-        );
-    }
-
-    #[test]
-    fn key_to_message_case_insensitive() {
-        let mut d = ConfirmDialog::quit();
-        d.open = true;
-        assert_eq!(
-            d.key_to_message(key(KeyCode::Char('Y'))),
-            Some(ConfirmMessage::Confirm('y'))
-        );
-    }
-
-    #[test]
-    fn key_to_message_esc_returns_cancel() {
-        let mut d = ConfirmDialog::quit();
-        d.open = true;
-        assert_eq!(
-            d.key_to_message(key(KeyCode::Esc)),
-            Some(ConfirmMessage::Cancel)
-        );
-    }
-
-    #[test]
-    fn key_to_message_unrecognized_returns_none() {
-        let mut d = ConfirmDialog::quit();
-        d.open = true;
-        assert!(d.key_to_message(key(KeyCode::Char('z'))).is_none());
-        assert!(d.key_to_message(key(KeyCode::Enter)).is_none());
     }
 
     // -- centered_rect tests --

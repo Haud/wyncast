@@ -34,7 +34,6 @@ use crate::tui::app::AppMessage;
 use crate::tui::subscription::{AppEvent, SubscriptionManager};
 use crate::tui::subscription::keybinding::KeybindManager;
 
-use draft::DraftScreen;
 pub use onboarding::llm_setup::LlmSetupState;
 pub use onboarding::strategy_setup::StrategySetupState;
 pub use text_input::{TextInput, TextInputMessage};
@@ -108,35 +107,8 @@ impl FocusPanel {
     }
 }
 
-// ---------------------------------------------------------------------------
-// KeybindHint
-// ---------------------------------------------------------------------------
-
-/// A single keyboard shortcut hint displayed in the help bar.
-///
-/// Each hint pairs a key label (e.g. `"q"`, `"Tab"`, `"↑↓"`) with a short
-/// human-readable description (e.g. `"Quit"`, `"Focus"`, `"Scroll"`).
-///
-/// The active set of hints is stored in [`app::App::active_keybinds`],
-/// recomputed on every render frame by [`app::App::compute_keybinds`]. The
-/// help bar is a dumb renderer that displays whatever hints are present there.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KeybindHint {
-    /// Short key label shown in the help bar (e.g. `"q"`, `"Tab"`, `"↑↓/j/k"`).
-    pub key: String,
-    /// Human-readable description of the action (e.g. `"Quit"`, `"Focus"`).
-    pub description: String,
-}
-
-impl KeybindHint {
-    /// Construct a new hint from string-like values.
-    pub fn new(key: impl Into<String>, description: impl Into<String>) -> Self {
-        KeybindHint {
-            key: key.into(),
-            description: description.into(),
-        }
-    }
-}
+// Re-export the canonical KeybindHint from the subscription system.
+pub use subscription::keybinding::KeybindHint;
 
 // ---------------------------------------------------------------------------
 // BudgetStatus
@@ -244,17 +216,18 @@ pub(crate) fn render_help_bar(
     render_keybind_hints(frame, area, keybinds);
 }
 
-/// Render the help bar from within the DraftScreen component.
+/// Render the help bar for draft mode.
 ///
-/// This is a draft-mode-specific variant that takes a DraftScreen reference
-/// instead of an App reference, used by `DraftScreen::view()`.
-pub(crate) fn render_help_bar_from_draft(
+/// When filter mode is active, shows an inline filter input bar with the
+/// current filter text. Otherwise, renders the standard keybind hint row.
+pub(crate) fn render_help_bar_draft(
     frame: &mut Frame,
     area: Rect,
-    draft_screen: &DraftScreen,
+    filter_mode: bool,
+    filter_text: &str,
     keybinds: &[KeybindHint],
 ) {
-    if draft_screen.main_panel.available.filter_mode() {
+    if filter_mode {
         let spans = vec![
             Span::styled(
                 " FILTER ",
@@ -265,7 +238,7 @@ pub(crate) fn render_help_bar_from_draft(
             ),
             Span::styled(" ", Style::default()),
             Span::styled(
-                draft_screen.main_panel.available.filter_text().value().to_string(),
+                filter_text.to_string(),
                 Style::default()
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD),
@@ -405,12 +378,7 @@ pub async fn run(
                 sub_manager.sync(sub);
 
                 // Draw using hints from kb_manager.
-                // Convert from keybinding::KeybindHint to tui::KeybindHint.
-                app.active_keybinds = kb_manager
-                    .hints()
-                    .into_iter()
-                    .map(|h| KeybindHint::new(h.key, h.description))
-                    .collect();
+                app.active_keybinds = kb_manager.hints();
                 terminal.draw(|frame| app.view(frame))?;
             }
         }
@@ -432,9 +400,7 @@ mod tests {
     use crate::protocol::{
         AppMode, ConnectionStatus, LlmStatus, NominationInfo, TabId, TeamSnapshot,
     };
-    use crossterm::event::KeyCode;
     use draft::main_panel::analysis::AnalysisPanelMessage;
-    use draft::main_panel::available::AvailablePanelMessage;
     use draft::main_panel::MainPanelMessage;
     use draft::sidebar::plan::PlanPanelMessage;
     use llm_stream::LlmStreamMessage;
@@ -783,319 +749,6 @@ mod tests {
         let hint = KeybindHint::new(String::from("Tab"), "Focus");
         assert_eq!(hint.key, "Tab");
         assert_eq!(hint.description, "Focus");
-    }
-
-    // -- compute_keybinds --
-
-    /// Helper: extract all key labels from a hint list.
-    fn keys(hints: &[KeybindHint]) -> Vec<&str> {
-        hints.iter().map(|h| h.key.as_str()).collect()
-    }
-
-    #[test]
-    fn compute_keybinds_normal_mode_base_hints_present() {
-        let app = app::App::default();
-        let hints = app.compute_keybinds();
-        let ks = keys(&hints);
-        assert!(ks.contains(&"q"), "should contain quit hint");
-        assert!(ks.contains(&"1-4"), "should contain tab-switch hint");
-        assert!(ks.contains(&"Tab"), "should contain focus hint");
-        assert!(ks.contains(&"r"), "should contain resync hint");
-    }
-
-    #[test]
-    fn compute_keybinds_no_scroll_hint_without_focus() {
-        let mut app = app::App::default();
-        app.draft_screen.focused_panel = None;
-        let hints = app.compute_keybinds();
-        let ks = keys(&hints);
-        assert!(
-            !ks.contains(&"\u{2191}\u{2193}/j/k/PgUp/PgDn"),
-            "scroll hint should not appear without focus"
-        );
-    }
-
-    #[test]
-    fn compute_keybinds_scroll_hint_with_focus() {
-        let mut app = app::App::default();
-        app.draft_screen.focused_panel = Some(FocusPanel::MainPanel);
-        let hints = app.compute_keybinds();
-        let ks = keys(&hints);
-        assert!(
-            ks.contains(&"\u{2191}\u{2193}/j/k/PgUp/PgDn"),
-            "scroll hint should appear when a panel is focused"
-        );
-    }
-
-    #[test]
-    fn compute_keybinds_filter_hints_on_available_tab() {
-        let mut app = app::App::default();
-        app.draft_screen.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
-        let hints = app.compute_keybinds();
-        let ks = keys(&hints);
-        assert!(ks.contains(&"/"), "filter hint should appear on Available tab");
-        assert!(ks.contains(&"p"), "pos filter hint should appear on Available tab");
-    }
-
-    #[test]
-    fn compute_keybinds_no_filter_hints_on_analysis_tab() {
-        let mut app = app::App::default();
-        app.draft_screen.main_panel.update(MainPanelMessage::SwitchTab(TabId::Analysis));
-        let hints = app.compute_keybinds();
-        let ks = keys(&hints);
-        assert!(
-            !ks.contains(&"/"),
-            "filter hint should not appear on Analysis tab"
-        );
-    }
-
-    #[test]
-    fn compute_keybinds_filter_mode() {
-        let mut app = app::App::default();
-        app.draft_screen.main_panel.available.update(AvailablePanelMessage::ToggleFilterMode);
-        let hints = app.compute_keybinds();
-        let ks = keys(&hints);
-        assert!(ks.contains(&"Enter"), "filter mode should show Enter hint");
-        assert!(ks.contains(&"Esc"), "filter mode should show Esc hint");
-        assert!(!ks.contains(&"q"), "normal quit hint should not appear in filter mode");
-        assert!(!ks.contains(&"1-4"), "tab hint should not appear in filter mode");
-    }
-
-    #[test]
-    fn compute_keybinds_position_modal_open() {
-        let mut app = app::App::default();
-        app.draft_screen.modal_layer.position_filter.open = true;
-        let hints = app.compute_keybinds();
-        let ks = keys(&hints);
-        assert!(ks.contains(&"\u{2191}\u{2193}"), "modal should show navigate hint");
-        assert!(ks.contains(&"Enter"), "modal should show select hint");
-        assert!(ks.contains(&"Esc"), "modal should show cancel hint");
-        assert!(!ks.contains(&"q"), "quit hint should not appear when modal is open");
-    }
-
-    #[test]
-    fn compute_keybinds_quit_confirm_mode() {
-        let mut app = app::App::default();
-        app.draft_screen.modal_layer.quit_confirm.open = true;
-        let hints = app.compute_keybinds();
-        let ks = keys(&hints);
-        assert!(ks.contains(&"y/q"), "confirm quit hint should appear");
-        assert!(ks.contains(&"n/Esc"), "cancel hint should appear");
-        assert!(!ks.contains(&"1-4"), "tab hint should not appear in confirm mode");
-    }
-
-    #[test]
-    fn compute_keybinds_active_filter_reminder_on_available_tab() {
-        let mut app = app::App::default();
-        app.draft_screen.main_panel.update(MainPanelMessage::SwitchTab(TabId::Available));
-        for ch in "trout".chars() {
-            app.draft_screen.main_panel.available.update(AvailablePanelMessage::FilterKeyPress(
-                crossterm::event::KeyEvent {
-                    code: KeyCode::Char(ch),
-                    modifiers: crossterm::event::KeyModifiers::NONE,
-                    kind: crossterm::event::KeyEventKind::Press,
-                    state: crossterm::event::KeyEventState::NONE,
-                },
-            ));
-        }
-        let hints = app.compute_keybinds();
-        let has_reminder = hints.iter().any(|h| h.key.contains("trout"));
-        assert!(has_reminder, "should show filter reminder hint with filter text");
-    }
-
-    #[test]
-    fn compute_keybinds_no_filter_reminder_on_analysis_tab() {
-        let mut app = app::App::default();
-        app.draft_screen.main_panel.update(MainPanelMessage::SwitchTab(TabId::Analysis));
-        for ch in "trout".chars() {
-            app.draft_screen.main_panel.available.update(AvailablePanelMessage::FilterKeyPress(
-                crossterm::event::KeyEvent {
-                    code: KeyCode::Char(ch),
-                    modifiers: crossterm::event::KeyModifiers::NONE,
-                    kind: crossterm::event::KeyEventKind::Press,
-                    state: crossterm::event::KeyEventState::NONE,
-                },
-            ));
-        }
-        let hints = app.compute_keybinds();
-        let has_reminder = hints.iter().any(|h| h.key.contains("trout"));
-        assert!(
-            !has_reminder,
-            "filter reminder should not appear on Analysis tab"
-        );
-    }
-
-    #[test]
-    fn app_default_active_keybinds_empty() {
-        let app = app::App::default();
-        assert!(
-            app.active_keybinds.is_empty(),
-            "active_keybinds should start empty before first render"
-        );
-    }
-
-    #[test]
-    fn quit_confirm_takes_priority_over_modal_and_filter_mode() {
-        let mut app = app::App::default();
-        app.draft_screen.modal_layer.quit_confirm.open = true;
-        app.draft_screen.modal_layer.position_filter.open = true;
-        app.draft_screen.main_panel.available.update(AvailablePanelMessage::ToggleFilterMode);
-        let hints = app.compute_keybinds();
-        let ks = keys(&hints);
-        assert!(ks.contains(&"y/q"), "quit confirm should take highest priority");
-        assert!(!ks.contains(&"\u{2191}\u{2193}"), "modal nav hint should not appear");
-        assert_eq!(hints.len(), 2, "only 2 quit-confirm hints should be present");
-    }
-
-    // -- AppMode-aware keybind computation --
-
-    #[test]
-    fn compute_keybinds_llm_setup_normal_mode() {
-        use crate::onboarding::OnboardingStep;
-        use onboarding::llm_setup::{LlmConnectionStatus, LlmSetupSection};
-
-        let mut app = app::App::default();
-        app.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
-        let hints = app.compute_keybinds();
-        let ks = keys(&hints);
-        assert!(ks.contains(&"^v"), "LLM setup should show select hint");
-        assert!(ks.contains(&"Enter"), "LLM setup should show confirm hint");
-        assert!(ks.contains(&"s"), "LLM setup should show skip hint");
-        assert!(!ks.contains(&"Esc"), "Esc should not appear on first section (Provider)");
-        assert!(!ks.contains(&"n"), "n should not appear until connection tested");
-        assert!(!ks.contains(&"1-4"), "tab hints should not appear in onboarding");
-
-        app.llm_setup.confirmed_through = Some(LlmSetupSection::Provider);
-        app.llm_setup.active_section = LlmSetupSection::Model;
-        let hints = app.compute_keybinds();
-        let ks = keys(&hints);
-        assert!(ks.contains(&"Esc"), "Esc should appear when not on first section");
-
-        app.llm_setup.connection_status = LlmConnectionStatus::Success("ok".to_string());
-        let hints = app.compute_keybinds();
-        let ks = keys(&hints);
-        assert!(ks.contains(&"n"), "n should appear after successful connection test");
-    }
-
-    #[test]
-    fn compute_keybinds_llm_setup_editing_mode() {
-        use crate::onboarding::OnboardingStep;
-
-        let mut app = app::App::default();
-        app.app_mode = AppMode::Onboarding(OnboardingStep::LlmSetup);
-        app.llm_setup.api_key_editing = true;
-        let hints = app.compute_keybinds();
-        let ks = keys(&hints);
-        assert!(ks.contains(&"Enter"), "editing should show confirm hint");
-        assert!(ks.contains(&"Esc"), "editing should show cancel hint");
-        assert!(!ks.contains(&"n"), "editing should not show Next hint");
-    }
-
-    #[test]
-    fn compute_keybinds_strategy_setup_input_editing() {
-        use crate::onboarding::OnboardingStep;
-
-        let mut app = app::App::default();
-        app.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
-        let hints = app.compute_keybinds();
-        let ks = keys(&hints);
-        assert!(ks.contains(&"Enter"), "input editing should show Generate hint");
-        assert!(ks.contains(&"Esc"), "input editing should show stop editing hint");
-    }
-
-    #[test]
-    fn compute_keybinds_strategy_setup_review() {
-        use crate::onboarding::OnboardingStep;
-        use crate::tui::onboarding::strategy_setup::StrategyWizardStep;
-
-        let mut app = app::App::default();
-        app.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
-        app.strategy_setup.step = StrategyWizardStep::Review;
-        app.strategy_setup.input_editing = false;
-        let hints = app.compute_keybinds();
-        let ks = keys(&hints);
-        assert!(ks.contains(&"s"), "review should show Save hint");
-        assert!(ks.contains(&"Esc"), "review should show Back hint");
-    }
-
-    #[test]
-    fn compute_keybinds_strategy_setup_editing() {
-        use crate::onboarding::OnboardingStep;
-
-        let mut app = app::App::default();
-        app.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
-        app.strategy_setup.editing_field = Some("budget".to_string());
-        let hints = app.compute_keybinds();
-        let ks = keys(&hints);
-        assert!(ks.contains(&"Enter"), "editing should show confirm hint");
-        assert!(ks.contains(&"Esc"), "editing should show cancel hint");
-        assert!(!ks.contains(&"s"), "editing should not show save hint");
-    }
-
-    #[test]
-    fn compute_keybinds_strategy_setup_ai_editing() {
-        use crate::onboarding::OnboardingStep;
-
-        let mut app = app::App::default();
-        app.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
-        app.strategy_setup.input_editing = true;
-        let hints = app.compute_keybinds();
-        let ks = keys(&hints);
-        assert!(ks.contains(&"Enter"), "ai editing should show confirm hint");
-        assert!(ks.contains(&"Esc"), "ai editing should show cancel hint");
-        assert!(!ks.contains(&"s"), "ai editing should not show save hint");
-    }
-
-    #[test]
-    fn compute_keybinds_settings_mode() {
-        use crate::protocol::SettingsSection;
-
-        let mut app = app::App::default();
-        app.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
-        app.settings_tab = SettingsSection::LlmConfig;
-        let hints = app.compute_keybinds();
-        let ks = keys(&hints);
-        assert!(ks.contains(&"Esc"), "settings should show Back hint");
-        assert!(ks.contains(&"1/2"), "settings should show tab switch hint");
-        assert!(ks.contains(&"Tab"), "settings should show section hint");
-        assert!(ks.contains(&"Enter"), "LLM tab should show Test Connection hint");
-        assert!(!ks.contains(&"s"), "LLM tab should not show save hint");
-        assert!(!ks.contains(&"1-4"), "draft tab hints should not appear in settings");
-        app.settings_tab = SettingsSection::StrategyConfig;
-        app.strategy_setup.step = onboarding::strategy_setup::StrategyWizardStep::Review;
-        app.strategy_setup.input_editing = false;
-        let hints = app.compute_keybinds();
-        let ks = keys(&hints);
-        assert!(ks.contains(&"s"), "Strategy tab should show save hint");
-        assert!(ks.contains(&"Enter"), "Strategy tab should show Edit hint in normal mode");
-    }
-
-    #[test]
-    fn compute_keybinds_settings_editing_mode() {
-        use crate::protocol::SettingsSection;
-
-        let mut app = app::App::default();
-        app.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
-        app.settings_tab = SettingsSection::LlmConfig;
-        app.llm_setup.api_key_editing = true;
-        let hints = app.compute_keybinds();
-        let ks = keys(&hints);
-        assert!(ks.contains(&"Enter"), "editing should show confirm hint");
-        assert!(ks.contains(&"Esc"), "editing should show cancel hint");
-        assert!(!ks.contains(&"s"), "editing should not show save hint");
-    }
-
-    #[test]
-    fn compute_keybinds_draft_mode_unchanged() {
-        let mut app = app::App::default();
-        app.app_mode = AppMode::Draft;
-        let hints = app.compute_keybinds();
-        let ks = keys(&hints);
-        assert!(ks.contains(&"q"), "draft mode should contain quit hint");
-        assert!(ks.contains(&"1-4"), "draft mode should contain tab-switch hint");
-        assert!(ks.contains(&"Tab"), "draft mode should contain focus hint");
-        assert!(ks.contains(&"r"), "draft mode should contain resync hint");
-        assert!(ks.contains(&","), "draft mode should contain settings hint");
     }
 
     // -- AppMode in App --
