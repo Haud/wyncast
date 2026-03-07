@@ -205,12 +205,15 @@ impl<F: FileSystem> OnboardingManager<F> {
                 .or_insert_with(|| toml::Value::Table(toml::Table::new()));
             if let toml::Value::Table(ref mut t) = llm_table {
                 if let Some(p) = provider {
-                    // Serialize the provider enum to its lowercase string form
-                    let provider_str = toml::to_string(p)
-                        .unwrap_or_default()
-                        .trim_matches('"')
-                        .trim()
-                        .to_string();
+                    // Serialize the provider enum to its lowercase string form.
+                    // toml::to_string() fails for non-table root values, so we
+                    // use a match to get the correct lowercase string directly.
+                    let provider_str = match p {
+                        LlmProvider::Anthropic => "anthropic",
+                        LlmProvider::Google => "google",
+                        LlmProvider::OpenAI => "openai",
+                    }
+                    .to_string();
                     t.insert(
                         "provider".to_string(),
                         toml::Value::String(provider_str),
