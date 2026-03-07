@@ -4,18 +4,19 @@
 // from consumers (screen components). Each component declares a
 // `Subscription<M>` describing which events it cares about; the runtime
 // collects all subscriptions, diffs them on each frame, and routes events
-// through the active listener set in priority order.
+// through the active listener set. Listeners are checked in declaration
+// order (batch order); first match wins.
 //
 // # Key types
 //
 // - [`SubscriptionId`] — stable identity used to track lifecycle across frames
 // - [`AppEvent`] — raw events the runtime feeds to listeners
 // - [`Recipe`] — extensibility point; creates a [`Listener`] on activation
-// - [`Listener`] — processes events, optionally capturing (blocking lower-priority listeners)
+// - [`Listener`] — processes events; first match wins
 // - [`Subscription<M>`] — generic container of recipes; supports `none`, `batch`, `map`
 // - [`SubscriptionManager<M>`] — diffs subscriptions, activates/drops listeners, routes events
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 // ---------------------------------------------------------------------------
 // SubscriptionId
@@ -70,17 +71,6 @@ pub trait Recipe: 'static {
     /// Stable identity for this subscription.
     fn id(&self) -> SubscriptionId;
 
-    /// Higher priority listeners receive events first.
-    fn priority(&self) -> u8 {
-        0
-    }
-
-    /// If true, lower-priority listeners do not receive the event even when
-    /// this listener returns `None`.
-    fn captures(&self) -> bool {
-        false
-    }
-
     /// Consume the recipe and produce a live listener.
     fn into_listener(self: Box<Self>) -> Box<dyn Listener<Output = Self::Output>>;
 }
@@ -92,8 +82,8 @@ pub trait Recipe: 'static {
 /// A live event handler created from a [`Recipe`].
 ///
 /// Listeners are kept alive across frames as long as their ID appears in the
-/// current subscription set. They receive every [`AppEvent`] in priority
-/// order; a capturing listener blocks all lower-priority listeners.
+/// current subscription set. They receive every [`AppEvent`] in declaration
+/// order; first match wins.
 pub trait Listener {
     type Output;
 
@@ -170,14 +160,6 @@ impl<A: 'static, B: 'static> Recipe for MapRecipe<A, B> {
         self.inner.id()
     }
 
-    fn priority(&self) -> u8 {
-        self.inner.priority()
-    }
-
-    fn captures(&self) -> bool {
-        self.inner.captures()
-    }
-
     fn into_listener(self: Box<Self>) -> Box<dyn Listener<Output = B>> {
         Box::new(MapListener {
             inner: self.inner.into_listener(),
@@ -210,21 +192,20 @@ impl<A: 'static, B: 'static> Listener for MapListener<A, B> {
 /// subscription to activate new listeners and drop removed ones. Then call
 /// [`process`][SubscriptionManager::process] for each incoming event to
 /// obtain a message.
+///
+/// Listeners are stored in declaration order (the order recipes appear in the
+/// subscription batch). First match wins during event processing.
 pub struct SubscriptionManager<M: 'static> {
-    active: HashMap<SubscriptionId, ActiveEntry<M>>,
+    active: Vec<(SubscriptionId, ActiveEntry<M>)>,
 }
 
 struct ActiveEntry<M> {
     listener: Box<dyn Listener<Output = M>>,
-    priority: u8,
-    captures: bool,
 }
 
 impl<M: 'static> SubscriptionManager<M> {
     pub fn new() -> Self {
-        Self {
-            active: HashMap::new(),
-        }
+        Self { active: vec![] }
     }
 
     /// Diff the new subscription against the current active set.
@@ -232,46 +213,37 @@ impl<M: 'static> SubscriptionManager<M> {
     /// - New IDs are activated (recipe converted to listener).
     /// - Removed IDs are dropped.
     /// - Existing IDs are kept as-is (listener state preserved).
+    /// - Order follows the new subscription's recipe order.
     pub fn sync(&mut self, subscription: Subscription<M>) {
         let new_recipes = subscription.into_recipes();
-        let mut new_ids: HashSet<SubscriptionId> = HashSet::new();
-        let mut to_start: Vec<(SubscriptionId, Box<dyn Recipe<Output = M>>)> = Vec::new();
+        let new_ids: HashSet<SubscriptionId> = new_recipes.iter().map(|r| r.id()).collect();
 
+        // Keep existing entries that are still in the new set.
+        self.active.retain(|(id, _)| new_ids.contains(id));
+
+        // Rebuild in new recipe order, reusing existing listeners.
+        let mut new_active: Vec<(SubscriptionId, ActiveEntry<M>)> = Vec::new();
         for recipe in new_recipes {
             let id = recipe.id();
-            new_ids.insert(id);
-            if !self.active.contains_key(&id) {
-                to_start.push((id, recipe));
+            if let Some(pos) = self.active.iter().position(|(eid, _)| *eid == id) {
+                // Reuse existing listener (preserves state).
+                new_active.push(self.active.swap_remove(pos));
+            } else {
+                // New subscription — activate.
+                let listener = recipe.into_listener();
+                new_active.push((id, ActiveEntry { listener }));
             }
         }
-
-        // Drop listeners whose IDs are no longer present.
-        self.active.retain(|id, _| new_ids.contains(id));
-
-        // Activate new listeners.
-        for (id, recipe) in to_start {
-            let priority = recipe.priority();
-            let captures = recipe.captures();
-            let listener = recipe.into_listener();
-            self.active.insert(id, ActiveEntry { listener, priority, captures });
-        }
+        self.active = new_active;
     }
 
-    /// Route an event through all active listeners in priority order.
+    /// Route an event through all active listeners in declaration order.
     ///
-    /// Returns the first message produced. A capturing listener blocks all
-    /// lower-priority listeners from receiving the event.
+    /// Returns the first message produced (first match wins).
     pub fn process(&mut self, event: &AppEvent) -> Option<M> {
-        // Collect mutable refs sorted by descending priority.
-        let mut entries: Vec<&mut ActiveEntry<M>> = self.active.values_mut().collect();
-        entries.sort_by(|a, b| b.priority.cmp(&a.priority));
-
-        for entry in entries {
+        for (_, entry) in &mut self.active {
             if let Some(msg) = entry.listener.process(event) {
                 return Some(msg);
-            }
-            if entry.captures {
-                return None;
             }
         }
         None
@@ -308,8 +280,6 @@ mod tests {
         id: SubscriptionId,
         respond_to: KeyCode,
         msg: TestMsg,
-        priority: u8,
-        captures: bool,
     }
 
     impl TestConfig {
@@ -318,19 +288,7 @@ mod tests {
                 id,
                 respond_to,
                 msg,
-                priority: 0,
-                captures: false,
             }
-        }
-
-        fn with_priority(mut self, p: u8) -> Self {
-            self.priority = p;
-            self
-        }
-
-        fn with_captures(mut self) -> Self {
-            self.captures = true;
-            self
         }
     }
 
@@ -342,14 +300,6 @@ mod tests {
 
         fn id(&self) -> SubscriptionId {
             self.0.id
-        }
-
-        fn priority(&self) -> u8 {
-            self.0.priority
-        }
-
-        fn captures(&self) -> bool {
-            self.0.captures
         }
 
         fn into_listener(self: Box<Self>) -> Box<dyn Listener<Output = TestMsg>> {
@@ -375,6 +325,11 @@ mod tests {
         Subscription::from_recipe(TestRecipe(config))
     }
 
+    /// Helper to check if a manager contains an entry with the given ID.
+    fn has_id<M>(mgr: &SubscriptionManager<M>, id: SubscriptionId) -> bool {
+        mgr.active.iter().any(|(eid, _)| *eid == id)
+    }
+
     // ------------------------------------------------------------------
     // sync() lifecycle tests
     // ------------------------------------------------------------------
@@ -387,7 +342,7 @@ mod tests {
 
         mgr.sync(sub);
 
-        assert!(mgr.active.contains_key(&id), "new ID should be activated");
+        assert!(has_id(&mgr, id), "new ID should be activated");
     }
 
     #[test]
@@ -396,11 +351,11 @@ mod tests {
         let id = SubscriptionId::unique();
         let sub = make_sub(TestConfig::new(id, KeyCode::Char('a'), TestMsg::A));
         mgr.sync(sub);
-        assert!(mgr.active.contains_key(&id));
+        assert!(has_id(&mgr, id));
 
         // Sync with empty subscription — id should be removed.
         mgr.sync(Subscription::none());
-        assert!(!mgr.active.contains_key(&id), "removed ID should be dropped");
+        assert!(!has_id(&mgr, id), "removed ID should be dropped");
     }
 
     #[test]
@@ -416,10 +371,7 @@ mod tests {
         let sub2 = make_sub(TestConfig::new(id, KeyCode::Char('a'), TestMsg::A));
         mgr.sync(sub2);
 
-        assert!(
-            mgr.active.contains_key(&id),
-            "existing ID should be preserved"
-        );
+        assert!(has_id(&mgr, id), "existing ID should be preserved");
         assert_eq!(mgr.active.len(), 1);
     }
 
@@ -441,28 +393,50 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // process() priority ordering
+    // process() declaration-order routing
     // ------------------------------------------------------------------
 
     #[test]
-    fn process_higher_priority_first() {
+    fn process_first_declared_wins() {
         let mut mgr: SubscriptionManager<TestMsg> = SubscriptionManager::new();
 
-        let id_low = SubscriptionId::unique();
-        let id_high = SubscriptionId::unique();
+        let id_first = SubscriptionId::unique();
+        let id_second = SubscriptionId::unique();
 
-        // Both respond to 'a'. High priority should win.
-        let low = make_sub(
-            TestConfig::new(id_low, KeyCode::Char('a'), TestMsg::A).with_priority(1),
-        );
-        let high = make_sub(
-            TestConfig::new(id_high, KeyCode::Char('a'), TestMsg::B).with_priority(10),
-        );
+        // Both respond to 'a'. The first one in batch order should win.
+        let first = make_sub(TestConfig::new(id_first, KeyCode::Char('a'), TestMsg::A));
+        let second = make_sub(TestConfig::new(id_second, KeyCode::Char('a'), TestMsg::B));
 
-        mgr.sync(Subscription::batch([low, high]));
+        mgr.sync(Subscription::batch([first, second]));
 
         let result = mgr.process(&key_event(KeyCode::Char('a')));
-        assert_eq!(result, Some(TestMsg::B), "high priority listener should win");
+        assert_eq!(
+            result,
+            Some(TestMsg::A),
+            "first declared listener should win"
+        );
+    }
+
+    #[test]
+    fn process_falls_through_to_later_listener() {
+        let mut mgr: SubscriptionManager<TestMsg> = SubscriptionManager::new();
+
+        let id_first = SubscriptionId::unique();
+        let id_second = SubscriptionId::unique();
+
+        // First responds to 'x', second responds to 'z'.
+        let first = make_sub(TestConfig::new(id_first, KeyCode::Char('x'), TestMsg::A));
+        let second = make_sub(TestConfig::new(id_second, KeyCode::Char('z'), TestMsg::B));
+
+        mgr.sync(Subscription::batch([first, second]));
+
+        // Send 'z' — first doesn't match, falls through to second.
+        let result = mgr.process(&key_event(KeyCode::Char('z')));
+        assert_eq!(
+            result,
+            Some(TestMsg::B),
+            "event should fall through to later listener"
+        );
     }
 
     #[test]
@@ -475,58 +449,28 @@ mod tests {
         assert_eq!(result, None);
     }
 
-    // ------------------------------------------------------------------
-    // process() capture behavior
-    // ------------------------------------------------------------------
-
     #[test]
-    fn capturing_listener_blocks_lower_priority() {
+    fn process_preserves_batch_order_across_syncs() {
+        // Verify that re-syncing with the same batch preserves declaration order.
         let mut mgr: SubscriptionManager<TestMsg> = SubscriptionManager::new();
 
-        let id_capturer = SubscriptionId::unique();
-        let id_lower = SubscriptionId::unique();
+        let id_first = SubscriptionId::unique();
+        let id_second = SubscriptionId::unique();
 
-        // High-priority capturer does NOT match 'z' but captures anyway.
-        let capturer = make_sub(
-            TestConfig::new(id_capturer, KeyCode::Char('x'), TestMsg::A)
-                .with_priority(10)
-                .with_captures(),
-        );
-        // Lower priority would match 'z' if given the chance.
-        let lower = make_sub(
-            TestConfig::new(id_lower, KeyCode::Char('z'), TestMsg::B).with_priority(1),
-        );
+        let make_batch = || {
+            let first = make_sub(TestConfig::new(id_first, KeyCode::Char('a'), TestMsg::A));
+            let second = make_sub(TestConfig::new(id_second, KeyCode::Char('a'), TestMsg::B));
+            Subscription::batch([first, second])
+        };
 
-        mgr.sync(Subscription::batch([capturer, lower]));
+        mgr.sync(make_batch());
+        mgr.sync(make_batch()); // Re-sync with same order.
 
-        // Send 'z' — capturer doesn't match but captures, blocking lower.
-        let result = mgr.process(&key_event(KeyCode::Char('z')));
-        assert_eq!(result, None, "capturer should block lower priority listener");
-    }
-
-    #[test]
-    fn non_capturing_listener_does_not_block() {
-        let mut mgr: SubscriptionManager<TestMsg> = SubscriptionManager::new();
-
-        let id_high = SubscriptionId::unique();
-        let id_low = SubscriptionId::unique();
-
-        // High priority, non-capturing, does NOT match 'z'.
-        let high = make_sub(
-            TestConfig::new(id_high, KeyCode::Char('x'), TestMsg::A).with_priority(10),
-        );
-        // Lower priority matches 'z'.
-        let low = make_sub(
-            TestConfig::new(id_low, KeyCode::Char('z'), TestMsg::B).with_priority(1),
-        );
-
-        mgr.sync(Subscription::batch([high, low]));
-
-        let result = mgr.process(&key_event(KeyCode::Char('z')));
+        let result = mgr.process(&key_event(KeyCode::Char('a')));
         assert_eq!(
             result,
-            Some(TestMsg::B),
-            "non-capturing listener should not block lower priority"
+            Some(TestMsg::A),
+            "batch order should be preserved across syncs"
         );
     }
 
