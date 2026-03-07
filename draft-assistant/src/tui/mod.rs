@@ -29,6 +29,10 @@ use ratatui::Frame;
 use tokio::sync::mpsc;
 
 use crate::protocol::{AppMode, UiUpdate, UserCommand};
+use crate::tui::action::Action;
+use crate::tui::app::AppMessage;
+use crate::tui::subscription::{AppEvent, SubscriptionManager};
+use crate::tui::subscription::keybinding::KeybindManager;
 
 use draft::DraftScreen;
 pub use onboarding::llm_setup::LlmSetupState;
@@ -341,7 +345,11 @@ pub async fn run(
     let mut render_tick = tokio::time::interval(Duration::from_millis(33));
     render_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    // 6. Main loop
+    // 6. Create subscription manager and keybind manager for the new input system.
+    let mut sub_manager = SubscriptionManager::<AppMessage>::new();
+    let mut kb_manager = KeybindManager::new();
+
+    // 7. Main loop
     loop {
         tokio::select! {
             // UI updates from the app orchestrator
@@ -361,11 +369,17 @@ pub async fn run(
             maybe_event = event_stream.next() => {
                 match maybe_event {
                     Some(Ok(Event::Key(key_event))) => {
-                        if let Some(cmd) = app.handle_key(key_event) {
-                            let is_quit = cmd == UserCommand::Quit;
-                            let _ = cmd_tx.send(cmd).await;
-                            if is_quit {
-                                break;
+                        if let Some(msg) = sub_manager.process(&AppEvent::Key(key_event)) {
+                            if let Some(action) = app.update(msg) {
+                                match action {
+                                    Action::Quit => {
+                                        let _ = cmd_tx.send(UserCommand::Quit).await;
+                                        break;
+                                    }
+                                    Action::Command(cmd) => {
+                                        let _ = cmd_tx.send(cmd).await;
+                                    }
+                                }
                             }
                         }
                     }
@@ -385,7 +399,18 @@ pub async fn run(
 
             // Render tick
             _ = render_tick.tick() => {
-                app.active_keybinds = app.compute_keybinds();
+                // Clear and rebuild hint registry + sync subscriptions.
+                kb_manager.clear();
+                let sub = app.subscription(&mut kb_manager);
+                sub_manager.sync(sub);
+
+                // Draw using hints from kb_manager.
+                // Convert from keybinding::KeybindHint to tui::KeybindHint.
+                app.active_keybinds = kb_manager
+                    .hints()
+                    .into_iter()
+                    .map(|h| KeybindHint::new(h.key, h.description))
+                    .collect();
                 terminal.draw(|frame| app.view(frame))?;
             }
         }
