@@ -3,7 +3,8 @@ use tracing::{info, warn};
 
 use crate::db::Database;
 use crate::draft::state::{
-    compute_state_diff, ActiveNomination, DraftState, ReconcileResult,
+    compute_state_diff, ActiveNomination, DraftState, NominationPayload, ReconcileResult,
+    StateUpdatePayload,
 };
 use crate::protocol::{
     ExtensionMessage, LlmStatus, NominationInfo, UiUpdate,
@@ -57,6 +58,11 @@ pub(super) async fn handle_ws_message(
 /// against an empty baseline). This prevents corrupted state that would
 /// result from applying incremental diffs against a blank slate when resuming
 /// a mid-draft session.
+///
+/// The extension also sends FULL_STATE_SYNC every 10 seconds as a periodic
+/// keyframe. To avoid restarting a streaming LLM analysis every time one of
+/// these keyframes arrives, we detect when the incoming nomination is the same
+/// player as what is currently being analyzed and preserve the LLM task.
 pub(super) async fn handle_full_state_sync(
     state: &mut AppState,
     ext_payload: crate::protocol::StateUpdatePayload,
@@ -67,16 +73,33 @@ pub(super) async fn handle_full_state_sync(
         ext_payload.picks.len()
     );
 
+    // Detect if the incoming nomination is the same player as what's currently
+    // being analyzed. The extension sends FULL_STATE_SYNC every 10 seconds as
+    // a periodic keyframe; if the nomination is unchanged, we should NOT cancel
+    // the in-progress LLM analysis or allow it to restart.
+    let incoming_nom = ext_payload.current_nomination.as_ref();
+    let preserve_llm = match (&state.llm_mode, incoming_nom) {
+        (Some(super::LlmMode::NominationAnalysis { player_name, player_id, .. }), Some(inc)) => {
+            if !player_id.is_empty() && !inc.player_id.is_empty() {
+                player_id == &inc.player_id
+            } else {
+                player_name == &inc.player_name
+            }
+        }
+        _ => false,
+    };
+
+    // Save current nomination before resetting so we can restore it (and use
+    // it as a stub baseline for compute_state_diff) when the nomination is
+    // unchanged.
+    let saved_nomination = state.draft_state.current_nomination.clone();
+
     // Reset in-memory draft state so the snapshot is applied from scratch.
     // Preserve salary_cap and roster_config (stored inside DraftState).
     state.draft_state = DraftState::new(
         state.config.league.salary_cap,
         &state.config.league.roster,
     );
-
-    // Clear the previous extension state so that compute_state_diff in
-    // handle_state_update treats all picks in the snapshot as new.
-    state.previous_extension_state = None;
 
     // Reset valuation pool and derived state so they're rebuilt cleanly
     // after all snapshot picks are applied.
@@ -87,18 +110,59 @@ pub(super) async fn handle_full_state_sync(
     state.inflation = InflationTracker::new();
     state.category_needs = CategoryNeeds::default();
 
-    // Clear any in-flight LLM task — its context is stale.
-    state.cancel_llm_task();
-    state.llm_mode = None;
-    state.nomination_analysis_text.clear();
-    state.nomination_analysis_status = LlmStatus::Idle;
-    state.nomination_plan_text.clear();
-    state.nomination_plan_status = LlmStatus::Idle;
+    if preserve_llm {
+        // Same nomination is still active: keep the LLM task and mode so
+        // streaming continues uninterrupted.
+        //
+        // Build a stub previous state for compute_state_diff.  Empty picks
+        // ensures all snapshot picks are treated as new (correct for rebuild).
+        // Preserved nomination prevents compute_state_diff from treating the
+        // same player as a new nomination (which would fire NominationUpdate
+        // and restart the LLM analysis).
+        state.previous_extension_state = saved_nomination.as_ref().map(|nom| StateUpdatePayload {
+            picks: vec![],
+            current_nomination: Some(NominationPayload {
+                player_id: nom.player_id.clone(),
+                player_name: nom.player_name.clone(),
+                position: nom.position.clone(),
+                nominated_by: nom.nominated_by.clone(),
+                current_bid: nom.current_bid,
+                current_bidder: nom.current_bidder.clone(),
+                time_remaining: nom.time_remaining,
+                eligible_slots: nom.eligible_slots.clone(),
+            }),
+            teams: vec![],
+            pick_count: None,
+            total_picks: None,
+        });
+        info!(
+            "FULL_STATE_SYNC: preserving in-progress LLM analysis (same nomination: {})",
+            saved_nomination.as_ref().map(|n| n.player_name.as_str()).unwrap_or("unknown")
+        );
+    } else {
+        // Nomination changed or no active analysis: clear all LLM state so
+        // handle_state_update can start fresh.
+        state.previous_extension_state = None;
+        state.cancel_llm_task();
+        state.llm_mode = None;
+        state.nomination_analysis_text.clear();
+        state.nomination_analysis_status = LlmStatus::Idle;
+        state.nomination_plan_text.clear();
+        state.nomination_plan_status = LlmStatus::Idle;
+    }
 
-    // Now process the snapshot as a regular state update.  Because
-    // previous_extension_state is None, compute_state_diff will emit all
-    // picks as new, rebuilding the draft log, rosters, and budgets cleanly.
+    // Now process the snapshot as a regular state update.  When preserve_llm
+    // is true, compute_state_diff will see the stub previous state and treat
+    // the nomination as unchanged, so nomination_changed will not fire and
+    // NominationUpdate will not be sent to the TUI.
     handle_state_update(state, ext_payload, ui_tx).await;
+
+    // Restore current_nomination after the draft state reset if it wasn't set
+    // by handle_state_update (happens when bid/bidder also didn't change, so
+    // neither nomination_changed nor bid_updated fired).
+    if preserve_llm && state.draft_state.current_nomination.is_none() {
+        state.draft_state.current_nomination = saved_nomination;
+    }
 }
 
 /// Handle a state update from the extension.
