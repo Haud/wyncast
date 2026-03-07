@@ -352,10 +352,12 @@ impl App {
     /// when a modal is open. The active screen's subscriptions follow.
     pub fn subscription(&self, kb: &mut KeybindManager) -> Subscription<AppMessage> {
         // Global: Ctrl+C → Quit (above PRIORITY_MODAL so it's always reachable).
+        // No `.capture()` here — capture mode makes this recipe's hints take
+        // exclusive ownership of the help bar, which would blank out all other
+        // hints. Ctrl+C is a silent background binding with no help-bar hint.
         let global = kb.subscribe(
             KeyBindingRecipe::new(self.sub_id_global)
                 .priority(PRIORITY_MODAL + 10)
-                .capture()
                 .bind(
                     ctrl(KeyCode::Char('c')),
                     |_| AppMessage::Quit,
