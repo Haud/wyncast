@@ -605,7 +605,7 @@ impl Default for DraftScreen {
 ///
 /// This enum mirrors the match arms in [`DraftScreen::handle_key`] but uses a
 /// message-based dispatch instead of direct key events. Both systems coexist —
-/// `handle_key` is untouched and remains the primary input path. `update_msg`
+/// `handle_key` is untouched and remains the primary input path. `update`
 /// is the new message-based path that will be used by the subscription system
 /// in later phases.
 #[derive(Debug, Clone)]
@@ -642,7 +642,7 @@ impl DraftScreen {
     /// This mirrors the logic in [`DraftScreen::handle_key`] but driven by
     /// message variants instead of raw key events. The existing `handle_key`
     /// method is untouched — both paths coexist.
-    pub fn update_msg(&mut self, msg: DraftScreenMessage) -> Option<Action> {
+    pub fn update(&mut self, msg: DraftScreenMessage) -> Option<Action> {
         use crate::tui::confirm_dialog::ConfirmMessage;
         use crate::protocol::TabFeature;
 

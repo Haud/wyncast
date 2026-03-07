@@ -1210,10 +1210,10 @@ impl App {
     /// when the message requires the event loop to take an action (e.g. quit or
     /// send a backend command). Returns `None` when the message was handled
     /// internally with no upward effect.
-    pub fn update_msg(&mut self, msg: AppMessage) -> Option<Action> {
+    pub fn update(&mut self, msg: AppMessage) -> Option<Action> {
         match msg {
             AppMessage::Quit => Some(Action::Quit),
-            AppMessage::Draft(m) => self.draft_screen.update_msg(m),
+            AppMessage::Draft(m) => self.draft_screen.update(m),
         }
     }
 }
