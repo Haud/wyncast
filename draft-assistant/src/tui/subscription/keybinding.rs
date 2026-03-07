@@ -7,7 +7,7 @@
 // `Subscription<M>`. The subscription system itself remains unaware of hints,
 // priority, or capture mode.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::{AppEvent, Listener, Recipe, Subscription, SubscriptionId};
 
@@ -60,6 +60,9 @@ pub enum KeyTrigger {
 impl KeyTrigger {
     /// Returns true if this trigger matches the given key event.
     pub fn matches(&self, key: &KeyEvent) -> bool {
+        if key.kind != KeyEventKind::Press {
+            return false;
+        }
         match self {
             KeyTrigger::Exact(code, mods) => key.code == *code && key.modifiers == *mods,
             KeyTrigger::AnyChar => {
