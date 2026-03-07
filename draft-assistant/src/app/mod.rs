@@ -433,6 +433,25 @@ impl AppState {
     /// state, and spawns a streaming task that sends tokens through the
     /// LLM event channel.
     pub fn trigger_nomination_analysis(&mut self, nomination: &ActiveNomination) {
+        // Secondary guard: if already analyzing this exact player, skip to avoid
+        // canceling and restarting the active LLM task. This is a backstop for
+        // cases where preserve_llm in handle_full_state_sync doesn't fully prevent
+        // nomination_changed from firing (e.g., when saved_nomination is None).
+        if let Some(LlmMode::NominationAnalysis { ref player_name, ref player_id, .. }) = self.llm_mode {
+            let same = if !player_id.is_empty() && !nomination.player_id.is_empty() {
+                player_id == &nomination.player_id
+            } else {
+                player_name == &nomination.player_name
+            };
+            if same {
+                info!(
+                    "LLM already analyzing {} — preserving active task (FullStateSync guard)",
+                    nomination.player_name
+                );
+                return;
+            }
+        }
+
         self.cancel_llm_task();
 
         let my_team = match self.draft_state.my_team() {
