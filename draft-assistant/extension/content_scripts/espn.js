@@ -623,7 +623,7 @@ function fetchEspnApiViaPageContext() {
           return;
         }
         var year = new Date().getFullYear();
-        var url = 'https://lm-api-reads.fantasy.espn.com/apis/v3/games/flb/seasons/' + year + '/segments/0/leagues/' + leagueId + '?view=mDraftDetail&view=mTeam';
+        var url = 'https://lm-api-reads.fantasy.espn.com/apis/v3/games/flb/seasons/' + year + '/segments/0/leagues/' + leagueId + '?view=mDraftDetail&view=mTeam&view=mRoster';
         fetch(url, { credentials: 'include' })
           .then(function(resp) {
             if (!resp.ok) throw new Error('HTTP ' + resp.status);
@@ -670,39 +670,40 @@ function parseApiTeamRosters(apiData) {
       return null;
     }
 
-    // Log first team structure for debugging
-    const firstTeam = teams[0];
-    log('ESPN API first team keys:', Object.keys(firstTeam || {}));
-    if (firstTeam && firstTeam.roster) {
-      log('ESPN API first team roster keys:', Object.keys(firstTeam.roster));
-      if (firstTeam.roster.entries && firstTeam.roster.entries.length > 0) {
-        log('ESPN API first roster entry keys:', Object.keys(firstTeam.roster.entries[0]));
-      }
+    const draftDetail = apiData.draftDetail;
+    if (!draftDetail || !Array.isArray(draftDetail.picks)) {
+      warn('ESPN API: no draftDetail.picks found, cannot build rosters');
+      return null;
     }
 
-    // Build price map from draftDetail.picks
-    const priceMap = new Map(); // playerId -> bidAmount
-    const draftDetail = apiData.draftDetail;
-    if (draftDetail && Array.isArray(draftDetail.picks)) {
-      log('ESPN API draftDetail has', draftDetail.picks.length, 'picks');
-      if (draftDetail.picks.length > 0) {
-        log('ESPN API first pick keys:', Object.keys(draftDetail.picks[0]));
-      }
-      for (const pick of draftDetail.picks) {
-        if (pick && pick.playerId != null && pick.bidAmount != null) {
-          priceMap.set(pick.playerId, pick.bidAmount);
+    log('ESPN API draftDetail has', draftDetail.picks.length, 'picks');
+    if (draftDetail.picks.length > 0) {
+      log('ESPN API first pick keys:', Object.keys(draftDetail.picks[0]));
+    }
+
+    // 1. Build player info map from teams[].roster.entries[].playerPoolEntry.player
+    const playerInfoMap = new Map(); // playerId (number) -> {name, eligibleSlots}
+    for (const team of teams) {
+      if (!team || !team.roster || !Array.isArray(team.roster.entries)) continue;
+      for (const entry of team.roster.entries) {
+        if (!entry || entry.playerId == null) continue;
+        const ppe = entry.playerPoolEntry;
+        if (ppe && ppe.player) {
+          const player = ppe.player;
+          const name = player.fullName || (player.firstName + ' ' + player.lastName) || '';
+          const eligibleSlots = Array.isArray(player.eligibleSlots) ? player.eligibleSlots : [];
+          if (name) {
+            playerInfoMap.set(entry.playerId, { name, eligibleSlots });
+          }
         }
       }
-    } else {
-      warn('ESPN API: no draftDetail.picks found, prices will be 0');
     }
+    log('ESPN API: built player info map with', playerInfoMap.size, 'entries from roster data');
 
-    const result = [];
-
+    // 2. Build team info map from teams[]
+    const teamInfoMap = new Map(); // teamId -> teamName
     for (const team of teams) {
       if (!team) continue;
-
-      // Try multiple patterns for team name
       let teamName = '';
       if (team.location && team.nickname) {
         teamName = (team.location + ' ' + team.nickname).trim();
@@ -713,54 +714,42 @@ function parseApiTeamRosters(apiData) {
       } else {
         teamName = 'Team ' + (team.id || '?');
       }
+      if (team.id != null) {
+        teamInfoMap.set(team.id, teamName);
+      }
+    }
 
-      const teamId = team.id != null ? team.id : 0;
+    // 3. Use draftDetail.picks as primary source, group by teamId
+    const teamPlayersMap = new Map(); // teamId -> Array of player objects
+    for (const pick of draftDetail.picks) {
+      if (!pick || pick.playerId == null || pick.teamId == null) continue;
 
-      const roster = team.roster;
-      if (!roster || !Array.isArray(roster.entries)) {
-        // Team might have no roster yet (draft not started)
-        result.push({
-          teamId: teamId,
-          teamName: teamName,
-          players: [],
-        });
+      const info = playerInfoMap.get(pick.playerId);
+      const playerName = info ? info.name : '';
+      const eligibleSlots = info ? info.eligibleSlots : [];
+      const lineupSlotId = pick.lineupSlotId != null ? pick.lineupSlotId : 16;
+
+      if (!playerName) {
+        warn('ESPN API: pick for playerId', pick.playerId, 'has no player info in roster data, skipping');
         continue;
       }
 
-      const players = [];
-      for (const entry of roster.entries) {
-        if (!entry) continue;
-
-        const playerId = entry.playerId != null ? String(entry.playerId) : '';
-        const lineupSlotId = entry.lineupSlotId != null ? entry.lineupSlotId : 16; // default to bench
-
-        // Extract player info from nested playerPoolEntry.player
-        let playerName = '';
-        let eligibleSlots = [];
-        const ppe = entry.playerPoolEntry;
-        if (ppe && ppe.player) {
-          const player = ppe.player;
-          playerName = player.fullName || player.firstName + ' ' + player.lastName || '';
-          if (Array.isArray(player.eligibleSlots)) {
-            eligibleSlots = player.eligibleSlots;
-          }
-        }
-
-        // Look up price from draftDetail
-        const numericId = entry.playerId != null ? entry.playerId : parseInt(playerId, 10);
-        const price = priceMap.has(numericId) ? priceMap.get(numericId) : 0;
-
-        if (playerName) {
-          players.push({
-            playerId: playerId,
-            playerName: playerName,
-            lineupSlotId: lineupSlotId,
-            eligibleSlots: eligibleSlots,
-            price: price,
-          });
-        }
+      if (!teamPlayersMap.has(pick.teamId)) {
+        teamPlayersMap.set(pick.teamId, []);
       }
+      teamPlayersMap.get(pick.teamId).push({
+        playerId: String(pick.playerId),
+        playerName: playerName,
+        lineupSlotId: lineupSlotId,
+        eligibleSlots: eligibleSlots,
+        price: pick.bidAmount != null ? pick.bidAmount : 0,
+      });
+    }
 
+    // 4. Build result, including teams that have no picks yet
+    const result = [];
+    for (const [teamId, teamName] of teamInfoMap) {
+      const players = teamPlayersMap.get(teamId) || [];
       result.push({
         teamId: teamId,
         teamName: teamName,
@@ -768,7 +757,15 @@ function parseApiTeamRosters(apiData) {
       });
     }
 
-    return result.length > 0 ? result : null;
+    // 5. Only return if total players > 0
+    const totalPlayers = result.reduce((sum, t) => sum + t.players.length, 0);
+    if (totalPlayers === 0) {
+      warn('ESPN API: draftDetail.picks produced 0 players across all teams, returning null');
+      return null;
+    }
+
+    log('ESPN API: built rosters from draftDetail.picks —', totalPlayers, 'players across', result.length, 'teams');
+    return result;
   } catch (e) {
     error('Failed to parse ESPN API team rosters:', e);
     return null;

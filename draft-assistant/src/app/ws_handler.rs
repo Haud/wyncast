@@ -105,7 +105,9 @@ pub(super) async fn handle_full_state_sync(
     let has_api_rosters = ext_payload
         .team_rosters
         .as_ref()
-        .map_or(false, |r| !r.is_empty());
+        .map_or(false, |r| {
+            !r.is_empty() && r.iter().any(|t| !t.players.is_empty())
+        });
 
     if has_api_rosters {
         let rosters = ext_payload.team_rosters.as_ref().unwrap();
@@ -216,13 +218,21 @@ pub(super) async fn handle_full_state_sync(
     }
 
     // --- Fallback path: no API roster data ---
-    // DON'T reset state — ESPN's pick list is virtualized so DOM scraping
-    // may have incomplete data. Preserve existing picks/rosters and only
-    // add new picks via the incremental diff path.
-    info!("FULL_STATE_SYNC: no API roster data, using preservation approach");
+    // If we already have picks from a previous sync, DON'T reset state —
+    // just process as an incremental update so we don't lose accumulated data.
+    // Only reset on first connection (no picks yet).
+    info!("FULL_STATE_SYNC: no API roster data, using fallback path");
 
-    // Reset in-memory draft state so the snapshot is applied from scratch.
-    // Preserve salary_cap and roster_config (stored inside DraftState).
+    if !state.draft_state.picks.is_empty() {
+        // We already have state from a previous sync. Treat this as a regular
+        // STATE_UPDATE so the incremental diff adds any genuinely new picks
+        // without wiping existing data.
+        info!("FULL_STATE_SYNC fallback: already have {} picks, treating as incremental update", state.draft_state.picks.len());
+        handle_state_update(state, ext_payload, ui_tx).await;
+        return;
+    }
+
+    // First connection: reset and rebuild from scratch.
     state.draft_state = DraftState::new(
         state.config.league.salary_cap,
         &state.config.league.roster,
