@@ -21,16 +21,19 @@ use crate::tui::{BudgetStatus, FocusPanel, KeybindHint, TeamSummary};
 use crate::valuation::scarcity::ScarcityEntry;
 use crate::valuation::zscore::PlayerValuation;
 
+use crate::tui::action::Action;
+
 use draft_log::DraftLogMessage;
 use main_panel::analysis::AnalysisPanelMessage;
 use main_panel::available::AvailablePanelMessage;
 use main_panel::{MainPanel, MainPanelMessage};
 use modal::ModalLayer;
 use modal::position_filter::{PositionFilterModalAction, PositionFilterModalMessage};
+use modal::{ModalLayerAction, ModalLayerMessage};
 use sidebar::plan::PlanPanelMessage;
 use sidebar::roster::RosterMessage;
 use sidebar::scarcity::ScarcityPanelMessage;
-use sidebar::Sidebar;
+use sidebar::{Sidebar, SidebarMessage};
 use teams::TeamsMessage;
 
 // ---------------------------------------------------------------------------
@@ -591,6 +594,143 @@ impl DraftScreen {
 impl Default for DraftScreen {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DraftScreenMessage
+// ---------------------------------------------------------------------------
+
+/// Messages that can be dispatched to [`DraftScreen`].
+///
+/// This enum mirrors the match arms in [`DraftScreen::handle_key`] but uses a
+/// message-based dispatch instead of direct key events. Both systems coexist —
+/// `handle_key` is untouched and remains the primary input path. `update_msg`
+/// is the new message-based path that will be used by the subscription system
+/// in later phases.
+#[derive(Debug, Clone)]
+pub enum DraftScreenMessage {
+    /// Delegate to the main panel component.
+    MainPanel(MainPanelMessage),
+    /// Delegate to the sidebar component.
+    Sidebar(SidebarMessage),
+    /// Delegate to the modal layer component.
+    Modal(ModalLayerMessage),
+    /// Switch the active tab.
+    SwitchTab(TabId),
+    /// Cycle focus forward to the next panel.
+    FocusNext,
+    /// Cycle focus backward to the previous panel.
+    FocusPrev,
+    /// Scroll the currently focused panel.
+    ScrollFocused(ScrollDirection),
+    /// Toggle the text filter input on the Available tab (mirrors `/` key).
+    ToggleFilter,
+    /// Open the position filter modal on the Available tab (mirrors `p` key).
+    OpenPositionFilter,
+    /// Enter the quit-confirmation dialog.
+    RequestQuit,
+    /// Request a full keyframe sync from the extension.
+    RequestResync,
+    /// Open the settings screen.
+    OpenSettings,
+}
+
+impl DraftScreen {
+    /// Process a [`DraftScreenMessage`] and return an optional [`Action`].
+    ///
+    /// This mirrors the logic in [`DraftScreen::handle_key`] but driven by
+    /// message variants instead of raw key events. The existing `handle_key`
+    /// method is untouched — both paths coexist.
+    pub fn update_msg(&mut self, msg: DraftScreenMessage) -> Option<Action> {
+        use crate::tui::confirm_dialog::ConfirmMessage;
+        use crate::protocol::TabFeature;
+
+        match msg {
+            DraftScreenMessage::MainPanel(m) => {
+                self.main_panel.update(m)
+            }
+            DraftScreenMessage::Sidebar(m) => {
+                self.sidebar.update(m)
+            }
+            DraftScreenMessage::Modal(m) => {
+                if let Some(action) = self.modal_layer.update(m) {
+                    match action {
+                        ModalLayerAction::QuitConfirm(crate::tui::confirm_dialog::ConfirmResult::Confirmed(_)) => {
+                            return Some(Action::Command(UserCommand::Quit));
+                        }
+                        ModalLayerAction::PositionFilter(PositionFilterModalAction::Selected(pos)) => {
+                            self.main_panel
+                                .available
+                                .update(AvailablePanelMessage::SetPositionFilter(pos));
+                        }
+                        _ => {}
+                    }
+                }
+                None
+            }
+            DraftScreenMessage::SwitchTab(tab) => {
+                self.main_panel.update(MainPanelMessage::SwitchTab(tab));
+                self.focused_panel = None;
+                None
+            }
+            DraftScreenMessage::FocusNext => {
+                self.focused_panel = FocusPanel::next(self.focused_panel);
+                None
+            }
+            DraftScreenMessage::FocusPrev => {
+                self.focused_panel = FocusPanel::prev(self.focused_panel);
+                None
+            }
+            DraftScreenMessage::ScrollFocused(dir) => {
+                let lines = match dir {
+                    ScrollDirection::PageUp | ScrollDirection::PageDown => page_size(),
+                    _ => 1,
+                };
+                match dir {
+                    ScrollDirection::Up | ScrollDirection::PageUp => {
+                        self.dispatch_scroll_up(lines);
+                    }
+                    ScrollDirection::Down | ScrollDirection::PageDown => {
+                        self.dispatch_scroll_down(lines);
+                    }
+                    _ => {}
+                }
+                None
+            }
+            DraftScreenMessage::ToggleFilter => {
+                if self.main_panel.active_tab().supports(TabFeature::Filter) {
+                    self.main_panel
+                        .available
+                        .update(AvailablePanelMessage::ToggleFilterMode);
+                }
+                None
+            }
+            DraftScreenMessage::OpenPositionFilter => {
+                if self
+                    .main_panel
+                    .active_tab()
+                    .supports(TabFeature::PositionFilter)
+                {
+                    self.modal_layer.position_filter.update(
+                        PositionFilterModalMessage::Open {
+                            current_filter: self.main_panel.available.position_filter(),
+                        },
+                    );
+                }
+                None
+            }
+            DraftScreenMessage::RequestQuit => {
+                self.modal_layer.quit_confirm.update(ConfirmMessage::Open);
+                None
+            }
+            DraftScreenMessage::RequestResync => {
+                Some(Action::Command(UserCommand::RequestKeyframe))
+            }
+            DraftScreenMessage::OpenSettings => {
+                Some(Action::Command(UserCommand::OpenSettings))
+            }
+        }
     }
 }
 

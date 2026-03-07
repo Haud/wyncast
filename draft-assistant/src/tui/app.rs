@@ -10,12 +10,13 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::Frame;
 
 use crate::protocol::{AppMode, AppSnapshot, SettingsSection, UiUpdate, UserCommand};
+use super::action::Action;
 use super::confirm_dialog::ConfirmDialog;
 use super::draft::main_panel::analysis::AnalysisPanelMessage;
 use super::draft::main_panel::available::AvailablePanelMessage;
 use super::draft::main_panel::MainPanelMessage;
 use super::draft::sidebar::plan::PlanPanelMessage;
-use super::draft::DraftScreen;
+use super::draft::{DraftScreen, DraftScreenMessage};
 use super::llm_stream::LlmStreamMessage;
 use super::onboarding;
 use super::settings;
@@ -1182,5 +1183,37 @@ mod tests {
 
         app.handle_key(key(KeyCode::Down));
         assert!(!app.suppress_next_bracket, "non-edit mode keys should not set suppression");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AppMessage
+// ---------------------------------------------------------------------------
+
+/// Top-level messages that can be dispatched to [`App`].
+///
+/// This enum is the entry point for the message-based input path. The
+/// existing [`App::handle_key`] system is untouched — both systems coexist.
+/// `AppMessage` will be produced by `subscription()` in later phases.
+#[derive(Debug, Clone)]
+pub enum AppMessage {
+    /// Exit the application.
+    Quit,
+    /// Delegate a message to the draft screen.
+    Draft(DraftScreenMessage),
+}
+
+impl App {
+    /// Process a [`AppMessage`] and return an optional [`Action`].
+    ///
+    /// Routes messages to the appropriate sub-component. Returns `Some(Action)`
+    /// when the message requires the event loop to take an action (e.g. quit or
+    /// send a backend command). Returns `None` when the message was handled
+    /// internally with no upward effect.
+    pub fn update_msg(&mut self, msg: AppMessage) -> Option<Action> {
+        match msg {
+            AppMessage::Quit => Some(Action::Quit),
+            AppMessage::Draft(m) => self.draft_screen.update_msg(m),
+        }
     }
 }

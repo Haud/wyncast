@@ -21,6 +21,7 @@ use scarcity::{ScarcityPanel, ScarcityPanelMessage};
 // ---------------------------------------------------------------------------
 
 /// Messages that can be sent to the Sidebar component.
+#[derive(Debug, Clone)]
 pub enum SidebarMessage {
     Roster(RosterMessage),
     Scarcity(ScarcityPanelMessage),
