@@ -14,7 +14,6 @@
 // - [`Listener`] — processes events, optionally capturing (blocking lower-priority listeners)
 // - [`Subscription<M>`] — generic container of recipes; supports `none`, `batch`, `map`
 // - [`SubscriptionManager<M>`] — diffs subscriptions, activates/drops listeners, routes events
-// - [`KeybindHint`] — display hint for the help bar
 
 use std::collections::{HashMap, HashSet};
 
@@ -56,26 +55,6 @@ pub enum AppEvent {
 }
 
 // ---------------------------------------------------------------------------
-// KeybindHint
-// ---------------------------------------------------------------------------
-
-/// A keybind hint displayed in the help bar.
-#[derive(Clone, Debug, PartialEq)]
-pub struct KeybindHint {
-    pub key: String,
-    pub description: String,
-}
-
-impl KeybindHint {
-    pub fn new(key: impl Into<String>, description: impl Into<String>) -> Self {
-        Self {
-            key: key.into(),
-            description: description.into(),
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Recipe
 // ---------------------------------------------------------------------------
 
@@ -109,11 +88,6 @@ pub trait Listener {
 
     /// Process one event. Returns `Some(msg)` if the event was consumed.
     fn process(&mut self, event: &AppEvent) -> Option<Self::Output>;
-
-    /// Keybind hints this listener wants shown in the help bar.
-    fn hints(&self) -> Vec<KeybindHint> {
-        vec![]
-    }
 
     /// Higher priority listeners receive events first.
     fn priority(&self) -> u8 {
@@ -217,10 +191,6 @@ impl<A: 'static, B: 'static> Listener for MapListener<A, B> {
         self.inner.process(event).map(self.f)
     }
 
-    fn hints(&self) -> Vec<KeybindHint> {
-        self.inner.hints()
-    }
-
     fn priority(&self) -> u8 {
         self.inner.priority()
     }
@@ -304,28 +274,6 @@ impl<M: 'static> SubscriptionManager<M> {
         }
         None
     }
-
-    /// Collect keybind hints from all active listeners.
-    ///
-    /// If any listener has [`captures`][Listener::captures] true, only that
-    /// listener's hints are returned (it has exclusive focus). Otherwise all
-    /// hints are merged.
-    pub fn hints(&self) -> Vec<KeybindHint> {
-        let mut entries: Vec<&ActiveEntry<M>> = self.active.values().collect();
-        entries.sort_by(|a, b| b.priority.cmp(&a.priority));
-
-        for entry in &entries {
-            if entry.listener.captures() {
-                return entry.listener.hints();
-            }
-        }
-        entries.iter().flat_map(|e| e.listener.hints()).collect()
-    }
-
-    /// Returns true if any active listener is currently capturing.
-    pub fn has_capture(&self) -> bool {
-        self.active.values().any(|e| e.listener.captures())
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -360,7 +308,6 @@ mod tests {
         msg: TestMsg,
         priority: u8,
         captures: bool,
-        hints: Vec<KeybindHint>,
     }
 
     impl TestConfig {
@@ -371,7 +318,6 @@ mod tests {
                 msg,
                 priority: 0,
                 captures: false,
-                hints: vec![],
             }
         }
 
@@ -382,11 +328,6 @@ mod tests {
 
         fn with_captures(mut self) -> Self {
             self.captures = true;
-            self
-        }
-
-        fn with_hints(mut self, hints: Vec<KeybindHint>) -> Self {
-            self.hints = hints;
             self
         }
     }
@@ -417,10 +358,6 @@ mod tests {
                 AppEvent::Key(k) if k.code == self.0.respond_to => Some(self.0.msg.clone()),
                 _ => None,
             }
-        }
-
-        fn hints(&self) -> Vec<KeybindHint> {
-            self.0.hints.clone()
         }
 
         fn priority(&self) -> u8 {
@@ -646,97 +583,6 @@ mod tests {
             Some(TestMsg::Mapped(Box::new(TestMsg::Mapped(Box::new(TestMsg::A))))),
             "double map should compose correctly"
         );
-    }
-
-    // ------------------------------------------------------------------
-    // hints() collection
-    // ------------------------------------------------------------------
-
-    #[test]
-    fn hints_returns_all_when_no_capture() {
-        let mut mgr: SubscriptionManager<TestMsg> = SubscriptionManager::new();
-
-        let id_a = SubscriptionId::unique();
-        let id_b = SubscriptionId::unique();
-
-        let hint_a = KeybindHint::new("a", "do A");
-        let hint_b = KeybindHint::new("b", "do B");
-
-        let sub_a = make_sub(
-            TestConfig::new(id_a, KeyCode::Char('a'), TestMsg::A)
-                .with_hints(vec![hint_a.clone()]),
-        );
-        let sub_b = make_sub(
-            TestConfig::new(id_b, KeyCode::Char('b'), TestMsg::B)
-                .with_hints(vec![hint_b.clone()]),
-        );
-
-        mgr.sync(Subscription::batch([sub_a, sub_b]));
-
-        let hints = mgr.hints();
-        assert!(hints.contains(&hint_a), "hint_a should be present");
-        assert!(hints.contains(&hint_b), "hint_b should be present");
-    }
-
-    #[test]
-    fn hints_returns_only_capturing_listener_hints_when_capture_active() {
-        let mut mgr: SubscriptionManager<TestMsg> = SubscriptionManager::new();
-
-        let id_capturer = SubscriptionId::unique();
-        let id_lower = SubscriptionId::unique();
-
-        let hint_capture = KeybindHint::new("Esc", "close dialog");
-        let hint_lower = KeybindHint::new("q", "quit");
-
-        let capturer = make_sub(
-            TestConfig::new(id_capturer, KeyCode::Esc, TestMsg::A)
-                .with_priority(10)
-                .with_captures()
-                .with_hints(vec![hint_capture.clone()]),
-        );
-        let lower = make_sub(
-            TestConfig::new(id_lower, KeyCode::Char('q'), TestMsg::B)
-                .with_priority(1)
-                .with_hints(vec![hint_lower.clone()]),
-        );
-
-        mgr.sync(Subscription::batch([capturer, lower]));
-
-        let hints = mgr.hints();
-        assert!(hints.contains(&hint_capture), "capturing listener hint should be shown");
-        assert!(
-            !hints.contains(&hint_lower),
-            "lower listener hint should NOT be shown when capture is active"
-        );
-    }
-
-    #[test]
-    fn hints_empty_when_no_subscriptions() {
-        let mut mgr: SubscriptionManager<TestMsg> = SubscriptionManager::new();
-        mgr.sync(Subscription::none());
-        assert!(mgr.hints().is_empty());
-    }
-
-    // ------------------------------------------------------------------
-    // has_capture
-    // ------------------------------------------------------------------
-
-    #[test]
-    fn has_capture_true_when_capturing_listener_present() {
-        let mut mgr: SubscriptionManager<TestMsg> = SubscriptionManager::new();
-        let id = SubscriptionId::unique();
-        mgr.sync(make_sub(
-            TestConfig::new(id, KeyCode::Char('a'), TestMsg::A).with_captures(),
-        ));
-        assert!(mgr.has_capture());
-    }
-
-    #[test]
-    fn has_capture_false_when_no_capturing_listener() {
-        let mut mgr: SubscriptionManager<TestMsg> = SubscriptionManager::new();
-        let id = SubscriptionId::unique();
-        mgr.sync(make_sub(TestConfig::new(id, KeyCode::Char('a'), TestMsg::A)));
-        assert!(!mgr.has_capture());
     }
 
     // ------------------------------------------------------------------
