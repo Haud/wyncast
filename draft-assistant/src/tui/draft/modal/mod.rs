@@ -10,6 +10,8 @@ use ratatui::layout::Rect;
 use ratatui::Frame;
 
 use crate::tui::confirm_dialog::{ConfirmDialog, ConfirmMessage, ConfirmResult};
+use crate::tui::subscription::Subscription;
+use crate::tui::subscription::keybinding::KeybindManager;
 use position_filter::{PositionFilterModal, PositionFilterModalAction, PositionFilterModalMessage};
 
 // ---------------------------------------------------------------------------
@@ -59,6 +61,25 @@ impl ModalLayer {
     /// Returns `true` if any modal is currently intercepting input.
     pub fn has_active_modal(&self) -> bool {
         self.position_filter.open || self.quit_confirm.open
+    }
+
+    /// Declare keybindings for the subscription system.
+    ///
+    /// Only the open modal (if any) subscribes — quit confirm is checked first
+    /// (it has higher visual precedence), then position filter. Both are
+    /// mutually exclusive in normal flow, but the batch order encodes priority.
+    pub fn subscription(&self, kb: &mut KeybindManager) -> Subscription<ModalLayerMessage> {
+        let quit_sub = self
+            .quit_confirm
+            .subscription(kb)
+            .map(ModalLayerMessage::QuitConfirm);
+
+        let pos_sub = self
+            .position_filter
+            .subscription(kb)
+            .map(ModalLayerMessage::PositionFilter);
+
+        Subscription::batch([quit_sub, pos_sub])
     }
 
     /// Process a message and return an optional action for the parent.
