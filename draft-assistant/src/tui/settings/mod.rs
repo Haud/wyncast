@@ -62,32 +62,11 @@ pub fn key_to_message(
             None
         }
         SettingsSection::StrategyConfig => {
-            let is_editing = strategy_setup.is_editing();
-            let is_generating = strategy_setup.generating;
-
-            if is_editing || is_generating {
-                return strategy_setup
-                    .key_to_message(key)
-                    .map(SettingsMessage::Strategy);
-            }
-
-            // Not editing: handle settings-level keys first
-            match key.code {
-                KeyCode::Char('1') => {
-                    Some(SettingsMessage::SwitchTab(SettingsSection::LlmConfig))
-                }
-                KeyCode::Char('2') => {
-                    Some(SettingsMessage::SwitchTab(SettingsSection::StrategyConfig))
-                }
-                KeyCode::Char('s') => Some(SettingsMessage::SaveStrategy),
-                KeyCode::Esc => Some(SettingsMessage::ExitSettings),
-                KeyCode::Char('q') => Some(SettingsMessage::Quit),
-                _ => {
-                    strategy_setup
-                        .key_to_message(key)
-                        .map(SettingsMessage::Strategy)
-                }
-            }
+            // StrategySetupState key routing is handled by the subscription system
+            // via StrategySetupState::subscription(). This function is retained for
+            // non-subscription callers but StrategyConfig routing is a no-op here.
+            let _ = (strategy_setup, key);
+            None
         }
     }
 }
