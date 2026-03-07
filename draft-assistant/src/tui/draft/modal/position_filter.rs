@@ -4,7 +4,7 @@
 // Available Players tab.  Owns its open/closed state, incremental search text,
 // and highlighted selection index.
 //
-// Messages flow through `key_to_message()` -> `update()` which returns an
+// Messages flow through subscription() -> update() which returns an
 // optional `PositionFilterModalAction` for the parent to act on.
 
 use crossterm::event::{KeyCode, KeyEvent};
@@ -128,29 +128,6 @@ impl PositionFilterModal {
     }
 
     // -- Elm Architecture API ------------------------------------------------
-
-    /// Convert a key event into a message when the modal is open.
-    ///
-    /// Returns `None` if the modal is closed or the key is not handled.
-    pub fn key_to_message(&self, key: KeyEvent) -> Option<PositionFilterModalMessage> {
-        if !self.open {
-            return None;
-        }
-        match key.code {
-            KeyCode::Esc => Some(PositionFilterModalMessage::Close),
-            KeyCode::Enter => Some(PositionFilterModalMessage::Confirm),
-            KeyCode::Up => Some(PositionFilterModalMessage::MoveUp),
-            KeyCode::Down => Some(PositionFilterModalMessage::MoveDown),
-            _ => {
-                // Only forward if TextInput would handle this key
-                if TextInput::key_to_message(&key).is_some() {
-                    Some(PositionFilterModalMessage::SearchKey(key))
-                } else {
-                    None
-                }
-            }
-        }
-    }
 
     /// Declare keybindings for the subscription system.
     ///
@@ -550,39 +527,6 @@ mod tests {
         let key = KeyEvent::new(KeyCode::Char('s'), crossterm::event::KeyModifiers::NONE);
         modal.update(PositionFilterModalMessage::SearchKey(key));
         assert_eq!(modal.selected_index, 0);
-    }
-
-    #[test]
-    fn key_to_message_returns_none_when_closed() {
-        let modal = PositionFilterModal::default();
-        let key = KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE);
-        assert!(modal.key_to_message(key).is_none());
-    }
-
-    #[test]
-    fn key_to_message_maps_esc_to_close() {
-        let mut modal = PositionFilterModal::default();
-        modal.update(PositionFilterModalMessage::Open {
-            current_filter: None,
-        });
-        let key = KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE);
-        assert!(matches!(
-            modal.key_to_message(key),
-            Some(PositionFilterModalMessage::Close)
-        ));
-    }
-
-    #[test]
-    fn key_to_message_maps_enter_to_confirm() {
-        let mut modal = PositionFilterModal::default();
-        modal.update(PositionFilterModalMessage::Open {
-            current_filter: None,
-        });
-        let key = KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE);
-        assert!(matches!(
-            modal.key_to_message(key),
-            Some(PositionFilterModalMessage::Confirm)
-        ));
     }
 
     #[test]

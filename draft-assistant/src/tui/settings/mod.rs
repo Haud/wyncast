@@ -45,9 +45,12 @@ pub fn key_to_message(
 ) -> Option<SettingsMessage> {
     // Confirm dialog intercepts all input when open
     if confirm_exit_settings.open {
-        return confirm_exit_settings
-            .key_to_message(key)
-            .map(SettingsMessage::ConfirmExit);
+        let msg = match key.code {
+            KeyCode::Esc => Some(ConfirmMessage::Cancel),
+            KeyCode::Char(ch) => Some(ConfirmMessage::Confirm(ch.to_ascii_lowercase())),
+            _ => None,
+        };
+        return msg.map(SettingsMessage::ConfirmExit);
     }
 
     match settings_tab {

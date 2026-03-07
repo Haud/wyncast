@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::KeyCode;
 use ratatui::Frame;
 
 use crate::draft::pick::{DraftPick, Position};
@@ -23,7 +23,7 @@ use crate::tui::subscription::keybinding::{
     exact, KeyBindingRecipe, KeybindHint as KbHint, KeybindManager, PRIORITY_NORMAL,
 };
 use crate::tui::widgets;
-use crate::tui::{BudgetStatus, FocusPanel, KeybindHint, TeamSummary};
+use crate::tui::{BudgetStatus, FocusPanel, TeamSummary};
 use crate::valuation::scarcity::ScarcityEntry;
 use crate::valuation::zscore::PlayerValuation;
 
@@ -122,163 +122,8 @@ impl DraftScreen {
         }
     }
 
-    /// Handle a key event in draft mode.
-    ///
-    /// Returns `Some(UserCommand)` when the key press should be forwarded
-    /// to the app orchestrator. Returns `None` when the key press was
-    /// handled locally by mutating state.
-    pub fn handle_key(&mut self, key_event: KeyEvent) -> Option<UserCommand> {
-        // Quit confirmation mode: delegate to ConfirmDialog component
-        if self.modal_layer.quit_confirm.open {
-            use crate::tui::confirm_dialog::ConfirmResult;
-            if let Some(msg) = self.modal_layer.quit_confirm.key_to_message(key_event) {
-                if let Some(result) = self.modal_layer.quit_confirm.update(msg) {
-                    match result {
-                        ConfirmResult::Confirmed('n') => return None, // 'n' cancels
-                        ConfirmResult::Confirmed(_) => return Some(UserCommand::Quit),
-                        ConfirmResult::Cancelled => return None,
-                    }
-                }
-            }
-            return None; // block all other keys
-        }
-
-        // Filter mode: route keys through the available panel component
-        if self.main_panel.available.filter_mode() {
-            if let Some(msg) = self.main_panel.available.key_to_message(key_event) {
-                self.main_panel.available.update(msg);
-            }
-            return None;
-        }
-
-        // Position filter modal: intercept all keys when the modal is open
-        if self.modal_layer.position_filter.open {
-            if let Some(msg) = self.modal_layer.position_filter.key_to_message(key_event) {
-                if let Some(action) = self.modal_layer.position_filter.update(msg) {
-                    if let PositionFilterModalAction::Selected(pos) = action {
-                        self.main_panel
-                            .available
-                            .update(AvailablePanelMessage::SetPositionFilter(pos));
-                    }
-                }
-            }
-            return None;
-        }
-
-        // Normal mode key dispatch
-        match key_event.code {
-            // Tab switching
-            KeyCode::Char('1') => {
-                self.main_panel
-                    .update(MainPanelMessage::SwitchTab(TabId::Analysis));
-                self.focused_panel = None;
-                None
-            }
-            KeyCode::Char('2') => {
-                self.main_panel
-                    .update(MainPanelMessage::SwitchTab(TabId::Available));
-                self.focused_panel = None;
-                None
-            }
-            KeyCode::Char('3') => {
-                self.main_panel
-                    .update(MainPanelMessage::SwitchTab(TabId::DraftLog));
-                self.focused_panel = None;
-                None
-            }
-            KeyCode::Char('4') => {
-                self.main_panel
-                    .update(MainPanelMessage::SwitchTab(TabId::Teams));
-                self.focused_panel = None;
-                None
-            }
-
-            // Scrolling: routes to focused panel (or main panel if no focus)
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.dispatch_scroll_up(1);
-                None
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.dispatch_scroll_down(1);
-                None
-            }
-            KeyCode::PageUp => {
-                self.dispatch_scroll_up(page_size());
-                None
-            }
-            KeyCode::PageDown => {
-                self.dispatch_scroll_down(page_size());
-                None
-            }
-
-            // Panel focus cycling
-            KeyCode::Tab => {
-                if key_event.modifiers.contains(KeyModifiers::SHIFT) {
-                    self.focused_panel = FocusPanel::prev(self.focused_panel);
-                } else {
-                    self.focused_panel = FocusPanel::next(self.focused_panel);
-                }
-                None
-            }
-            KeyCode::BackTab => {
-                self.focused_panel = FocusPanel::prev(self.focused_panel);
-                None
-            }
-
-            // Filter mode entry: only on tabs that support filtering
-            KeyCode::Char('/') => {
-                if self.main_panel.active_tab().supports(TabFeature::Filter) {
-                    self.main_panel
-                        .available
-                        .update(AvailablePanelMessage::ToggleFilterMode);
-                }
-                None
-            }
-
-            // Escape: clear focus, filter text, and position filter
-            KeyCode::Esc => {
-                self.focused_panel = None;
-                self.main_panel
-                    .available
-                    .update(AvailablePanelMessage::ClearFilters);
-                None
-            }
-
-            // Position filter modal: only on tabs that support it
-            KeyCode::Char('p') => {
-                if self
-                    .main_panel
-                    .active_tab()
-                    .supports(TabFeature::PositionFilter)
-                {
-                    self.modal_layer.position_filter.update(
-                        PositionFilterModalMessage::Open {
-                            current_filter: self.main_panel.available.position_filter(),
-                        },
-                    );
-                }
-                None
-            }
-
-            // Request a full keyframe (FULL_STATE_SYNC) from the extension
-            KeyCode::Char('r') => Some(UserCommand::RequestKeyframe),
-
-            // Open settings screen
-            KeyCode::Char(',') => Some(UserCommand::OpenSettings),
-
-            // Quit: enter confirmation mode instead of quitting immediately
-            KeyCode::Char('q') => {
-                use crate::tui::confirm_dialog::ConfirmMessage;
-                self.modal_layer.quit_confirm.update(ConfirmMessage::Open);
-                None
-            }
-
-            _ => None,
-        }
-    }
-
     /// Render the full draft dashboard.
-    pub fn view(&self, frame: &mut Frame) {
+    pub fn view(&self, frame: &mut Frame, keybinds: &[crate::tui::KeybindHint]) {
         let layout = build_layout(frame.area());
 
         widgets::status_bar::render(
@@ -340,81 +185,11 @@ impl DraftScreen {
             nom_plan_focused,
         );
 
-        // Help bar: dumb renderer of the pre-synced active keybind hints
-        // Note: render_help_bar is called by the parent (ViewState) since it
-        // needs access to active_keybinds which lives on ViewState.
-        // We render the help bar here using a local keybinds computation.
-        let keybinds = self.compute_keybinds();
-        crate::tui::render_help_bar_from_draft(frame, layout.help_bar, self, &keybinds);
+        // Help bar: render keybind hints passed in from App (from kb_manager).
+        crate::tui::render_help_bar_draft(frame, layout.help_bar, self.main_panel.available.filter_mode(), self.main_panel.available.filter_text().value(), keybinds);
 
         // Modal overlay layer (position filter + quit confirm)
         self.modal_layer.view(frame, frame.area());
-    }
-
-    /// Compute keybind hints for the help bar.
-    pub fn compute_keybinds(&self) -> Vec<KeybindHint> {
-        // 1. Quit confirmation overlay: all other input is blocked
-        if self.modal_layer.quit_confirm.open {
-            return vec![
-                KeybindHint::new("y/q", "Confirm quit"),
-                KeybindHint::new("n/Esc", "Cancel"),
-            ];
-        }
-
-        // 2. Position filter modal
-        if self.modal_layer.position_filter.open {
-            return vec![
-                KeybindHint::new("\u{2191}\u{2193}", "Navigate"),
-                KeybindHint::new("Enter", "Select"),
-                KeybindHint::new("Esc", "Cancel"),
-            ];
-        }
-
-        // 3. Text filter mode (the inline filter input bar)
-        if self.main_panel.available.filter_mode() {
-            return vec![
-                KeybindHint::new("Enter", "Apply"),
-                KeybindHint::new("Esc", "Cancel"),
-            ];
-        }
-
-        // 4. Normal mode: assemble context-sensitive hints
-        let mut hints = vec![
-            KeybindHint::new("q", "Quit"),
-            KeybindHint::new("1-4", "Tabs"),
-        ];
-
-        // Tab-specific: filtering and position-filter only on supported tabs
-        if self.main_panel.active_tab().supports(TabFeature::Filter) {
-            hints.push(KeybindHint::new("/", "Filter"));
-            hints.push(KeybindHint::new("p", "Pos"));
-        }
-
-        // Focus cycling, resync, and settings are always available in normal mode
-        hints.push(KeybindHint::new("Tab", "Focus"));
-        hints.push(KeybindHint::new("r", "Resync"));
-        hints.push(KeybindHint::new(",", "Settings"));
-
-        // Scroll hint only appears when a panel is focused (scroll is routed there)
-        if self.focused_panel.is_some() {
-            hints.push(KeybindHint::new("\u{2191}\u{2193}/j/k/PgUp/PgDn", "Scroll"));
-        }
-
-        // Active filter reminder: shown as a trailing hint when the Available tab
-        // has a non-empty filter so the user knows results are currently filtered.
-        if !self.main_panel.available.filter_text().is_empty()
-            && self.main_panel.active_tab() == TabId::Available
-        {
-            hints.push(KeybindHint::new(
-                format!(
-                    "filter:\"{}\"",
-                    self.main_panel.available.filter_text().value()
-                ),
-                "active",
-            ));
-        }
-
-        hints
     }
 
     // -- Private scroll dispatch methods --
@@ -814,12 +589,6 @@ impl DraftScreen {
 // ---------------------------------------------------------------------------
 
 /// Messages that can be dispatched to [`DraftScreen`].
-///
-/// This enum mirrors the match arms in [`DraftScreen::handle_key`] but uses a
-/// message-based dispatch instead of direct key events. Both systems coexist —
-/// `handle_key` is untouched and remains the primary input path. `update`
-/// is the new message-based path that will be used by the subscription system
-/// in later phases.
 #[derive(Debug, Clone)]
 pub enum DraftScreenMessage {
     /// Delegate to the main panel component.
@@ -850,10 +619,6 @@ pub enum DraftScreenMessage {
 
 impl DraftScreen {
     /// Process a [`DraftScreenMessage`] and return an optional [`Action`].
-    ///
-    /// This mirrors the logic in [`DraftScreen::handle_key`] but driven by
-    /// message variants instead of raw key events. The existing `handle_key`
-    /// method is untouched — both paths coexist.
     pub fn update(&mut self, msg: DraftScreenMessage) -> Option<Action> {
         use crate::tui::confirm_dialog::ConfirmMessage;
         use crate::protocol::TabFeature;
