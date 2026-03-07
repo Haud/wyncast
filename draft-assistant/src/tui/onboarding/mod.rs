@@ -28,7 +28,11 @@ pub fn key_to_message(
 ) -> Option<OnboardingMessage> {
     match step {
         OnboardingStep::LlmSetup => {
-            llm_setup.key_to_message(key, false).map(OnboardingMessage::LlmSetup)
+            // LlmSetupState key routing is handled by the subscription system
+            // via LlmSetupState::subscription(). This function is retained for
+            // non-subscription callers but LlmSetup routing is a no-op here.
+            let _ = (llm_setup, key);
+            None
         }
         OnboardingStep::StrategySetup | OnboardingStep::Complete => {
             strategy_setup.key_to_message(key).map(OnboardingMessage::Strategy)

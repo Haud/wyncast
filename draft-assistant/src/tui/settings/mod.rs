@@ -55,9 +55,11 @@ pub fn key_to_message(
 
     match settings_tab {
         SettingsSection::LlmConfig => {
-            llm_setup
-                .key_to_message(key, true)
-                .map(SettingsMessage::LlmConfig)
+            // LlmSetupState key routing is handled by the subscription system
+            // via LlmSetupState::subscription(). This function is retained for
+            // non-subscription callers but LlmConfig routing is a no-op here.
+            let _ = (llm_setup, key);
+            None
         }
         SettingsSection::StrategyConfig => {
             let is_editing = strategy_setup.is_editing();

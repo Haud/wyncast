@@ -4,6 +4,9 @@
 // chooses a model, enters an API key, and optionally tests the connection
 // before proceeding to strategy configuration.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -15,7 +18,11 @@ use crossterm::event::{KeyCode, KeyEvent};
 use crate::llm::provider::{models_for_provider, LlmProvider, ModelOption};
 use crate::protocol::{OnboardingAction, SettingsSection, UserCommand};
 use crate::tui::TextInput;
-use crate::tui::text_input::TextInputMessage;
+use crate::tui::subscription::{Subscription, SubscriptionId};
+use crate::tui::subscription::keybinding::{
+    exact, KeyBindingRecipe, KeybindHint, KeybindManager, KeyTrigger, PRIORITY_CAPTURE,
+    PRIORITY_NORMAL,
+};
 
 // ---------------------------------------------------------------------------
 // API key masking
@@ -175,6 +182,10 @@ pub struct LlmSetupState {
     /// cleared when the connection test succeeds or on Esc (restore snapshot).
     /// While `true`, the 's' (save) keybind is blocked.
     pub settings_needs_connection_test: bool,
+    /// Stable base ID used to derive state-dependent subscription IDs.
+    /// The actual ID is hashed from this plus relevant state fields so the
+    /// listener is rebuilt when the active mode/state changes.
+    sub_id: SubscriptionId,
 }
 
 impl std::fmt::Debug for LlmSetupState {
@@ -218,6 +229,7 @@ impl Default for LlmSetupState {
             settings_saved_confirmed_through: None,
             in_settings_mode: false,
             settings_needs_connection_test: false,
+            sub_id: SubscriptionId::unique(),
         }
     }
 }
@@ -489,7 +501,7 @@ pub enum LlmSetupMessage {
     TabPrev,
     // API key editing
     StartApiKeyEdit,
-    ApiKeyInput(TextInputMessage),
+    ApiKeyInput(KeyEvent),
     FinishApiKeyEdit,
     CancelApiKeyEdit,
     // Connection / flow
@@ -512,71 +524,213 @@ pub enum LlmSetupMessage {
 }
 
 impl LlmSetupState {
-    pub fn key_to_message(&self, key: KeyEvent, settings_mode: bool) -> Option<LlmSetupMessage> {
+    /// Declare keybindings for the subscription system.
+    ///
+    /// State-dependent subscription ID: the listener is rebuilt whenever
+    /// `settings_mode`, `api_key_editing`, or `settings_editing_field` changes,
+    /// so the correct binding set is always active.
+    ///
+    /// States (mutually exclusive, highest priority first):
+    /// - `api_key_editing` → CAPTURE mode: Enter, Esc, Any key → ApiKeyInput
+    /// - settings mode + field editing → Up/k, Down/j, Enter, Esc, q
+    /// - settings mode + overview → Up/k, Down/j, Enter, Esc, s, 1, 2, q
+    /// - onboarding mode → Up/k, Down/j, Enter, Esc, n, s, Tab, BackTab, q
+    pub fn subscription(
+        &self,
+        kb: &mut KeybindManager,
+        settings_mode: bool,
+    ) -> Subscription<LlmSetupMessage> {
+        // Derive state-dependent ID so the listener is rebuilt on state changes.
+        let mut hasher = DefaultHasher::new();
+        self.sub_id.hash(&mut hasher);
+        (settings_mode as u8).hash(&mut hasher);
+        (self.api_key_editing as u8).hash(&mut hasher);
+        (self.settings_editing_field.is_some() as u8).hash(&mut hasher);
+        let sub_id = SubscriptionId::from_u64(hasher.finish());
+
+        if self.api_key_editing {
+            // CAPTURE mode: Enter/Esc are handled explicitly; everything else
+            // is forwarded as ApiKeyInput(key) so the TextInput can process it.
+            let recipe = KeyBindingRecipe::new(sub_id)
+                .priority(PRIORITY_CAPTURE)
+                .capture()
+                .bind(
+                    exact(KeyCode::Enter),
+                    |_| LlmSetupMessage::FinishApiKeyEdit,
+                    KeybindHint::new("Enter", "Confirm key"),
+                )
+                .bind(
+                    exact(KeyCode::Esc),
+                    |_| LlmSetupMessage::CancelApiKeyEdit,
+                    KeybindHint::new("Esc", "Cancel"),
+                )
+                .bind(
+                    KeyTrigger::Any,
+                    LlmSetupMessage::ApiKeyInput,
+                    None,
+                );
+            return kb.subscribe(recipe);
+        }
+
+        if settings_mode && self.settings_editing_field.is_some() {
+            // Settings field editing mode (dropdown open): Up/Down to navigate,
+            // Enter to confirm, Esc to cancel, q to quit.
+            let recipe = KeyBindingRecipe::new(sub_id)
+                .priority(PRIORITY_NORMAL)
+                .bind(
+                    exact(KeyCode::Up),
+                    |_| LlmSetupMessage::SectionUp,
+                    KeybindHint::new("↑/k", "Up"),
+                )
+                .bind(
+                    exact(KeyCode::Char('k')),
+                    |_| LlmSetupMessage::SectionUp,
+                    None,
+                )
+                .bind(
+                    exact(KeyCode::Down),
+                    |_| LlmSetupMessage::SectionDown,
+                    KeybindHint::new("↓/j", "Down"),
+                )
+                .bind(
+                    exact(KeyCode::Char('j')),
+                    |_| LlmSetupMessage::SectionDown,
+                    None,
+                )
+                .bind(
+                    exact(KeyCode::Enter),
+                    |_| LlmSetupMessage::SettingsFieldConfirm,
+                    KeybindHint::new("Enter", "Confirm"),
+                )
+                .bind(
+                    exact(KeyCode::Esc),
+                    |_| LlmSetupMessage::SettingsFieldCancel,
+                    KeybindHint::new("Esc", "Cancel"),
+                )
+                .bind(
+                    exact(KeyCode::Char('q')),
+                    |_| LlmSetupMessage::Quit,
+                    KeybindHint::new("q", "Quit"),
+                );
+            return kb.subscribe(recipe);
+        }
+
         if settings_mode {
-            self.settings_key_to_message(key)
-        } else {
-            self.onboarding_key_to_message(key)
+            // Settings overview mode: navigate fields, open, save, exit, tab switch.
+            let recipe = KeyBindingRecipe::new(sub_id)
+                .priority(PRIORITY_NORMAL)
+                .bind(
+                    exact(KeyCode::Up),
+                    |_| LlmSetupMessage::SettingsFieldUp,
+                    KeybindHint::new("↑/k", "Up"),
+                )
+                .bind(
+                    exact(KeyCode::Char('k')),
+                    |_| LlmSetupMessage::SettingsFieldUp,
+                    None,
+                )
+                .bind(
+                    exact(KeyCode::Down),
+                    |_| LlmSetupMessage::SettingsFieldDown,
+                    KeybindHint::new("↓/j", "Down"),
+                )
+                .bind(
+                    exact(KeyCode::Char('j')),
+                    |_| LlmSetupMessage::SettingsFieldDown,
+                    None,
+                )
+                .bind(
+                    exact(KeyCode::Enter),
+                    |_| LlmSetupMessage::SettingsFieldOpen,
+                    KeybindHint::new("Enter", "Edit field"),
+                )
+                .bind(
+                    exact(KeyCode::Esc),
+                    |_| LlmSetupMessage::SettingsExit,
+                    KeybindHint::new("Esc", "Exit settings"),
+                )
+                .bind(
+                    exact(KeyCode::Char('s')),
+                    |_| LlmSetupMessage::SettingsSave,
+                    KeybindHint::new("s", "Save"),
+                )
+                .bind(
+                    exact(KeyCode::Char('1')),
+                    |_| LlmSetupMessage::SettingsTabSwitch(SettingsSection::LlmConfig),
+                    KeybindHint::new("1/2", "Switch tab"),
+                )
+                .bind(
+                    exact(KeyCode::Char('2')),
+                    |_| LlmSetupMessage::SettingsTabSwitch(SettingsSection::StrategyConfig),
+                    None,
+                )
+                .bind(
+                    exact(KeyCode::Char('q')),
+                    |_| LlmSetupMessage::Quit,
+                    KeybindHint::new("q", "Quit"),
+                );
+            return kb.subscribe(recipe);
         }
-    }
 
-    fn onboarding_key_to_message(&self, key: KeyEvent) -> Option<LlmSetupMessage> {
-        if self.api_key_editing {
-            return match key.code {
-                KeyCode::Enter => Some(LlmSetupMessage::FinishApiKeyEdit),
-                KeyCode::Esc => Some(LlmSetupMessage::CancelApiKeyEdit),
-                _ => TextInput::key_to_message(&key).map(LlmSetupMessage::ApiKeyInput),
-            };
-        }
-
-        match key.code {
-            KeyCode::Up | KeyCode::Char('k') => Some(LlmSetupMessage::SectionUp),
-            KeyCode::Down | KeyCode::Char('j') => Some(LlmSetupMessage::SectionDown),
-            KeyCode::Enter => Some(LlmSetupMessage::ConfirmSection),
-            KeyCode::Char('n') => Some(LlmSetupMessage::GoNext),
-            KeyCode::Char('s') => Some(LlmSetupMessage::Skip),
-            KeyCode::Esc => Some(LlmSetupMessage::GoBackSection),
-            KeyCode::Tab => Some(LlmSetupMessage::TabNext),
-            KeyCode::BackTab => Some(LlmSetupMessage::TabPrev),
-            KeyCode::Char('q') => Some(LlmSetupMessage::Quit),
-            _ => None,
-        }
-    }
-
-    fn settings_key_to_message(&self, key: KeyEvent) -> Option<LlmSetupMessage> {
-        // API key text editing mode
-        if self.api_key_editing {
-            return match key.code {
-                KeyCode::Enter => Some(LlmSetupMessage::FinishApiKeyEdit),
-                KeyCode::Esc => Some(LlmSetupMessage::CancelApiKeyEdit),
-                _ => TextInput::key_to_message(&key).map(LlmSetupMessage::ApiKeyInput),
-            };
-        }
-
-        // Field editing mode (dropdown open)
-        if self.settings_editing_field.is_some() {
-            return match key.code {
-                KeyCode::Up | KeyCode::Char('k') => Some(LlmSetupMessage::SectionUp),
-                KeyCode::Down | KeyCode::Char('j') => Some(LlmSetupMessage::SectionDown),
-                KeyCode::Enter => Some(LlmSetupMessage::SettingsFieldConfirm),
-                KeyCode::Esc => Some(LlmSetupMessage::SettingsFieldCancel),
-                KeyCode::Char('q') => Some(LlmSetupMessage::Quit),
-                _ => None,
-            };
-        }
-
-        // Overview mode — Esc is handled here (not deferred to caller)
-        match key.code {
-            KeyCode::Esc => Some(LlmSetupMessage::SettingsExit),
-            KeyCode::Up | KeyCode::Char('k') => Some(LlmSetupMessage::SettingsFieldUp),
-            KeyCode::Down | KeyCode::Char('j') => Some(LlmSetupMessage::SettingsFieldDown),
-            KeyCode::Enter => Some(LlmSetupMessage::SettingsFieldOpen),
-            KeyCode::Char('s') => Some(LlmSetupMessage::SettingsSave),
-            KeyCode::Char('1') => Some(LlmSetupMessage::SettingsTabSwitch(SettingsSection::LlmConfig)),
-            KeyCode::Char('2') => Some(LlmSetupMessage::SettingsTabSwitch(SettingsSection::StrategyConfig)),
-            KeyCode::Char('q') => Some(LlmSetupMessage::Quit),
-            _ => None,
-        }
+        // Onboarding mode: navigate sections, confirm, go back, next, skip, tab, quit.
+        let recipe = KeyBindingRecipe::new(sub_id)
+            .priority(PRIORITY_NORMAL)
+            .bind(
+                exact(KeyCode::Up),
+                |_| LlmSetupMessage::SectionUp,
+                KeybindHint::new("↑/k", "Up"),
+            )
+            .bind(
+                exact(KeyCode::Char('k')),
+                |_| LlmSetupMessage::SectionUp,
+                None,
+            )
+            .bind(
+                exact(KeyCode::Down),
+                |_| LlmSetupMessage::SectionDown,
+                KeybindHint::new("↓/j", "Down"),
+            )
+            .bind(
+                exact(KeyCode::Char('j')),
+                |_| LlmSetupMessage::SectionDown,
+                None,
+            )
+            .bind(
+                exact(KeyCode::Enter),
+                |_| LlmSetupMessage::ConfirmSection,
+                KeybindHint::new("Enter", "Confirm"),
+            )
+            .bind(
+                exact(KeyCode::Esc),
+                |_| LlmSetupMessage::GoBackSection,
+                KeybindHint::new("Esc", "Back"),
+            )
+            .bind(
+                exact(KeyCode::Char('n')),
+                |_| LlmSetupMessage::GoNext,
+                KeybindHint::new("n", "Next"),
+            )
+            .bind(
+                exact(KeyCode::Char('s')),
+                |_| LlmSetupMessage::Skip,
+                KeybindHint::new("s", "Skip"),
+            )
+            .bind(
+                exact(KeyCode::Tab),
+                |_| LlmSetupMessage::TabNext,
+                KeybindHint::new("Tab", "Next section"),
+            )
+            .bind(
+                exact(KeyCode::BackTab),
+                |_| LlmSetupMessage::TabPrev,
+                None,
+            )
+            .bind(
+                exact(KeyCode::Char('q')),
+                |_| LlmSetupMessage::Quit,
+                KeybindHint::new("q", "Quit"),
+            );
+        kb.subscribe(recipe)
     }
 
     pub fn update(&mut self, msg: LlmSetupMessage) -> Option<UserCommand> {
@@ -599,8 +753,10 @@ impl LlmSetupState {
                 }
                 None
             }
-            LlmSetupMessage::ApiKeyInput(ti_msg) => {
-                self.api_key_input.update(ti_msg);
+            LlmSetupMessage::ApiKeyInput(key) => {
+                if let Some(ti_msg) = TextInput::key_to_message(&key) {
+                    self.api_key_input.update(ti_msg);
+                }
                 if self.in_settings_mode {
                     self.settings_dirty = true;
                 }
