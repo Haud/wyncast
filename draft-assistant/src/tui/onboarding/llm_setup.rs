@@ -497,8 +497,6 @@ pub enum LlmSetupMessage {
     SectionDown,
     ConfirmSection,
     GoBackSection,
-    TabNext,
-    TabPrev,
     // API key editing
     StartApiKeyEdit,
     ApiKeyInput(KeyEvent),
@@ -704,16 +702,6 @@ impl LlmSetupState {
                 KeybindHint::new("Esc", "Back"),
             )
             .bind(
-                exact(KeyCode::Tab),
-                |_| LlmSetupMessage::TabNext,
-                KeybindHint::new("Tab", "Next section"),
-            )
-            .bind(
-                exact(KeyCode::BackTab),
-                |_| LlmSetupMessage::TabPrev,
-                None,
-            )
-            .bind(
                 exact(KeyCode::Char('q')),
                 |_| LlmSetupMessage::Quit,
                 KeybindHint::new("q", "Quit"),
@@ -828,21 +816,6 @@ impl LlmSetupState {
                     self.go_back_section();
                     None
                 }
-            }
-
-            LlmSetupMessage::TabNext => {
-                let next = self.active_section.next();
-                if self.is_section_visible(next) {
-                    self.active_section = next;
-                }
-                None
-            }
-            LlmSetupMessage::TabPrev => {
-                let prev = self.active_section.prev();
-                if self.is_section_visible(prev) && prev < self.active_section {
-                    self.active_section = prev;
-                }
-                None
             }
 
             LlmSetupMessage::Quit => Some(UserCommand::Quit),
