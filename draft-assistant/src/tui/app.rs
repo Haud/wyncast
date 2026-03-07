@@ -8,13 +8,13 @@
 
 use std::time::Duration;
 
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
 
-use crate::protocol::{AppMode, AppSnapshot, SettingsSection, UiUpdate};
+use crate::protocol::{AppMode, AppSnapshot, SettingsSection, UiUpdate, UserCommand};
 use crate::tui::subscription::{Subscription, SubscriptionId};
 use crate::tui::subscription::keybinding::{
-    ctrl, KeyBindingRecipe, KeybindManager, PRIORITY_MODAL,
+    ctrl, KeyBindingRecipe, KeybindManager, KeyTrigger, PRIORITY_MODAL,
 };
 use crate::tui::subscription::timer::TimerRecipe;
 use super::action::Action;
@@ -46,6 +46,8 @@ pub struct App {
     sub_id_global: SubscriptionId,
     /// Stable ID for the 500ms timer subscription (never changes).
     sub_id_tick: SubscriptionId,
+    /// Stable ID for the passthrough key subscription used by Settings/Onboarding.
+    sub_id_passthrough: SubscriptionId,
     /// Monotonically incrementing counter advanced on each 500ms timer tick.
     /// Useful for blinking indicators or periodic UI refresh.
     pub tick_count: u64,
@@ -63,6 +65,7 @@ impl App {
             confirm_exit_settings: ConfirmDialog::unsaved_changes(),
             sub_id_global: SubscriptionId::unique(),
             sub_id_tick: SubscriptionId::unique(),
+            sub_id_passthrough: SubscriptionId::unique(),
             tick_count: 0,
         }
     }
@@ -326,6 +329,11 @@ pub enum AppMessage {
     /// Fired by the 500ms `TimerRecipe`. Used for blinking indicators and
     /// other periodic UI refreshes. Increments `App::tick_count`.
     Tick,
+    /// Raw key event for modes that use direct key-to-message dispatch
+    /// (Settings, Onboarding). The subscription system forwards all key
+    /// events as-is; `App::update()` routes them through the mode-specific
+    /// `key_to_message` -> `update` pipeline.
+    RawKey(KeyEvent),
 }
 
 impl App {
@@ -342,6 +350,50 @@ impl App {
             AppMessage::Tick => {
                 self.tick_count = self.tick_count.wrapping_add(1);
                 None
+            }
+            AppMessage::RawKey(key) => {
+                let cmd = match &self.app_mode {
+                    AppMode::Settings(section) => {
+                        let msg = settings::key_to_message(
+                            *section,
+                            &self.llm_setup,
+                            &self.strategy_setup,
+                            &self.confirm_exit_settings,
+                            key,
+                        );
+                        msg.and_then(|m| {
+                            settings::update(
+                                *section,
+                                &mut self.llm_setup,
+                                &mut self.strategy_setup,
+                                &mut self.confirm_exit_settings,
+                                m,
+                            )
+                        })
+                    }
+                    AppMode::Onboarding(step) => {
+                        let msg = onboarding::key_to_message(
+                            step,
+                            &self.llm_setup,
+                            &self.strategy_setup,
+                            key,
+                        );
+                        msg.and_then(|m| {
+                            onboarding::update(
+                                step,
+                                &mut self.llm_setup,
+                                &mut self.strategy_setup,
+                                m,
+                            )
+                        })
+                    }
+                    _ => None,
+                };
+                match cmd {
+                    Some(UserCommand::Quit) => Some(Action::Quit),
+                    Some(other) => Some(Action::Command(other)),
+                    None => None,
+                }
             }
         }
     }
@@ -376,9 +428,12 @@ impl App {
                 .draft_screen
                 .subscription(kb)
                 .map(AppMessage::Draft),
-            // Onboarding and Settings modes do not have subscription()
-            // implementations yet — they still use handle_key().
-            AppMode::Onboarding(_) | AppMode::Settings(_) => Subscription::none(),
+            AppMode::Onboarding(_) | AppMode::Settings(_) => {
+                kb.subscribe(
+                    KeyBindingRecipe::new(self.sub_id_passthrough)
+                        .bind(KeyTrigger::Any, AppMessage::RawKey, None),
+                )
+            }
         };
 
         Subscription::batch([global, timer_sub, mode_sub])
