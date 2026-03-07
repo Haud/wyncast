@@ -19,7 +19,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::protocol::{OnboardingAction, UserCommand};
 use crate::tui::TextInput;
@@ -459,7 +459,6 @@ pub enum StrategySetupMessage {
     EditField,
     // Review step: flow
     AdvanceToConfirm,
-    SkipStep,
     CancelGeneration,
     // Confirm step
     ToggleSelection,
@@ -748,11 +747,6 @@ impl StrategySetupState {
                         KeybindHint::new("s", "Save/Continue"),
                     )
                     .bind(
-                        KeyTrigger::Exact(KeyCode::Char('S'), KeyModifiers::SHIFT),
-                        |_| StrategySetupMessage::SkipStep,
-                        KeybindHint::new("S", "Skip"),
-                    )
-                    .bind(
                         exact(KeyCode::Esc),
                         |_| StrategySetupMessage::GoBack,
                         KeybindHint::new("Esc", "Back"),
@@ -1015,10 +1009,6 @@ impl StrategySetupState {
                 self.confirm_yes = true;
                 None
             }
-            StrategySetupMessage::SkipStep => {
-                Some(UserCommand::OnboardingAction(OnboardingAction::Skip))
-            }
-
             // -- Confirm step --
             StrategySetupMessage::ToggleSelection => {
                 self.confirm_yes = !self.confirm_yes;
