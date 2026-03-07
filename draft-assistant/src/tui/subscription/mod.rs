@@ -17,8 +17,10 @@
 // - [`SubscriptionManager<M>`] — diffs subscriptions, activates/drops listeners, routes events
 
 pub mod keybinding;
+pub mod timer;
 
 use std::collections::HashSet;
+use std::time::Instant;
 
 // ---------------------------------------------------------------------------
 // SubscriptionId
@@ -62,10 +64,12 @@ impl SubscriptionId {
 
 /// Raw events the runtime feeds to listeners.
 ///
-/// Additional variants (Tick, Resize, Custom) will be added as needed.
+/// Additional variants (Resize, Custom) will be added as needed.
 pub enum AppEvent {
     /// A keyboard event from crossterm.
     Key(crossterm::event::KeyEvent),
+    /// A timer tick carrying the current instant.
+    Tick(Instant),
 }
 
 // ---------------------------------------------------------------------------
@@ -329,7 +333,7 @@ mod tests {
         fn process(&mut self, event: &AppEvent) -> Option<TestMsg> {
             match event {
                 AppEvent::Key(k) if k.code == self.0.respond_to => Some(self.0.msg.clone()),
-                _ => None,
+                AppEvent::Key(_) | AppEvent::Tick(_) => None,
             }
         }
     }
