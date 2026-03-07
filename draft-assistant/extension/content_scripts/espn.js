@@ -670,37 +670,19 @@ function parseApiTeamRosters(apiData) {
       return null;
     }
 
+    // Build price map from draftDetail.picks (used by both approaches)
+    const priceMap = new Map();
     const draftDetail = apiData.draftDetail;
-    if (!draftDetail || !Array.isArray(draftDetail.picks)) {
-      warn('ESPN API: no draftDetail.picks found, cannot build rosters');
-      return null;
-    }
-
-    log('ESPN API draftDetail has', draftDetail.picks.length, 'picks');
-    if (draftDetail.picks.length > 0) {
-      log('ESPN API first pick keys:', Object.keys(draftDetail.picks[0]));
-    }
-
-    // 1. Build player info map from teams[].roster.entries[].playerPoolEntry.player
-    const playerInfoMap = new Map(); // playerId (number) -> {name, eligibleSlots}
-    for (const team of teams) {
-      if (!team || !team.roster || !Array.isArray(team.roster.entries)) continue;
-      for (const entry of team.roster.entries) {
-        if (!entry || entry.playerId == null) continue;
-        const ppe = entry.playerPoolEntry;
-        if (ppe && ppe.player) {
-          const player = ppe.player;
-          const name = player.fullName || (player.firstName + ' ' + player.lastName) || '';
-          const eligibleSlots = Array.isArray(player.eligibleSlots) ? player.eligibleSlots : [];
-          if (name) {
-            playerInfoMap.set(entry.playerId, { name, eligibleSlots });
-          }
+    if (draftDetail && Array.isArray(draftDetail.picks)) {
+      for (const pick of draftDetail.picks) {
+        if (pick && pick.playerId != null && pick.bidAmount != null) {
+          priceMap.set(pick.playerId, pick.bidAmount);
         }
       }
     }
-    log('ESPN API: built player info map with', playerInfoMap.size, 'entries from roster data');
+    log('ESPN API: built price map with', priceMap.size, 'entries from draftDetail.picks');
 
-    // 2. Build team info map from teams[]
+    // Build team info map from teams[]
     const teamInfoMap = new Map(); // teamId -> teamName
     for (const team of teams) {
       if (!team) continue;
@@ -719,7 +701,83 @@ function parseApiTeamRosters(apiData) {
       }
     }
 
-    // 3. Use draftDetail.picks as primary source, group by teamId
+    // --- Primary approach: build from teams[].roster.entries ---
+    const result = [];
+    let totalPlayers = 0;
+
+    for (const team of teams) {
+      if (!team) continue;
+      const teamId = team.id != null ? team.id : 0;
+      const teamName = teamInfoMap.get(teamId) || ('Team ' + teamId);
+      const players = [];
+
+      if (team.roster && Array.isArray(team.roster.entries)) {
+        for (const entry of team.roster.entries) {
+          if (!entry) continue;
+          const playerId = entry.playerId != null ? String(entry.playerId) : '';
+          const lineupSlotId = entry.lineupSlotId != null ? entry.lineupSlotId : 16;
+
+          let playerName = '';
+          let eligibleSlots = [];
+          const ppe = entry.playerPoolEntry;
+          if (ppe && ppe.player) {
+            const player = ppe.player;
+            playerName = player.fullName || ((player.firstName || '') + ' ' + (player.lastName || '')).trim();
+            eligibleSlots = Array.isArray(player.eligibleSlots) ? player.eligibleSlots : [];
+          }
+
+          const numericId = entry.playerId != null ? entry.playerId : parseInt(playerId, 10);
+          const price = priceMap.has(numericId) ? priceMap.get(numericId) : 0;
+
+          if (playerName) {
+            players.push({ playerId, playerName, lineupSlotId, eligibleSlots, price });
+          }
+        }
+      }
+
+      result.push({ teamId, teamName, players });
+      totalPlayers += players.length;
+    }
+
+    if (totalPlayers > 0) {
+      log('ESPN API: built rosters from roster.entries —', totalPlayers, 'players across', result.length, 'teams');
+      return result;
+    }
+
+    // --- Fallback: build from draftDetail.picks ---
+    log('ESPN API: roster.entries produced 0 players, falling back to draftDetail.picks');
+
+    if (!draftDetail || !Array.isArray(draftDetail.picks)) {
+      warn('ESPN API: no draftDetail.picks found either, cannot build rosters');
+      return null;
+    }
+
+    log('ESPN API draftDetail has', draftDetail.picks.length, 'picks');
+    if (draftDetail.picks.length > 0) {
+      log('ESPN API first pick keys:', Object.keys(draftDetail.picks[0]));
+    }
+
+    // Build player info map from teams[].roster.entries[].playerPoolEntry.player
+    // (even if entries had no players, some might have player info without lineupSlotId)
+    const playerInfoMap = new Map(); // playerId (number) -> {name, eligibleSlots}
+    for (const team of teams) {
+      if (!team || !team.roster || !Array.isArray(team.roster.entries)) continue;
+      for (const entry of team.roster.entries) {
+        if (!entry || entry.playerId == null) continue;
+        const ppe = entry.playerPoolEntry;
+        if (ppe && ppe.player) {
+          const player = ppe.player;
+          const name = player.fullName || ((player.firstName || '') + ' ' + (player.lastName || '')).trim();
+          const eligibleSlots = Array.isArray(player.eligibleSlots) ? player.eligibleSlots : [];
+          if (name) {
+            playerInfoMap.set(entry.playerId, { name, eligibleSlots });
+          }
+        }
+      }
+    }
+    log('ESPN API: built player info map with', playerInfoMap.size, 'entries from roster data');
+
+    // Use draftDetail.picks, group by teamId
     const teamPlayersMap = new Map(); // teamId -> Array of player objects
     for (const pick of draftDetail.picks) {
       if (!pick || pick.playerId == null || pick.teamId == null) continue;
@@ -746,26 +804,25 @@ function parseApiTeamRosters(apiData) {
       });
     }
 
-    // 4. Build result, including teams that have no picks yet
-    const result = [];
-    for (const [teamId, teamName] of teamInfoMap) {
-      const players = teamPlayersMap.get(teamId) || [];
-      result.push({
-        teamId: teamId,
-        teamName: teamName,
+    // Build fallback result, including teams that have no picks yet
+    const fallbackResult = [];
+    for (const [fbTeamId, fbTeamName] of teamInfoMap) {
+      const players = teamPlayersMap.get(fbTeamId) || [];
+      fallbackResult.push({
+        teamId: fbTeamId,
+        teamName: fbTeamName,
         players: players,
       });
     }
 
-    // 5. Only return if total players > 0
-    const totalPlayers = result.reduce((sum, t) => sum + t.players.length, 0);
-    if (totalPlayers === 0) {
-      warn('ESPN API: draftDetail.picks produced 0 players across all teams, returning null');
+    const fallbackTotalPlayers = fallbackResult.reduce((sum, t) => sum + t.players.length, 0);
+    if (fallbackTotalPlayers === 0) {
+      warn('ESPN API: draftDetail.picks also produced 0 players across all teams, returning null');
       return null;
     }
 
-    log('ESPN API: built rosters from draftDetail.picks —', totalPlayers, 'players across', result.length, 'teams');
-    return result;
+    log('ESPN API: built rosters from draftDetail.picks (fallback) —', fallbackTotalPlayers, 'players across', fallbackResult.length, 'teams');
+    return fallbackResult;
   } catch (e) {
     error('Failed to parse ESPN API team rosters:', e);
     return null;

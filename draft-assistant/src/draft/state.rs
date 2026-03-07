@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use tracing::warn;
+use tracing::{info, warn};
 
 use super::pick::DraftPick;
 use super::roster::Roster;
@@ -98,14 +98,46 @@ impl DraftState {
     /// After teams are registered via `reconcile_budgets()`, this method
     /// finds and sets `my_team_idx` by matching the name.
     pub fn set_my_team_by_name(&mut self, team_name: &str) {
+        // Try exact match first
         if let Some(idx) = self.teams.iter().position(|t| t.team_name == team_name) {
             self.my_team_idx = idx;
-        } else {
-            warn!(
-                "Could not find team matching '{}' — my_team_idx remains at {}",
-                team_name, self.my_team_idx
-            );
+            return;
         }
+        // Try case-insensitive match
+        let lower = team_name.to_lowercase();
+        if let Some(idx) = self
+            .teams
+            .iter()
+            .position(|t| t.team_name.to_lowercase() == lower)
+        {
+            info!(
+                "Matched team '{}' to '{}' (case-insensitive)",
+                team_name, self.teams[idx].team_name
+            );
+            self.my_team_idx = idx;
+            return;
+        }
+        // Try contains match (handles truncation or partial names)
+        if let Some(idx) = self.teams.iter().position(|t| {
+            let t_lower = t.team_name.to_lowercase();
+            t_lower.contains(&lower) || lower.contains(&t_lower)
+        }) {
+            info!(
+                "Matched team '{}' to '{}' (contains)",
+                team_name, self.teams[idx].team_name
+            );
+            self.my_team_idx = idx;
+            return;
+        }
+        warn!(
+            "Could not find team matching '{}' among [{}]",
+            team_name,
+            self.teams
+                .iter()
+                .map(|t| t.team_name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
 
     /// Record a completed draft pick.

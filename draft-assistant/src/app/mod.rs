@@ -691,6 +691,16 @@ impl AppState {
             for player in &team_data.players {
                 let position_str = position_str_from_espn_slot(player.lineup_slot_id);
 
+                info!(
+                    "  Adding {} to {} (slot {} -> {}, eligible: {:?}, price: ${})",
+                    player.player_name,
+                    team_data.team_name,
+                    player.lineup_slot_id,
+                    position_str,
+                    player.eligible_slots,
+                    player.price
+                );
+
                 team.roster.add_player_with_slots(
                     &player.player_name,
                     &position_str,
