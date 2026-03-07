@@ -3,13 +3,14 @@
 pub mod llm_setup;
 pub mod strategy_setup;
 
-use crossterm::event::KeyEvent;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::Frame;
 
 use crate::onboarding::OnboardingStep;
 use crate::protocol::UserCommand;
 use crate::tui::app::App;
+use crate::tui::subscription::Subscription;
+use crate::tui::subscription::keybinding::KeybindManager;
 
 use self::llm_setup::{LlmSetupMessage, LlmSetupState};
 use self::strategy_setup::{StrategySetupMessage, StrategySetupState};
@@ -20,27 +21,24 @@ pub enum OnboardingMessage {
     Strategy(StrategySetupMessage),
 }
 
-pub fn key_to_message(
+/// Compose keybinding subscriptions for the onboarding screen.
+///
+/// Delegates entirely to the active step's leaf subscription:
+/// - `LlmSetup` → `LlmSetupState::subscription(kb, false)`.
+/// - `StrategySetup` / `Complete` → `StrategySetupState::subscription(kb)`.
+pub fn subscription(
     step: &OnboardingStep,
     llm_setup: &LlmSetupState,
     strategy_setup: &StrategySetupState,
-    key: KeyEvent,
-) -> Option<OnboardingMessage> {
+    kb: &mut KeybindManager,
+) -> Subscription<OnboardingMessage> {
     match step {
-        OnboardingStep::LlmSetup => {
-            // LlmSetupState key routing is handled by the subscription system
-            // via LlmSetupState::subscription(). This function is retained for
-            // non-subscription callers but LlmSetup routing is a no-op here.
-            let _ = (llm_setup, key);
-            None
-        }
-        OnboardingStep::StrategySetup | OnboardingStep::Complete => {
-            // StrategySetupState key routing is handled by the subscription system
-            // via StrategySetupState::subscription(). This function is retained for
-            // non-subscription callers but StrategySetup routing is a no-op here.
-            let _ = (strategy_setup, key);
-            None
-        }
+        OnboardingStep::LlmSetup => llm_setup
+            .subscription(kb, false)
+            .map(OnboardingMessage::LlmSetup),
+        OnboardingStep::StrategySetup | OnboardingStep::Complete => strategy_setup
+            .subscription(kb)
+            .map(OnboardingMessage::Strategy),
     }
 }
 
