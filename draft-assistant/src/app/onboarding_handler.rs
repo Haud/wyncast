@@ -365,7 +365,7 @@ pub(super) async fn handle_onboarding_action(
                     );
 
                     // Spawn LLM streaming task
-                    tokio::spawn(async move {
+                    let handle = tokio::spawn(async move {
                         let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel::<crate::protocol::LlmEvent>(100);
 
                         // Start the LLM stream in a separate task
@@ -433,6 +433,7 @@ pub(super) async fn handle_onboarding_action(
                             }
                         }
                     });
+                    state.llm_requests.track(generation, handle);
                 }
             }
         }

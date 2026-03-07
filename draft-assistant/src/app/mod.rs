@@ -404,7 +404,7 @@ impl AppState {
     }
 
     /// Cancel all active LLM tasks.
-    pub fn cancel_llm_task(&mut self) {
+    pub fn cancel_llm_tasks(&mut self) {
         if let Some(id) = self.analysis_request_id.take() {
             self.llm_requests.cancel(id);
         }
@@ -443,6 +443,7 @@ impl AppState {
         if let Some(id) = self.analysis_request_id.take() {
             self.llm_requests.cancel(id);
         }
+        self.analysis_player = None;
 
         let my_team = match self.draft_state.my_team() {
             Some(t) => t,

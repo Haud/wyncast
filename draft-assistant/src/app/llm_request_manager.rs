@@ -85,8 +85,17 @@ impl LlmRequestManager {
 
     /// Insert a dummy tracked entry for testing purposes.
     /// This allows tests to register an ID as active without spawning a real task.
+    #[doc(hidden)]
     pub fn track_test_id(&mut self, id: u64) {
         self.active.insert(id, tokio::spawn(async {}));
+    }
+
+    /// Track an externally-spawned task handle.
+    ///
+    /// Used when the caller needs to spawn the task themselves (e.g., onboarding)
+    /// but still wants it tracked for cancellation.
+    pub fn track(&mut self, id: u64, handle: JoinHandle<()>) {
+        self.active.insert(id, handle);
     }
 
     /// Allocate a unique ID without tracking a task handle.

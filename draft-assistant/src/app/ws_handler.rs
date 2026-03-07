@@ -78,8 +78,8 @@ pub(super) async fn handle_full_state_sync(
     // a periodic keyframe; if the nomination is unchanged, we should NOT cancel
     // the in-progress LLM analysis or allow it to restart.
     let incoming_nom = ext_payload.current_nomination.as_ref();
-    let preserve_llm = match (&state.analysis_player, incoming_nom) {
-        (Some(ap), Some(inc)) => {
+    let preserve_llm = match (&state.analysis_player, &state.analysis_request_id, incoming_nom) {
+        (Some(ap), Some(_), Some(inc)) => {
             if !ap.player_id.is_empty() && !inc.player_id.is_empty() {
                 ap.player_id == inc.player_id
             } else {
@@ -143,7 +143,7 @@ pub(super) async fn handle_full_state_sync(
         // Nomination changed or no active analysis: clear all LLM state so
         // handle_state_update can start fresh.
         state.previous_extension_state = None;
-        state.cancel_llm_task();
+        state.cancel_llm_tasks();
     }
 
     // Now process the snapshot as a regular state update.  When preserve_llm

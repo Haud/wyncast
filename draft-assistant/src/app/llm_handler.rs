@@ -1,5 +1,5 @@
 use tokio::sync::mpsc;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::protocol::{LlmEvent, LlmStreamUpdate, UiUpdate};
 
@@ -42,9 +42,12 @@ pub(super) async fn handle_llm_event(
         }
     };
 
+    let send_result = ui_tx.send(UiUpdate::LlmUpdate { request_id, update }).await;
+
     if is_terminal {
         state.llm_requests.complete(request_id);
+        if send_result.is_err() {
+            warn!("Failed to deliver terminal LLM event for request {}", request_id);
+        }
     }
-
-    let _ = ui_tx.send(UiUpdate::LlmUpdate { request_id, update }).await;
 }
