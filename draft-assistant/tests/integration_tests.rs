@@ -3110,6 +3110,7 @@ fn convert_extension_state_filters_premature_nomination() {
         total_picks: None,
         draft_id: None,
         source: Some("test".into()),
+        team_rosters: None,
     };
 
     let internal = AppState::convert_extension_state(&ext_payload);
@@ -3140,6 +3141,7 @@ fn convert_extension_state_passes_confirmed_nomination() {
         total_picks: None,
         draft_id: None,
         source: Some("test".into()),
+        team_rosters: None,
     };
 
     let internal = AppState::convert_extension_state(&ext_payload);

@@ -563,6 +563,219 @@ function scrapeDraftId() {
 }
 
 // ---------------------------------------------------------------------------
+// ESPN Fantasy API fetch (page-context injection)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch ESPN Fantasy API data via a page-context injected script.
+ *
+ * The content script cannot directly fetch cross-origin ESPN API endpoints
+ * with the user's session cookies. However, a script injected into the page
+ * context runs with the page's security origin and CAN fetch from ESPN's API
+ * with `credentials: 'include'`.
+ *
+ * Returns a Promise that resolves with the parsed API JSON, or null on failure.
+ */
+function fetchEspnApiViaPageContext() {
+  return new Promise((resolve) => {
+    const requestId = 'wyndham-api-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    let resolved = false;
+
+    const timeoutId = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        window.removeEventListener('message', handler);
+        warn('ESPN API fetch timed out after 5 seconds');
+        resolve(null);
+      }
+    }, 5000);
+
+    function handler(event) {
+      if (!event.data || event.data.source !== 'wyndham-espn-api') return;
+      if (event.data.requestId !== requestId) return;
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timeoutId);
+      window.removeEventListener('message', handler);
+
+      if (event.data.type === 'API_DATA') {
+        log('ESPN API data received successfully');
+        resolve(event.data.data);
+      } else if (event.data.type === 'API_ERROR') {
+        warn('ESPN API fetch error:', event.data.error);
+        resolve(null);
+      } else {
+        resolve(null);
+      }
+    }
+
+    window.addEventListener('message', handler);
+
+    // Inject a page-context script that fetches the ESPN API
+    const script = document.createElement('script');
+    script.textContent = `(function() {
+      var requestId = ${JSON.stringify(requestId)};
+      try {
+        var params = new URLSearchParams(window.location.search);
+        var leagueId = params.get('leagueId');
+        if (!leagueId) {
+          window.postMessage({ source: 'wyndham-espn-api', type: 'API_ERROR', requestId: requestId, error: 'No leagueId in URL' }, '*');
+          return;
+        }
+        var year = new Date().getFullYear();
+        var url = 'https://lm-api-reads.fantasy.espn.com/apis/v3/games/flb/seasons/' + year + '/segments/0/leagues/' + leagueId + '?view=mDraftDetail&view=mTeam';
+        fetch(url, { credentials: 'include' })
+          .then(function(resp) {
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            return resp.json();
+          })
+          .then(function(data) {
+            window.postMessage({ source: 'wyndham-espn-api', type: 'API_DATA', requestId: requestId, data: data }, '*');
+          })
+          .catch(function(err) {
+            window.postMessage({ source: 'wyndham-espn-api', type: 'API_ERROR', requestId: requestId, error: err.message || String(err) }, '*');
+          });
+      } catch(e) {
+        window.postMessage({ source: 'wyndham-espn-api', type: 'API_ERROR', requestId: requestId, error: e.message || String(e) }, '*');
+      }
+    })();`;
+    document.documentElement.appendChild(script);
+    script.remove();
+  });
+}
+
+/**
+ * Parse the ESPN Fantasy API response into team roster data.
+ *
+ * The API response format is a best guess — this function parses VERY
+ * defensively with null checks at every level. If any expected field is
+ * missing, logs a warning and returns null (falling back to DOM scraping).
+ *
+ * @param {Object} apiData - Parsed JSON from the ESPN Fantasy API
+ * @returns {Array|null} Array of team roster objects, or null on parse failure
+ */
+function parseApiTeamRosters(apiData) {
+  try {
+    if (!apiData || typeof apiData !== 'object') {
+      warn('ESPN API data is null or not an object');
+      return null;
+    }
+
+    // Log top-level keys for debugging
+    log('ESPN API response top-level keys:', Object.keys(apiData));
+
+    const teams = apiData.teams;
+    if (!Array.isArray(teams) || teams.length === 0) {
+      warn('ESPN API: no teams array found');
+      return null;
+    }
+
+    // Log first team structure for debugging
+    const firstTeam = teams[0];
+    log('ESPN API first team keys:', Object.keys(firstTeam || {}));
+    if (firstTeam && firstTeam.roster) {
+      log('ESPN API first team roster keys:', Object.keys(firstTeam.roster));
+      if (firstTeam.roster.entries && firstTeam.roster.entries.length > 0) {
+        log('ESPN API first roster entry keys:', Object.keys(firstTeam.roster.entries[0]));
+      }
+    }
+
+    // Build price map from draftDetail.picks
+    const priceMap = new Map(); // playerId -> bidAmount
+    const draftDetail = apiData.draftDetail;
+    if (draftDetail && Array.isArray(draftDetail.picks)) {
+      log('ESPN API draftDetail has', draftDetail.picks.length, 'picks');
+      if (draftDetail.picks.length > 0) {
+        log('ESPN API first pick keys:', Object.keys(draftDetail.picks[0]));
+      }
+      for (const pick of draftDetail.picks) {
+        if (pick && pick.playerId != null && pick.bidAmount != null) {
+          priceMap.set(pick.playerId, pick.bidAmount);
+        }
+      }
+    } else {
+      warn('ESPN API: no draftDetail.picks found, prices will be 0');
+    }
+
+    const result = [];
+
+    for (const team of teams) {
+      if (!team) continue;
+
+      // Try multiple patterns for team name
+      let teamName = '';
+      if (team.location && team.nickname) {
+        teamName = (team.location + ' ' + team.nickname).trim();
+      } else if (team.name) {
+        teamName = team.name;
+      } else if (team.abbrev) {
+        teamName = team.abbrev;
+      } else {
+        teamName = 'Team ' + (team.id || '?');
+      }
+
+      const teamId = team.id != null ? team.id : 0;
+
+      const roster = team.roster;
+      if (!roster || !Array.isArray(roster.entries)) {
+        // Team might have no roster yet (draft not started)
+        result.push({
+          teamId: teamId,
+          teamName: teamName,
+          players: [],
+        });
+        continue;
+      }
+
+      const players = [];
+      for (const entry of roster.entries) {
+        if (!entry) continue;
+
+        const playerId = entry.playerId != null ? String(entry.playerId) : '';
+        const lineupSlotId = entry.lineupSlotId != null ? entry.lineupSlotId : 16; // default to bench
+
+        // Extract player info from nested playerPoolEntry.player
+        let playerName = '';
+        let eligibleSlots = [];
+        const ppe = entry.playerPoolEntry;
+        if (ppe && ppe.player) {
+          const player = ppe.player;
+          playerName = player.fullName || player.firstName + ' ' + player.lastName || '';
+          if (Array.isArray(player.eligibleSlots)) {
+            eligibleSlots = player.eligibleSlots;
+          }
+        }
+
+        // Look up price from draftDetail
+        const numericId = entry.playerId != null ? entry.playerId : parseInt(playerId, 10);
+        const price = priceMap.has(numericId) ? priceMap.get(numericId) : 0;
+
+        if (playerName) {
+          players.push({
+            playerId: playerId,
+            playerName: playerName,
+            lineupSlotId: lineupSlotId,
+            eligibleSlots: eligibleSlots,
+            price: price,
+          });
+        }
+      }
+
+      result.push({
+        teamId: teamId,
+        teamName: teamName,
+        players: players,
+      });
+    }
+
+    return result.length > 0 ? result : null;
+  } catch (e) {
+    error('Failed to parse ESPN API team rosters:', e);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // State handling and forwarding to background script
 // ---------------------------------------------------------------------------
 
@@ -626,18 +839,38 @@ function buildStatePayload(state) {
  * draft state and rebuild it from scratch. Unlike STATE_UPDATE (which carries
  * incremental diffs), FULL_STATE_SYNC always includes the complete current pick
  * history and team budgets visible on the page.
+ *
+ * When the ESPN Fantasy API is reachable, the payload is enriched with
+ * authoritative team roster data (all picks, not limited by DOM virtualization).
  */
-function sendFullStateSync() {
+async function sendFullStateSync() {
   const state = scrapeDom();
   if (!state) return;
 
-  log('Sending FULL_STATE_SYNC with', (state.picks || []).length, 'picks');
+  log('Sending FULL_STATE_SYNC with', (state.picks || []).length, 'DOM picks');
+
+  const payload = buildStatePayload(state);
+
+  // Try ESPN API for authoritative roster data
+  try {
+    const apiData = await fetchEspnApiViaPageContext();
+    if (apiData) {
+      const teamRosters = parseApiTeamRosters(apiData);
+      if (teamRosters && teamRosters.length > 0) {
+        payload.teamRosters = teamRosters;
+        const totalPlayers = teamRosters.reduce((sum, t) => sum + t.players.length, 0);
+        log('FULL_STATE_SYNC enriched with API roster data for', teamRosters.length, 'teams,', totalPlayers, 'players');
+      }
+    }
+  } catch (e) {
+    warn('ESPN API enrichment failed, using DOM-only data:', e);
+  }
 
   const message = {
     source: 'wyndham-draft-sync',
     type: 'FULL_STATE_SYNC',
     timestamp: Date.now(),
-    payload: buildStatePayload(state),
+    payload: payload,
   };
 
   try {

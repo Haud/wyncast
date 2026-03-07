@@ -51,13 +51,15 @@ pub(super) async fn handle_ws_message(
 
 /// Handle a full state sync from the extension (on connect or reconnect).
 ///
-/// Resets the in-memory draft state (picks, rosters, budgets) and rebuilds it
-/// entirely from the snapshot payload. After the reset, delegates to
-/// `handle_state_update` with `previous_extension_state` cleared so that
-/// `compute_state_diff` treats every pick in the snapshot as new (applied
-/// against an empty baseline). This prevents corrupted state that would
-/// result from applying incremental diffs against a blank slate when resuming
-/// a mid-draft session.
+/// When the payload includes `team_rosters` from the ESPN Fantasy API, performs
+/// an authoritative rebuild: resets draft state and reconstructs it entirely
+/// from the API data (which contains ALL picks and rosters, not limited by
+/// ESPN's DOM virtualization). This solves the problem where earlier picks
+/// (keepers, early draft picks) are permanently lost after a reconnect.
+///
+/// When no API roster data is available, falls back to the previous behavior:
+/// preserves existing state and processes the DOM-scraped snapshot as an
+/// incremental update (since the DOM pick list may be incomplete).
 ///
 /// The extension also sends FULL_STATE_SYNC every 10 seconds as a periodic
 /// keyframe. To avoid restarting a streaming LLM analysis every time one of
@@ -69,8 +71,13 @@ pub(super) async fn handle_full_state_sync(
     ui_tx: &mpsc::Sender<UiUpdate>,
 ) {
     info!(
-        "Received FULL_STATE_SYNC with {} picks — resetting draft state",
-        ext_payload.picks.len()
+        "Received FULL_STATE_SYNC with {} DOM picks, API rosters: {}",
+        ext_payload.picks.len(),
+        ext_payload
+            .team_rosters
+            .as_ref()
+            .map(|r| format!("{} teams", r.len()))
+            .unwrap_or_else(|| "none".to_string()),
     );
 
     // Detect if the incoming nomination is the same player as what's currently
@@ -93,6 +100,126 @@ pub(super) async fn handle_full_state_sync(
     // it as a stub baseline for compute_state_diff) when the nomination is
     // unchanged.
     let saved_nomination = state.draft_state.current_nomination.clone();
+
+    // --- Authoritative rebuild path (ESPN API roster data available) ---
+    let has_api_rosters = ext_payload
+        .team_rosters
+        .as_ref()
+        .map_or(false, |r| !r.is_empty());
+
+    if has_api_rosters {
+        let rosters = ext_payload.team_rosters.as_ref().unwrap();
+        info!(
+            "FULL_STATE_SYNC has API roster data for {} teams — performing authoritative rebuild",
+            rosters.len()
+        );
+
+        // Reset in-memory draft state for a clean rebuild from API data.
+        state.draft_state = DraftState::new(
+            state.config.league.salary_cap,
+            &state.config.league.roster,
+        );
+
+        // Rebuild from authoritative roster data (registers teams, populates
+        // rosters, builds pick list, recalculates valuations/scarcity/inflation).
+        state.rebuild_from_api_rosters(rosters);
+
+        // Handle LLM state preservation
+        if preserve_llm {
+            info!(
+                "FULL_STATE_SYNC: preserving in-progress LLM analysis (same nomination: {})",
+                saved_nomination
+                    .as_ref()
+                    .map(|n| n.player_name.as_str())
+                    .unwrap_or("unknown")
+            );
+        } else {
+            state.cancel_llm_task();
+            state.llm_mode = None;
+            state.nomination_analysis_text.clear();
+            state.nomination_analysis_status = LlmStatus::Idle;
+            state.nomination_plan_text.clear();
+            state.nomination_plan_status = LlmStatus::Idle;
+        }
+
+        // Set previous_extension_state so subsequent STATE_UPDATEs work correctly
+        state.previous_extension_state = Some(AppState::convert_extension_state(&ext_payload));
+
+        // Set my team from the extension's myTeamId
+        if let Some(ref my_team_name) = ext_payload.my_team_id {
+            if !my_team_name.is_empty() && !state.draft_state.teams.is_empty() {
+                state.draft_state.set_my_team_by_name(my_team_name);
+            }
+        }
+
+        // Update pick count / total picks from ESPN clock label
+        if let Some(pc) = ext_payload.pick_count {
+            state.draft_state.pick_count = pc as usize;
+        }
+        if let Some(tp) = ext_payload.total_picks {
+            state.draft_state.total_picks = tp as usize;
+        }
+
+        // Send snapshot to TUI
+        let snapshot = state.build_snapshot();
+        let _ = ui_tx
+            .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
+            .await;
+
+        // Handle nomination from the DOM-scraped data
+        let internal_payload = AppState::convert_extension_state(&ext_payload);
+        if let Some(ref nom_payload) = internal_payload.current_nomination {
+            let nomination = ActiveNomination {
+                player_name: nom_payload.player_name.clone(),
+                player_id: nom_payload.player_id.clone(),
+                position: nom_payload.position.clone(),
+                nominated_by: nom_payload.nominated_by.clone(),
+                current_bid: nom_payload.current_bid,
+                current_bidder: nom_payload.current_bidder.clone(),
+                time_remaining: nom_payload.time_remaining,
+                eligible_slots: nom_payload.eligible_slots.clone(),
+            };
+
+            if !preserve_llm {
+                info!(
+                    "Authoritative rebuild: processing nomination for {}",
+                    nomination.player_name
+                );
+                let analysis = state.handle_nomination(&nomination);
+
+                let nom_info = NominationInfo {
+                    player_name: nomination.player_name.clone(),
+                    position: nomination.position.clone(),
+                    nominated_by: nomination.nominated_by.clone(),
+                    current_bid: nomination.current_bid,
+                    current_bidder: nomination.current_bidder.clone(),
+                    time_remaining: nomination.time_remaining,
+                    eligible_slots: nomination.eligible_slots.clone(),
+                };
+                let _ = ui_tx
+                    .send(UiUpdate::NominationUpdate(Box::new(nom_info)))
+                    .await;
+
+                if let Some(_analysis) = analysis {
+                    info!("Instant analysis computed for nomination after authoritative rebuild");
+                }
+            } else {
+                // Preserve existing nomination state
+                state.draft_state.current_nomination = saved_nomination;
+            }
+        } else if preserve_llm {
+            // No nomination in payload but we preserved LLM — restore saved nomination
+            state.draft_state.current_nomination = saved_nomination;
+        }
+
+        return;
+    }
+
+    // --- Fallback path: no API roster data ---
+    // DON'T reset state — ESPN's pick list is virtualized so DOM scraping
+    // may have incomplete data. Preserve existing picks/rosters and only
+    // add new picks via the incremental diff path.
+    info!("FULL_STATE_SYNC: no API roster data, using preservation approach");
 
     // Reset in-memory draft state so the snapshot is applied from scratch.
     // Preserve salary_cap and roster_config (stored inside DraftState).

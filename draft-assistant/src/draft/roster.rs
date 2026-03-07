@@ -182,8 +182,14 @@ impl Roster {
         assigned_slot: Option<u16>,
         espn_player_id: Option<&str>,
     ) -> bool {
-        // Fall back to single-position logic if no slot data provided at all
-        if eligible_slots.is_empty() && assigned_slot.is_none() {
+        // Fall back to single-position logic if no useful slot data provided.
+        // An assigned_slot is only useful if it maps to a known position. Combo
+        // slots (OF=5, MI=6, CI=7, P=13) return None from position_from_espn_slot
+        // and need the multi-position eligible_slots path instead.
+        let assigned_maps_to_position = assigned_slot
+            .map(|s| position_from_espn_slot(s).is_some())
+            .unwrap_or(false);
+        if eligible_slots.is_empty() && !assigned_maps_to_position {
             return self.add_player(name, position_str, price, espn_player_id);
         }
 

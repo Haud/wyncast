@@ -79,6 +79,35 @@ pub struct StateUpdatePayload {
     #[serde(default)]
     pub draft_id: Option<String>,
     pub source: Option<String>,
+    /// Authoritative team roster data from ESPN's Fantasy API.
+    ///
+    /// Present only in FULL_STATE_SYNC messages when the extension successfully
+    /// fetches from the ESPN API. Contains complete rosters for all teams with
+    /// exact slot assignments and eligible positions — not limited by DOM
+    /// virtualization. When present, the backend uses this for an authoritative
+    /// rebuild instead of relying on the incomplete DOM-scraped pick list.
+    #[serde(default)]
+    pub team_rosters: Option<Vec<TeamRosterEntry>>,
+}
+
+/// A team's complete roster as reported by the ESPN Fantasy API.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamRosterEntry {
+    pub team_id: u32,
+    pub team_name: String,
+    pub players: Vec<RosteredPlayerEntry>,
+}
+
+/// A single player on a team's roster from the ESPN Fantasy API.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RosteredPlayerEntry {
+    pub player_id: String,
+    pub player_name: String,
+    pub lineup_slot_id: u16,
+    pub eligible_slots: Vec<u16>,
+    pub price: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -576,6 +605,7 @@ mod tests {
                 total_picks: None,
                 draft_id: Some("espn_12345_2026".to_string()),
                 source: Some("dom_scraper".to_string()),
+                team_rosters: None,
             },
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -796,6 +826,7 @@ mod tests {
                 total_picks: None,
                 draft_id: Some("espn_42_2026".to_string()),
                 source: Some("test".to_string()),
+                team_rosters: None,
             },
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -1029,6 +1060,7 @@ mod tests {
                 total_picks: Some(260),
                 draft_id: Some("espn_12345_2026".to_string()),
                 source: Some("dom_scrape".to_string()),
+                team_rosters: None,
             },
         };
         let json = serde_json::to_string(&msg).unwrap();

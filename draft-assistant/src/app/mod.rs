@@ -661,6 +661,163 @@ impl AppState {
             total_picks: payload.total_picks,
         }
     }
+
+    /// Rebuild the draft state from authoritative ESPN API roster data.
+    ///
+    /// Called when FULL_STATE_SYNC includes roster data from ESPN's Fantasy API,
+    /// which provides complete team rosters with exact slot assignments and
+    /// eligible positions (unlike the virtualized DOM pick list which only
+    /// shows a window of recent picks).
+    ///
+    /// This method assumes `draft_state` has already been reset to a fresh state.
+    /// It registers teams, populates rosters, builds the pick list, and
+    /// recalculates all derived state (available players, scarcity, inflation).
+    pub fn rebuild_from_api_rosters(
+        &mut self,
+        rosters: &[crate::protocol::TeamRosterEntry],
+    ) {
+        use crate::draft::pick::DraftPick;
+
+        // Register teams and build rosters
+        for team_data in rosters {
+            let mut team = crate::draft::state::TeamState {
+                team_id: team_data.team_id.to_string(),
+                team_name: team_data.team_name.clone(),
+                roster: crate::draft::roster::Roster::new(&self.config.league.roster),
+                budget_spent: 0,
+                budget_remaining: self.config.league.salary_cap,
+            };
+
+            for player in &team_data.players {
+                let position_str = position_str_from_espn_slot(player.lineup_slot_id);
+
+                team.roster.add_player_with_slots(
+                    &player.player_name,
+                    &position_str,
+                    player.price,
+                    &player.eligible_slots,
+                    Some(player.lineup_slot_id),
+                    Some(&player.player_id),
+                );
+
+                team.budget_spent += player.price;
+
+                // Build pick list entry
+                self.draft_state.picks.push(DraftPick {
+                    pick_number: self.draft_state.picks.len() as u32 + 1,
+                    team_id: team_data.team_id.to_string(),
+                    team_name: team_data.team_name.clone(),
+                    player_name: player.player_name.clone(),
+                    position: position_str.clone(),
+                    price: player.price,
+                    espn_player_id: Some(player.player_id.clone()),
+                    eligible_slots: player.eligible_slots.clone(),
+                    assigned_slot: Some(player.lineup_slot_id),
+                });
+            }
+
+            team.budget_remaining = self.config.league.salary_cap.saturating_sub(team.budget_spent);
+            self.draft_state.teams.push(team);
+        }
+
+        // Update pick count and compute total picks / nomination order
+        self.draft_state.pick_count = self.draft_state.picks.len();
+        let draftable_per_team = self
+            .draft_state
+            .teams
+            .first()
+            .map(|t| t.roster.draftable_count())
+            .unwrap_or(0);
+        self.draft_state.total_picks = draftable_per_team * self.draft_state.teams.len();
+        self.draft_state.nomination_order = (0..self.draft_state.teams.len()).collect();
+
+        // Rebuild available players: remove all rostered players from the pool
+        let rostered_names: std::collections::HashSet<String> = rosters
+            .iter()
+            .flat_map(|t| t.players.iter().map(|p| p.player_name.clone()))
+            .collect();
+        let rostered_ids: std::collections::HashSet<String> = rosters
+            .iter()
+            .flat_map(|t| t.players.iter().map(|p| p.player_id.clone()))
+            .filter(|id| !id.is_empty())
+            .collect();
+
+        // Reset available players from scratch
+        self.available_players =
+            crate::valuation::compute_initial(&self.all_projections, &self.config)
+                .unwrap_or_default();
+
+        // Remove all rostered players (match by name or ESPN player ID)
+        self.available_players.retain(|p| {
+            if rostered_names.contains(&p.name) {
+                return false;
+            }
+            // Future: also check by ESPN player ID when the PlayerValuation
+            // struct carries one. For now name-based matching covers it.
+            let _ = &rostered_ids; // suppress unused warning
+            true
+        });
+
+        // Recalculate valuations with updated pool
+        crate::valuation::recalculate_all(
+            &mut self.available_players,
+            &self.config.league,
+            &self.config.strategy,
+            &self.draft_state,
+        );
+
+        // Recalculate scarcity
+        self.scarcity =
+            compute_scarcity(&self.available_players, &self.config.league);
+
+        // Recalculate inflation
+        self.inflation = InflationTracker::new();
+        self.inflation.update(
+            &self.available_players,
+            &self.draft_state,
+            &self.config.league,
+        );
+
+        // Reset category needs (will be recomputed by subsequent updates)
+        self.category_needs = CategoryNeeds::default();
+
+        info!(
+            "Authoritative rebuild complete: {} teams, {} picks, {} available players",
+            self.draft_state.teams.len(),
+            self.draft_state.picks.len(),
+            self.available_players.len()
+        );
+    }
+}
+
+/// Convert an ESPN slot ID to a position string for display.
+///
+/// This is the reverse mapping of `espnSlotIdFromPositionStr` in the extension JS
+/// and `espn_slot_from_position` in `pick.rs`. Handles combo/flex slots that don't
+/// map to a single Position enum variant.
+fn position_str_from_espn_slot(slot_id: u16) -> String {
+    use crate::draft::pick::*;
+    match slot_id {
+        ESPN_SLOT_C => "C".to_string(),
+        ESPN_SLOT_1B => "1B".to_string(),
+        ESPN_SLOT_2B => "2B".to_string(),
+        ESPN_SLOT_3B => "3B".to_string(),
+        ESPN_SLOT_SS => "SS".to_string(),
+        ESPN_SLOT_OF => "OF".to_string(),
+        ESPN_SLOT_LF => "LF".to_string(),
+        ESPN_SLOT_CF => "CF".to_string(),
+        ESPN_SLOT_RF => "RF".to_string(),
+        ESPN_SLOT_DH => "DH".to_string(),
+        ESPN_SLOT_UTIL => "UTIL".to_string(),
+        ESPN_SLOT_SP => "SP".to_string(),
+        ESPN_SLOT_RP => "RP".to_string(),
+        ESPN_SLOT_P => "P".to_string(),
+        ESPN_SLOT_MI => "MI".to_string(),
+        ESPN_SLOT_CI => "CI".to_string(),
+        ESPN_SLOT_BE => "BE".to_string(),
+        ESPN_SLOT_IL => "IL".to_string(),
+        _ => format!("UNK_{}", slot_id),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1914,6 +2071,7 @@ mod tests {
             total_picks: None,
             draft_id: None,
             source: Some("test".into()),
+            team_rosters: None,
         };
 
         ws_handler::handle_state_update(&mut state, ext_payload, &ui_tx).await;
@@ -1982,6 +2140,7 @@ mod tests {
             total_picks: None,
             draft_id: None,
             source: Some("test".into()),
+            team_rosters: None,
         };
 
         ws_handler::handle_state_update(&mut state, ext_payload_1, &ui_tx).await;
@@ -2032,6 +2191,7 @@ mod tests {
             total_picks: None,
             draft_id: None,
             source: Some("test".into()),
+            team_rosters: None,
         };
 
         ws_handler::handle_state_update(&mut state, ext_payload_2, &ui_tx).await;
@@ -2108,6 +2268,7 @@ mod tests {
             total_picks: None,
             draft_id: None,
             source: Some("test".into()),
+            team_rosters: None,
         };
 
         ws_handler::handle_state_update(&mut state, ext_payload, &ui_tx).await;
@@ -2160,6 +2321,7 @@ mod tests {
             total_picks: None,
             draft_id: Some("espn_42_2026".into()),
             source: Some("test".into()),
+            team_rosters: None,
         };
 
         let internal = AppState::convert_extension_state(&ext_payload);
@@ -2200,6 +2362,7 @@ mod tests {
             total_picks: None,
             draft_id: None,
             source: Some("test".into()),
+            team_rosters: None,
         };
 
         let internal = AppState::convert_extension_state(&ext_payload);
@@ -2230,6 +2393,7 @@ mod tests {
             total_picks: None,
             draft_id: None,
             source: Some("test".into()),
+            team_rosters: None,
         };
 
         let internal = AppState::convert_extension_state(&ext_payload);
@@ -2266,6 +2430,7 @@ mod tests {
             total_picks: None,
             draft_id: None,
             source: Some("test".into()),
+            team_rosters: None,
         };
 
         let internal = AppState::convert_extension_state(&ext_payload);
@@ -2297,6 +2462,7 @@ mod tests {
             total_picks: None,
             draft_id: None,
             source: Some("test".into()),
+            team_rosters: None,
         };
 
         let internal = AppState::convert_extension_state(&ext_payload);
@@ -2327,6 +2493,7 @@ mod tests {
             total_picks: None,
             draft_id: None,
             source: Some("test".into()),
+            team_rosters: None,
         };
 
         let internal = AppState::convert_extension_state(&ext_payload);
@@ -2347,6 +2514,7 @@ mod tests {
             total_picks: None,
             draft_id: None,
             source: Some("test".into()),
+            team_rosters: None,
         };
 
         let internal = AppState::convert_extension_state(&ext_payload);
@@ -3243,6 +3411,7 @@ mod tests {
             total_picks: None,
             draft_id: Some("espn_12345_2026".into()),
             source: Some("test".into()),
+            team_rosters: None,
         };
 
         let (ui_tx, _ui_rx) = mpsc::channel(64);
@@ -3275,6 +3444,7 @@ mod tests {
             total_picks: None,
             draft_id: Some("espn_12345_2026".into()),
             source: Some("test".into()),
+            team_rosters: None,
         };
 
         let (ui_tx, _ui_rx) = mpsc::channel(64);
@@ -3305,6 +3475,7 @@ mod tests {
             total_picks: None,
             draft_id: Some("espn_67890_2026".into()),
             source: Some("test".into()),
+            team_rosters: None,
         };
 
         let (ui_tx, _ui_rx) = mpsc::channel(64);
@@ -3345,6 +3516,7 @@ mod tests {
             total_picks: None,
             draft_id: None,
             source: Some("test".into()),
+            team_rosters: None,
         };
 
         let (ui_tx, _ui_rx) = mpsc::channel(64);
@@ -3390,6 +3562,7 @@ mod tests {
             total_picks: Some(260),
             draft_id: Some("espn_12345_2026".into()),
             source: Some("test".into()),
+            team_rosters: None,
         };
 
         let (ui_tx, _ui_rx) = mpsc::channel(64);
@@ -3433,6 +3606,7 @@ mod tests {
             total_picks: Some(260),
             draft_id: Some("espn_12345_2026".into()),
             source: Some("test".into()),
+            team_rosters: None,
         };
 
         ws_handler::handle_state_update(&mut state, ext_payload2, &ui_tx).await;
