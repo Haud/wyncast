@@ -4,7 +4,10 @@
 // delegates to the same render functions used by the onboarding wizard, avoiding
 // code duplication.
 
-use crossterm::event::{KeyCode, KeyEvent};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
+use crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -16,6 +19,10 @@ use crate::tui::app::App;
 use crate::tui::confirm_dialog::{ConfirmDialog, ConfirmMessage, ConfirmResult};
 use crate::tui::onboarding::llm_setup::{LlmSetupMessage, LlmSetupState};
 use crate::tui::onboarding::strategy_setup::{StrategySetupMessage, StrategySetupState};
+use crate::tui::subscription::{Subscription, SubscriptionId};
+use crate::tui::subscription::keybinding::{
+    exact, KeyBindingRecipe, KeybindHint, KeybindManager, PRIORITY_NORMAL,
+};
 
 // ---------------------------------------------------------------------------
 // SettingsMessage
@@ -33,42 +40,107 @@ pub enum SettingsMessage {
 }
 
 // ---------------------------------------------------------------------------
-// key_to_message
+// subscription
 // ---------------------------------------------------------------------------
 
-pub fn key_to_message(
+/// Compose keybinding subscriptions for the settings screen.
+///
+/// Layer order (highest precedence first):
+/// 1. Confirm-exit dialog — modal; swallows all input when open.
+/// 2. Active tab:
+///    - `LlmConfig` → delegates entirely to `LlmSetupState::subscription`.
+///    - `StrategyConfig` (editing/generating) → delegates entirely to
+///      `StrategySetupState::subscription`.
+///    - `StrategyConfig` (overview/nav) → settings-nav keys (tab switch,
+///      save, quit) composed in a batch with `StrategySetupState::subscription`
+///      so the child can still claim inner-navigation keys.
+pub fn subscription(
     settings_tab: SettingsSection,
     llm_setup: &LlmSetupState,
     strategy_setup: &StrategySetupState,
     confirm_exit_settings: &ConfirmDialog,
-    key: KeyEvent,
-) -> Option<SettingsMessage> {
-    // Confirm dialog intercepts all input when open
-    if confirm_exit_settings.open {
-        let msg = match key.code {
-            KeyCode::Esc => Some(ConfirmMessage::Cancel),
-            KeyCode::Char(ch) => Some(ConfirmMessage::Confirm(ch.to_ascii_lowercase())),
-            _ => None,
-        };
-        return msg.map(SettingsMessage::ConfirmExit);
-    }
+    kb: &mut KeybindManager,
+) -> Subscription<SettingsMessage> {
+    // Modal layer: confirm-exit dialog intercepts everything when open.
+    let confirm_sub = confirm_exit_settings
+        .subscription(kb)
+        .map(SettingsMessage::ConfirmExit);
 
-    match settings_tab {
-        SettingsSection::LlmConfig => {
-            // LlmSetupState key routing is handled by the subscription system
-            // via LlmSetupState::subscription(). This function is retained for
-            // non-subscription callers but LlmConfig routing is a no-op here.
-            let _ = (llm_setup, key);
-            None
-        }
+    // Active tab layer.
+    let tab_sub = match settings_tab {
+        SettingsSection::LlmConfig => llm_setup
+            .subscription(kb, true)
+            .map(SettingsMessage::LlmConfig),
+
         SettingsSection::StrategyConfig => {
-            // StrategySetupState key routing is handled by the subscription system
-            // via StrategySetupState::subscription(). This function is retained for
-            // non-subscription callers but StrategyConfig routing is a no-op here.
-            let _ = (strategy_setup, key);
-            None
+            // Determine if strategy is actively editing/generating (not in
+            // overview/nav mode). In those states we delegate entirely to the
+            // child; in overview mode we also add settings-nav keys on top.
+            let is_editing_or_generating = strategy_setup.overview_editing
+                || strategy_setup.editing_field.is_some()
+                || strategy_setup.generating
+                || strategy_setup.input_editing;
+
+            let strategy_sub = strategy_setup
+                .subscription(kb)
+                .map(SettingsMessage::Strategy);
+
+            if is_editing_or_generating {
+                strategy_sub
+            } else {
+                // Overview/nav mode: add settings-nav keys (tab switch, save,
+                // exit, quit) with first-match-wins precedence before the child.
+                let nav_sub = settings_nav_subscription(kb);
+                Subscription::batch([nav_sub, strategy_sub])
+            }
         }
-    }
+    };
+
+    Subscription::batch([confirm_sub, tab_sub])
+}
+
+/// Build a subscription for settings navigation keys.
+///
+/// Binds `1`/`2` for tab switching, `s` for save, `Esc` for exit, and `q`
+/// for quit. Used when `StrategyConfig` is in overview/navigation mode so
+/// that the settings-level keys take precedence over child bindings for the
+/// same keys.
+fn settings_nav_subscription(kb: &mut KeybindManager) -> Subscription<SettingsMessage> {
+    // Stable ID derived from a constant seed so this recipe is not rebuilt
+    // unnecessarily on every frame.
+    let mut hasher = DefaultHasher::new();
+    0xdead_beef_cafe_u64.hash(&mut hasher);
+    let sub_id = SubscriptionId::from_u64(hasher.finish());
+
+    let recipe = KeyBindingRecipe::new(sub_id)
+        .priority(PRIORITY_NORMAL)
+        .bind(
+            exact(KeyCode::Char('1')),
+            |_| SettingsMessage::SwitchTab(SettingsSection::LlmConfig),
+            KeybindHint::new("1", "LLM tab"),
+        )
+        .bind(
+            exact(KeyCode::Char('2')),
+            |_| SettingsMessage::SwitchTab(SettingsSection::StrategyConfig),
+            KeybindHint::new("2", "Strategy tab"),
+        )
+        .bind(
+            exact(KeyCode::Char('s')),
+            |_| SettingsMessage::SaveStrategy,
+            KeybindHint::new("s", "Save"),
+        )
+        .bind(
+            exact(KeyCode::Esc),
+            |_| SettingsMessage::ExitSettings,
+            KeybindHint::new("Esc", "Exit settings"),
+        )
+        .bind(
+            exact(KeyCode::Char('q')),
+            |_| SettingsMessage::Quit,
+            KeybindHint::new("q", "Quit"),
+        );
+
+    kb.subscribe(recipe)
 }
 
 // ---------------------------------------------------------------------------
