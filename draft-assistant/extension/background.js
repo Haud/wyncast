@@ -231,278 +231,12 @@ function requestFullStateSyncFromContentScript() {
 }
 
 // ---------------------------------------------------------------------------
-// ESPN Fantasy API fetch
-// ---------------------------------------------------------------------------
-
-/**
- * Fetch ESPN Fantasy API data from the background script.
- * Extensions bypass CORS, so this works without page-context injection.
- * Returns parsed JSON or null on failure.
- */
-async function fetchEspnApi(tabUrl) {
-  try {
-    const url = new URL(tabUrl);
-    const leagueId = url.searchParams.get('leagueId');
-    if (!leagueId) {
-      log('No leagueId in tab URL:', tabUrl);
-      return null;
-    }
-    const year = new Date().getFullYear();
-    const apiUrl = 'https://lm-api-reads.fantasy.espn.com/apis/v3/games/flb/seasons/' + year + '/segments/0/leagues/' + leagueId + '?view=mDraftDetail&view=mTeam&view=mRoster';
-
-    log('Fetching ESPN API:', apiUrl);
-    const resp = await fetch(apiUrl, { credentials: 'include' });
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    const data = await resp.json();
-    log('ESPN API response received, top-level keys:', Object.keys(data));
-    return data;
-  } catch (e) {
-    warn('ESPN API fetch failed:', e.message || e);
-    return null;
-  }
-}
-
-/**
- * Parse the ESPN Fantasy API response into team roster data.
- *
- * The API response format is a best guess — this function parses VERY
- * defensively with null checks at every level. If any expected field is
- * missing, logs a warning and returns null (falling back to DOM scraping).
- *
- * @param {Object} apiData - Parsed JSON from the ESPN Fantasy API
- * @returns {Array|null} Array of team roster objects, or null on parse failure
- */
-function parseApiTeamRosters(apiData) {
-  try {
-    if (!apiData || typeof apiData !== 'object') {
-      warn('ESPN API data is null or not an object');
-      return null;
-    }
-
-    // Log top-level keys for debugging
-    log('ESPN API response top-level keys:', Object.keys(apiData));
-
-    const teams = apiData.teams;
-    if (!Array.isArray(teams) || teams.length === 0) {
-      warn('ESPN API: no teams array found');
-      return null;
-    }
-
-    // Build price map from draftDetail.picks (used by both approaches)
-    const priceMap = new Map();
-    const draftDetail = apiData.draftDetail;
-    if (draftDetail && Array.isArray(draftDetail.picks)) {
-      for (const pick of draftDetail.picks) {
-        if (pick && pick.playerId != null && pick.bidAmount != null) {
-          priceMap.set(pick.playerId, pick.bidAmount);
-        }
-      }
-    }
-    log('ESPN API: built price map with', priceMap.size, 'entries from draftDetail.picks');
-
-    // Build team info map from teams[]
-    const teamInfoMap = new Map(); // teamId -> teamName
-    for (const team of teams) {
-      if (!team) continue;
-      let teamName = '';
-      if (team.location && team.nickname) {
-        teamName = (team.location + ' ' + team.nickname).trim();
-      } else if (team.name) {
-        teamName = team.name;
-      } else if (team.abbrev) {
-        teamName = team.abbrev;
-      } else {
-        teamName = 'Team ' + (team.id || '?');
-      }
-      if (team.id != null) {
-        teamInfoMap.set(team.id, teamName);
-      }
-    }
-
-    // --- Primary approach: build from teams[].roster.entries ---
-    const result = [];
-    let totalPlayers = 0;
-
-    for (const team of teams) {
-      if (!team) continue;
-      const teamId = team.id != null ? team.id : 0;
-      const teamName = teamInfoMap.get(teamId) || ('Team ' + teamId);
-      const players = [];
-
-      if (team.roster && Array.isArray(team.roster.entries)) {
-        for (const entry of team.roster.entries) {
-          if (!entry) continue;
-          const playerId = entry.playerId != null ? String(entry.playerId) : '';
-          const lineupSlotId = entry.lineupSlotId != null ? entry.lineupSlotId : 16;
-
-          let playerName = '';
-          let eligibleSlots = [];
-          const ppe = entry.playerPoolEntry;
-          if (ppe && ppe.player) {
-            const player = ppe.player;
-            playerName = player.fullName || ((player.firstName || '') + ' ' + (player.lastName || '')).trim();
-            eligibleSlots = Array.isArray(player.eligibleSlots) ? player.eligibleSlots : [];
-          }
-
-          const numericId = entry.playerId != null ? entry.playerId : parseInt(playerId, 10);
-          const price = priceMap.has(numericId) ? priceMap.get(numericId) : 0;
-
-          if (playerName) {
-            players.push({ playerId, playerName, lineupSlotId, eligibleSlots, price });
-          }
-        }
-      }
-
-      result.push({ teamId, teamName, players });
-      totalPlayers += players.length;
-    }
-
-    if (totalPlayers > 0) {
-      log('ESPN API: built rosters from roster.entries —', totalPlayers, 'players across', result.length, 'teams');
-      return result;
-    }
-
-    // --- Fallback: build from draftDetail.picks ---
-    log('ESPN API: roster.entries produced 0 players, falling back to draftDetail.picks');
-
-    if (!draftDetail || !Array.isArray(draftDetail.picks)) {
-      warn('ESPN API: no draftDetail.picks found either, cannot build rosters');
-      return null;
-    }
-
-    log('ESPN API draftDetail has', draftDetail.picks.length, 'picks');
-    if (draftDetail.picks.length > 0) {
-      log('ESPN API first pick keys:', Object.keys(draftDetail.picks[0]));
-    }
-
-    // Build player info map from teams[].roster.entries[].playerPoolEntry.player
-    // (even if entries had no players, some might have player info without lineupSlotId)
-    const playerInfoMap = new Map(); // playerId (number) -> {name, eligibleSlots}
-    for (const team of teams) {
-      if (!team || !team.roster || !Array.isArray(team.roster.entries)) continue;
-      for (const entry of team.roster.entries) {
-        if (!entry || entry.playerId == null) continue;
-        const ppe = entry.playerPoolEntry;
-        if (ppe && ppe.player) {
-          const player = ppe.player;
-          const name = player.fullName || ((player.firstName || '') + ' ' + (player.lastName || '')).trim();
-          const eligibleSlots = Array.isArray(player.eligibleSlots) ? player.eligibleSlots : [];
-          if (name) {
-            playerInfoMap.set(entry.playerId, { name, eligibleSlots });
-          }
-        }
-      }
-    }
-    log('ESPN API: built player info map with', playerInfoMap.size, 'entries from roster data');
-
-    // Use draftDetail.picks, group by teamId
-    const teamPlayersMap = new Map(); // teamId -> Array of player objects
-    for (const pick of draftDetail.picks) {
-      if (!pick || pick.playerId == null || pick.teamId == null) continue;
-
-      const info = playerInfoMap.get(pick.playerId);
-      const playerName = info ? info.name : '';
-      const eligibleSlots = info ? info.eligibleSlots : [];
-      const lineupSlotId = pick.lineupSlotId != null ? pick.lineupSlotId : 16;
-
-      if (!playerName) {
-        warn('ESPN API: pick for playerId', pick.playerId, 'has no player info in roster data, skipping');
-        continue;
-      }
-
-      if (!teamPlayersMap.has(pick.teamId)) {
-        teamPlayersMap.set(pick.teamId, []);
-      }
-      teamPlayersMap.get(pick.teamId).push({
-        playerId: String(pick.playerId),
-        playerName: playerName,
-        lineupSlotId: lineupSlotId,
-        eligibleSlots: eligibleSlots,
-        price: pick.bidAmount != null ? pick.bidAmount : 0,
-      });
-    }
-
-    // Build fallback result, including teams that have no picks yet
-    const fallbackResult = [];
-    for (const [fbTeamId, fbTeamName] of teamInfoMap) {
-      const players = teamPlayersMap.get(fbTeamId) || [];
-      fallbackResult.push({
-        teamId: fbTeamId,
-        teamName: fbTeamName,
-        players: players,
-      });
-    }
-
-    const fallbackTotalPlayers = fallbackResult.reduce((sum, t) => sum + t.players.length, 0);
-    if (fallbackTotalPlayers === 0) {
-      warn('ESPN API: draftDetail.picks also produced 0 players across all teams, returning null');
-      return null;
-    }
-
-    log('ESPN API: built rosters from draftDetail.picks (fallback) —', fallbackTotalPlayers, 'players across', fallbackResult.length, 'teams');
-    return fallbackResult;
-  } catch (e) {
-    error('Failed to parse ESPN API team rosters:', e);
-    return null;
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Message relay from content scripts
 // ---------------------------------------------------------------------------
 
 /**
- * Forward a content script message to the WebSocket backend.
- */
-function forwardToWebSocket(message) {
-  const forwarded = {
-    type: message.type,
-    timestamp: message.timestamp,
-    payload: message.payload,
-  };
-
-  if (isConnected) {
-    if (wsSend(forwarded)) {
-      // Message sent successfully
-    } else {
-      warn('WebSocket send failed; message dropped');
-    }
-  } else {
-    warn('WebSocket not connected; dropping message of type:', message.type);
-  }
-}
-
-/**
- * Enrich a FULL_STATE_SYNC message with ESPN API roster data,
- * then forward to the WebSocket backend.
- */
-async function enrichAndForward(message, tabUrl) {
-  try {
-    const apiData = await fetchEspnApi(tabUrl);
-    if (apiData) {
-      const teamRosters = parseApiTeamRosters(apiData);
-      if (teamRosters && teamRosters.length > 0) {
-        const totalPlayers = teamRosters.reduce((sum, t) => sum + t.players.length, 0);
-        if (totalPlayers > 0) {
-          message.payload.teamRosters = teamRosters;
-          log('Enriched FULL_STATE_SYNC with', totalPlayers, 'players from', teamRosters.length, 'teams via API');
-        } else {
-          log('API returned teams but 0 players — not enriching');
-        }
-      }
-    }
-  } catch (e) {
-    warn('API enrichment failed, forwarding DOM-only data:', e.message || e);
-  }
-
-  // Forward (enriched or not) to WebSocket
-  forwardToWebSocket(message);
-}
-
-/**
  * Handle messages from content scripts.
- * For FULL_STATE_SYNC messages, enriches with ESPN API data before forwarding.
- * Other message types are forwarded immediately.
+ * Constructs a protocol-compliant message and forwards to the backend.
  *
  * IMPORTANT: The Rust backend deserializes ExtensionMessage using
  * #[serde(tag = "type")] (internally-tagged enum). Only fields defined in
@@ -515,18 +249,29 @@ browser.runtime.onMessage.addListener((message, sender) => {
     return;
   }
 
+  // Log tab context for debugging (not forwarded to backend)
   const tabId = sender.tab ? sender.tab.id : null;
-  log('Received', message.type, 'from tab', tabId);
+  log('Relaying', message.type, 'from tab', tabId);
 
-  if (message.type === 'FULL_STATE_SYNC') {
-    // Enrich FULL_STATE_SYNC with API data before forwarding
-    const tabUrl = sender.tab ? sender.tab.url : '';
-    enrichAndForward(message, tabUrl);
-    return; // Don't forward yet — enrichAndForward handles it
+  // Build a protocol-compliant message with ONLY the fields that
+  // protocol.rs ExtensionMessage expects. Do not add extra fields like
+  // tabId or relayTimestamp -- serde will reject unknown fields.
+  const forwarded = {
+    type: message.type,
+    timestamp: message.timestamp,
+    payload: message.payload,
+  };
+
+  // Forward to WebSocket
+  if (isConnected) {
+    if (wsSend(forwarded)) {
+      // Message sent successfully
+    } else {
+      warn('WebSocket send failed; message dropped');
+    }
+  } else {
+    warn('WebSocket not connected; dropping message of type:', message.type);
   }
-
-  // Forward other message types immediately
-  forwardToWebSocket(message);
 });
 
 // ---------------------------------------------------------------------------

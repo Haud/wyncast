@@ -5,8 +5,7 @@
   "description": "Syncs ESPN fantasy baseball draft data to the draft assistant backend",
   "permissions": [
     "tabs",
-    "activeTab",
-    "*://*.espn.com/*"
+    "activeTab"
   ],
   "background": {
     "scripts": ["background.js"],
