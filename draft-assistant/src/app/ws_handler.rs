@@ -5,8 +5,8 @@ use crate::db::Database;
 use crate::draft::pick::{espn_slot_from_position_str, DraftPick};
 use crate::draft::roster::Roster;
 use crate::draft::state::{
-    compute_state_diff, ActiveNomination, DraftState, NominationPayload, ReconcileResult,
-    StateUpdatePayload, TeamState,
+    compute_state_diff, ActiveNomination, DraftState, NominationPayload, PickPayload,
+    ReconcileResult, StateUpdatePayload, TeamState,
 };
 use crate::protocol::{
     DraftBoardData, ExtensionMessage, NominationInfo, PickHistoryEntry, TeamIdMapping, UiUpdate,
@@ -111,6 +111,7 @@ pub(super) async fn handle_full_state_sync(
     state.scarcity = compute_scarcity(&state.available_players, &state.config.league);
     state.inflation = InflationTracker::new();
     state.category_needs = CategoryNeeds::default();
+    state.grid_picks_persisted = false;
 
     // --- Grid-based state building (when draft board + pick history available) ---
     //
@@ -153,18 +154,34 @@ pub(super) async fn handle_full_state_sync(
     // Build stub previous_extension_state for compute_state_diff so that
     // handle_state_update doesn't re-process picks that we already loaded.
     //
-    // When grid_based_rebuild is true, ALL picks from the extension payload
-    // are already recorded in draft_state — include them in the stub so
-    // compute_state_diff sees them as "already known".
+    // When grid_based_rebuild is true, picks are sourced from the complete
+    // grid/pick-history data (not the virtualized extension pick log). We
+    // convert them to PickPayloads for the stub so compute_state_diff sees
+    // every pick as "already known" and doesn't double-process any.
     //
     // When preserve_llm is true, include the saved nomination in the stub
     // so compute_state_diff doesn't treat it as a new nomination (which
     // would fire NominationUpdate and restart the LLM analysis).
     let stub_picks = if grid_based_rebuild {
-        // Convert the extension picks to internal PickPayloads so
-        // compute_state_diff recognizes them as already processed.
-        let internal = AppState::convert_extension_state(&ext_payload);
-        internal.picks
+        // Build stub picks from the complete grid-sourced picks (not the
+        // virtualized extension pick log) so compute_state_diff in
+        // handle_state_update recognizes ALL picks as already processed.
+        state
+            .draft_state
+            .picks
+            .iter()
+            .map(|p| PickPayload {
+                pick_number: p.pick_number,
+                team_id: p.team_id.clone(),
+                team_name: p.team_name.clone(),
+                player_id: p.espn_player_id.clone().unwrap_or_default(),
+                player_name: p.player_name.clone(),
+                position: p.position.clone(),
+                price: p.price,
+                eligible_slots: p.eligible_slots.clone(),
+                assigned_slot: p.assigned_slot,
+            })
+            .collect()
     } else {
         vec![]
     };
@@ -293,6 +310,7 @@ pub(super) async fn handle_state_update(
                 state.plan_request_id = None;
                 state.analysis_player = None;
                 state.category_needs = CategoryNeeds::default();
+                state.grid_picks_persisted = false;
             }
             None => {
                 // First time receiving an ESPN draft ID -- store it.
@@ -517,6 +535,15 @@ pub(super) async fn handle_state_update(
 // Grid-based state building
 // ---------------------------------------------------------------------------
 
+/// Extract a player name from a draft board slot's first/last name fields.
+/// Returns `None` if both fields are empty.
+fn slot_player_name(slot: &crate::protocol::DraftBoardSlot) -> Option<String> {
+    let first = slot.first_name.as_deref().unwrap_or("");
+    let last = slot.last_name.as_deref().unwrap_or("");
+    let name = format!("{} {}", first, last).trim().to_string();
+    if name.is_empty() { None } else { Some(name) }
+}
+
 /// Build the complete draft state from the draft board grid and pick history.
 ///
 /// When the extension provides draft board grid data (always fully rendered,
@@ -536,6 +563,18 @@ fn build_state_from_grid(
         Some(b) if !b.teams.is_empty() => b,
         _ => return false,
     };
+
+    // Pre-build a team name -> ESPN team ID lookup map to avoid
+    // repeated linear scans through the mapping slice.
+    let team_id_map: std::collections::HashMap<&str, &str> = team_id_mapping
+        .as_ref()
+        .map(|mapping| {
+            mapping
+                .iter()
+                .map(|m| (m.team_name.as_str(), m.espn_team_id.as_str()))
+                .collect()
+        })
+        .unwrap_or_default();
 
     // Count filled slots — if none are filled, no picks have been made yet
     // and the normal flow works fine.
@@ -577,11 +616,9 @@ fn build_state_from_grid(
             // pick-train values when available, ensuring consistency.
         };
 
-        // Apply team ID from mapping if available
-        if let Some(mapping) = team_id_mapping {
-            if let Some(m) = mapping.iter().find(|m| m.team_name == db_team.team_name) {
-                team.team_id = m.espn_team_id.clone();
-            }
+        // Apply team ID from mapping
+        if let Some(id) = team_id_map.get(db_team.team_name.as_str()) {
+            team.team_id = id.to_string();
         }
 
         // Fill roster slots from the grid
@@ -589,12 +626,10 @@ fn build_state_from_grid(
             if !slot.filled {
                 continue;
             }
-            let first = slot.first_name.as_deref().unwrap_or("");
-            let last = slot.last_name.as_deref().unwrap_or("");
-            let player_name = format!("{} {}", first, last).trim().to_string();
-            if player_name.is_empty() {
-                continue;
-            }
+            let player_name = match slot_player_name(slot) {
+                Some(name) => name,
+                None => continue,
+            };
 
             let price = slot.price.unwrap_or(0);
             let roster_slot_str = &slot.roster_slot;
@@ -669,13 +704,8 @@ fn build_state_from_grid(
 
             // Apply team ID from mapping
             let mut pick = pick;
-            if let Some(mapping) = team_id_mapping {
-                if let Some(m) = mapping
-                    .iter()
-                    .find(|m| m.team_name == entry.team_name)
-                {
-                    pick.team_id = m.espn_team_id.clone();
-                }
+            if let Some(id) = team_id_map.get(entry.team_name.as_str()) {
+                pick.team_id = id.to_string();
             }
 
             // Add directly to picks list (bypassing record_pick since rosters
@@ -697,12 +727,10 @@ fn build_state_from_grid(
                 if !slot.filled {
                     continue;
                 }
-                let first = slot.first_name.as_deref().unwrap_or("");
-                let last = slot.last_name.as_deref().unwrap_or("");
-                let player_name = format!("{} {}", first, last).trim().to_string();
-                if player_name.is_empty() {
-                    continue;
-                }
+                let player_name = match slot_player_name(slot) {
+                    Some(name) => name,
+                    None => continue,
+                };
 
                 pick_num += 1;
                 let position = slot
@@ -711,15 +739,10 @@ fn build_state_from_grid(
                     .unwrap_or(&slot.roster_slot)
                     .to_string();
 
-                let mut team_id = String::new();
-                if let Some(mapping) = team_id_mapping {
-                    if let Some(m) = mapping
-                        .iter()
-                        .find(|m| m.team_name == db_team.team_name)
-                    {
-                        team_id = m.espn_team_id.clone();
-                    }
-                }
+                let team_id = team_id_map
+                    .get(db_team.team_name.as_str())
+                    .map(|id| id.to_string())
+                    .unwrap_or_default();
 
                 state.draft_state.picks.push(DraftPick {
                     pick_number: pick_num,
@@ -747,20 +770,17 @@ fn build_state_from_grid(
         .available_players
         .retain(|p| !drafted_names.contains(&p.name));
 
-    // Persist only NEW picks to DB for crash recovery.
-    // record_pick uses INSERT OR IGNORE, but loading the existing count
-    // avoids unnecessary writes on every 10-second FULL_STATE_SYNC keyframe.
-    let existing_pick_count = state
-        .db
-        .load_picks(&state.draft_id)
-        .map(|picks| picks.len())
-        .unwrap_or(0);
-    for pick in &state.draft_state.picks {
-        if (pick.pick_number as usize) > existing_pick_count {
+    // Persist picks to DB for crash recovery.
+    // Skip if we've already persisted grid picks this session — FULL_STATE_SYNC
+    // fires every 10 seconds and the grid data is the same each time.
+    // record_pick uses INSERT OR IGNORE for idempotency on the first call.
+    if !state.grid_picks_persisted {
+        for pick in &state.draft_state.picks {
             if let Err(e) = state.db.record_pick(pick, &state.draft_id) {
                 warn!("Failed to persist grid-sourced pick to DB: {}", e);
             }
         }
+        state.grid_picks_persisted = true;
     }
 
     true

@@ -610,18 +610,25 @@ function scrapePickHistory() {
     const tables = document.querySelectorAll(SELECTORS.pickHistoryTable);
     if (tables.length === 0) return picks;
 
-    // Determine picks per round from the first table's data rows
-    // (avoids hardcoding 10 for the team count)
-    let picksPerRound = 10; // fallback
-    if (tables.length > 0) {
-      const firstTableRows = tables[0].querySelectorAll('[aria-rowindex]');
-      // Subtract 1 for header row (aria-rowindex=1)
-      const dataRowCount = Array.from(firstTableRows).filter(
-        (r) => parseInt(r.getAttribute('aria-rowindex'), 10) > 1
-      ).length;
-      if (dataRowCount > 0) {
+    // Determine picks per round from the maximum data row count across all
+    // tables. Using the max (rather than just the first table) handles the
+    // edge case where the extension connects mid-Round-1 before all teams
+    // have picked, which would undercount if we only checked tables[0].
+    let picksPerRound = 0;
+    tables.forEach((table) => {
+      const tableRows = table.querySelectorAll('[aria-rowindex]');
+      let dataRowCount = 0;
+      tableRows.forEach((r) => {
+        if (parseInt(r.getAttribute('aria-rowindex'), 10) > 1) {
+          dataRowCount++;
+        }
+      });
+      if (dataRowCount > picksPerRound) {
         picksPerRound = dataRowCount;
       }
+    });
+    if (picksPerRound === 0) {
+      picksPerRound = 10; // fallback if no data rows found
     }
 
     tables.forEach((table) => {
@@ -800,9 +807,6 @@ function scrapeDom() {
     // Extract draft identifier
     state.draftId = scrapeDraftId();
 
-    // Scrape draft board grid (lightweight, always fully rendered)
-    state.draftBoard = scrapeDraftBoard();
-
     // Scrape team ID mapping from roster dropdown
     state.teamIdMapping = scrapeTeamIdMapping();
   } catch (e) {
@@ -863,14 +867,6 @@ function computeFingerprint(state) {
   const teams = state.teams || [];
   const teamBudgets = teams.map((t) => t.teamName + ':' + t.budget).join(',');
 
-  // Draft board: count filled slots and on-the-clock team
-  const db = state.draftBoard || {};
-  const dbFilledCount = (db.teams || []).reduce(
-    (sum, t) => sum + (t.slots || []).filter((s) => s.filled).length,
-    0
-  );
-  const dbOnTheClock = db.onTheClockTeam || '';
-
   return (
     picks.length +
     '|' +
@@ -892,11 +888,7 @@ function computeFingerprint(state) {
     '|' +
     (state.totalPicks ?? '') +
     '|' +
-    (state.draftId || '') +
-    '|' +
-    dbFilledCount +
-    '|' +
-    dbOnTheClock
+    (state.draftId || '')
   );
 }
 
@@ -904,7 +896,7 @@ function computeFingerprint(state) {
  * Build a state payload object from the current scraped state.
  *
  * @param {Object} state - The scraped state
- * @param {Object} [extras] - Optional extra fields (pickHistory)
+ * @param {Object} [extras] - Optional extra fields (pickHistory, draftBoard)
  *                            that are only included on FULL_STATE_SYNC
  */
 function buildStatePayload(state, extras) {
@@ -917,13 +909,13 @@ function buildStatePayload(state, extras) {
     totalPicks: state.totalPicks ?? null,
     draftId: state.draftId || null,
     source: state.source || 'unknown',
-    draftBoard: state.draftBoard || null,
     teamIdMapping: state.teamIdMapping || null,
   };
 
   // Only include expensive data when explicitly provided (FULL_STATE_SYNC)
   if (extras) {
     if (extras.pickHistory) payload.pickHistory = extras.pickHistory;
+    if (extras.draftBoard) payload.draftBoard = extras.draftBoard;
   }
 
   return payload;
@@ -943,6 +935,7 @@ function sendFullStateSync() {
 
   // Scrape expensive data only on FULL_STATE_SYNC
   const pickHistory = scrapePickHistory();
+  const draftBoard = scrapeDraftBoard();
 
   log(
     'Sending FULL_STATE_SYNC with',
@@ -958,6 +951,7 @@ function sendFullStateSync() {
     timestamp: Date.now(),
     payload: buildStatePayload(state, {
       pickHistory: pickHistory,
+      draftBoard: draftBoard,
     }),
   };
 

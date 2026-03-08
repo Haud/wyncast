@@ -131,6 +131,10 @@ pub struct AppState {
     /// capture the current generation and only write to `connection_test_result`
     /// if the generation hasn't changed, preventing stale writes.
     pub connection_test_generation: Arc<AtomicU64>,
+    /// Whether grid-sourced picks have already been persisted to DB this session.
+    /// Set to true after the first grid-based rebuild to avoid redundant writes
+    /// on subsequent 10-second FULL_STATE_SYNC keyframes.
+    pub grid_picks_persisted: bool,
 }
 
 impl AppState {
@@ -182,6 +186,7 @@ impl AppState {
             onboarding_progress,
             connection_test_result: Arc::new(AtomicI8::new(CONNECTION_NEVER_TESTED)),
             connection_test_generation: Arc::new(AtomicU64::new(0)),
+            grid_picks_persisted: false,
         }
     }
 
