@@ -563,367 +563,403 @@ function scrapeDraftId() {
 }
 
 // ---------------------------------------------------------------------------
-// React State Extraction (via Firefox wrappedJSObject)
+// React State Extraction (via page-context script injection)
 // ---------------------------------------------------------------------------
 
+// Cached team rosters received from the injected page-context script.
+// Updated asynchronously via window.postMessage from the injected script.
+let cachedTeamRosters = null;
+
 /**
- * Extract ESPN's complete draft state from the page's JavaScript context.
- *
- * Firefox content scripts can access page-context JS objects via
- * window.wrappedJSObject, bypassing CSP restrictions entirely.
- * ESPN's React app stores the full draft state (all picks, team rosters,
- * player data) in memory — we just need to find it.
- *
- * Returns team roster data in the format expected by the Rust backend's
- * TeamRosterEntry, or null if extraction fails.
+ * Set up a listener for messages from the injected page-context script.
+ * The injected script posts results via window.postMessage with a known source.
  */
-function extractTeamRostersFromPage() {
+function setupPageContextListener() {
+  window.addEventListener('message', (event) => {
+    // Only accept messages from the same window (page-context script)
+    if (event.source !== window) return;
+    if (!event.data || event.data.source !== 'wyndham-draft-sync-page-extract') return;
+
+    if (event.data.error) {
+      warn('Page-context extraction error:', event.data.error);
+      cachedTeamRosters = null;
+      return;
+    }
+
+    const rosters = event.data.teamRosters;
+    if (rosters && Array.isArray(rosters)) {
+      const totalPlayers = rosters.reduce((sum, t) => sum + (t.players ? t.players.length : 0), 0);
+      log('Received team rosters from page-context script:', totalPlayers, 'players across', rosters.length, 'teams');
+      cachedTeamRosters = rosters;
+    } else {
+      log('Page-context script returned no roster data');
+      cachedTeamRosters = null;
+    }
+  });
+  log('Page-context message listener registered');
+}
+
+/**
+ * Inject a script element into the page that runs in the PAGE's JavaScript
+ * context (not the content script sandbox). In the page context, React fiber
+ * keys ARE visible on DOM elements via Object.keys().
+ *
+ * The injected script:
+ * - Finds a React root element
+ * - Walks the React fiber tree looking for draft state (draftDetail + teams)
+ * - Builds team rosters in the format expected by the Rust backend
+ * - Posts the result back via window.postMessage
+ *
+ * No network calls are made — it only reads React state from memory.
+ */
+function injectPageContextExtractor() {
   try {
-    const pw = window.wrappedJSObject;
-    if (!pw) {
-      warn('wrappedJSObject not available');
+    const script = document.createElement('script');
+    script.textContent = `(${pageContextExtractorIIFE.toString()})();`;
+    (document.documentElement || document.head || document.body).appendChild(script);
+    script.remove();
+  } catch (e) {
+    warn('Failed to inject page-context extractor script:', e.message || e);
+  }
+}
+
+/**
+ * The IIFE that runs in the page's JavaScript context.
+ * Defined as a named function so we can .toString() it for injection.
+ * Everything inside runs with full access to the page's JS objects.
+ */
+function pageContextExtractorIIFE() {
+  var LOG = '[WyndhamDraftSync:PageCtx]';
+
+  try {
+    // ---- Helper: find React fiber key on a DOM element ----
+    function findReactFiber(element) {
+      if (!element) return null;
+      var keys = Object.keys(element);
+      for (var i = 0; i < keys.length; i++) {
+        if (keys[i].startsWith('__reactFiber$') || keys[i].startsWith('__reactInternalInstance$')) {
+          return element[keys[i]];
+        }
+      }
       return null;
     }
 
-    // Strategy 1: Find React fiber on draft container and walk the component tree
-    // to find the draft state store (contains all picks, teams, rosters)
-    const draftContainer = document.querySelector('div.draft-content-wrapper');
-    if (draftContainer) {
-      const result = extractFromReactFiber(draftContainer);
-      if (result) return result;
-    }
-
-    // Strategy 2: Try the main app root
-    const appRoot = document.querySelector('#fitt-analytics') || document.querySelector('#global-viewport');
-    if (appRoot) {
-      const result = extractFromReactFiber(appRoot);
-      if (result) return result;
-    }
-
-    // Strategy 3: Search common ESPN global state objects
-    const globalKeys = ['__espnfitt__', '__espn__', 'espn', '__NEXT_DATA__', '__INITIAL_STATE__'];
-    for (const key of globalKeys) {
+    // ---- Helper: check if an object contains draft data ----
+    function checkObjectForDraftData(obj, label, depth) {
+      if (!obj || typeof obj !== 'object') return null;
       try {
-        const val = pw[key];
-        if (val && typeof val === 'object') {
-          log('Found page global:', key);
-          const result = extractFromGlobalObject(val, key);
-          if (result) return result;
-        }
-      } catch (e) {
-        // SecurityError or similar — skip
-      }
-    }
-
-    // Strategy 4: Look for draft data in any window property containing 'draft'
-    try {
-      for (const key of Object.getOwnPropertyNames(pw)) {
-        try {
-          if (key.toLowerCase().includes('draft') || key.toLowerCase().includes('fantasy')) {
-            const val = pw[key];
-            if (val && typeof val === 'object' && !Array.isArray(val)) {
-              log('Found potentially relevant page global:', key, typeof val);
-            }
+        // Look for draftDetail.picks (most reliable indicator)
+        if (obj.draftDetail && Array.isArray(obj.draftDetail.picks) && obj.draftDetail.picks.length > 0) {
+          console.log(LOG, 'Found draftDetail at', label, 'depth', depth, 'with', obj.draftDetail.picks.length, 'picks');
+          if (Array.isArray(obj.teams)) {
+            return obj;
           }
-        } catch (e) {
-          // Skip inaccessible properties
         }
-      }
-    } catch (e) {
-      // getOwnPropertyNames might fail
-    }
-
-    log('React state extraction: no draft state found via any strategy');
-    return null;
-  } catch (e) {
-    warn('React state extraction failed:', e.message || e);
-    return null;
-  }
-}
-
-/**
- * Find a React fiber key on a DOM element.
- */
-function findReactFiber(element) {
-  if (!element) return null;
-  const key = Object.keys(element).find(k =>
-    k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$')
-  );
-  return key ? element[key] : null;
-}
-
-/**
- * Extract draft state by walking the React fiber tree from a DOM element.
- * Looks for components whose state or props contain draft-related data
- * (draftDetail, picks, teams with roster entries).
- */
-function extractFromReactFiber(element) {
-  const fiber = findReactFiber(element);
-  if (!fiber) {
-    log('No React fiber found on', element.tagName, element.className || '');
-    return null;
-  }
-
-  log('Found React fiber on', element.tagName, element.className || '');
-
-  // Walk up the fiber tree looking for components with draft state
-  let current = fiber;
-  let depth = 0;
-  const maxDepth = 50;
-
-  while (current && depth < maxDepth) {
-    try {
-      // Check memoizedState (hooks state) and memoizedProps
-      const state = current.memoizedState;
-      const props = current.memoizedProps;
-      const stateNode = current.stateNode;
-
-      // Check props for draft-related data
-      if (props) {
-        const result = checkObjectForDraftData(props, 'props', depth);
-        if (result) return result;
-      }
-
-      // Check class component state
-      if (stateNode && stateNode.state) {
-        const result = checkObjectForDraftData(stateNode.state, 'stateNode.state', depth);
-        if (result) return result;
-      }
-
-      // Check stateNode for store/context (e.g. Redux store)
-      if (stateNode && typeof stateNode === 'object' && stateNode !== null) {
-        if (typeof stateNode.getState === 'function') {
+        // Check nested: obj might wrap the data one level deeper
+        var objKeys = Object.keys(obj);
+        for (var i = 0; i < objKeys.length; i++) {
+          var key = objKeys[i];
           try {
-            const storeState = stateNode.getState();
-            const result = checkObjectForDraftData(storeState, 'redux-store', depth);
-            if (result) return result;
+            var val = obj[key];
+            if (val && typeof val === 'object' && !Array.isArray(val)) {
+              if (val.draftDetail && Array.isArray(val.draftDetail.picks) && val.draftDetail.picks.length > 0) {
+                console.log(LOG, 'Found draftDetail at', label + '.' + key, 'depth', depth, 'with', val.draftDetail.picks.length, 'picks');
+                if (Array.isArray(val.teams)) {
+                  return val;
+                }
+              }
+            }
           } catch (e) { /* skip */ }
         }
-      }
+      } catch (e) { /* skip */ }
+      return null;
+    }
 
-      // Check hooks state chain (linked list of hooks)
-      if (state && typeof state === 'object') {
-        let hookState = state;
-        let hookIdx = 0;
-        while (hookState && hookIdx < 20) {
-          if (hookState.memoizedState && typeof hookState.memoizedState === 'object') {
-            const result = checkObjectForDraftData(hookState.memoizedState, `hook[${hookIdx}]`, depth);
+    // ---- Helper: walk React fiber tree from an element ----
+    function extractFromReactFiber(element) {
+      var fiber = findReactFiber(element);
+      if (!fiber) {
+        console.log(LOG, 'No React fiber found on', element.tagName, element.className || '');
+        return null;
+      }
+      console.log(LOG, 'Found React fiber on', element.tagName, element.className || '');
+
+      var current = fiber;
+      var depth = 0;
+      var maxDepth = 50;
+
+      while (current && depth < maxDepth) {
+        try {
+          var state = current.memoizedState;
+          var props = current.memoizedProps;
+          var stateNode = current.stateNode;
+
+          // Check props
+          if (props) {
+            var result = checkObjectForDraftData(props, 'props', depth);
             if (result) return result;
           }
-          hookState = hookState.next;
-          hookIdx++;
-        }
-      }
-    } catch (e) {
-      // Skip inaccessible fibers
-    }
 
-    // Walk up (return = parent fiber)
-    current = current.return;
-    depth++;
-  }
+          // Check class component state
+          if (stateNode && stateNode.state) {
+            var result = checkObjectForDraftData(stateNode.state, 'stateNode.state', depth);
+            if (result) return result;
+          }
 
-  log('React fiber walk: no draft state found in', depth, 'levels');
-  return null;
-}
-
-/**
- * Check if an object contains draft-related data (draftDetail, teams with rosters).
- * If found, extract and return team rosters in the expected format.
- */
-function checkObjectForDraftData(obj, label, depth) {
-  if (!obj || typeof obj !== 'object') return null;
-
-  try {
-    // Look for draftDetail.picks (the most reliable indicator of draft state)
-    if (obj.draftDetail && Array.isArray(obj.draftDetail.picks) && obj.draftDetail.picks.length > 0) {
-      log('Found draftDetail at', label, 'depth', depth, 'with', obj.draftDetail.picks.length, 'picks');
-      if (Array.isArray(obj.teams)) {
-        return buildTeamRostersFromReactState(obj);
-      }
-    }
-
-    // Check nested: obj might wrap the data one level deeper
-    for (const key of Object.keys(obj)) {
-      try {
-        const val = obj[key];
-        if (val && typeof val === 'object' && !Array.isArray(val)) {
-          if (val.draftDetail && Array.isArray(val.draftDetail.picks) && val.draftDetail.picks.length > 0) {
-            log('Found draftDetail at', label + '.' + key, 'depth', depth, 'with', val.draftDetail.picks.length, 'picks');
-            if (Array.isArray(val.teams)) {
-              return buildTeamRostersFromReactState(val);
+          // Check stateNode for Redux store
+          if (stateNode && typeof stateNode === 'object' && stateNode !== null) {
+            if (typeof stateNode.getState === 'function') {
+              try {
+                var storeState = stateNode.getState();
+                var result = checkObjectForDraftData(storeState, 'redux-store', depth);
+                if (result) return result;
+              } catch (e) { /* skip */ }
             }
           }
+
+          // Check hooks state chain (linked list)
+          if (state && typeof state === 'object') {
+            var hookState = state;
+            var hookIdx = 0;
+            while (hookState && hookIdx < 20) {
+              if (hookState.memoizedState && typeof hookState.memoizedState === 'object') {
+                var result = checkObjectForDraftData(hookState.memoizedState, 'hook[' + hookIdx + ']', depth);
+                if (result) return result;
+              }
+              hookState = hookState.next;
+              hookIdx++;
+            }
+          }
+        } catch (e) { /* skip inaccessible fibers */ }
+
+        current = current.return;
+        depth++;
+      }
+
+      console.log(LOG, 'React fiber walk: no draft state found in', depth, 'levels');
+      return null;
+    }
+
+    // ---- Helper: build team rosters from React state ----
+    function buildTeamRosters(stateObj) {
+      var teams = stateObj.teams;
+      var draftDetail = stateObj.draftDetail;
+      if (!Array.isArray(teams) || teams.length === 0) return null;
+
+      // Build price map from draftDetail.picks
+      var priceMap = {};
+      if (draftDetail && Array.isArray(draftDetail.picks)) {
+        for (var i = 0; i < draftDetail.picks.length; i++) {
+          var pick = draftDetail.picks[i];
+          if (pick && pick.playerId != null && pick.bidAmount != null) {
+            priceMap[pick.playerId] = pick.bidAmount;
+          }
+        }
+      }
+
+      // Build team info map
+      var teamInfoMap = {};
+      for (var i = 0; i < teams.length; i++) {
+        var team = teams[i];
+        if (!team) continue;
+        var teamName = '';
+        if (team.location && team.nickname) {
+          teamName = (team.location + ' ' + team.nickname).trim();
+        } else if (team.name) {
+          teamName = team.name;
+        } else if (team.abbrev) {
+          teamName = team.abbrev;
+        } else {
+          teamName = 'Team ' + (team.id || '?');
+        }
+        if (team.id != null) {
+          teamInfoMap[team.id] = teamName;
+        }
+      }
+
+      // Build from teams[].roster.entries (primary)
+      var result = [];
+      var totalPlayers = 0;
+
+      for (var i = 0; i < teams.length; i++) {
+        var team = teams[i];
+        if (!team) continue;
+        var teamId = team.id != null ? team.id : 0;
+        var teamName = teamInfoMap[teamId] || ('Team ' + teamId);
+        var players = [];
+
+        if (team.roster && Array.isArray(team.roster.entries)) {
+          for (var j = 0; j < team.roster.entries.length; j++) {
+            var entry = team.roster.entries[j];
+            if (!entry) continue;
+            var playerId = entry.playerId != null ? String(entry.playerId) : '';
+            var lineupSlotId = entry.lineupSlotId != null ? entry.lineupSlotId : 16;
+
+            var playerName = '';
+            var eligibleSlots = [];
+            var ppe = entry.playerPoolEntry;
+            if (ppe && ppe.player) {
+              var player = ppe.player;
+              playerName = player.fullName || ((player.firstName || '') + ' ' + (player.lastName || '')).trim();
+              eligibleSlots = Array.isArray(player.eligibleSlots) ? player.eligibleSlots.slice() : [];
+            }
+
+            var numericId = entry.playerId != null ? entry.playerId : parseInt(playerId, 10);
+            var price = priceMap[numericId] != null ? priceMap[numericId] : 0;
+
+            if (playerName) {
+              players.push({ playerId: playerId, playerName: playerName, lineupSlotId: lineupSlotId, eligibleSlots: eligibleSlots, price: price });
+            }
+          }
+        }
+
+        result.push({ teamId: teamId, teamName: teamName, players: players });
+        totalPlayers += players.length;
+      }
+
+      if (totalPlayers > 0) {
+        console.log(LOG, 'Built rosters from roster.entries:', totalPlayers, 'players across', result.length, 'teams');
+        return result;
+      }
+
+      // Fallback: build from draftDetail.picks
+      if (!draftDetail || !Array.isArray(draftDetail.picks) || draftDetail.picks.length === 0) {
+        return null;
+      }
+
+      console.log(LOG, 'roster.entries had 0 players, falling back to draftDetail.picks');
+
+      // Build player info map from roster entries (might have partial data)
+      var playerInfoMap = {};
+      for (var i = 0; i < teams.length; i++) {
+        var team = teams[i];
+        if (!team || !team.roster || !Array.isArray(team.roster.entries)) continue;
+        for (var j = 0; j < team.roster.entries.length; j++) {
+          var entry = team.roster.entries[j];
+          if (!entry || entry.playerId == null) continue;
+          var ppe = entry.playerPoolEntry;
+          if (ppe && ppe.player) {
+            var player = ppe.player;
+            var name = player.fullName || ((player.firstName || '') + ' ' + (player.lastName || '')).trim();
+            var es = Array.isArray(player.eligibleSlots) ? player.eligibleSlots.slice() : [];
+            if (name) playerInfoMap[entry.playerId] = { name: name, eligibleSlots: es };
+          }
+        }
+      }
+
+      var teamPlayersMap = {};
+      for (var i = 0; i < draftDetail.picks.length; i++) {
+        var pick = draftDetail.picks[i];
+        if (!pick || pick.playerId == null || pick.teamId == null) continue;
+        var info = playerInfoMap[pick.playerId];
+        var playerName = info ? info.name : '';
+        var eligibleSlots = info ? info.eligibleSlots : [];
+        var lineupSlotId = pick.lineupSlotId != null ? pick.lineupSlotId : 16;
+        if (!playerName) continue;
+        if (!teamPlayersMap[pick.teamId]) teamPlayersMap[pick.teamId] = [];
+        teamPlayersMap[pick.teamId].push({
+          playerId: String(pick.playerId),
+          playerName: playerName, lineupSlotId: lineupSlotId, eligibleSlots: eligibleSlots,
+          price: pick.bidAmount != null ? pick.bidAmount : 0,
+        });
+      }
+
+      var fbResult = [];
+      for (var tid in teamInfoMap) {
+        if (!teamInfoMap.hasOwnProperty(tid)) continue;
+        var numTid = parseInt(tid, 10);
+        fbResult.push({ teamId: isNaN(numTid) ? tid : numTid, teamName: teamInfoMap[tid], players: teamPlayersMap[tid] || [] });
+      }
+      var fbTotal = 0;
+      for (var i = 0; i < fbResult.length; i++) fbTotal += fbResult[i].players.length;
+      if (fbTotal > 0) {
+        console.log(LOG, 'Built rosters from draftDetail.picks:', fbTotal, 'players across', fbResult.length, 'teams');
+        return fbResult;
+      }
+
+      return null;
+    }
+
+    // ---- Helper: extract from global ESPN objects ----
+    function extractFromGlobalObject(obj, globalKey) {
+      try {
+        var str = JSON.stringify(obj);
+        if (!str || str.length < 10) return null;
+        if (str.length > 10 * 1024 * 1024) {
+          console.warn(LOG, 'Global', globalKey, 'too large:', str.length, 'bytes');
+          return null;
+        }
+        var data = JSON.parse(str);
+        return checkObjectForDraftData(data, 'global:' + globalKey, 0);
+      } catch (e) {
+        console.warn(LOG, 'Failed to extract from global', globalKey + ':', e.message || e);
+        return null;
+      }
+    }
+
+    // ---- Main extraction logic ----
+    console.log(LOG, 'Page-context extractor running');
+
+    var stateObj = null;
+
+    // Strategy 1: Find React fiber on draft container
+    var selectors = ['div.draft-content-wrapper', '#fitt-analytics', '#global-viewport', '#app'];
+    for (var s = 0; s < selectors.length; s++) {
+      var el = document.querySelector(selectors[s]);
+      if (el) {
+        stateObj = extractFromReactFiber(el);
+        if (stateObj) break;
+      }
+    }
+
+    // Strategy 2: Search common ESPN global state objects
+    if (!stateObj) {
+      var globalKeys = ['__espnfitt__', '__espn__', 'espn', '__NEXT_DATA__', '__INITIAL_STATE__'];
+      for (var g = 0; g < globalKeys.length; g++) {
+        try {
+          var val = window[globalKeys[g]];
+          if (val && typeof val === 'object') {
+            console.log(LOG, 'Found page global:', globalKeys[g]);
+            stateObj = extractFromGlobalObject(val, globalKeys[g]);
+            if (stateObj) break;
+          }
+        } catch (e) { /* skip */ }
+      }
+    }
+
+    // Strategy 3: Look for draft-related properties on window
+    if (!stateObj) {
+      try {
+        var ownKeys = Object.getOwnPropertyNames(window);
+        for (var k = 0; k < ownKeys.length; k++) {
+          try {
+            var key = ownKeys[k];
+            if (key.toLowerCase().indexOf('draft') !== -1 || key.toLowerCase().indexOf('fantasy') !== -1) {
+              var val = window[key];
+              if (val && typeof val === 'object' && !Array.isArray(val)) {
+                console.log(LOG, 'Found potentially relevant global:', key);
+                stateObj = checkObjectForDraftData(val, 'global:' + key, 0);
+                if (stateObj) break;
+              }
+            }
+          } catch (e) { /* skip */ }
         }
       } catch (e) { /* skip */ }
     }
+
+    // Build rosters and post result
+    if (stateObj) {
+      var teamRosters = buildTeamRosters(stateObj);
+      console.log(LOG, 'Posting result:', teamRosters ? (teamRosters.length + ' teams') : 'null');
+      window.postMessage({ source: 'wyndham-draft-sync-page-extract', teamRosters: teamRosters }, '*');
+    } else {
+      console.log(LOG, 'No draft state found via any strategy');
+      window.postMessage({ source: 'wyndham-draft-sync-page-extract', teamRosters: null }, '*');
+    }
+
   } catch (e) {
-    // Skip objects that throw on property access
-  }
-
-  return null;
-}
-
-/**
- * Extract from a global ESPN object (like __espnfitt__).
- */
-function extractFromGlobalObject(obj, globalKey) {
-  try {
-    // Clone the object to avoid cross-compartment issues
-    const str = JSON.stringify(obj);
-    if (!str || str.length < 10) return null;
-
-    // Only parse if it's not too large (avoid parsing megabytes of data)
-    if (str.length > 10 * 1024 * 1024) {
-      warn('Global', globalKey, 'is too large to parse:', str.length, 'bytes');
-      return null;
-    }
-
-    const data = JSON.parse(str);
-    return checkObjectForDraftData(data, 'global:' + globalKey, 0);
-  } catch (e) {
-    warn('Failed to extract from global', globalKey + ':', e.message || e);
-    return null;
-  }
-}
-
-/**
- * Build team rosters from ESPN's React state object.
- * The state object should have `teams` (array) and `draftDetail.picks` (array).
- * This is the same format as the ESPN Fantasy API response.
- */
-function buildTeamRostersFromReactState(stateObj) {
-  try {
-    const teams = stateObj.teams;
-    const draftDetail = stateObj.draftDetail;
-
-    if (!Array.isArray(teams) || teams.length === 0) return null;
-
-    // Build price map from draftDetail.picks
-    const priceMap = new Map();
-    if (draftDetail && Array.isArray(draftDetail.picks)) {
-      for (const pick of draftDetail.picks) {
-        if (pick && pick.playerId != null && pick.bidAmount != null) {
-          priceMap.set(pick.playerId, pick.bidAmount);
-        }
-      }
-    }
-
-    // Build team info map
-    const teamInfoMap = new Map();
-    for (const team of teams) {
-      if (!team) continue;
-      let teamName = '';
-      if (team.location && team.nickname) {
-        teamName = (team.location + ' ' + team.nickname).trim();
-      } else if (team.name) {
-        teamName = team.name;
-      } else if (team.abbrev) {
-        teamName = team.abbrev;
-      } else {
-        teamName = 'Team ' + (team.id || '?');
-      }
-      if (team.id != null) {
-        teamInfoMap.set(team.id, teamName);
-      }
-    }
-
-    // Build from teams[].roster.entries (primary)
-    const result = [];
-    let totalPlayers = 0;
-
-    for (const team of teams) {
-      if (!team) continue;
-      const teamId = team.id != null ? team.id : 0;
-      const teamName = teamInfoMap.get(teamId) || ('Team ' + teamId);
-      const players = [];
-
-      if (team.roster && Array.isArray(team.roster.entries)) {
-        for (const entry of team.roster.entries) {
-          if (!entry) continue;
-          const playerId = entry.playerId != null ? String(entry.playerId) : '';
-          const lineupSlotId = entry.lineupSlotId != null ? entry.lineupSlotId : 16;
-
-          let playerName = '';
-          let eligibleSlots = [];
-          const ppe = entry.playerPoolEntry;
-          if (ppe && ppe.player) {
-            const player = ppe.player;
-            playerName = player.fullName || ((player.firstName || '') + ' ' + (player.lastName || '')).trim();
-            eligibleSlots = Array.isArray(player.eligibleSlots) ? player.eligibleSlots : [];
-          }
-
-          const numericId = entry.playerId != null ? entry.playerId : parseInt(playerId, 10);
-          const price = priceMap.has(numericId) ? priceMap.get(numericId) : 0;
-
-          if (playerName) {
-            players.push({ playerId, playerName, lineupSlotId, eligibleSlots, price });
-          }
-        }
-      }
-
-      result.push({ teamId, teamName, players });
-      totalPlayers += players.length;
-    }
-
-    if (totalPlayers > 0) {
-      log('React state: built rosters from roster.entries —', totalPlayers, 'players across', result.length, 'teams');
-      return result;
-    }
-
-    // Fallback: build from draftDetail.picks
-    if (!draftDetail || !Array.isArray(draftDetail.picks) || draftDetail.picks.length === 0) {
-      return null;
-    }
-
-    log('React state: roster.entries had 0 players, falling back to draftDetail.picks');
-
-    // Build player info map from roster entries (might have partial data)
-    const playerInfoMap = new Map();
-    for (const team of teams) {
-      if (!team || !team.roster || !Array.isArray(team.roster.entries)) continue;
-      for (const entry of team.roster.entries) {
-        if (!entry || entry.playerId == null) continue;
-        const ppe = entry.playerPoolEntry;
-        if (ppe && ppe.player) {
-          const player = ppe.player;
-          const name = player.fullName || ((player.firstName || '') + ' ' + (player.lastName || '')).trim();
-          const es = Array.isArray(player.eligibleSlots) ? player.eligibleSlots : [];
-          if (name) playerInfoMap.set(entry.playerId, { name, eligibleSlots: es });
-        }
-      }
-    }
-
-    const teamPlayersMap = new Map();
-    for (const pick of draftDetail.picks) {
-      if (!pick || pick.playerId == null || pick.teamId == null) continue;
-      const info = playerInfoMap.get(pick.playerId);
-      const playerName = info ? info.name : '';
-      const eligibleSlots = info ? info.eligibleSlots : [];
-      const lineupSlotId = pick.lineupSlotId != null ? pick.lineupSlotId : 16;
-      if (!playerName) continue;
-      if (!teamPlayersMap.has(pick.teamId)) teamPlayersMap.set(pick.teamId, []);
-      teamPlayersMap.get(pick.teamId).push({
-        playerId: String(pick.playerId),
-        playerName, lineupSlotId, eligibleSlots,
-        price: pick.bidAmount != null ? pick.bidAmount : 0,
-      });
-    }
-
-    const fbResult = [];
-    for (const [tid, tname] of teamInfoMap) {
-      fbResult.push({ teamId: tid, teamName: tname, players: teamPlayersMap.get(tid) || [] });
-    }
-    const fbTotal = fbResult.reduce((s, t) => s + t.players.length, 0);
-    if (fbTotal > 0) {
-      log('React state: built rosters from draftDetail.picks —', fbTotal, 'players across', fbResult.length, 'teams');
-      return fbResult;
-    }
-
-    return null;
-  } catch (e) {
-    warn('buildTeamRostersFromReactState failed:', e.message || e);
-    return null;
+    console.error(LOG, 'Page-context extraction failed:', e.message || e);
+    window.postMessage({ source: 'wyndham-draft-sync-page-extract', teamRosters: null, error: e.message || String(e) }, '*');
   }
 }
 
@@ -992,47 +1028,53 @@ function buildStatePayload(state) {
  * incremental diffs), FULL_STATE_SYNC always includes the complete current pick
  * history and team budgets visible on the page.
  *
- * Attempts to extract complete roster data from ESPN's React state via
- * window.wrappedJSObject and includes it as teamRosters in the payload.
+ * Injects a page-context script to extract complete roster data from ESPN's
+ * React state, waits briefly for the async message to arrive, then sends
+ * the FULL_STATE_SYNC with whatever roster data is cached.
  */
 function sendFullStateSync() {
   const state = scrapeDom();
   if (!state) return;
 
-  log('Sending FULL_STATE_SYNC with', (state.picks || []).length, 'DOM picks');
+  log('Preparing FULL_STATE_SYNC with', (state.picks || []).length, 'DOM picks');
 
-  const payload = buildStatePayload(state);
+  // Re-inject the page-context extractor to get fresh React state data.
+  // The injected script runs synchronously in the page context and posts
+  // results via window.postMessage. The content script's message handler
+  // fires asynchronously, so we wait a short delay before sending.
+  injectPageContextExtractor();
 
-  // Try to extract complete roster data from React state
-  try {
-    const teamRosters = extractTeamRostersFromPage();
-    if (teamRosters && teamRosters.length > 0) {
-      const totalPlayers = teamRosters.reduce((sum, t) => sum + t.players.length, 0);
+  setTimeout(() => {
+    const payload = buildStatePayload(state);
+
+    // Attach cached roster data from the page-context extraction
+    if (cachedTeamRosters && cachedTeamRosters.length > 0) {
+      const totalPlayers = cachedTeamRosters.reduce((sum, t) => sum + (t.players ? t.players.length : 0), 0);
       if (totalPlayers > 0) {
-        payload.teamRosters = teamRosters;
-        log('FULL_STATE_SYNC enriched with React state data:', totalPlayers, 'players across', teamRosters.length, 'teams');
+        payload.teamRosters = cachedTeamRosters;
+        log('FULL_STATE_SYNC enriched with React state data:', totalPlayers, 'players across', cachedTeamRosters.length, 'teams');
       }
+    } else {
+      log('FULL_STATE_SYNC: no React state roster data available, sending DOM-only');
     }
-  } catch (e) {
-    warn('React state extraction failed, sending DOM-only data:', e.message || e);
-  }
 
-  const message = {
-    source: 'wyndham-draft-sync',
-    type: 'FULL_STATE_SYNC',
-    timestamp: Date.now(),
-    payload: payload,
-  };
+    const message = {
+      source: 'wyndham-draft-sync',
+      type: 'FULL_STATE_SYNC',
+      timestamp: Date.now(),
+      payload: payload,
+    };
 
-  try {
-    browser.runtime.sendMessage(message).catch((err) => {
-      warn('Failed to send FULL_STATE_SYNC to background:', err.message || err);
-    });
-  } catch (e) {
-    warn('runtime.sendMessage not available:', e.message || e);
-  }
+    try {
+      browser.runtime.sendMessage(message).catch((err) => {
+        warn('Failed to send FULL_STATE_SYNC to background:', err.message || err);
+      });
+    } catch (e) {
+      warn('runtime.sendMessage not available:', e.message || e);
+    }
 
-  lastFingerprint = computeFingerprint(state);
+    lastFingerprint = computeFingerprint(state);
+  }, 50);
 }
 
 /**
@@ -1208,7 +1250,15 @@ browser.runtime.onMessage.addListener((message) => {
 // ---------------------------------------------------------------------------
 
 function init() {
-  log('Initializing ESPN draft page scraper (DOM-only mode)');
+  log('Initializing ESPN draft page scraper');
+
+  // Set up listener for page-context script results (must be first, before
+  // any injection, so the listener is ready when results arrive)
+  setupPageContextListener();
+
+  // Inject the page-context extractor to pre-populate cachedTeamRosters.
+  // This runs in the page's JS context where React fiber keys are visible.
+  injectPageContextExtractor();
 
   // Poll for draft container and start observing
   initObserver();
