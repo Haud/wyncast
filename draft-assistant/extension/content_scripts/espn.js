@@ -107,6 +107,23 @@ const SELECTORS = {
 
   // My team identification via pick train
   myTeamContent: 'div.content.auction-pick-component--own',
+
+  // Draft board grid (always fully rendered, never virtualized)
+  draftBoardGrid: 'div.draftBoardGrid',
+  draftBoardHeader: 'div.draft-board-grid-header',
+  draftBoardHeaderCell: 'div.draft-board-grid-header-cell',
+  draftBoardCell: 'div.draft-board-grid-pick-cell',
+
+  // Pick history tables (all rounds fully rendered)
+  pickHistoryTables: 'div.pick-history-tables',
+  pickHistoryTable: 'div.pick-history-table',
+  pickHistoryCaption: 'div.caption',
+
+  // Roster module (user's team only)
+  rosterModule: 'div.roster-module',
+
+  // ESPN team ID dropdown (maps team names to ESPN numeric IDs)
+  teamIdDropdown: 'div.roster__dropdown select.dropdown__select',
 };
 
 // Timing constants
@@ -484,6 +501,275 @@ function scrapeCurrentNomination() {
 }
 
 /**
+ * Scrape the draft board grid for complete team/roster state.
+ *
+ * The draft board grid (`div.draftBoardGrid`) contains ALL 10 teams × 26
+ * roster slots and is always fully rendered (never virtualized). This makes
+ * it the most reliable source for team rosters, especially when resuming
+ * a draft mid-way where the pick log is virtualized and incomplete.
+ *
+ * Returns: { teams: [...], onTheClockTeam: string|null }
+ */
+function scrapeDraftBoard() {
+  const result = { teams: [], onTheClockTeam: null };
+  try {
+    // 1. Parse header cells for team names, myTeam, onTheClock
+    const headerCells = document.querySelectorAll(SELECTORS.draftBoardHeaderCell);
+    if (headerCells.length === 0) return result;
+
+    const teamsByColumn = {};
+    headerCells.forEach((cell) => {
+      // Extract column from grid-area style (e.g. "1 / 3" -> column 3)
+      const gridArea = cell.style.gridArea || '';
+      const colMatch = gridArea.match(/\d+\s*\/\s*(\d+)/);
+      const column = colMatch ? parseInt(colMatch[1], 10) : 0;
+      if (column === 0) return;
+
+      const nameSpan = cell.querySelector('span');
+      const teamName = nameSpan ? nameSpan.textContent.trim() : '';
+      if (!teamName) return;
+
+      const isMyTeam = cell.classList.contains('myTeam');
+      const isOnTheClock = cell.classList.contains('onTheClock');
+
+      if (isOnTheClock) {
+        result.onTheClockTeam = teamName;
+      }
+
+      teamsByColumn[column] = {
+        teamName: teamName,
+        column: column,
+        isMyTeam: isMyTeam,
+        isOnTheClock: isOnTheClock,
+        slots: [],
+      };
+    });
+
+    // 2. Parse all pick cells
+    const pickCells = document.querySelectorAll(SELECTORS.draftBoardCell);
+    pickCells.forEach((cell) => {
+      // Extract row/col from grid-area (e.g. "3 / 2" -> row 3, col 2)
+      const gridArea = cell.style.gridArea || '';
+      const areaMatch = gridArea.match(/(\d+)\s*\/\s*(\d+)/);
+      if (!areaMatch) return;
+
+      const row = parseInt(areaMatch[1], 10);
+      const col = parseInt(areaMatch[2], 10);
+      const team = teamsByColumn[col];
+      if (!team) return;
+
+      const isCompleted = cell.classList.contains('completedPick');
+      const rosterSlotEl = cell.querySelector('.rosterSlot');
+      const rosterSlot = rosterSlotEl ? rosterSlotEl.textContent.trim() : '';
+
+      const slot = {
+        row: row,
+        rosterSlot: rosterSlot,
+        filled: isCompleted,
+      };
+
+      if (isCompleted) {
+        const firstNameEl = cell.querySelector('.playerFirstName');
+        const lastNameEl = cell.querySelector('.playerLastName');
+        const proTeamEl = cell.querySelector('.playerProTeam');
+        const positionPillEl = cell.querySelector('.pickCellBottom .positionPill');
+        const priceEl = cell.querySelector('.winningPrice');
+
+        slot.firstName = firstNameEl ? firstNameEl.textContent.trim() : '';
+        slot.lastName = lastNameEl ? lastNameEl.textContent.trim() : '';
+        slot.proTeam = proTeamEl ? proTeamEl.textContent.trim() : '';
+        slot.naturalPosition = positionPillEl ? positionPillEl.textContent.trim() : '';
+        slot.price = priceEl ? parsePrice(priceEl.textContent) : 0;
+      }
+
+      team.slots.push(slot);
+    });
+
+    // Convert to array
+    result.teams = Object.values(teamsByColumn);
+  } catch (e) {
+    error('Error scraping draft board:', e);
+  }
+  return result;
+}
+
+/**
+ * Scrape the pick history tables for chronological pick order.
+ *
+ * The pick history section (`div.pick-history-tables`) contains 19 round
+ * tables with 10 picks each, ALL fully rendered (never virtualized). This
+ * gives us the complete chronological draft order with player IDs, eligible
+ * positions, and team assignments.
+ *
+ * Returns: array of { pickNumber, round, playerName, espnPlayerId,
+ *          eligiblePositions: string[], teamName, price, isMyPick }
+ */
+function scrapePickHistory() {
+  const picks = [];
+  try {
+    const tables = document.querySelectorAll(SELECTORS.pickHistoryTable);
+    if (tables.length === 0) return picks;
+
+    // Determine picks per round from the maximum data row count across all
+    // tables. Using the max (rather than just the first table) handles the
+    // edge case where the extension connects mid-Round-1 before all teams
+    // have picked, which would undercount if we only checked tables[0].
+    let picksPerRound = 0;
+    tables.forEach((table) => {
+      const tableRows = table.querySelectorAll('[aria-rowindex]');
+      let dataRowCount = 0;
+      tableRows.forEach((r) => {
+        if (parseInt(r.getAttribute('aria-rowindex'), 10) > 1) {
+          dataRowCount++;
+        }
+      });
+      if (dataRowCount > picksPerRound) {
+        picksPerRound = dataRowCount;
+      }
+    });
+    if (picksPerRound === 0) {
+      picksPerRound = 10; // fallback: assumes 10-team league
+      warn('Could not determine picks per round from tables, falling back to', picksPerRound);
+    }
+
+    tables.forEach((table) => {
+      // Extract round number from caption
+      const captionEl = table.querySelector(SELECTORS.pickHistoryCaption);
+      const captionText = captionEl ? captionEl.textContent.trim() : '';
+      const roundMatch = captionText.match(/Round\s+(\d+)/i);
+      const round = roundMatch ? parseInt(roundMatch[1], 10) : 0;
+      if (round === 0) return;
+
+      // Find data rows (aria-rowindex > 1, skipping the header)
+      const rows = table.querySelectorAll('[aria-rowindex]');
+      rows.forEach((row) => {
+        const rowIndex = parseInt(row.getAttribute('aria-rowindex'), 10);
+        if (rowIndex <= 1) return; // Skip header row
+
+        // Get all cells, sorted by their CSS left offset
+        const cells = Array.from(row.querySelectorAll('[role="gridcell"]'));
+        if (cells.length < 4) return;
+
+        // Sort cells by their CSS left offset for consistent column ordering.
+        // Use parseFloat to handle fractional px values. Treat missing/NaN
+        // left values as Infinity so unstyled cells sort to the end rather
+        // than all collapsing to position 0 (which would make the sort unstable).
+        cells.sort((a, b) => {
+          const leftA = parseFloat(a.style.left);
+          const leftB = parseFloat(b.style.left);
+          return (isNaN(leftA) ? Infinity : leftA) - (isNaN(leftB) ? Infinity : leftB);
+        });
+
+        // Cell 1: Pick number within round
+        const pickInRound = parseInt(
+          extractText(cells[0], '.cellContent') || cells[0].textContent.trim(),
+          10
+        ) || 0;
+        if (pickInRound === 0) return;
+
+        // Cell 2: Player column
+        const playerCol = cells[1];
+        const nameAnchor = playerCol.querySelector(
+          'span.playerinfo__playername span.truncate a[title]'
+        );
+        const playerName = nameAnchor ? nameAnchor.getAttribute('title') : '';
+        if (!playerName) return;
+
+        // ESPN player ID from headshot image URL
+        let espnPlayerId = '';
+        const headshot = playerCol.querySelector('img');
+        if (headshot) {
+          const src = headshot.src || '';
+          const idMatch = src.match(/\/full\/(\d+)\.png/);
+          if (idMatch) {
+            espnPlayerId = idMatch[1];
+          }
+        }
+
+        // Eligible positions from ALL positionPill spans
+        const positionPills = playerCol.querySelectorAll(
+          'span.playerinfo__playerpos span.positionPill'
+        );
+        const eligiblePositions = [];
+        positionPills.forEach((pill) => {
+          const pos = pill.textContent.trim();
+          if (pos) eligiblePositions.push(pos);
+        });
+
+        // Is this the user's pick?
+        const playerColumnDiv = playerCol.querySelector('.player-column');
+        const isMyPick = playerColumnDiv
+          ? playerColumnDiv.classList.contains('my-pick')
+          : false;
+
+        // Cell 3: Team name
+        const teamCell = cells[2];
+        const boldTeam = teamCell.querySelector('span.fw-bold');
+        const teamName = boldTeam
+          ? boldTeam.textContent.trim()
+          : teamCell.textContent.trim();
+
+        // Cell 4: Price
+        const priceCell = cells[3];
+        const price = parsePrice(priceCell.textContent);
+
+        // Global pick number
+        const pickNumber = (round - 1) * picksPerRound + pickInRound;
+
+        picks.push({
+          pickNumber: pickNumber,
+          round: round,
+          playerName: playerName,
+          espnPlayerId: espnPlayerId,
+          eligiblePositions: eligiblePositions,
+          teamName: teamName,
+          price: price,
+          isMyPick: isMyPick,
+        });
+      });
+    });
+  } catch (e) {
+    error('Error scraping pick history:', e);
+  }
+  return picks;
+}
+
+/**
+ * Scrape the roster dropdown for team name -> ESPN team ID mapping.
+ *
+ * The roster section has a `<select>` dropdown where each `<option>` maps
+ * a team name to its ESPN numeric ID (e.g. `<option value="2">Team Name</option>`).
+ *
+ * Returns: array of { teamName, espnTeamId }
+ */
+function scrapeTeamIdMapping() {
+  if (cachedTeamIdMapping) return cachedTeamIdMapping;
+  const mapping = [];
+  try {
+    const dropdown = document.querySelector(SELECTORS.teamIdDropdown);
+    if (!dropdown) return mapping;
+
+    const options = dropdown.querySelectorAll('option');
+    options.forEach((option) => {
+      const teamName = option.textContent.trim();
+      const espnTeamId = option.value;
+      if (teamName && espnTeamId) {
+        mapping.push({
+          teamName: teamName,
+          espnTeamId: espnTeamId,
+        });
+      }
+    });
+  } catch (e) {
+    error('Error scraping team ID mapping:', e);
+  }
+  if (mapping.length > 0) {
+    cachedTeamIdMapping = mapping;
+  }
+  return mapping;
+}
+
+/**
  * Scrape complete draft state from the DOM.
  */
 function scrapeDom() {
@@ -524,6 +810,9 @@ function scrapeDom() {
 
     // Extract draft identifier
     state.draftId = scrapeDraftId();
+
+    // Scrape team ID mapping from roster dropdown
+    state.teamIdMapping = scrapeTeamIdMapping();
   } catch (e) {
     error('DOM scraping error:', e);
   }
@@ -569,6 +858,9 @@ function scrapeDraftId() {
 /** Last state fingerprint (for deduplication, excludes timeRemaining) */
 let lastFingerprint = null;
 
+/** Cached team ID mapping (static for the duration of a draft) */
+let cachedTeamIdMapping = null;
+
 /**
  * Compute a lightweight fingerprint of the state for deduplication.
  * Excludes timeRemaining since it changes every second and would defeat dedup.
@@ -578,6 +870,7 @@ function computeFingerprint(state) {
   const nom = state.currentNomination;
   const teams = state.teams || [];
   const teamBudgets = teams.map((t) => t.teamName + ':' + t.budget).join(',');
+
   return (
     picks.length +
     '|' +
@@ -605,9 +898,13 @@ function computeFingerprint(state) {
 
 /**
  * Build a state payload object from the current scraped state.
+ *
+ * @param {Object} state - The scraped state
+ * @param {Object} [extras] - Optional extra fields (pickHistory, draftBoard)
+ *                            that are only included on FULL_STATE_SYNC
  */
-function buildStatePayload(state) {
-  return {
+function buildStatePayload(state, extras) {
+  const payload = {
     picks: state.picks || [],
     currentNomination: state.currentNomination || null,
     myTeamId: state.myTeamId || null,
@@ -616,7 +913,16 @@ function buildStatePayload(state) {
     totalPicks: state.totalPicks ?? null,
     draftId: state.draftId || null,
     source: state.source || 'unknown',
+    teamIdMapping: state.teamIdMapping || null,
   };
+
+  // Only include expensive data when explicitly provided (FULL_STATE_SYNC)
+  if (extras) {
+    if (extras.pickHistory) payload.pickHistory = extras.pickHistory;
+    if (extras.draftBoard) payload.draftBoard = extras.draftBoard;
+  }
+
+  return payload;
 }
 
 /**
@@ -631,13 +937,26 @@ function sendFullStateSync() {
   const state = scrapeDom();
   if (!state) return;
 
-  log('Sending FULL_STATE_SYNC with', (state.picks || []).length, 'picks');
+  // Scrape expensive data only on FULL_STATE_SYNC
+  const pickHistory = scrapePickHistory();
+  const draftBoard = scrapeDraftBoard();
+
+  log(
+    'Sending FULL_STATE_SYNC with',
+    (state.picks || []).length,
+    'pick log entries,',
+    pickHistory.length,
+    'pick history entries'
+  );
 
   const message = {
     source: 'wyndham-draft-sync',
     type: 'FULL_STATE_SYNC',
     timestamp: Date.now(),
-    payload: buildStatePayload(state),
+    payload: buildStatePayload(state, {
+      pickHistory: pickHistory,
+      draftBoard: draftBoard,
+    }),
   };
 
   try {

@@ -217,6 +217,15 @@ pub fn playing_positions_from_slots(eligible_slots: &[u16]) -> Vec<Position> {
         .collect()
 }
 
+/// Map a position string (e.g. "C", "1B", "SP", "BE") to the ESPN slot ID.
+///
+/// This is the Rust equivalent of `espnSlotIdFromPositionStr()` in the
+/// extension. Useful for converting draft board `rosterSlot` strings into
+/// ESPN slot IDs for roster placement.
+pub fn espn_slot_from_position_str(s: &str) -> Option<u16> {
+    Position::from_str_pos(s).map(espn_slot_from_position)
+}
+
 /// A single draft pick record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DraftPick {

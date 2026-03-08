@@ -131,6 +131,10 @@ pub struct AppState {
     /// capture the current generation and only write to `connection_test_result`
     /// if the generation hasn't changed, preventing stale writes.
     pub connection_test_generation: Arc<AtomicU64>,
+    /// Whether grid-sourced picks have already been persisted to DB this session.
+    /// Set to true after the first grid-based rebuild to avoid redundant writes
+    /// on subsequent 10-second FULL_STATE_SYNC keyframes.
+    pub grid_picks_persisted: bool,
 }
 
 impl AppState {
@@ -182,6 +186,7 @@ impl AppState {
             onboarding_progress,
             connection_test_result: Arc::new(AtomicI8::new(CONNECTION_NEVER_TESTED)),
             connection_test_generation: Arc::new(AtomicU64::new(0)),
+            grid_picks_persisted: false,
         }
     }
 
@@ -1839,6 +1844,7 @@ mod tests {
             total_picks: None,
             draft_id: None,
             source: Some("test".into()),
+            ..Default::default()
         };
 
         ws_handler::handle_state_update(&mut state, ext_payload, &ui_tx).await;
@@ -1904,6 +1910,7 @@ mod tests {
             total_picks: None,
             draft_id: None,
             source: Some("test".into()),
+            ..Default::default()
         };
 
         ws_handler::handle_state_update(&mut state, ext_payload_1, &ui_tx).await;
@@ -1954,6 +1961,7 @@ mod tests {
             total_picks: None,
             draft_id: None,
             source: Some("test".into()),
+            ..Default::default()
         };
 
         ws_handler::handle_state_update(&mut state, ext_payload_2, &ui_tx).await;
@@ -2027,6 +2035,7 @@ mod tests {
             total_picks: None,
             draft_id: None,
             source: Some("test".into()),
+            ..Default::default()
         };
 
         ws_handler::handle_state_update(&mut state, ext_payload, &ui_tx).await;
@@ -2079,6 +2088,7 @@ mod tests {
             total_picks: None,
             draft_id: Some("espn_42_2026".into()),
             source: Some("test".into()),
+            ..Default::default()
         };
 
         let internal = AppState::convert_extension_state(&ext_payload);
@@ -2119,6 +2129,7 @@ mod tests {
             total_picks: None,
             draft_id: None,
             source: Some("test".into()),
+            ..Default::default()
         };
 
         let internal = AppState::convert_extension_state(&ext_payload);
@@ -2149,6 +2160,7 @@ mod tests {
             total_picks: None,
             draft_id: None,
             source: Some("test".into()),
+            ..Default::default()
         };
 
         let internal = AppState::convert_extension_state(&ext_payload);
@@ -2185,6 +2197,7 @@ mod tests {
             total_picks: None,
             draft_id: None,
             source: Some("test".into()),
+            ..Default::default()
         };
 
         let internal = AppState::convert_extension_state(&ext_payload);
@@ -2216,6 +2229,7 @@ mod tests {
             total_picks: None,
             draft_id: None,
             source: Some("test".into()),
+            ..Default::default()
         };
 
         let internal = AppState::convert_extension_state(&ext_payload);
@@ -2246,6 +2260,7 @@ mod tests {
             total_picks: None,
             draft_id: None,
             source: Some("test".into()),
+            ..Default::default()
         };
 
         let internal = AppState::convert_extension_state(&ext_payload);
@@ -2266,6 +2281,7 @@ mod tests {
             total_picks: None,
             draft_id: None,
             source: Some("test".into()),
+            ..Default::default()
         };
 
         let internal = AppState::convert_extension_state(&ext_payload);
@@ -3162,6 +3178,7 @@ mod tests {
             total_picks: None,
             draft_id: Some("espn_12345_2026".into()),
             source: Some("test".into()),
+            ..Default::default()
         };
 
         let (ui_tx, _ui_rx) = mpsc::channel(64);
@@ -3194,6 +3211,7 @@ mod tests {
             total_picks: None,
             draft_id: Some("espn_12345_2026".into()),
             source: Some("test".into()),
+            ..Default::default()
         };
 
         let (ui_tx, _ui_rx) = mpsc::channel(64);
@@ -3224,6 +3242,7 @@ mod tests {
             total_picks: None,
             draft_id: Some("espn_67890_2026".into()),
             source: Some("test".into()),
+            ..Default::default()
         };
 
         let (ui_tx, _ui_rx) = mpsc::channel(64);
@@ -3264,6 +3283,7 @@ mod tests {
             total_picks: None,
             draft_id: None,
             source: Some("test".into()),
+            ..Default::default()
         };
 
         let (ui_tx, _ui_rx) = mpsc::channel(64);
@@ -3309,6 +3329,7 @@ mod tests {
             total_picks: Some(260),
             draft_id: Some("espn_12345_2026".into()),
             source: Some("test".into()),
+            ..Default::default()
         };
 
         let (ui_tx, _ui_rx) = mpsc::channel(64);
@@ -3352,6 +3373,7 @@ mod tests {
             total_picks: Some(260),
             draft_id: Some("espn_12345_2026".into()),
             source: Some("test".into()),
+            ..Default::default()
         };
 
         ws_handler::handle_state_update(&mut state, ext_payload2, &ui_tx).await;

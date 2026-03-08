@@ -58,9 +58,10 @@ pub struct ExtensionConnectedPayload {
     pub extension_version: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct StateUpdatePayload {
+    #[serde(default)]
     pub picks: Vec<PickData>,
     #[serde(default)]
     pub current_nomination: Option<NominationData>,
@@ -79,6 +80,25 @@ pub struct StateUpdatePayload {
     #[serde(default)]
     pub draft_id: Option<String>,
     pub source: Option<String>,
+
+    // --- New fields for complete draft state synchronization ---
+
+    /// Complete draft board grid data (all teams × all roster slots).
+    /// Always fully rendered in the ESPN DOM, never virtualized.
+    /// Sent on both STATE_UPDATE and FULL_STATE_SYNC.
+    #[serde(default)]
+    pub draft_board: Option<DraftBoardData>,
+
+    /// Chronological pick history from the pick-history-tables section.
+    /// All rounds fully rendered. Only sent on FULL_STATE_SYNC (expensive).
+    #[serde(default)]
+    pub pick_history: Option<Vec<PickHistoryEntry>>,
+
+    /// Team name to ESPN numeric team ID mapping from the roster dropdown.
+    /// Sent on both STATE_UPDATE and FULL_STATE_SYNC.
+    #[serde(default)]
+    pub team_id_mapping: Option<Vec<TeamIdMapping>>,
+
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -129,6 +149,88 @@ pub struct TeamBudgetData {
 #[serde(rename_all = "camelCase")]
 pub struct HeartbeatPayload {
     pub timestamp: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Draft board grid types (complete team × roster slot data)
+// ---------------------------------------------------------------------------
+
+/// Complete draft board grid data scraped from `div.draftBoardGrid`.
+///
+/// Contains all teams and their roster slots (filled and empty). Always
+/// fully rendered in the ESPN DOM, making it the most reliable source for
+/// roster state when resuming a draft mid-way.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftBoardData {
+    pub teams: Vec<DraftBoardTeam>,
+    pub on_the_clock_team: Option<String>,
+}
+
+/// A single team's data from the draft board grid header + cells.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftBoardTeam {
+    pub team_name: String,
+    pub column: u16,
+    pub is_my_team: bool,
+    pub is_on_the_clock: bool,
+    pub slots: Vec<DraftBoardSlot>,
+}
+
+/// A single roster slot from the draft board grid.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftBoardSlot {
+    pub row: u16,
+    pub roster_slot: String,
+    pub filled: bool,
+    #[serde(default)]
+    pub first_name: Option<String>,
+    #[serde(default)]
+    pub last_name: Option<String>,
+    #[serde(default)]
+    pub pro_team: Option<String>,
+    #[serde(default)]
+    pub natural_position: Option<String>,
+    #[serde(default)]
+    pub price: Option<u32>,
+}
+
+// ---------------------------------------------------------------------------
+// Pick history types (chronological pick order from round tables)
+// ---------------------------------------------------------------------------
+
+/// A single entry from the pick history tables.
+///
+/// The pick history section contains all rounds fully rendered, giving
+/// complete chronological draft order with player IDs and eligible positions.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PickHistoryEntry {
+    pub pick_number: u32,
+    pub round: u16,
+    pub player_name: String,
+    #[serde(default)]
+    pub espn_player_id: String,
+    #[serde(default)]
+    pub eligible_positions: Vec<String>,
+    pub team_name: String,
+    pub price: u32,
+    #[serde(default)]
+    pub is_my_pick: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Team ID mapping (roster dropdown)
+// ---------------------------------------------------------------------------
+
+/// Maps a team name to its ESPN numeric team ID from the roster dropdown.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamIdMapping {
+    pub team_name: String,
+    pub espn_team_id: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -586,6 +688,7 @@ mod tests {
                 total_picks: None,
                 draft_id: Some("espn_12345_2026".to_string()),
                 source: Some("dom_scraper".to_string()),
+                ..Default::default()
             },
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -806,6 +909,7 @@ mod tests {
                 total_picks: None,
                 draft_id: Some("espn_42_2026".to_string()),
                 source: Some("test".to_string()),
+                ..Default::default()
             },
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -1039,6 +1143,7 @@ mod tests {
                 total_picks: Some(260),
                 draft_id: Some("espn_12345_2026".to_string()),
                 source: Some("dom_scrape".to_string()),
+                ..Default::default()
             },
         };
         let json = serde_json::to_string(&msg).unwrap();
