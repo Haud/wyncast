@@ -610,6 +610,20 @@ function scrapePickHistory() {
     const tables = document.querySelectorAll(SELECTORS.pickHistoryTable);
     if (tables.length === 0) return picks;
 
+    // Determine picks per round from the first table's data rows
+    // (avoids hardcoding 10 for the team count)
+    let picksPerRound = 10; // fallback
+    if (tables.length > 0) {
+      const firstTableRows = tables[0].querySelectorAll('[aria-rowindex]');
+      // Subtract 1 for header row (aria-rowindex=1)
+      const dataRowCount = Array.from(firstTableRows).filter(
+        (r) => parseInt(r.getAttribute('aria-rowindex'), 10) > 1
+      ).length;
+      if (dataRowCount > 0) {
+        picksPerRound = dataRowCount;
+      }
+    }
+
     tables.forEach((table) => {
       // Extract round number from caption
       const captionEl = table.querySelector(SELECTORS.pickHistoryCaption);
@@ -689,7 +703,7 @@ function scrapePickHistory() {
         const price = parsePrice(priceCell.textContent);
 
         // Global pick number
-        const pickNumber = (round - 1) * 10 + pickInRound;
+        const pickNumber = (round - 1) * picksPerRound + pickInRound;
 
         picks.push({
           pickNumber: pickNumber,
@@ -718,6 +732,7 @@ function scrapePickHistory() {
  * Returns: array of { teamName, espnTeamId }
  */
 function scrapeTeamIdMapping() {
+  if (cachedTeamIdMapping) return cachedTeamIdMapping;
   const mapping = [];
   try {
     const dropdown = document.querySelector(SELECTORS.teamIdDropdown);
@@ -737,71 +752,10 @@ function scrapeTeamIdMapping() {
   } catch (e) {
     error('Error scraping team ID mapping:', e);
   }
-  return mapping;
-}
-
-/**
- * Scrape the user's roster from the roster module table.
- *
- * The roster module (`div.roster-module`) shows only the user's team. Each
- * row has columns: POS, Player, $, ELIG.
- *
- * Returns: array of { position, playerName?, price?, eligiblePositions? }
- */
-function scrapeMyRoster() {
-  const entries = [];
-  try {
-    const rosterModule = document.querySelector(SELECTORS.rosterModule);
-    if (!rosterModule) return entries;
-
-    const rows = rosterModule.querySelectorAll('tr');
-    rows.forEach((row) => {
-      const cells = row.querySelectorAll('td');
-      if (cells.length < 2) return;
-
-      // First cell: position
-      const position = cells[0] ? cells[0].textContent.trim() : '';
-      if (!position) return;
-
-      // Check if slot is empty
-      const emptyEl = row.querySelector('.player-column__empty');
-      if (emptyEl) {
-        entries.push({ position: position });
-        return;
-      }
-
-      // Player name from title attribute on the player element
-      const playerEl = row.querySelector('[title]');
-      const playerName = playerEl ? playerEl.getAttribute('title') : '';
-
-      // Price from the price column (typically cells[2])
-      let price = null;
-      if (cells.length >= 3) {
-        const priceEl = cells[2].querySelector('[title]');
-        if (priceEl) {
-          price = parsePrice(priceEl.getAttribute('title'));
-        } else {
-          price = parsePrice(cells[2].textContent);
-        }
-      }
-
-      // Eligible positions from ELIG column
-      let eligiblePositions = null;
-      const eligCol = row.querySelector('.player-eligible-position-column');
-      if (eligCol) {
-        eligiblePositions = eligCol.textContent.trim();
-      }
-
-      const entry = { position: position };
-      if (playerName) entry.playerName = playerName;
-      if (price !== null) entry.price = price;
-      if (eligiblePositions) entry.eligiblePositions = eligiblePositions;
-      entries.push(entry);
-    });
-  } catch (e) {
-    error('Error scraping my roster:', e);
+  if (mapping.length > 0) {
+    cachedTeamIdMapping = mapping;
   }
-  return entries;
+  return mapping;
 }
 
 /**
@@ -896,6 +850,9 @@ function scrapeDraftId() {
 /** Last state fingerprint (for deduplication, excludes timeRemaining) */
 let lastFingerprint = null;
 
+/** Cached team ID mapping (static for the duration of a draft) */
+let cachedTeamIdMapping = null;
+
 /**
  * Compute a lightweight fingerprint of the state for deduplication.
  * Excludes timeRemaining since it changes every second and would defeat dedup.
@@ -947,7 +904,7 @@ function computeFingerprint(state) {
  * Build a state payload object from the current scraped state.
  *
  * @param {Object} state - The scraped state
- * @param {Object} [extras] - Optional extra fields (pickHistory, myRoster)
+ * @param {Object} [extras] - Optional extra fields (pickHistory)
  *                            that are only included on FULL_STATE_SYNC
  */
 function buildStatePayload(state, extras) {
@@ -967,7 +924,6 @@ function buildStatePayload(state, extras) {
   // Only include expensive data when explicitly provided (FULL_STATE_SYNC)
   if (extras) {
     if (extras.pickHistory) payload.pickHistory = extras.pickHistory;
-    if (extras.myRoster) payload.myRoster = extras.myRoster;
   }
 
   return payload;
@@ -987,7 +943,6 @@ function sendFullStateSync() {
 
   // Scrape expensive data only on FULL_STATE_SYNC
   const pickHistory = scrapePickHistory();
-  const myRoster = scrapeMyRoster();
 
   log(
     'Sending FULL_STATE_SYNC with',
@@ -1003,7 +958,6 @@ function sendFullStateSync() {
     timestamp: Date.now(),
     payload: buildStatePayload(state, {
       pickHistory: pickHistory,
-      myRoster: myRoster,
     }),
   };
 

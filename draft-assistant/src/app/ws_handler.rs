@@ -572,6 +572,9 @@ fn build_state_from_grid(
             roster: Roster::new(&state.config.league.roster),
             budget_spent: spent,
             budget_remaining: salary_cap.saturating_sub(spent),
+            // NOTE: These grid-computed budgets are provisional. reconcile_budgets()
+            // in handle_state_update() will overwrite them with ESPN's authoritative
+            // pick-train values when available, ensuring consistency.
         };
 
         // Apply team ID from mapping if available
@@ -744,23 +747,19 @@ fn build_state_from_grid(
         .available_players
         .retain(|p| !drafted_names.contains(&p.name));
 
-    // Also try to remove by ESPN player ID for name mismatch resilience
-    let drafted_ids: std::collections::HashSet<String> = state
-        .draft_state
-        .picks
-        .iter()
-        .filter_map(|p| p.espn_player_id.clone())
-        .filter(|id| !id.is_empty())
-        .collect();
-    if !drafted_ids.is_empty() {
-        // Future: match against player.espn_id once that field exists
-        let _ = drafted_ids; // suppress unused warning
-    }
-
-    // Persist picks to DB for crash recovery
+    // Persist only NEW picks to DB for crash recovery.
+    // record_pick uses INSERT OR IGNORE, but loading the existing count
+    // avoids unnecessary writes on every 10-second FULL_STATE_SYNC keyframe.
+    let existing_pick_count = state
+        .db
+        .load_picks(&state.draft_id)
+        .map(|picks| picks.len())
+        .unwrap_or(0);
     for pick in &state.draft_state.picks {
-        if let Err(e) = state.db.record_pick(pick, &state.draft_id) {
-            warn!("Failed to persist grid-sourced pick to DB: {}", e);
+        if (pick.pick_number as usize) > existing_pick_count {
+            if let Err(e) = state.db.record_pick(pick, &state.draft_id) {
+                warn!("Failed to persist grid-sourced pick to DB: {}", e);
+            }
         }
     }
 

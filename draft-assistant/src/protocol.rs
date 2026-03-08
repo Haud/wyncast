@@ -99,10 +99,6 @@ pub struct StateUpdatePayload {
     #[serde(default)]
     pub team_id_mapping: Option<Vec<TeamIdMapping>>,
 
-    /// User's roster from the roster module table.
-    /// Only sent on FULL_STATE_SYNC (expensive).
-    #[serde(default)]
-    pub my_roster: Option<Vec<MyRosterEntry>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -235,23 +231,6 @@ pub struct PickHistoryEntry {
 pub struct TeamIdMapping {
     pub team_name: String,
     pub espn_team_id: String,
-}
-
-// ---------------------------------------------------------------------------
-// User's roster (roster module table)
-// ---------------------------------------------------------------------------
-
-/// A single row from the user's roster module table.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct MyRosterEntry {
-    pub position: String,
-    #[serde(default)]
-    pub player_name: Option<String>,
-    #[serde(default)]
-    pub price: Option<u32>,
-    #[serde(default)]
-    pub eligible_positions: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
