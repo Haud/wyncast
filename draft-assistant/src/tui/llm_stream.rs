@@ -2,6 +2,8 @@ use crate::protocol::LlmStatus;
 use crate::tui::action::Action;
 use crate::tui::scroll::{ScrollDirection, ScrollState};
 
+const PAGE_SIZE: usize = 20;
+
 /// Reusable state for an LLM streaming text panel.
 /// Used by both AnalysisPanel and PlanPanel.
 #[derive(Debug, Clone)]
@@ -68,7 +70,7 @@ impl LlmStreamState {
                 None
             }
             LlmStreamMessage::Scroll(dir) => {
-                self.scroll.scroll(dir, 0);
+                self.scroll.scroll(dir, PAGE_SIZE);
                 None
             }
         }

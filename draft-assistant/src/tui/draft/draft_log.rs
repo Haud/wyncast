@@ -21,6 +21,8 @@ pub enum DraftLogMessage {
     Scroll(ScrollDirection),
 }
 
+const PAGE_SIZE: usize = 20;
+
 /// Stateful draft log panel component.
 pub struct DraftLogPanel {
     scroll: ScrollState,
@@ -36,7 +38,7 @@ impl DraftLogPanel {
     pub fn update(&mut self, msg: DraftLogMessage) -> Option<Action> {
         match msg {
             DraftLogMessage::Scroll(dir) => {
-                self.scroll.scroll(dir, 0);
+                self.scroll.scroll(dir, PAGE_SIZE);
                 None
             }
         }

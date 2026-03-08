@@ -17,6 +17,8 @@ pub enum TeamsMessage {
     Scroll(ScrollDirection),
 }
 
+const PAGE_SIZE: usize = 20;
+
 /// Stateful teams overview panel component.
 pub struct TeamsPanel {
     scroll: ScrollState,
@@ -32,7 +34,7 @@ impl TeamsPanel {
     pub fn update(&mut self, msg: TeamsMessage) -> Option<Action> {
         match msg {
             TeamsMessage::Scroll(dir) => {
-                self.scroll.scroll(dir, 0);
+                self.scroll.scroll(dir, PAGE_SIZE);
                 None
             }
         }
