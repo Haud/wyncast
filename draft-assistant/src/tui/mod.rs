@@ -615,7 +615,6 @@ mod tests {
         assert!(app.draft_screen.main_panel.analysis.text().is_empty());
         assert_eq!(app.draft_screen.main_panel.analysis.status(), LlmStatus::Idle);
         assert!(app.draft_screen.instant_analysis.is_none());
-        assert_eq!(app.draft_screen.main_panel.available.scroll_offset(), 0);
     }
 
     #[test]

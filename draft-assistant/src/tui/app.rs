@@ -11,7 +11,7 @@ use std::time::Duration;
 use crossterm::event::KeyCode;
 use ratatui::Frame;
 
-use crate::protocol::{AppMode, AppSnapshot, SettingsSection, UiUpdate};
+use crate::protocol::{AppMode, AppSnapshot, SettingsSection, TabId, UiUpdate};
 use crate::tui::subscription::{Subscription, SubscriptionId};
 use crate::tui::subscription::keybinding::{
     ctrl, KeyBindingRecipe, KeybindManager, PRIORITY_MODAL,
@@ -81,10 +81,11 @@ impl App {
                 self.draft_screen.analysis_request_id = analysis_request_id;
                 self.draft_screen.main_panel.analysis.update(AnalysisPanelMessage::Stream(LlmStreamMessage::Clear));
                 self.draft_screen.instant_analysis = None;
-                self.draft_screen.focused_panel = None;
-                self.draft_screen.main_panel.available.update(AvailablePanelMessage::Scroll(
-                    crate::tui::scroll::ScrollDirection::Top,
-                ));
+                if self.draft_screen.main_panel.active_tab() == TabId::Available {
+                    self.draft_screen.main_panel.available.update(AvailablePanelMessage::Scroll(
+                        crate::tui::scroll::ScrollDirection::Top,
+                    ));
+                }
             }
             UiUpdate::BidUpdate(nomination) => {
                 self.draft_screen.current_nomination = Some(*nomination);
@@ -94,7 +95,6 @@ impl App {
                 self.draft_screen.instant_analysis = None;
                 self.draft_screen.analysis_request_id = None;
                 self.draft_screen.main_panel.analysis.update(AnalysisPanelMessage::Stream(LlmStreamMessage::Clear));
-                self.draft_screen.focused_panel = None;
             }
             UiUpdate::PlanStarted { request_id } => {
                 self.draft_screen.plan_request_id = Some(request_id);
