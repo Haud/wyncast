@@ -2,12 +2,14 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::db::Database;
+use crate::draft::pick::{espn_slot_from_position_str, DraftPick};
+use crate::draft::roster::Roster;
 use crate::draft::state::{
     compute_state_diff, ActiveNomination, DraftState, NominationPayload, ReconcileResult,
-    StateUpdatePayload,
+    StateUpdatePayload, TeamState,
 };
 use crate::protocol::{
-    ExtensionMessage, NominationInfo, UiUpdate,
+    DraftBoardData, ExtensionMessage, NominationInfo, PickHistoryEntry, TeamIdMapping, UiUpdate,
 };
 use crate::valuation;
 use crate::valuation::analysis::CategoryNeeds;
@@ -110,17 +112,68 @@ pub(super) async fn handle_full_state_sync(
     state.inflation = InflationTracker::new();
     state.category_needs = CategoryNeeds::default();
 
+    // --- Grid-based state building (when draft board + pick history available) ---
+    //
+    // When the extension provides draft board grid data (always fully rendered,
+    // never virtualized), we build the entire team/roster/pick state directly
+    // from it instead of relying on the pick log (which is virtualized and
+    // may only contain ~106 of 188 picks). This is the key fix for mid-draft
+    // resume reliability.
+    let grid_based_rebuild = build_state_from_grid(
+        state,
+        &ext_payload.draft_board,
+        &ext_payload.pick_history,
+        &ext_payload.team_id_mapping,
+    );
+
+    if grid_based_rebuild {
+        info!(
+            "FULL_STATE_SYNC: built state from draft board grid ({} teams, {} picks)",
+            state.draft_state.teams.len(),
+            state.draft_state.picks.len(),
+        );
+
+        // Recalculate valuations with the updated pool
+        crate::valuation::recalculate_all(
+            &mut state.available_players,
+            &state.config.league,
+            &state.config.strategy,
+            &state.draft_state,
+        );
+
+        // Update inflation and scarcity
+        state.inflation.update(
+            &state.available_players,
+            &state.draft_state,
+            &state.config.league,
+        );
+        state.scarcity = compute_scarcity(&state.available_players, &state.config.league);
+    }
+
+    // Build stub previous_extension_state for compute_state_diff so that
+    // handle_state_update doesn't re-process picks that we already loaded.
+    //
+    // When grid_based_rebuild is true, ALL picks from the extension payload
+    // are already recorded in draft_state — include them in the stub so
+    // compute_state_diff sees them as "already known".
+    //
+    // When preserve_llm is true, include the saved nomination in the stub
+    // so compute_state_diff doesn't treat it as a new nomination (which
+    // would fire NominationUpdate and restart the LLM analysis).
+    let stub_picks = if grid_based_rebuild {
+        // Convert the extension picks to internal PickPayloads so
+        // compute_state_diff recognizes them as already processed.
+        let internal = AppState::convert_extension_state(&ext_payload);
+        internal.picks
+    } else {
+        vec![]
+    };
+
     if preserve_llm {
         // Same nomination is still active: keep the LLM task and mode so
         // streaming continues uninterrupted.
-        //
-        // Build a stub previous state for compute_state_diff.  Empty picks
-        // ensures all snapshot picks are treated as new (correct for rebuild).
-        // Preserved nomination prevents compute_state_diff from treating the
-        // same player as a new nomination (which would fire NominationUpdate
-        // and restart the LLM analysis).
         state.previous_extension_state = saved_nomination.as_ref().map(|nom| StateUpdatePayload {
-            picks: vec![],
+            picks: stub_picks.clone(),
             current_nomination: Some(NominationPayload {
                 player_id: nom.player_id.clone(),
                 player_name: nom.player_name.clone(),
@@ -139,6 +192,17 @@ pub(super) async fn handle_full_state_sync(
             "FULL_STATE_SYNC: preserving in-progress LLM analysis (same nomination: {})",
             saved_nomination.as_ref().map(|n| n.player_name.as_str()).unwrap_or("unknown")
         );
+    } else if grid_based_rebuild {
+        // Grid-based rebuild: picks are already processed, set stub so
+        // handle_state_update doesn't re-process them.
+        state.previous_extension_state = Some(StateUpdatePayload {
+            picks: stub_picks,
+            current_nomination: None,
+            teams: vec![],
+            pick_count: None,
+            total_picks: None,
+        });
+        state.cancel_llm_tasks();
     } else {
         // Nomination changed or no active analysis: clear all LLM state so
         // handle_state_update can start fresh.
@@ -150,6 +214,11 @@ pub(super) async fn handle_full_state_sync(
     // is true, compute_state_diff will see the stub previous state and treat
     // the nomination as unchanged, so nomination_changed will not fire and
     // NominationUpdate will not be sent to the TUI.
+    //
+    // When grid_based_rebuild is true, the stub includes all picks so they
+    // won't be re-processed. handle_state_update still handles: draft ID
+    // detection, nomination changes, team budget reconciliation, and sending
+    // UI snapshots.
     handle_state_update(state, ext_payload, ui_tx).await;
 
     // Restore current_nomination after the draft state reset if it wasn't set
@@ -277,10 +346,45 @@ pub(super) async fn handle_state_update(
     let teams_just_registered = reconcile.teams_registered;
 
     // Set the user's team from the extension's myTeamId (a team name).
+    // Also check the draft board's isMyTeam flag as a more reliable source.
     // This must happen after reconcile_budgets so teams are registered.
-    if let Some(ref my_team_name) = ext_payload.my_team_id {
-        if !my_team_name.is_empty() && !state.draft_state.teams.is_empty() {
-            state.draft_state.set_my_team_by_name(my_team_name);
+    if !state.draft_state.teams.is_empty() {
+        // Prefer draft board's isMyTeam (from CSS class) over myTeamId (from pick train)
+        let my_team_from_grid = ext_payload
+            .draft_board
+            .as_ref()
+            .and_then(|db| {
+                db.teams
+                    .iter()
+                    .find(|t| t.is_my_team)
+                    .map(|t| t.team_name.clone())
+            });
+
+        if let Some(ref team_name) = my_team_from_grid {
+            state.draft_state.set_my_team_by_name(team_name);
+        } else if let Some(ref my_team_name) = ext_payload.my_team_id {
+            if !my_team_name.is_empty() {
+                state.draft_state.set_my_team_by_name(my_team_name);
+            }
+        }
+    }
+
+    // Draft board reconciliation check: if the grid shows more filled slots
+    // than we have picks, something is out of sync.
+    if let Some(ref draft_board) = ext_payload.draft_board {
+        let grid_filled: usize = draft_board
+            .teams
+            .iter()
+            .flat_map(|t| &t.slots)
+            .filter(|s| s.filled)
+            .count();
+        let our_picks = state.draft_state.picks.len();
+        if grid_filled > 0 && our_picks > 0 && grid_filled != our_picks {
+            warn!(
+                "Draft board grid shows {} filled slots but we have {} picks — \
+                 state may be out of sync (will be corrected on next FULL_STATE_SYNC)",
+                grid_filled, our_picks
+            );
         }
     }
 
@@ -407,4 +511,258 @@ pub(super) async fn handle_state_update(
 
     // Store current state for next diff
     state.previous_extension_state = Some(internal_payload);
+}
+
+// ---------------------------------------------------------------------------
+// Grid-based state building
+// ---------------------------------------------------------------------------
+
+/// Build the complete draft state from the draft board grid and pick history.
+///
+/// When the extension provides draft board grid data (always fully rendered,
+/// never virtualized), we can build the entire team/roster/pick state directly
+/// from it. This is far more reliable than the pick log when resuming mid-draft,
+/// since the pick log is virtualized and may only contain a subset of picks.
+///
+/// Returns `true` if the state was built from grid data, `false` if the grid
+/// data was not available or insufficient.
+fn build_state_from_grid(
+    state: &mut AppState,
+    draft_board: &Option<DraftBoardData>,
+    pick_history: &Option<Vec<PickHistoryEntry>>,
+    team_id_mapping: &Option<Vec<TeamIdMapping>>,
+) -> bool {
+    let board = match draft_board {
+        Some(b) if !b.teams.is_empty() => b,
+        _ => return false,
+    };
+
+    // Count filled slots — if none are filled, no picks have been made yet
+    // and the normal flow works fine.
+    let filled_count: usize = board
+        .teams
+        .iter()
+        .flat_map(|t| &t.slots)
+        .filter(|s| s.filled)
+        .count();
+    if filled_count == 0 {
+        return false;
+    }
+
+    info!(
+        "Building state from draft board grid: {} teams, {} filled slots",
+        board.teams.len(),
+        filled_count
+    );
+
+    // 1. Register teams from the draft board header
+    let salary_cap = state.config.league.salary_cap;
+    for db_team in &board.teams {
+        // Calculate budget from filled slots
+        let spent: u32 = db_team
+            .slots
+            .iter()
+            .filter(|s| s.filled)
+            .filter_map(|s| s.price)
+            .sum();
+
+        let mut team = TeamState {
+            team_id: String::new(),
+            team_name: db_team.team_name.clone(),
+            roster: Roster::new(&state.config.league.roster),
+            budget_spent: spent,
+            budget_remaining: salary_cap.saturating_sub(spent),
+        };
+
+        // Apply team ID from mapping if available
+        if let Some(mapping) = team_id_mapping {
+            if let Some(m) = mapping.iter().find(|m| m.team_name == db_team.team_name) {
+                team.team_id = m.espn_team_id.clone();
+            }
+        }
+
+        // Fill roster slots from the grid
+        for slot in &db_team.slots {
+            if !slot.filled {
+                continue;
+            }
+            let first = slot.first_name.as_deref().unwrap_or("");
+            let last = slot.last_name.as_deref().unwrap_or("");
+            let player_name = format!("{} {}", first, last).trim().to_string();
+            if player_name.is_empty() {
+                continue;
+            }
+
+            let price = slot.price.unwrap_or(0);
+            let roster_slot_str = &slot.roster_slot;
+            let assigned_slot = espn_slot_from_position_str(roster_slot_str);
+
+            // Use the roster slot string as the position for placement.
+            // The assigned_slot gives us the ESPN slot ID for direct placement.
+            team.roster.add_player_with_slots(
+                &player_name,
+                roster_slot_str,
+                price,
+                &[], // No eligible_slots from grid — use assigned_slot instead
+                assigned_slot,
+                None, // No ESPN player ID from grid cells
+            );
+        }
+
+        state.draft_state.teams.push(team);
+    }
+
+    // Set my_team from the isMyTeam flag
+    if let Some(idx) = board
+        .teams
+        .iter()
+        .position(|t| t.is_my_team)
+    {
+        state.draft_state.my_team_idx = idx;
+    }
+
+    // Compute total picks and nomination order now that teams are registered
+    let draftable_per_team = state
+        .draft_state
+        .teams
+        .first()
+        .map(|t| t.roster.draftable_count())
+        .unwrap_or(0);
+    state.draft_state.total_picks = draftable_per_team * state.draft_state.teams.len();
+    state.draft_state.nomination_order = (0..state.draft_state.teams.len()).collect();
+
+    // 2. Build picks from pick history (if available) for chronological draft log
+    if let Some(history) = pick_history {
+        for entry in history {
+            // Convert eligible position strings to ESPN slot IDs
+            let eligible_slots: Vec<u16> = entry
+                .eligible_positions
+                .iter()
+                .filter_map(|s| espn_slot_from_position_str(s))
+                .collect();
+
+            // Use the first eligible position as the position string
+            let position = entry
+                .eligible_positions
+                .first()
+                .cloned()
+                .unwrap_or_default();
+
+            let pick = DraftPick {
+                pick_number: entry.pick_number,
+                team_id: String::new(), // Will be resolved via team_name
+                team_name: entry.team_name.clone(),
+                player_name: entry.player_name.clone(),
+                position,
+                price: entry.price,
+                espn_player_id: if entry.espn_player_id.is_empty() {
+                    None
+                } else {
+                    Some(entry.espn_player_id.clone())
+                },
+                eligible_slots,
+                assigned_slot: None, // Pick history doesn't have assigned slot
+            };
+
+            // Apply team ID from mapping
+            let mut pick = pick;
+            if let Some(mapping) = team_id_mapping {
+                if let Some(m) = mapping
+                    .iter()
+                    .find(|m| m.team_name == entry.team_name)
+                {
+                    pick.team_id = m.espn_team_id.clone();
+                }
+            }
+
+            // Add directly to picks list (bypassing record_pick since rosters
+            // are already built from the grid). We still need the picks list
+            // for the draft log display.
+            state.draft_state.picks.push(pick);
+        }
+        state.draft_state.pick_count = state.draft_state.picks.len();
+    } else {
+        // No pick history — count filled slots from the grid as our pick count
+        state.draft_state.pick_count = filled_count;
+
+        // Build minimal picks from the grid for the draft log.
+        // These won't have chronological order or ESPN player IDs,
+        // but at least the count and player names will be correct.
+        let mut pick_num = 0u32;
+        for db_team in &board.teams {
+            for slot in &db_team.slots {
+                if !slot.filled {
+                    continue;
+                }
+                let first = slot.first_name.as_deref().unwrap_or("");
+                let last = slot.last_name.as_deref().unwrap_or("");
+                let player_name = format!("{} {}", first, last).trim().to_string();
+                if player_name.is_empty() {
+                    continue;
+                }
+
+                pick_num += 1;
+                let position = slot
+                    .natural_position
+                    .as_deref()
+                    .unwrap_or(&slot.roster_slot)
+                    .to_string();
+
+                let mut team_id = String::new();
+                if let Some(mapping) = team_id_mapping {
+                    if let Some(m) = mapping
+                        .iter()
+                        .find(|m| m.team_name == db_team.team_name)
+                    {
+                        team_id = m.espn_team_id.clone();
+                    }
+                }
+
+                state.draft_state.picks.push(DraftPick {
+                    pick_number: pick_num,
+                    team_id,
+                    team_name: db_team.team_name.clone(),
+                    player_name,
+                    position,
+                    price: slot.price.unwrap_or(0),
+                    espn_player_id: None,
+                    eligible_slots: vec![],
+                    assigned_slot: espn_slot_from_position_str(&slot.roster_slot),
+                });
+            }
+        }
+    }
+
+    // 3. Remove drafted players from available pool
+    let drafted_names: std::collections::HashSet<String> = state
+        .draft_state
+        .picks
+        .iter()
+        .map(|p| p.player_name.clone())
+        .collect();
+    state
+        .available_players
+        .retain(|p| !drafted_names.contains(&p.name));
+
+    // Also try to remove by ESPN player ID for name mismatch resilience
+    let drafted_ids: std::collections::HashSet<String> = state
+        .draft_state
+        .picks
+        .iter()
+        .filter_map(|p| p.espn_player_id.clone())
+        .filter(|id| !id.is_empty())
+        .collect();
+    if !drafted_ids.is_empty() {
+        // Future: match against player.espn_id once that field exists
+        let _ = drafted_ids; // suppress unused warning
+    }
+
+    // Persist picks to DB for crash recovery
+    for pick in &state.draft_state.picks {
+        if let Err(e) = state.db.record_pick(pick, &state.draft_id) {
+            warn!("Failed to persist grid-sourced pick to DB: {}", e);
+        }
+    }
+
+    true
 }
