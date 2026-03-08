@@ -401,6 +401,22 @@ pub struct PickPayload {
     pub assigned_slot: Option<u16>,
 }
 
+impl From<&crate::draft::pick::DraftPick> for PickPayload {
+    fn from(p: &crate::draft::pick::DraftPick) -> Self {
+        Self {
+            pick_number: p.pick_number,
+            team_id: p.team_id.clone(),
+            team_name: p.team_name.clone(),
+            player_id: p.espn_player_id.clone().unwrap_or_default(),
+            player_name: p.player_name.clone(),
+            position: p.position.clone(),
+            price: p.price,
+            eligible_slots: p.eligible_slots.clone(),
+            assigned_slot: p.assigned_slot,
+        }
+    }
+}
+
 /// A nomination as received from the extension.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NominationPayload {

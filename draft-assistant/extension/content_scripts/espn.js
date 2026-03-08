@@ -628,7 +628,8 @@ function scrapePickHistory() {
       }
     });
     if (picksPerRound === 0) {
-      picksPerRound = 10; // fallback if no data rows found
+      picksPerRound = 10; // fallback: assumes 10-team league
+      warn('Could not determine picks per round from tables, falling back to', picksPerRound);
     }
 
     tables.forEach((table) => {
@@ -649,11 +650,14 @@ function scrapePickHistory() {
         const cells = Array.from(row.querySelectorAll('[role="gridcell"]'));
         if (cells.length < 4) return;
 
-        // Sort cells by left position to get consistent ordering
+        // Sort cells by their CSS left offset for consistent column ordering.
+        // Use parseFloat to handle fractional px values. Treat missing/NaN
+        // left values as Infinity so unstyled cells sort to the end rather
+        // than all collapsing to position 0 (which would make the sort unstable).
         cells.sort((a, b) => {
-          const leftA = parseInt(a.style.left, 10) || 0;
-          const leftB = parseInt(b.style.left, 10) || 0;
-          return leftA - leftB;
+          const leftA = parseFloat(a.style.left);
+          const leftB = parseFloat(b.style.left);
+          return (isNaN(leftA) ? Infinity : leftA) - (isNaN(leftB) ? Infinity : leftB);
         });
 
         // Cell 1: Pick number within round

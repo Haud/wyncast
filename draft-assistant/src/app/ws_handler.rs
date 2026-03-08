@@ -111,7 +111,6 @@ pub(super) async fn handle_full_state_sync(
     state.scarcity = compute_scarcity(&state.available_players, &state.config.league);
     state.inflation = InflationTracker::new();
     state.category_needs = CategoryNeeds::default();
-    state.grid_picks_persisted = false;
 
     // --- Grid-based state building (when draft board + pick history available) ---
     //
@@ -162,26 +161,11 @@ pub(super) async fn handle_full_state_sync(
     // When preserve_llm is true, include the saved nomination in the stub
     // so compute_state_diff doesn't treat it as a new nomination (which
     // would fire NominationUpdate and restart the LLM analysis).
-    let stub_picks = if grid_based_rebuild {
+    let stub_picks: Vec<PickPayload> = if grid_based_rebuild {
         // Build stub picks from the complete grid-sourced picks (not the
         // virtualized extension pick log) so compute_state_diff in
         // handle_state_update recognizes ALL picks as already processed.
-        state
-            .draft_state
-            .picks
-            .iter()
-            .map(|p| PickPayload {
-                pick_number: p.pick_number,
-                team_id: p.team_id.clone(),
-                team_name: p.team_name.clone(),
-                player_id: p.espn_player_id.clone().unwrap_or_default(),
-                player_name: p.player_name.clone(),
-                position: p.position.clone(),
-                price: p.price,
-                eligible_slots: p.eligible_slots.clone(),
-                assigned_slot: p.assigned_slot,
-            })
-            .collect()
+        state.draft_state.picks.iter().map(PickPayload::from).collect()
     } else {
         vec![]
     };
