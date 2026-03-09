@@ -319,23 +319,16 @@ pub async fn run(
     let mut sub_manager = SubscriptionManager::<AppMessage>::new();
     let mut kb_manager = KeybindManager::new();
 
-    // 7. Main loop
+    // 7. Main loop (game-loop pattern)
+    //
+    // Instead of giving `ui_rx.recv()` its own select branch (which causes
+    // render-tick starvation when many updates queue up, e.g. LLM streaming
+    // tokens), we drain ALL pending UI updates inside the render-tick branch
+    // via `try_recv()`. This batches updates between frames and guarantees
+    // the render tick is never starved.
     loop {
         tokio::select! {
-            // UI updates from the app orchestrator
-            update = ui_rx.recv() => {
-                match update {
-                    Some(ui_update) => {
-                        app.apply_update(ui_update);
-                    }
-                    None => {
-                        // Channel closed: app is shutting down
-                        break;
-                    }
-                }
-            }
-
-            // Keyboard input
+            // Keyboard input - handle immediately (low volume, latency-sensitive)
             maybe_event = event_stream.next() => {
                 match maybe_event {
                     Some(Ok(Event::Key(key_event))) => {
@@ -367,8 +360,22 @@ pub async fn run(
                 }
             }
 
-            // Render tick
+            // Render tick - drain all pending UI updates, then render
             _ = render_tick.tick() => {
+                // Drain all pending UI updates (game-loop batching).
+                loop {
+                    match ui_rx.try_recv() {
+                        Ok(ui_update) => app.apply_update(ui_update),
+                        Err(mpsc::error::TryRecvError::Empty) => break,
+                        Err(mpsc::error::TryRecvError::Disconnected) => {
+                            // Channel closed: app is shutting down.
+                            // Restore terminal before returning.
+                            ratatui::restore();
+                            return Ok(());
+                        }
+                    }
+                }
+
                 // Fire a Tick event for timer subscriptions before rebuilding.
                 // This allows TimerRecipe listeners to fire on the render cadence.
                 let now = std::time::Instant::now();
