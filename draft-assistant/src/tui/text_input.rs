@@ -34,6 +34,9 @@ pub struct TextInput {
     /// When `true`, typing overwrites the character under the cursor rather
     /// than inserting before it.
     overwrite: bool,
+    /// When `true`, all text is selected. The next insertion or deletion
+    /// replaces everything.
+    selected_all: bool,
 }
 
 impl TextInput {
@@ -49,6 +52,7 @@ impl TextInput {
             value: text.to_string(),
             cursor: len,
             overwrite: false,
+            selected_all: false,
         }
     }
 
@@ -82,9 +86,32 @@ impl TextInput {
         self.overwrite = !self.overwrite;
     }
 
+    /// Select all text. The next insertion or deletion will replace all content.
+    pub fn select_all(&mut self) {
+        if !self.value.is_empty() {
+            self.selected_all = true;
+        }
+    }
+
+    /// Return whether all text is selected.
+    pub fn is_selected_all(&self) -> bool {
+        self.selected_all
+    }
+
+    /// Clear the select-all flag on movement or targeted deletion.
+    fn deselect(&mut self) {
+        self.selected_all = false;
+    }
+
     /// Insert `ch` at the cursor position (or overwrite the character under
     /// the cursor if overwrite mode is active), then advance the cursor.
     pub fn insert_char(&mut self, ch: char) {
+        if self.selected_all {
+            self.value.clear();
+            self.cursor = 0;
+            self.selected_all = false;
+            self.overwrite = false; // no longer relevant after clearing
+        }
         if self.overwrite && self.cursor < self.value.len() {
             // Delete the character currently under the cursor, then insert.
             let char_len = self.value[self.cursor..]
@@ -102,6 +129,11 @@ impl TextInput {
     ///
     /// Does nothing if the cursor is at the start.
     pub fn backspace(&mut self) {
+        if self.selected_all {
+            self.clear();
+            self.selected_all = false;
+            return;
+        }
         if self.cursor == 0 {
             return;
         }
@@ -115,6 +147,11 @@ impl TextInput {
     ///
     /// Does nothing if the cursor is at the end.
     pub fn delete(&mut self) {
+        if self.selected_all {
+            self.clear();
+            self.selected_all = false;
+            return;
+        }
         if self.cursor >= self.value.len() {
             return;
         }
@@ -129,6 +166,7 @@ impl TextInput {
 
     /// Move the cursor one character to the left.
     pub fn move_left(&mut self) {
+        self.deselect();
         if self.cursor == 0 {
             return;
         }
@@ -137,6 +175,7 @@ impl TextInput {
 
     /// Move the cursor one character to the right.
     pub fn move_right(&mut self) {
+        self.deselect();
         if self.cursor >= self.value.len() {
             return;
         }
@@ -150,11 +189,13 @@ impl TextInput {
 
     /// Move the cursor to the beginning of the input.
     pub fn move_home(&mut self) {
+        self.deselect();
         self.cursor = 0;
     }
 
     /// Move the cursor to the end of the input.
     pub fn move_end(&mut self) {
+        self.deselect();
         self.cursor = self.value.len();
     }
 
@@ -162,12 +203,14 @@ impl TextInput {
     pub fn clear(&mut self) {
         self.value.clear();
         self.cursor = 0;
+        self.selected_all = false;
     }
 
     /// Replace the buffer contents with `text`, cursor at end.
     pub fn set_value(&mut self, text: &str) {
         self.value = text.to_string();
         self.cursor = self.value.len();
+        self.selected_all = false;
     }
 
     /// Return the character before the cursor, if any.
@@ -250,16 +293,19 @@ impl TextInput {
 
     /// Move cursor to the start of the previous word.
     pub fn move_word_left(&mut self) {
+        self.deselect();
         self.cursor = self.word_boundary_left();
     }
 
     /// Move cursor past the end of the next word.
     pub fn move_word_right(&mut self) {
+        self.deselect();
         self.cursor = self.word_boundary_right();
     }
 
     /// Delete from the start of the previous word to the cursor.
     pub fn delete_word_backward(&mut self) {
+        self.deselect();
         let boundary = self.word_boundary_left();
         self.value.drain(boundary..self.cursor);
         self.cursor = boundary;
@@ -267,18 +313,21 @@ impl TextInput {
 
     /// Delete from the cursor to the end of the next word.
     pub fn delete_word_forward(&mut self) {
+        self.deselect();
         let boundary = self.word_boundary_right();
         self.value.drain(self.cursor..boundary);
     }
 
     /// Delete from the start of the line to the cursor (Ctrl+U).
     pub fn delete_to_start(&mut self) {
+        self.deselect();
         self.value.drain(..self.cursor);
         self.cursor = 0;
     }
 
     /// Delete from the cursor to the end of the line (Ctrl+K).
     pub fn delete_to_end(&mut self) {
+        self.deselect();
         self.value.truncate(self.cursor);
     }
 }
@@ -300,6 +349,7 @@ pub enum TextInputMessage {
     DeleteToStart,
     DeleteToEnd,
     ToggleOverwrite,
+    SelectAll,
 }
 
 impl TextInput {
@@ -320,6 +370,7 @@ impl TextInput {
             TextInputMessage::DeleteToStart => self.delete_to_start(),
             TextInputMessage::DeleteToEnd => self.delete_to_end(),
             TextInputMessage::ToggleOverwrite => self.toggle_overwrite(),
+            TextInputMessage::SelectAll => self.select_all(),
         }
     }
 
@@ -342,7 +393,7 @@ impl TextInput {
             KeyCode::Char('k') if ctrl => Some(TextInputMessage::DeleteToEnd),
 
             // Ctrl + navigation (readline/emacs style)
-            KeyCode::Char('a') if ctrl => Some(TextInputMessage::MoveHome),
+            KeyCode::Char('a') if ctrl => Some(TextInputMessage::SelectAll),
             KeyCode::Char('e') if ctrl => Some(TextInputMessage::MoveEnd),
 
             // Alt + movement (some terminals send alt instead of ctrl for word movement)
@@ -925,10 +976,10 @@ mod tests {
     }
 
     #[test]
-    fn key_to_message_ctrl_a_moves_home() {
+    fn key_to_message_ctrl_a_selects_all() {
         assert_eq!(
             TextInput::key_to_message(&ctrl_key(KeyCode::Char('a'))),
-            Some(TextInputMessage::MoveHome)
+            Some(TextInputMessage::SelectAll)
         );
     }
 
@@ -1053,5 +1104,71 @@ mod tests {
         ti.update(TextInputMessage::DeleteToEnd);
         assert_eq!(ti.value(), "hello");
         assert_eq!(ti.cursor_byte(), 5);
+    }
+
+    // -----------------------------------------------------------------------
+    // Select-all tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn select_all_then_type_replaces() {
+        let mut ti = TextInput::with_value("hello");
+        ti.select_all();
+        assert!(ti.is_selected_all());
+        ti.insert_char('X');
+        assert_eq!(ti.value(), "X");
+        assert!(!ti.is_selected_all());
+    }
+
+    #[test]
+    fn select_all_then_backspace_clears() {
+        let mut ti = TextInput::with_value("hello");
+        ti.select_all();
+        ti.backspace();
+        assert_eq!(ti.value(), "");
+        assert!(!ti.is_selected_all());
+    }
+
+    #[test]
+    fn select_all_then_delete_clears() {
+        let mut ti = TextInput::with_value("hello");
+        ti.select_all();
+        ti.delete();
+        assert_eq!(ti.value(), "");
+        assert!(!ti.is_selected_all());
+    }
+
+    #[test]
+    fn select_all_then_move_deselects() {
+        let mut ti = TextInput::with_value("hello");
+        ti.select_all();
+        ti.move_left();
+        assert!(!ti.is_selected_all());
+        assert_eq!(ti.value(), "hello");
+    }
+
+    #[test]
+    fn select_all_empty_input_noop() {
+        let mut ti = TextInput::new();
+        ti.select_all();
+        assert!(!ti.is_selected_all());
+    }
+
+    #[test]
+    fn select_all_flag_resets_on_clear() {
+        let mut ti = TextInput::with_value("hello");
+        ti.select_all();
+        assert!(ti.is_selected_all());
+        ti.clear();
+        assert!(!ti.is_selected_all());
+    }
+
+    #[test]
+    fn select_all_flag_resets_on_set_value() {
+        let mut ti = TextInput::with_value("hello");
+        ti.select_all();
+        assert!(ti.is_selected_all());
+        ti.set_value("world");
+        assert!(!ti.is_selected_all());
     }
 }
