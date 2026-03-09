@@ -85,7 +85,7 @@ impl AvailablePanel {
                 KeybindHint::new("Enter", "Apply filter"),
             )
             .bind(
-                KeyTrigger::AnyChar,
+                KeyTrigger::Any,
                 |k| AvailablePanelMessage::FilterKeyPress(k),
                 KeybindHint::new("a-z", "Type to filter"),
             );
