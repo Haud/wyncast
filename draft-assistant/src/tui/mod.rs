@@ -186,7 +186,12 @@ pub(crate) fn render_help_bar(
     keybinds: &[KeybindHint],
 ) {
     if app.draft_screen.main_panel.available.filter_mode() {
-        let spans = vec![
+        let filter = app.draft_screen.main_panel.available.filter_text();
+        let text_style = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
+        let cursor_style = Style::default().fg(Color::Cyan);
+        let selection_style = Style::default().fg(Color::White).bg(Color::DarkGray).add_modifier(Modifier::BOLD);
+
+        let mut spans = vec![
             Span::styled(
                 " FILTER ",
                 Style::default()
@@ -195,18 +200,12 @@ pub(crate) fn render_help_bar(
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(" ", Style::default()),
-            Span::styled(
-                app.draft_screen.main_panel.available.filter_text().value().to_string(),
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("\u{258e}", Style::default().fg(Color::Cyan)),
-            Span::styled(
-                "  (Enter:apply | Esc:cancel)",
-                Style::default().fg(Color::DarkGray),
-            ),
         ];
+        spans.extend(filter.styled_spans(text_style, cursor_style, selection_style));
+        spans.push(Span::styled(
+            "  (Enter:apply | Esc:cancel)",
+            Style::default().fg(Color::DarkGray),
+        ));
         let paragraph = Paragraph::new(Line::from(spans))
             .style(Style::default().bg(Color::Black));
         frame.render_widget(paragraph, area);
@@ -224,11 +223,15 @@ pub(crate) fn render_help_bar_draft(
     frame: &mut Frame,
     area: Rect,
     filter_mode: bool,
-    filter_text: &str,
+    filter_input: &TextInput,
     keybinds: &[KeybindHint],
 ) {
     if filter_mode {
-        let spans = vec![
+        let text_style = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
+        let cursor_style = Style::default().fg(Color::Cyan);
+        let selection_style = Style::default().fg(Color::White).bg(Color::DarkGray).add_modifier(Modifier::BOLD);
+
+        let mut spans = vec![
             Span::styled(
                 " FILTER ",
                 Style::default()
@@ -237,18 +240,12 @@ pub(crate) fn render_help_bar_draft(
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(" ", Style::default()),
-            Span::styled(
-                filter_text.to_string(),
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("\u{258e}", Style::default().fg(Color::Cyan)),
-            Span::styled(
-                "  (Enter:apply | Esc:cancel)",
-                Style::default().fg(Color::DarkGray),
-            ),
         ];
+        spans.extend(filter_input.styled_spans(text_style, cursor_style, selection_style));
+        spans.push(Span::styled(
+            "  (Enter:apply | Esc:cancel)",
+            Style::default().fg(Color::DarkGray),
+        ));
         let paragraph = Paragraph::new(Line::from(spans))
             .style(Style::default().bg(Color::Black));
         frame.render_widget(paragraph, area);

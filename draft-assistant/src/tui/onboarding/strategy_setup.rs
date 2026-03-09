@@ -1134,16 +1134,11 @@ fn render_input_step(frame: &mut Frame, area: Rect, state: &StrategySetupState) 
         .border_style(border_style);
 
     let text_para = if state.input_editing {
-        let cursor_char = state.strategy_input.cursor_pos();
-        let before: String = input_value.chars().take(cursor_char).collect();
-        let after: String = input_value.chars().skip(cursor_char).collect();
         let text_style = Style::default().fg(Color::White);
         let cursor_style = Style::default().fg(Color::Black).bg(Color::Cyan);
-        Paragraph::new(Line::from(vec![
-            Span::styled(before, text_style),
-            Span::styled("|", cursor_style),
-            Span::styled(after, text_style),
-        ]))
+        let selection_style = Style::default().fg(Color::White).bg(Color::DarkGray);
+        let input_spans = state.strategy_input.styled_spans(text_style, cursor_style, selection_style);
+        Paragraph::new(Line::from(input_spans))
         .block(text_block)
         .wrap(Wrap { trim: false })
     } else if input_value.is_empty() {
@@ -1389,17 +1384,11 @@ fn render_review_step(frame: &mut Frame, area: Rect, state: &StrategySetupState)
 
     if state.overview_editing {
         // Editable text input with cursor
-        let input_value = state.overview_input.value();
-        let cursor_char = state.overview_input.cursor_pos();
-        let before: String = input_value.chars().take(cursor_char).collect();
-        let after: String = input_value.chars().skip(cursor_char).collect();
         let text_style = Style::default().fg(Color::White);
         let cursor_style = Style::default().fg(Color::Black).bg(Color::Yellow);
-        let overview_para = Paragraph::new(Line::from(vec![
-            Span::styled(before, text_style),
-            Span::styled("|", cursor_style),
-            Span::styled(after, text_style),
-        ]))
+        let selection_style = Style::default().fg(Color::White).bg(Color::DarkGray);
+        let input_spans = state.overview_input.styled_spans(text_style, cursor_style, selection_style);
+        let overview_para = Paragraph::new(Line::from(input_spans))
         .block(overview_block)
         .wrap(Wrap { trim: false });
         frame.render_widget(overview_para, content_rect(sections[2]));
@@ -1584,19 +1573,15 @@ fn render_budget_field(frame: &mut Frame, area: Rect, state: &StrategySetupState
     };
 
     let line = if editing {
-        let cursor_char = state.field_input.cursor_pos();
-        let field_val = state.field_input.value();
-        let before: String = field_val.chars().take(cursor_char).collect();
-        let after: String = field_val.chars().skip(cursor_char).collect();
         let cursor_style = Style::default().fg(Color::Black).bg(Color::Cyan);
-        Line::from(vec![
+        let selection_style = Style::default().fg(Color::White).bg(Color::DarkGray);
+        let mut spans = vec![
             Span::styled("  Budget (hitting %):     ", label_style),
             Span::styled("[ ", value_style),
-            Span::styled(before, value_style),
-            Span::styled("|", cursor_style),
-            Span::styled(after, value_style),
-            Span::styled(" ]", value_style),
-        ])
+        ];
+        spans.extend(state.field_input.styled_spans(value_style, cursor_style, selection_style));
+        spans.push(Span::styled(" ]", value_style));
+        Line::from(spans)
     } else {
         Line::from(vec![
             Span::styled("  Budget (hitting %):     ", label_style),
@@ -1643,16 +1628,6 @@ fn render_weight_grid(frame: &mut Frame, area: Rect, state: &StrategySetupState)
                 Style::default().fg(Color::White)
             };
 
-            let value_str = if is_editing {
-                let cursor_char = state.field_input.cursor_pos();
-                let field_val = state.field_input.value();
-                let before: String = field_val.chars().take(cursor_char).collect();
-                let after: String = field_val.chars().skip(cursor_char).collect();
-                format!("{}|{}", before, after)
-            } else {
-                format!("{:.1}", state.category_weights.get(idx))
-            };
-
             let value_style = if is_editing {
                 Style::default()
                     .fg(Color::White)
@@ -1670,10 +1645,19 @@ fn render_weight_grid(frame: &mut Frame, area: Rect, state: &StrategySetupState)
                 format!("{:<4}", cat_name),
                 name_style,
             ));
-            spans.push(Span::styled(
-                format!("[ {:<4}]", value_str),
-                value_style,
-            ));
+
+            if is_editing {
+                let cursor_style = Style::default().fg(Color::Black).bg(Color::Cyan);
+                let selection_style = Style::default().fg(Color::White).bg(Color::DarkGray);
+                spans.push(Span::styled("[ ", value_style));
+                spans.extend(state.field_input.styled_spans(value_style, cursor_style, selection_style));
+                spans.push(Span::styled(" ]", value_style));
+            } else {
+                spans.push(Span::styled(
+                    format!("[ {:<4}]", format!("{:.1}", state.category_weights.get(idx))),
+                    value_style,
+                ));
+            }
             if col < WEIGHT_COLS - 1 {
                 spans.push(Span::styled("  ", Style::default()));
             }

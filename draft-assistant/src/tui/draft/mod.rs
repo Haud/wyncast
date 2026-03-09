@@ -192,7 +192,7 @@ impl DraftScreen {
         );
 
         // Help bar: render keybind hints passed in from App (from kb_manager).
-        crate::tui::render_help_bar_draft(frame, layout.help_bar, self.main_panel.available.filter_mode(), self.main_panel.available.filter_text().value(), keybinds);
+        crate::tui::render_help_bar_draft(frame, layout.help_bar, self.main_panel.available.filter_mode(), self.main_panel.available.filter_text(), keybinds);
 
         // Modal overlay layer (position filter + quit confirm)
         self.modal_layer.view(frame, frame.area());

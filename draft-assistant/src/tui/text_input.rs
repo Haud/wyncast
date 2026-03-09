@@ -34,9 +34,9 @@ pub struct TextInput {
     /// When `true`, typing overwrites the character under the cursor rather
     /// than inserting before it.
     overwrite: bool,
-    /// When `true`, all text is selected. The next insertion or deletion
-    /// replaces everything.
-    selected_all: bool,
+    /// Byte offset of the selection anchor. When `Some`, the selection spans
+    /// from `min(anchor, cursor)` to `max(anchor, cursor)`.
+    selection_anchor: Option<usize>,
 }
 
 impl TextInput {
@@ -52,7 +52,7 @@ impl TextInput {
             value: text.to_string(),
             cursor: len,
             overwrite: false,
-            selected_all: false,
+            selection_anchor: None,
         }
     }
 
@@ -86,31 +86,49 @@ impl TextInput {
         self.overwrite = !self.overwrite;
     }
 
-    /// Select all text. The next insertion or deletion will replace all content.
+    /// Select all text (sets anchor to 0, cursor to end).
     pub fn select_all(&mut self) {
         if !self.value.is_empty() {
-            self.selected_all = true;
+            self.selection_anchor = Some(0);
+            self.cursor = self.value.len();
         }
     }
 
-    /// Return whether all text is selected.
-    pub fn is_selected_all(&self) -> bool {
-        self.selected_all
+    /// Return whether any text is selected.
+    pub fn has_selection(&self) -> bool {
+        match self.selection_anchor {
+            Some(anchor) => anchor != self.cursor,
+            None => false,
+        }
     }
 
-    /// Clear the select-all flag on movement or targeted deletion.
+    /// Return the selection range as character indices `(start, end)` for rendering.
+    /// Returns `None` if nothing is selected.
+    pub fn selection_char_range(&self) -> Option<(usize, usize)> {
+        let anchor = self.selection_anchor?;
+        if anchor == self.cursor {
+            return None;
+        }
+        let (start_byte, end_byte) = if anchor < self.cursor {
+            (anchor, self.cursor)
+        } else {
+            (self.cursor, anchor)
+        };
+        let start_char = self.value[..start_byte].chars().count();
+        let end_char = self.value[..end_byte].chars().count();
+        Some((start_char, end_char))
+    }
+
+    /// Clear the selection anchor.
     fn deselect(&mut self) {
-        self.selected_all = false;
+        self.selection_anchor = None;
     }
 
     /// Insert `ch` at the cursor position (or overwrite the character under
     /// the cursor if overwrite mode is active), then advance the cursor.
     pub fn insert_char(&mut self, ch: char) {
-        if self.selected_all {
-            self.value.clear();
-            self.cursor = 0;
-            self.selected_all = false;
-            self.overwrite = false; // no longer relevant after clearing
+        if self.has_selection() {
+            self.delete_selection();
         }
         if self.overwrite && self.cursor < self.value.len() {
             // Delete the character currently under the cursor, then insert.
@@ -129,9 +147,8 @@ impl TextInput {
     ///
     /// Does nothing if the cursor is at the start.
     pub fn backspace(&mut self) {
-        if self.selected_all {
-            self.clear();
-            self.selected_all = false;
+        if self.has_selection() {
+            self.delete_selection();
             return;
         }
         if self.cursor == 0 {
@@ -147,9 +164,8 @@ impl TextInput {
     ///
     /// Does nothing if the cursor is at the end.
     pub fn delete(&mut self) {
-        if self.selected_all {
-            self.clear();
-            self.selected_all = false;
+        if self.has_selection() {
+            self.delete_selection();
             return;
         }
         if self.cursor >= self.value.len() {
@@ -203,14 +219,14 @@ impl TextInput {
     pub fn clear(&mut self) {
         self.value.clear();
         self.cursor = 0;
-        self.selected_all = false;
+        self.selection_anchor = None;
     }
 
     /// Replace the buffer contents with `text`, cursor at end.
     pub fn set_value(&mut self, text: &str) {
         self.value = text.to_string();
         self.cursor = self.value.len();
-        self.selected_all = false;
+        self.selection_anchor = None;
     }
 
     /// Return the character before the cursor, if any.
@@ -329,6 +345,65 @@ impl TextInput {
     pub fn delete_to_end(&mut self) {
         self.deselect();
         self.value.truncate(self.cursor);
+    }
+
+    /// Delete the currently selected text and place the cursor at the start of the selection.
+    fn delete_selection(&mut self) {
+        if let Some(anchor) = self.selection_anchor.take() {
+            let (start, end) = if anchor < self.cursor {
+                (anchor, self.cursor)
+            } else {
+                (self.cursor, anchor)
+            };
+            self.value.drain(start..end);
+            self.cursor = start;
+        }
+    }
+
+    /// Produce styled spans for rendering: text before selection, selected text (gray bg),
+    /// text after selection, with cursor indicator.
+    ///
+    /// When there's a selection, the selected portion gets `selection_style` applied.
+    /// When there's no selection, a cursor block is inserted at the cursor position.
+    ///
+    /// Returns a `Vec<Span>`.
+    pub fn styled_spans(
+        &self,
+        text_style: ratatui::style::Style,
+        cursor_style: ratatui::style::Style,
+        selection_style: ratatui::style::Style,
+    ) -> Vec<ratatui::text::Span<'static>> {
+        use ratatui::text::Span;
+
+        let value = self.value.clone();
+
+        if let Some((sel_start, sel_end)) = self.selection_char_range() {
+            // Three segments: before selection, selection, after selection
+            let before: String = value.chars().take(sel_start).collect();
+            let selected: String = value.chars().skip(sel_start).take(sel_end - sel_start).collect();
+            let after: String = value.chars().skip(sel_end).collect();
+
+            let mut spans = Vec::new();
+            if !before.is_empty() {
+                spans.push(Span::styled(before, text_style));
+            }
+            spans.push(Span::styled(selected, selection_style));
+            if !after.is_empty() {
+                spans.push(Span::styled(after, text_style));
+            }
+            spans
+        } else {
+            // No selection — show cursor
+            let cursor_char = self.cursor_pos();
+            let before: String = value.chars().take(cursor_char).collect();
+            let after: String = value.chars().skip(cursor_char).collect();
+
+            vec![
+                Span::styled(before, text_style),
+                Span::styled("\u{258e}", cursor_style),
+                Span::styled(after, text_style),
+            ]
+        }
     }
 }
 
@@ -1114,10 +1189,10 @@ mod tests {
     fn select_all_then_type_replaces() {
         let mut ti = TextInput::with_value("hello");
         ti.select_all();
-        assert!(ti.is_selected_all());
+        assert!(ti.has_selection());
         ti.insert_char('X');
         assert_eq!(ti.value(), "X");
-        assert!(!ti.is_selected_all());
+        assert!(!ti.has_selection());
     }
 
     #[test]
@@ -1126,7 +1201,7 @@ mod tests {
         ti.select_all();
         ti.backspace();
         assert_eq!(ti.value(), "");
-        assert!(!ti.is_selected_all());
+        assert!(!ti.has_selection());
     }
 
     #[test]
@@ -1135,7 +1210,7 @@ mod tests {
         ti.select_all();
         ti.delete();
         assert_eq!(ti.value(), "");
-        assert!(!ti.is_selected_all());
+        assert!(!ti.has_selection());
     }
 
     #[test]
@@ -1143,7 +1218,7 @@ mod tests {
         let mut ti = TextInput::with_value("hello");
         ti.select_all();
         ti.move_left();
-        assert!(!ti.is_selected_all());
+        assert!(!ti.has_selection());
         assert_eq!(ti.value(), "hello");
     }
 
@@ -1151,24 +1226,55 @@ mod tests {
     fn select_all_empty_input_noop() {
         let mut ti = TextInput::new();
         ti.select_all();
-        assert!(!ti.is_selected_all());
+        assert!(!ti.has_selection());
     }
 
     #[test]
     fn select_all_flag_resets_on_clear() {
         let mut ti = TextInput::with_value("hello");
         ti.select_all();
-        assert!(ti.is_selected_all());
+        assert!(ti.has_selection());
         ti.clear();
-        assert!(!ti.is_selected_all());
+        assert!(!ti.has_selection());
     }
 
     #[test]
     fn select_all_flag_resets_on_set_value() {
         let mut ti = TextInput::with_value("hello");
         ti.select_all();
-        assert!(ti.is_selected_all());
+        assert!(ti.has_selection());
         ti.set_value("world");
-        assert!(!ti.is_selected_all());
+        assert!(!ti.has_selection());
+    }
+
+    #[test]
+    fn selection_char_range_none_when_no_selection() {
+        let ti = TextInput::with_value("hello");
+        assert_eq!(ti.selection_char_range(), None);
+    }
+
+    #[test]
+    fn selection_char_range_after_select_all() {
+        let mut ti = TextInput::with_value("hello");
+        ti.select_all();
+        assert_eq!(ti.selection_char_range(), Some((0, 5)));
+    }
+
+    #[test]
+    fn has_selection_false_by_default() {
+        let ti = TextInput::new();
+        assert!(!ti.has_selection());
+    }
+
+    #[test]
+    fn delete_selection_removes_selected_text() {
+        let mut ti = TextInput::with_value("hello world");
+        // Manually set anchor to simulate selecting "world" (bytes 6..11)
+        ti.selection_anchor = Some(6);
+        ti.cursor = 11;
+        assert!(ti.has_selection());
+        ti.delete();
+        assert_eq!(ti.value(), "hello ");
+        assert_eq!(ti.cursor_byte(), 6);
     }
 }
