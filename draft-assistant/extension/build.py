@@ -96,23 +96,32 @@ def run_command(args: list, description: str) -> None:
         sys.exit(result.returncode)
 
 
+def clean_artifacts() -> None:
+    """Remove the artifacts directory so each build produces a single clean output."""
+    if ARTIFACTS_DIR.exists():
+        shutil.rmtree(ARTIFACTS_DIR)
+
+
 def find_xpi() -> Path:
     """Find the signed .xpi file in web-ext-artifacts/."""
     if not ARTIFACTS_DIR.exists():
         print("Error: web-ext-artifacts/ directory not found.", file=sys.stderr)
         sys.exit(1)
 
-    xpi_files = sorted(ARTIFACTS_DIR.glob("*.xpi"), key=lambda p: p.stat().st_mtime)
+    xpi_files = list(ARTIFACTS_DIR.glob("*.xpi"))
     if not xpi_files:
         print("Error: No .xpi file found in web-ext-artifacts/.", file=sys.stderr)
         sys.exit(1)
 
-    return xpi_files[-1]
+    return xpi_files[0]
 
 
 def main() -> None:
     web_ext = check_web_ext()
     issuer, secret = load_credentials()
+
+    # Clean previous artifacts so the output is always a single .xpi
+    clean_artifacts()
 
     source_dir = str(EXTENSION_DIR)
 
