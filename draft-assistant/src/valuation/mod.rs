@@ -41,6 +41,11 @@ pub fn compute_initial(
     // Step 2: VOR adjustment
     vor::apply_vor(&mut players, &config.league);
 
+    // Snapshot initial VOR for stable scarcity computation.
+    for player in players.iter_mut() {
+        player.initial_vor = player.vor;
+    }
+
     // Step 3: Auction dollar conversion
     auction::apply_auction_values(&mut players, &config.league, &config.strategy);
 
@@ -537,6 +542,7 @@ mod tests {
                 r: 0.0, hr: 0.0, rbi: 0.0, bb: 0.0, sb: 0.0, avg: 0.0, total: 0.0,
             }),
             vor: 0.0,
+            initial_vor: 0.0,
             best_position: None,
             dollar_value: 0.0,
         }
@@ -575,6 +581,7 @@ mod tests {
                 k: 0.0, w: 0.0, sv: 0.0, hd: 0.0, era: 0.0, whip: 0.0, total: 0.0,
             }),
             vor: 0.0,
+            initial_vor: 0.0,
             best_position: None,
             dollar_value: 0.0,
         }
@@ -795,6 +802,7 @@ mod tests {
                 total: 0.0,
             }),
             vor: 0.0,
+            initial_vor: 0.0,
             best_position: None,
             dollar_value: 0.0,
         }

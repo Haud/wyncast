@@ -427,6 +427,7 @@ mod tests {
             total_zscore: vor + 2.0, // arbitrary; VOR is what matters here
             category_zscores: default_hitter_zscores(vor + 2.0),
             vor,
+            initial_vor: 0.0,
             best_position: Some(Position::FirstBase),
             dollar_value: 0.0,
         }
@@ -458,6 +459,7 @@ mod tests {
             total_zscore: vor + 1.0,
             category_zscores: default_pitcher_zscores(vor + 1.0),
             vor,
+            initial_vor: 0.0,
             best_position: Some(pos),
             dollar_value: 0.0,
         }

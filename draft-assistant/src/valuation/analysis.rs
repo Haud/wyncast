@@ -501,6 +501,7 @@ mod tests {
                 r: 1.5, hr: 1.2, rbi: 0.8, bb: 2.0, sb: 0.3, avg: 0.5, total: vor + 2.0,
             }),
             vor,
+            initial_vor: vor,
             best_position: positions.first().copied(),
             dollar_value: dollar,
         }
@@ -526,6 +527,7 @@ mod tests {
                 k: 1.5, w: 0.8, sv: 0.0, hd: 0.0, era: 1.2, whip: 0.9, total: vor + 1.0,
             }),
             vor,
+            initial_vor: vor,
             best_position: Some(pos),
             dollar_value: dollar,
         }
