@@ -26,8 +26,30 @@ use anyhow::Context;
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
+fn main() {
+    let result = run_app();
+    if let Err(e) = result {
+        eprintln!("\nError: {e:?}");
+        pause();
+        std::process::exit(1);
+    }
+}
+
+/// On Windows, wait for the user to press Enter so the terminal window stays
+/// open long enough to read any error output. No-op on other platforms.
+#[cfg(windows)]
+fn pause() {
+    use std::io::{self, BufRead};
+    eprintln!("\nPress Enter to exit...");
+    let stdin = io::stdin();
+    let _ = stdin.lock().lines().next();
+}
+
+#[cfg(not(windows))]
+fn pause() {}
+
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn run_app() -> anyhow::Result<()> {
     // 1. Initialize tracing (log to file, not terminal)
     init_tracing()?;
     info!("Draft assistant starting up");
