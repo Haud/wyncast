@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 // Text input widget with cursor movement, backspace/delete, and insert/overwrite mode.
 //
@@ -183,6 +183,104 @@ impl TextInput {
             }
         }
     }
+
+    /// Find the byte position of the start of the previous word.
+    ///
+    /// Skips whitespace backwards, then skips non-whitespace backwards.
+    /// Returns 0 if at start.
+    fn word_boundary_left(&self) -> usize {
+        let before = &self.value[..self.cursor];
+        let mut chars = before.char_indices().rev().peekable();
+
+        // Skip whitespace
+        while let Some(&(_, ch)) = chars.peek() {
+            if ch.is_whitespace() {
+                chars.next();
+            } else {
+                break;
+            }
+        }
+
+        // Skip non-whitespace (the word itself)
+        let mut boundary = 0;
+        while let Some(&(idx, ch)) = chars.peek() {
+            if !ch.is_whitespace() {
+                boundary = idx;
+                chars.next();
+            } else {
+                // The word starts at `boundary`
+                return boundary;
+            }
+        }
+
+        boundary
+    }
+
+    /// Find the byte position after the end of the next word.
+    ///
+    /// Skips non-whitespace forward, then skips whitespace forward.
+    /// Returns `self.value.len()` if at end.
+    fn word_boundary_right(&self) -> usize {
+        let after = &self.value[self.cursor..];
+        let mut chars = after.char_indices().peekable();
+
+        // Skip non-whitespace
+        while let Some(&(_, ch)) = chars.peek() {
+            if !ch.is_whitespace() {
+                chars.next();
+            } else {
+                break;
+            }
+        }
+
+        // Skip whitespace
+        while let Some(&(_, ch)) = chars.peek() {
+            if ch.is_whitespace() {
+                chars.next();
+            } else {
+                break;
+            }
+        }
+
+        match chars.peek() {
+            Some(&(idx, _)) => self.cursor + idx,
+            None => self.value.len(),
+        }
+    }
+
+    /// Move cursor to the start of the previous word.
+    pub fn move_word_left(&mut self) {
+        self.cursor = self.word_boundary_left();
+    }
+
+    /// Move cursor past the end of the next word.
+    pub fn move_word_right(&mut self) {
+        self.cursor = self.word_boundary_right();
+    }
+
+    /// Delete from the start of the previous word to the cursor.
+    pub fn delete_word_backward(&mut self) {
+        let boundary = self.word_boundary_left();
+        self.value.drain(boundary..self.cursor);
+        self.cursor = boundary;
+    }
+
+    /// Delete from the cursor to the end of the next word.
+    pub fn delete_word_forward(&mut self) {
+        let boundary = self.word_boundary_right();
+        self.value.drain(self.cursor..boundary);
+    }
+
+    /// Delete from the start of the line to the cursor (Ctrl+U).
+    pub fn delete_to_start(&mut self) {
+        self.value.drain(..self.cursor);
+        self.cursor = 0;
+    }
+
+    /// Delete from the cursor to the end of the line (Ctrl+K).
+    pub fn delete_to_end(&mut self) {
+        self.value.truncate(self.cursor);
+    }
 }
 
 /// Messages for the TextInput component.
@@ -195,6 +293,12 @@ pub enum TextInputMessage {
     MoveRight,
     MoveHome,
     MoveEnd,
+    MoveWordLeft,
+    MoveWordRight,
+    DeleteWordBackward,
+    DeleteWordForward,
+    DeleteToStart,
+    DeleteToEnd,
     ToggleOverwrite,
 }
 
@@ -209,6 +313,12 @@ impl TextInput {
             TextInputMessage::MoveRight => self.move_right(),
             TextInputMessage::MoveHome => self.move_home(),
             TextInputMessage::MoveEnd => self.move_end(),
+            TextInputMessage::MoveWordLeft => self.move_word_left(),
+            TextInputMessage::MoveWordRight => self.move_word_right(),
+            TextInputMessage::DeleteWordBackward => self.delete_word_backward(),
+            TextInputMessage::DeleteWordForward => self.delete_word_forward(),
+            TextInputMessage::DeleteToStart => self.delete_to_start(),
+            TextInputMessage::DeleteToEnd => self.delete_to_end(),
             TextInputMessage::ToggleOverwrite => self.toggle_overwrite(),
         }
     }
@@ -216,7 +326,34 @@ impl TextInput {
     /// Convert a key event to a TextInputMessage, if relevant.
     /// Returns None for keys not handled by text input (Enter, Esc, etc.)
     pub fn key_to_message(key: &KeyEvent) -> Option<TextInputMessage> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+
         match key.code {
+            // Ctrl + movement
+            KeyCode::Left if ctrl => Some(TextInputMessage::MoveWordLeft),
+            KeyCode::Right if ctrl => Some(TextInputMessage::MoveWordRight),
+
+            // Ctrl + deletion
+            KeyCode::Backspace if ctrl => Some(TextInputMessage::DeleteWordBackward),
+            KeyCode::Delete if ctrl => Some(TextInputMessage::DeleteWordForward),
+            KeyCode::Char('w') if ctrl => Some(TextInputMessage::DeleteWordBackward),
+            KeyCode::Char('u') if ctrl => Some(TextInputMessage::DeleteToStart),
+            KeyCode::Char('k') if ctrl => Some(TextInputMessage::DeleteToEnd),
+
+            // Ctrl + navigation (readline/emacs style)
+            KeyCode::Char('a') if ctrl => Some(TextInputMessage::MoveHome),
+            KeyCode::Char('e') if ctrl => Some(TextInputMessage::MoveEnd),
+
+            // Alt + movement (some terminals send alt instead of ctrl for word movement)
+            KeyCode::Left if alt => Some(TextInputMessage::MoveWordLeft),
+            KeyCode::Right if alt => Some(TextInputMessage::MoveWordRight),
+            KeyCode::Char('b') if alt => Some(TextInputMessage::MoveWordLeft),
+            KeyCode::Char('f') if alt => Some(TextInputMessage::MoveWordRight),
+            KeyCode::Backspace if alt => Some(TextInputMessage::DeleteWordBackward),
+            KeyCode::Char('d') if alt => Some(TextInputMessage::DeleteWordForward),
+
+            // Plain keys (no Ctrl/Alt modifier, Shift is OK)
             KeyCode::Backspace => Some(TextInputMessage::Backspace),
             KeyCode::Delete => Some(TextInputMessage::Delete),
             KeyCode::Left => Some(TextInputMessage::MoveLeft),
@@ -224,7 +361,10 @@ impl TextInput {
             KeyCode::Home => Some(TextInputMessage::MoveHome),
             KeyCode::End => Some(TextInputMessage::MoveEnd),
             KeyCode::Insert => Some(TextInputMessage::ToggleOverwrite),
-            KeyCode::Char(c) => Some(TextInputMessage::InsertChar(c)),
+
+            // Only insert printable chars when no Ctrl/Alt modifier
+            KeyCode::Char(c) if !ctrl && !alt => Some(TextInputMessage::InsertChar(c)),
+
             _ => None,
         }
     }
@@ -509,5 +649,409 @@ mod tests {
         ti.update(TextInputMessage::MoveHome);
         ti.update(TextInputMessage::InsertChar('X'));
         assert_eq!(ti.value(), "Xb");
+    }
+
+    // -----------------------------------------------------------------------
+    // Word boundary and word-level editing tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn word_boundary_left_multiple_words() {
+        let mut ti = TextInput::with_value("hello world foo");
+        // Cursor at end (after "foo")
+        assert_eq!(ti.word_boundary_left(), 12); // start of "foo"
+        ti.cursor = 12;
+        assert_eq!(ti.word_boundary_left(), 6); // start of "world"
+        ti.cursor = 6;
+        assert_eq!(ti.word_boundary_left(), 0); // start of "hello"
+        ti.cursor = 0;
+        assert_eq!(ti.word_boundary_left(), 0); // already at start
+    }
+
+    #[test]
+    fn word_boundary_left_from_middle_of_word() {
+        let mut ti = TextInput::with_value("hello world");
+        ti.cursor = 8; // middle of "world" (after "wor")
+        assert_eq!(ti.word_boundary_left(), 6); // start of "world"
+    }
+
+    #[test]
+    fn word_boundary_left_leading_spaces() {
+        let mut ti = TextInput::with_value("  hello");
+        // cursor at end
+        assert_eq!(ti.word_boundary_left(), 2); // start of "hello"
+        ti.cursor = 2;
+        assert_eq!(ti.word_boundary_left(), 0); // at start (only whitespace before)
+    }
+
+    #[test]
+    fn word_boundary_left_trailing_spaces() {
+        let ti = TextInput::with_value("hello  ");
+        // cursor at end (after trailing spaces)
+        assert_eq!(ti.word_boundary_left(), 0); // skips spaces, then "hello"
+    }
+
+    #[test]
+    fn word_boundary_left_consecutive_spaces() {
+        let mut ti = TextInput::with_value("hello   world");
+        ti.cursor = 13; // end
+        assert_eq!(ti.word_boundary_left(), 8); // start of "world"
+        ti.cursor = 8;
+        assert_eq!(ti.word_boundary_left(), 0); // start of "hello"
+    }
+
+    #[test]
+    fn word_boundary_right_multiple_words() {
+        let mut ti = TextInput::with_value("hello world foo");
+        ti.cursor = 0;
+        assert_eq!(ti.word_boundary_right(), 6); // past "hello "
+        ti.cursor = 6;
+        assert_eq!(ti.word_boundary_right(), 12); // past "world "
+        ti.cursor = 12;
+        assert_eq!(ti.word_boundary_right(), 15); // end
+    }
+
+    #[test]
+    fn word_boundary_right_from_middle_of_word() {
+        let mut ti = TextInput::with_value("hello world");
+        ti.cursor = 2; // middle of "hello"
+        assert_eq!(ti.word_boundary_right(), 6); // past "llo "
+    }
+
+    #[test]
+    fn word_boundary_right_trailing_spaces() {
+        let mut ti = TextInput::with_value("hello  ");
+        ti.cursor = 0;
+        assert_eq!(ti.word_boundary_right(), 7); // past "hello  " (end)
+    }
+
+    #[test]
+    fn word_boundary_right_at_end() {
+        let mut ti = TextInput::with_value("hello");
+        ti.cursor = 5;
+        assert_eq!(ti.word_boundary_right(), 5); // already at end
+    }
+
+    #[test]
+    fn move_word_left() {
+        let mut ti = TextInput::with_value("hello world");
+        ti.move_word_left();
+        assert_eq!(ti.cursor_byte(), 6);
+        assert_eq!(ti.cursor_pos(), 6);
+        ti.move_word_left();
+        assert_eq!(ti.cursor_byte(), 0);
+    }
+
+    #[test]
+    fn move_word_right() {
+        let mut ti = TextInput::with_value("hello world");
+        ti.move_home();
+        ti.move_word_right();
+        assert_eq!(ti.cursor_byte(), 6);
+        ti.move_word_right();
+        assert_eq!(ti.cursor_byte(), 11);
+    }
+
+    #[test]
+    fn delete_word_backward_basic() {
+        let mut ti = TextInput::with_value("hello world");
+        ti.delete_word_backward();
+        assert_eq!(ti.value(), "hello ");
+        assert_eq!(ti.cursor_byte(), 6);
+    }
+
+    #[test]
+    fn delete_word_backward_middle() {
+        let mut ti = TextInput::with_value("one two three");
+        ti.cursor = 7; // after "two"
+        ti.delete_word_backward();
+        assert_eq!(ti.value(), "one  three");
+        assert_eq!(ti.cursor_byte(), 4);
+    }
+
+    #[test]
+    fn delete_word_backward_at_start() {
+        let mut ti = TextInput::with_value("hello");
+        ti.move_home();
+        ti.delete_word_backward();
+        assert_eq!(ti.value(), "hello");
+        assert_eq!(ti.cursor_byte(), 0);
+    }
+
+    #[test]
+    fn delete_word_forward_basic() {
+        let mut ti = TextInput::with_value("hello world");
+        ti.move_home();
+        ti.delete_word_forward();
+        assert_eq!(ti.value(), "world");
+        assert_eq!(ti.cursor_byte(), 0);
+    }
+
+    #[test]
+    fn delete_word_forward_middle() {
+        let mut ti = TextInput::with_value("hello world foo");
+        ti.cursor = 6; // start of "world"
+        ti.delete_word_forward();
+        assert_eq!(ti.value(), "hello foo");
+        assert_eq!(ti.cursor_byte(), 6);
+    }
+
+    #[test]
+    fn delete_word_forward_at_end() {
+        let mut ti = TextInput::with_value("hello");
+        ti.delete_word_forward();
+        assert_eq!(ti.value(), "hello");
+    }
+
+    #[test]
+    fn delete_to_start() {
+        let mut ti = TextInput::with_value("hello world");
+        ti.cursor = 6; // after "hello "
+        ti.delete_to_start();
+        assert_eq!(ti.value(), "world");
+        assert_eq!(ti.cursor_byte(), 0);
+    }
+
+    #[test]
+    fn delete_to_start_at_beginning() {
+        let mut ti = TextInput::with_value("hello");
+        ti.move_home();
+        ti.delete_to_start();
+        assert_eq!(ti.value(), "hello");
+        assert_eq!(ti.cursor_byte(), 0);
+    }
+
+    #[test]
+    fn delete_to_end() {
+        let mut ti = TextInput::with_value("hello world");
+        ti.cursor = 5; // after "hello"
+        ti.delete_to_end();
+        assert_eq!(ti.value(), "hello");
+        assert_eq!(ti.cursor_byte(), 5);
+    }
+
+    #[test]
+    fn delete_to_end_at_end() {
+        let mut ti = TextInput::with_value("hello");
+        ti.delete_to_end();
+        assert_eq!(ti.value(), "hello");
+    }
+
+    #[test]
+    fn word_operations_with_unicode() {
+        let mut ti = TextInput::with_value("αβγ δεζ");
+        // cursor at end
+        ti.move_word_left();
+        assert_eq!(ti.cursor_pos(), 4); // start of "δεζ"
+        ti.move_word_left();
+        assert_eq!(ti.cursor_pos(), 0); // start of "αβγ"
+
+        ti.move_word_right();
+        // Should be past "αβγ "
+        let mut ti2 = TextInput::with_value("αβγ δεζ");
+        ti2.move_home();
+        ti2.delete_word_forward();
+        assert_eq!(ti2.value(), "δεζ");
+    }
+
+    // -----------------------------------------------------------------------
+    // key_to_message modifier tests
+    // -----------------------------------------------------------------------
+
+    fn ctrl_key(code: KeyCode) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
+    }
+
+    fn alt_key(code: KeyCode) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::ALT,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
+    }
+
+    #[test]
+    fn key_to_message_ctrl_left_right() {
+        assert_eq!(
+            TextInput::key_to_message(&ctrl_key(KeyCode::Left)),
+            Some(TextInputMessage::MoveWordLeft)
+        );
+        assert_eq!(
+            TextInput::key_to_message(&ctrl_key(KeyCode::Right)),
+            Some(TextInputMessage::MoveWordRight)
+        );
+    }
+
+    #[test]
+    fn key_to_message_ctrl_backspace_delete() {
+        assert_eq!(
+            TextInput::key_to_message(&ctrl_key(KeyCode::Backspace)),
+            Some(TextInputMessage::DeleteWordBackward)
+        );
+        assert_eq!(
+            TextInput::key_to_message(&ctrl_key(KeyCode::Delete)),
+            Some(TextInputMessage::DeleteWordForward)
+        );
+    }
+
+    #[test]
+    fn key_to_message_ctrl_w_deletes_word_backward() {
+        assert_eq!(
+            TextInput::key_to_message(&ctrl_key(KeyCode::Char('w'))),
+            Some(TextInputMessage::DeleteWordBackward)
+        );
+    }
+
+    #[test]
+    fn key_to_message_ctrl_u_deletes_to_start() {
+        assert_eq!(
+            TextInput::key_to_message(&ctrl_key(KeyCode::Char('u'))),
+            Some(TextInputMessage::DeleteToStart)
+        );
+    }
+
+    #[test]
+    fn key_to_message_ctrl_k_deletes_to_end() {
+        assert_eq!(
+            TextInput::key_to_message(&ctrl_key(KeyCode::Char('k'))),
+            Some(TextInputMessage::DeleteToEnd)
+        );
+    }
+
+    #[test]
+    fn key_to_message_ctrl_a_moves_home() {
+        assert_eq!(
+            TextInput::key_to_message(&ctrl_key(KeyCode::Char('a'))),
+            Some(TextInputMessage::MoveHome)
+        );
+    }
+
+    #[test]
+    fn key_to_message_ctrl_e_moves_end() {
+        assert_eq!(
+            TextInput::key_to_message(&ctrl_key(KeyCode::Char('e'))),
+            Some(TextInputMessage::MoveEnd)
+        );
+    }
+
+    #[test]
+    fn key_to_message_ctrl_random_char_returns_none() {
+        // Ctrl+z, Ctrl+x, etc. should NOT insert characters
+        assert_eq!(
+            TextInput::key_to_message(&ctrl_key(KeyCode::Char('z'))),
+            None
+        );
+        assert_eq!(
+            TextInput::key_to_message(&ctrl_key(KeyCode::Char('x'))),
+            None
+        );
+        assert_eq!(
+            TextInput::key_to_message(&ctrl_key(KeyCode::Char('q'))),
+            None
+        );
+    }
+
+    #[test]
+    fn key_to_message_alt_left_right() {
+        assert_eq!(
+            TextInput::key_to_message(&alt_key(KeyCode::Left)),
+            Some(TextInputMessage::MoveWordLeft)
+        );
+        assert_eq!(
+            TextInput::key_to_message(&alt_key(KeyCode::Right)),
+            Some(TextInputMessage::MoveWordRight)
+        );
+    }
+
+    #[test]
+    fn key_to_message_alt_b_f_word_movement() {
+        assert_eq!(
+            TextInput::key_to_message(&alt_key(KeyCode::Char('b'))),
+            Some(TextInputMessage::MoveWordLeft)
+        );
+        assert_eq!(
+            TextInput::key_to_message(&alt_key(KeyCode::Char('f'))),
+            Some(TextInputMessage::MoveWordRight)
+        );
+    }
+
+    #[test]
+    fn key_to_message_alt_backspace_deletes_word() {
+        assert_eq!(
+            TextInput::key_to_message(&alt_key(KeyCode::Backspace)),
+            Some(TextInputMessage::DeleteWordBackward)
+        );
+    }
+
+    #[test]
+    fn key_to_message_alt_d_deletes_word_forward() {
+        assert_eq!(
+            TextInput::key_to_message(&alt_key(KeyCode::Char('d'))),
+            Some(TextInputMessage::DeleteWordForward)
+        );
+    }
+
+    #[test]
+    fn key_to_message_alt_random_char_returns_none() {
+        assert_eq!(
+            TextInput::key_to_message(&alt_key(KeyCode::Char('z'))),
+            None
+        );
+        assert_eq!(
+            TextInput::key_to_message(&alt_key(KeyCode::Char('x'))),
+            None
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Update tests for new message variants
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn update_move_word_left_right() {
+        let mut ti = TextInput::with_value("hello world");
+        ti.update(TextInputMessage::MoveWordLeft);
+        assert_eq!(ti.cursor_byte(), 6);
+        ti.update(TextInputMessage::MoveWordRight);
+        assert_eq!(ti.cursor_byte(), 11);
+    }
+
+    #[test]
+    fn update_delete_word_backward() {
+        let mut ti = TextInput::with_value("hello world");
+        ti.update(TextInputMessage::DeleteWordBackward);
+        assert_eq!(ti.value(), "hello ");
+    }
+
+    #[test]
+    fn update_delete_word_forward() {
+        let mut ti = TextInput::with_value("hello world");
+        ti.update(TextInputMessage::MoveHome);
+        ti.update(TextInputMessage::DeleteWordForward);
+        assert_eq!(ti.value(), "world");
+    }
+
+    #[test]
+    fn update_delete_to_start() {
+        let mut ti = TextInput::with_value("hello world");
+        ti.cursor = 6;
+        ti.update(TextInputMessage::DeleteToStart);
+        assert_eq!(ti.value(), "world");
+        assert_eq!(ti.cursor_byte(), 0);
+    }
+
+    #[test]
+    fn update_delete_to_end() {
+        let mut ti = TextInput::with_value("hello world");
+        ti.cursor = 5;
+        ti.update(TextInputMessage::DeleteToEnd);
+        assert_eq!(ti.value(), "hello");
+        assert_eq!(ti.cursor_byte(), 5);
     }
 }
