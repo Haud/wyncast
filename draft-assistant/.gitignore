@@ -2,3 +2,5 @@ target/
 config/
 *.db
 *.log
+extension/.amo-credentials
+extension/web-ext-artifacts/
