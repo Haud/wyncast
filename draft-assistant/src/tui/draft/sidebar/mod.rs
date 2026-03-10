@@ -8,10 +8,8 @@ use ratatui::Frame;
 use crate::draft::pick::Position;
 use crate::draft::roster::RosterSlot;
 use crate::tui::action::Action;
-use crate::tui::BudgetStatus;
 use crate::tui::subscription::Subscription;
 use crate::tui::subscription::keybinding::KeybindManager;
-use crate::tui::widgets;
 use crate::valuation::scarcity::ScarcityEntry;
 
 use plan::{PlanPanel, PlanPanelMessage};
@@ -34,8 +32,8 @@ pub enum SidebarMessage {
 // Sidebar
 // ---------------------------------------------------------------------------
 
-/// Mid-level component composing the four sidebar sections:
-/// roster, scarcity, budget (stateless), and nomination plan.
+/// Mid-level component composing the three sidebar sections:
+/// roster, scarcity, and nomination plan.
 pub struct Sidebar {
     pub roster: RosterPanel,
     pub scarcity: ScarcityPanel,
@@ -70,30 +68,23 @@ impl Sidebar {
         }
     }
 
-    /// Render all four sidebar sections into their respective areas.
-    ///
-    /// Budget rendering delegates to the stateless `widgets::budget::render()`.
+    /// Render the three sidebar sections into their respective areas.
     #[allow(clippy::too_many_arguments)]
     pub fn view(
         &self,
         frame: &mut Frame,
         roster_area: Rect,
         scarcity_area: Rect,
-        budget_area: Rect,
         plan_area: Rect,
         my_roster: &[RosterSlot],
         positional_scarcity: &[ScarcityEntry],
         nominated_position: Option<&Position>,
-        budget: &BudgetStatus,
-        budget_scroll_offset: usize,
         roster_focused: bool,
         scarcity_focused: bool,
-        budget_focused: bool,
         plan_focused: bool,
     ) {
         self.roster.view(frame, roster_area, my_roster, nominated_position, roster_focused);
         self.scarcity.view(frame, scarcity_area, positional_scarcity, nominated_position, scarcity_focused);
-        widgets::budget::render(frame, budget_area, budget, budget_scroll_offset, budget_focused);
         self.plan.view(frame, plan_area, plan_focused);
     }
 }

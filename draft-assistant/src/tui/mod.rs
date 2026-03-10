@@ -50,7 +50,7 @@ pub use text_input::{TextInput, TextInputMessage};
 /// clears focus back to `None`.
 ///
 /// The cycle order follows left-to-right, then top-to-bottom within columns:
-/// `None -> MainPanel -> Roster -> Scarcity -> Budget -> NominationPlan -> None`
+/// `None -> MainPanel -> Budget -> Roster -> Scarcity -> NominationPlan -> None`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusPanel {
     /// The active tab's content area (left side).
@@ -59,7 +59,7 @@ pub enum FocusPanel {
     Roster,
     /// Sidebar: Positional Scarcity panel.
     Scarcity,
-    /// Sidebar: Budget panel.
+    /// Left column bottom: Budget panel.
     Budget,
     /// Sidebar: Nomination Plan panel.
     NominationPlan,
@@ -69,14 +69,14 @@ impl FocusPanel {
     /// Ordered list of panels for cycling.
     const CYCLE: &[FocusPanel] = &[
         FocusPanel::MainPanel,
+        FocusPanel::Budget,
         FocusPanel::Roster,
         FocusPanel::Scarcity,
-        FocusPanel::Budget,
         FocusPanel::NominationPlan,
     ];
 
     /// Advance focus forward:
-    /// None -> MainPanel -> Roster -> Scarcity -> Budget -> NominationPlan -> None
+    /// None -> MainPanel -> Budget -> Roster -> Scarcity -> NominationPlan -> None
     pub fn next(current: Option<FocusPanel>) -> Option<FocusPanel> {
         match current {
             None => Some(Self::CYCLE[0]),
@@ -91,7 +91,7 @@ impl FocusPanel {
     }
 
     /// Advance focus backward:
-    /// None -> NominationPlan -> Budget -> Scarcity -> Roster -> MainPanel -> None
+    /// None -> NominationPlan -> Scarcity -> Roster -> Budget -> MainPanel -> None
     pub fn prev(current: Option<FocusPanel>) -> Option<FocusPanel> {
         match current {
             None => Some(*Self::CYCLE.last().unwrap()),
@@ -431,20 +431,20 @@ mod tests {
     #[test]
     fn focus_next_cycles_forward() {
         assert_eq!(FocusPanel::next(None), Some(FocusPanel::MainPanel));
-        assert_eq!(FocusPanel::next(Some(FocusPanel::MainPanel)), Some(FocusPanel::Roster));
+        assert_eq!(FocusPanel::next(Some(FocusPanel::MainPanel)), Some(FocusPanel::Budget));
+        assert_eq!(FocusPanel::next(Some(FocusPanel::Budget)), Some(FocusPanel::Roster));
         assert_eq!(FocusPanel::next(Some(FocusPanel::Roster)), Some(FocusPanel::Scarcity));
-        assert_eq!(FocusPanel::next(Some(FocusPanel::Scarcity)), Some(FocusPanel::Budget));
-        assert_eq!(FocusPanel::next(Some(FocusPanel::Budget)), Some(FocusPanel::NominationPlan));
+        assert_eq!(FocusPanel::next(Some(FocusPanel::Scarcity)), Some(FocusPanel::NominationPlan));
         assert_eq!(FocusPanel::next(Some(FocusPanel::NominationPlan)), None);
     }
 
     #[test]
     fn focus_prev_cycles_backward() {
         assert_eq!(FocusPanel::prev(None), Some(FocusPanel::NominationPlan));
-        assert_eq!(FocusPanel::prev(Some(FocusPanel::NominationPlan)), Some(FocusPanel::Budget));
-        assert_eq!(FocusPanel::prev(Some(FocusPanel::Budget)), Some(FocusPanel::Scarcity));
+        assert_eq!(FocusPanel::prev(Some(FocusPanel::NominationPlan)), Some(FocusPanel::Scarcity));
         assert_eq!(FocusPanel::prev(Some(FocusPanel::Scarcity)), Some(FocusPanel::Roster));
-        assert_eq!(FocusPanel::prev(Some(FocusPanel::Roster)), Some(FocusPanel::MainPanel));
+        assert_eq!(FocusPanel::prev(Some(FocusPanel::Roster)), Some(FocusPanel::Budget));
+        assert_eq!(FocusPanel::prev(Some(FocusPanel::Budget)), Some(FocusPanel::MainPanel));
         assert_eq!(FocusPanel::prev(Some(FocusPanel::MainPanel)), None);
     }
 

@@ -8,10 +8,10 @@
 // | Nomination Banner (4 rows)                        |
 // +-------------------------+------------------------+
 // | Main Panel (65%)         | Sidebar (35%)          |
-// |                          | +- Roster (30%) ------+|
-// |                          | +- Scarcity (25%) ----+|
-// |                          | +- Budget (20%) ------+|
-// |                          | +- Nom Plan (25%) ----+|
+// | (tabs: analysis/avail/   | +- Roster (33%) ------+|
+// |  log/teams)              | +- Scarcity (33%) ----+|
+// |                          | +- Nom Plan (34%) ----+|
+// +- Budget (7 rows) -------+                        |
 // +-------------------------+------------------------+
 // | Help Bar (1 row)                                  |
 // +--------------------------------------------------+
@@ -31,7 +31,7 @@ pub struct AppLayout {
     pub roster: Rect,
     /// Right sidebar upper-middle: positional scarcity index.
     pub scarcity: Rect,
-    /// Right sidebar lower-middle: budget/inflation summary.
+    /// Left column bottom: budget/inflation summary.
     pub budget: Rect,
     /// Right sidebar bottom: nomination plan from LLM.
     pub nomination_plan: Rect,
@@ -61,7 +61,7 @@ pub fn build_layout(area: Rect) -> AppLayout {
     let middle = vertical[2];
     let help_bar = vertical[3];
 
-    // Horizontal: main panel (65%) | sidebar (35%)
+    // Horizontal: left column (65%) | sidebar (35%)
     let horizontal = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -70,24 +70,34 @@ pub fn build_layout(area: Rect) -> AppLayout {
         ])
         .split(middle);
 
-    let main_panel = horizontal[0];
+    let left_col = horizontal[0];
     let sidebar = horizontal[1];
 
-    // Sidebar vertical: roster (30%) | scarcity (25%) | budget (20%) | nomination_plan (25%)
+    // Left column vertical: main panel (fill) | budget (7 rows)
+    let left_sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),    // main panel fills remaining space
+            Constraint::Length(7), // budget: 5 data lines + 2 border rows
+        ])
+        .split(left_col);
+
+    let main_panel = left_sections[0];
+    let budget = left_sections[1];
+
+    // Sidebar vertical: roster (33%) | scarcity (33%) | nomination_plan (34%)
     let sidebar_sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage(30),
-            Constraint::Percentage(25),
-            Constraint::Percentage(20),
-            Constraint::Percentage(25),
+            Constraint::Percentage(33),
+            Constraint::Percentage(33),
+            Constraint::Percentage(34),
         ])
         .split(sidebar);
 
     let roster = sidebar_sections[0];
     let scarcity = sidebar_sections[1];
-    let budget = sidebar_sections[2];
-    let nomination_plan = sidebar_sections[3];
+    let nomination_plan = sidebar_sections[2];
 
     AppLayout {
         status_bar,
@@ -183,15 +193,10 @@ mod tests {
             layout.roster.y < layout.scarcity.y,
             "Roster should be above scarcity"
         );
-        // Scarcity should be above budget
+        // Scarcity should be above nomination_plan
         assert!(
-            layout.scarcity.y < layout.budget.y,
-            "Scarcity should be above budget"
-        );
-        // Budget should be above nomination_plan
-        assert!(
-            layout.budget.y < layout.nomination_plan.y,
-            "Budget should be above nomination_plan"
+            layout.scarcity.y < layout.nomination_plan.y,
+            "Scarcity should be above nomination_plan"
         );
     }
 
@@ -203,11 +208,7 @@ mod tests {
             "Sidebar sections should have the same width"
         );
         assert_eq!(
-            layout.scarcity.width, layout.budget.width,
-            "Sidebar sections should have the same width"
-        );
-        assert_eq!(
-            layout.budget.width, layout.nomination_plan.width,
+            layout.scarcity.width, layout.nomination_plan.width,
             "Sidebar sections should have the same width"
         );
     }

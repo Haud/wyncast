@@ -169,7 +169,7 @@ impl DraftScreen {
             main_focused,
         );
 
-        // Sidebar: roster, scarcity, budget, nomination plan
+        // Sidebar: roster, scarcity, nomination plan
         let nominated_position = self
             .current_nomination
             .as_ref()
@@ -178,17 +178,22 @@ impl DraftScreen {
             frame,
             layout.roster,
             layout.scarcity,
-            layout.budget,
             layout.nomination_plan,
             &self.my_roster,
             &self.positional_scarcity,
             nominated_position.as_ref(),
-            &self.budget,
-            self.scroll_offset.get("budget").copied().unwrap_or(0),
             roster_focused,
             scarcity_focused,
-            budget_focused,
             nom_plan_focused,
+        );
+
+        // Budget: bottom of left column
+        widgets::budget::render(
+            frame,
+            layout.budget,
+            &self.budget,
+            self.scroll_offset.get("budget").copied().unwrap_or(0),
+            budget_focused,
         );
 
         // Help bar: render keybind hints passed in from App (from kb_manager).
@@ -427,9 +432,9 @@ impl DraftScreen {
             let fp_disc: u8 = match self.focused_panel {
                 None => 0,
                 Some(FocusPanel::MainPanel) => 1,
-                Some(FocusPanel::Roster) => 2,
-                Some(FocusPanel::Scarcity) => 3,
-                Some(FocusPanel::Budget) => 4,
+                Some(FocusPanel::Budget) => 2,
+                Some(FocusPanel::Roster) => 3,
+                Some(FocusPanel::Scarcity) => 4,
                 Some(FocusPanel::NominationPlan) => 5,
             };
             fp_disc.hash(&mut hasher);
