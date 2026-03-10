@@ -403,6 +403,7 @@ mod tests {
             total_zscore,
             category_zscores: default_hitter_zscores(total_zscore),
             vor: 0.0,
+            initial_vor: 0.0,
             best_position: None,
             dollar_value: 0.0,
         }
@@ -438,6 +439,7 @@ mod tests {
             total_zscore,
             category_zscores: default_pitcher_zscores(total_zscore),
             vor: 0.0,
+            initial_vor: 0.0,
             best_position: None,
             dollar_value: 0.0,
         }

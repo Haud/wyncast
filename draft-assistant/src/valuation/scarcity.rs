@@ -151,7 +151,7 @@ pub fn compute_scarcity(
         // pitcher_type for players that lack ESPN position overlay data.
         let mut eligible: Vec<f64> = available_players
             .iter()
-            .filter(|p| p.vor > 0.0 && player_eligible_at(p, pos))
+            .filter(|p| p.initial_vor > 0.0 && player_eligible_at(p, pos))
             .map(|p| p.vor)
             .collect();
 
@@ -294,6 +294,7 @@ mod tests {
                 r: 0.5, hr: 0.3, rbi: 0.4, bb: 0.6, sb: 0.2, avg: 0.1, total: vor + 2.0,
             }),
             vor,
+            initial_vor: vor,
             best_position: best_pos,
             dollar_value: vor.max(1.0) * 5.0 + 1.0,
         }
@@ -319,6 +320,7 @@ mod tests {
                 k: 0.5, w: 0.3, sv: 0.0, hd: 0.0, era: 0.4, whip: 0.3, total: vor + 1.0,
             }),
             vor,
+            initial_vor: vor,
             best_position: Some(pos),
             dollar_value: vor.max(1.0) * 5.0 + 1.0,
         }

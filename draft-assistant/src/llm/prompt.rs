@@ -1049,6 +1049,7 @@ mod tests {
                 total: vor + 2.0,
             }),
             vor,
+            initial_vor: 0.0,
             best_position: positions.first().copied(),
             dollar_value: dollar,
         }
@@ -1088,6 +1089,7 @@ mod tests {
                 total: vor + 1.0,
             }),
             vor,
+            initial_vor: 0.0,
             best_position: Some(pos),
             dollar_value: dollar,
         }

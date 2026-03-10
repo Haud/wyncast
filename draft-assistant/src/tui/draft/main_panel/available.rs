@@ -381,6 +381,7 @@ mod tests {
                 total: 3.5,
             }),
             vor: 5.0,
+            initial_vor: 0.0,
             best_position: None,
             dollar_value: dollar,
         }

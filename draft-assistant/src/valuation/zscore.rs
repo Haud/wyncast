@@ -223,6 +223,10 @@ pub struct PlayerValuation {
     pub total_zscore: f64,
     pub category_zscores: CategoryZScores,
     pub vor: f64,
+    /// Snapshot of VOR from the initial (full-pool) computation.
+    /// Used by scarcity calculation so that shrinking the available pool
+    /// does not inflate the count of players "above replacement."
+    pub initial_vor: f64,
     pub best_position: Option<Position>,
     pub dollar_value: f64,
 }
@@ -584,6 +588,7 @@ pub fn compute_initial_zscores(
                     total: combined_total,
                 }),
                 vor: 0.0,
+                initial_vor: 0.0,
                 best_position: None,
                 dollar_value: 0.0,
             });
@@ -636,6 +641,7 @@ pub fn compute_initial_zscores(
                 total_zscore: zscores.total,
                 category_zscores: CategoryZScores::Hitter(zscores),
                 vor: 0.0,
+                initial_vor: 0.0,
                 best_position: None,
                 dollar_value: 0.0,
             });
@@ -680,6 +686,7 @@ pub fn compute_initial_zscores(
             total_zscore: zscores.total,
             category_zscores: CategoryZScores::Pitcher(zscores),
             vor: 0.0,
+            initial_vor: 0.0,
             best_position: None,
             dollar_value: 0.0,
         });

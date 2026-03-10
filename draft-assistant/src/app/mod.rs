@@ -970,6 +970,7 @@ mod tests {
                 total: 0.0,
             }),
             vor: 0.0,
+            initial_vor: 0.0,
             best_position: None,
             dollar_value: 0.0,
         }
@@ -1023,6 +1024,7 @@ mod tests {
                 total: 0.0,
             }),
             vor: 0.0,
+            initial_vor: 0.0,
             best_position: None,
             dollar_value: 0.0,
         }
