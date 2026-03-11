@@ -194,6 +194,18 @@ fn create_test_app_state_from_fixtures() -> AppState {
     AppState::new(config, draft_state, available, projections, db, draft_id, llm_client, llm_tx, None, AppMode::Draft, onboarding_manager)
 }
 
+/// Drain the initial `StateSnapshot` that `run()` sends before entering
+/// the event loop. Tests that spawn `run()` and then assert on the first
+/// UI update must call this first, otherwise they'll see the snapshot
+/// instead of the event-driven update they expect.
+async fn drain_initial_snapshot(ui_rx: &mut mpsc::Receiver<UiUpdate>) {
+    let update = ui_rx.recv().await.expect("should receive initial snapshot");
+    assert!(
+        matches!(update, UiUpdate::StateSnapshot(_)),
+        "Expected initial StateSnapshot, got {:?}", update
+    );
+}
+
 // ===========================================================================
 // Mock draft event generator
 // ===========================================================================
@@ -1018,6 +1030,7 @@ async fn event_loop_processes_state_update_with_picks() {
     let (ui_tx, mut ui_rx) = mpsc::channel(64);
 
     let handle = tokio::spawn(app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+    drain_initial_snapshot(&mut ui_rx).await;
 
     // Send a state update with 1 pick and a nomination
     let events = generate_mock_draft_events();
@@ -1063,6 +1076,7 @@ async fn event_loop_handles_connection_lifecycle() {
     let (ui_tx, mut ui_rx) = mpsc::channel(64);
 
     let handle = tokio::spawn(app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+    drain_initial_snapshot(&mut ui_rx).await;
 
     // Send connected
     ws_tx
@@ -1102,6 +1116,7 @@ async fn event_loop_incremental_state_updates() {
     let (ui_tx, mut ui_rx) = mpsc::channel(64);
 
     let handle = tokio::spawn(app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+    drain_initial_snapshot(&mut ui_rx).await;
 
     let events = generate_mock_draft_events();
 
@@ -2015,6 +2030,7 @@ async fn event_loop_budget_only_update_triggers_snapshot() {
     let (ui_tx, mut ui_rx) = mpsc::channel(64);
 
     let handle = tokio::spawn(app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+    drain_initial_snapshot(&mut ui_rx).await;
 
     // First: send a state update with 1 pick + team budgets (initial registration)
     let events = generate_mock_draft_events();
@@ -2103,6 +2119,7 @@ async fn event_loop_same_budgets_no_redundant_snapshot() {
     let (ui_tx, mut ui_rx) = mpsc::channel(64);
 
     let handle = tokio::spawn(app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+    drain_initial_snapshot(&mut ui_rx).await;
 
     // First: send a state update with 1 pick + team budgets
     let events = generate_mock_draft_events();
@@ -2670,6 +2687,7 @@ async fn event_loop_premature_nomination_does_not_trigger_update() {
     let (ui_tx, mut ui_rx) = mpsc::channel(64);
 
     let handle = tokio::spawn(app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+    drain_initial_snapshot(&mut ui_rx).await;
 
     let events = generate_mock_draft_events();
     let budgets: Vec<(String, u32)> = (1..=10)
@@ -2752,7 +2770,8 @@ async fn multiple_sequential_llm_analysis_requests() {
         app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state).await
     });
 
-    tokio::task::yield_now().await;
+    // Drain the initial snapshot sent before the event loop
+    drain_initial_snapshot(&mut ui_rx).await;
 
     // --- Nomination 1: tokens and completion ---
     llm_tx
@@ -2823,6 +2842,7 @@ async fn event_loop_confirmed_nomination_triggers_update() {
     let (ui_tx, mut ui_rx) = mpsc::channel(64);
 
     let handle = tokio::spawn(app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+    drain_initial_snapshot(&mut ui_rx).await;
 
     let events = generate_mock_draft_events();
     let budgets: Vec<(String, u32)> = (1..=10)
@@ -2890,7 +2910,8 @@ async fn cancel_analysis_and_start_new_one() {
         app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state).await
     });
 
-    tokio::task::yield_now().await;
+    // Drain the initial snapshot sent before the event loop
+    drain_initial_snapshot(&mut ui_rx).await;
 
     // Send a token from task 1 -- should be processed
     llm_tx
@@ -2958,6 +2979,7 @@ async fn event_loop_bid_update_on_confirmed_nomination_works() {
     let (ui_tx, mut ui_rx) = mpsc::channel(64);
 
     let handle = tokio::spawn(app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+    drain_initial_snapshot(&mut ui_rx).await;
 
     let events = generate_mock_draft_events();
     let budgets: Vec<(String, u32)> = (1..=10)
@@ -3033,6 +3055,7 @@ async fn event_loop_nomination_clearing_works() {
     let (ui_tx, mut ui_rx) = mpsc::channel(64);
 
     let handle = tokio::spawn(app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+    drain_initial_snapshot(&mut ui_rx).await;
 
     let events = generate_mock_draft_events();
     let budgets: Vec<(String, u32)> = (1..=10)
@@ -3162,6 +3185,7 @@ async fn premature_then_confirmed_nomination_same_player() {
     let (ui_tx, mut ui_rx) = mpsc::channel(64);
 
     let handle = tokio::spawn(app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+    drain_initial_snapshot(&mut ui_rx).await;
 
     let events = generate_mock_draft_events();
     let budgets: Vec<(String, u32)> = (1..=10)
@@ -3269,7 +3293,8 @@ async fn error_recovery_allows_subsequent_analyses() {
         app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state).await
     });
 
-    tokio::task::yield_now().await;
+    // Drain the initial snapshot sent before the event loop
+    drain_initial_snapshot(&mut ui_rx).await;
 
     // --- Send an error event ---
     llm_tx
@@ -3333,7 +3358,8 @@ async fn llm_channel_stays_open_across_nominations() {
         app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state).await
     });
 
-    tokio::task::yield_now().await;
+    // Drain the initial snapshot sent before the event loop
+    drain_initial_snapshot(&mut ui_rx).await;
 
     // Complete analysis for nomination 1
     llm_tx
@@ -3392,6 +3418,7 @@ async fn premature_player_a_then_confirmed_player_b() {
     let (ui_tx, mut ui_rx) = mpsc::channel(64);
 
     let handle = tokio::spawn(app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+    drain_initial_snapshot(&mut ui_rx).await;
 
     let events = generate_mock_draft_events();
     let budgets: Vec<(String, u32)> = (1..=10)
@@ -3496,7 +3523,8 @@ async fn stale_generation_events_discarded() {
         app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state).await
     });
 
-    tokio::task::yield_now().await;
+    // Drain the initial snapshot sent before the event loop
+    drain_initial_snapshot(&mut ui_rx).await;
 
     // Send stale events from old request IDs (1, 3, 4) -- should all be
     // silently discarded
@@ -3547,7 +3575,8 @@ async fn planning_error_surfaced_to_tui() {
         app::run(ws_rx, llm_rx, cmd_rx, ui_tx, state).await
     });
 
-    tokio::task::yield_now().await;
+    // Drain the initial snapshot sent before the event loop
+    drain_initial_snapshot(&mut ui_rx).await;
 
     // Send planning token then error
     llm_tx

@@ -642,6 +642,11 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     info!("Application event loop started");
 
+    // Send initial snapshot so the TUI has available players immediately,
+    // before any WebSocket events arrive from the extension.
+    let initial_snapshot = state.build_snapshot();
+    let _ = ui_tx.send(UiUpdate::StateSnapshot(Box::new(initial_snapshot))).await;
+
     // Track whether the LLM channel is still open. When it closes we replace
     // the recv future with a pending future so tokio::select! never spins on it.
     let mut llm_open = true;
@@ -1150,6 +1155,18 @@ mod tests {
         AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx, None, AppMode::Draft, test_onboarding_manager())
     }
 
+    /// Drain the initial `StateSnapshot` that `run()` sends before entering
+    /// the event loop. Tests that spawn `run()` and then assert on the first
+    /// UI update must call this first, otherwise they'll see the snapshot
+    /// instead of the event-driven update they expect.
+    async fn drain_initial_snapshot(ui_rx: &mut mpsc::Receiver<UiUpdate>) {
+        let update = ui_rx.recv().await.expect("should receive initial snapshot");
+        assert!(
+            matches!(update, UiUpdate::StateSnapshot(_)),
+            "Expected initial StateSnapshot, got {:?}", update
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Tests: State diff detection -> pick recording -> recalculation
     // -----------------------------------------------------------------------
@@ -1626,6 +1643,7 @@ mod tests {
         let (ui_tx, mut ui_rx) = mpsc::channel(64);
 
         let handle = tokio::spawn(run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+        drain_initial_snapshot(&mut ui_rx).await;
 
         // Send connected event
         ws_tx
@@ -1678,8 +1696,8 @@ mod tests {
             run(ws_rx, llm_rx, cmd_rx, ui_tx, state).await
         });
 
-        // Give the loop a moment to start
-        tokio::task::yield_now().await;
+        // Drain the initial snapshot sent before the event loop
+        drain_initial_snapshot(&mut ui_rx).await;
 
         // Send LLM token with matching generation
         llm_tx
@@ -1713,6 +1731,7 @@ mod tests {
         let (ui_tx, mut ui_rx) = mpsc::channel(64);
 
         let handle = tokio::spawn(run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+        drain_initial_snapshot(&mut ui_rx).await;
 
         // Send a state update with a new pick and nomination
         let state_update = serde_json::json!({
@@ -2317,6 +2336,7 @@ mod tests {
         // receive the UI update, then send Quit. The state is owned by
         // the event loop, so we verify behavior through UI updates.
         let handle = tokio::spawn(run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+        drain_initial_snapshot(&mut ui_rx).await;
 
         ws_tx
             .send(WsEvent::Connected { addr: "test:1234".into() })
@@ -2343,6 +2363,7 @@ mod tests {
         let (ui_tx, mut ui_rx) = mpsc::channel(64);
 
         let handle = tokio::spawn(run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+        drain_initial_snapshot(&mut ui_rx).await;
 
         // Connect first
         ws_tx
@@ -2375,6 +2396,7 @@ mod tests {
         let (ui_tx, mut ui_rx) = mpsc::channel(64);
 
         let handle = tokio::spawn(run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+        drain_initial_snapshot(&mut ui_rx).await;
 
         // Connect
         ws_tx
@@ -2429,6 +2451,7 @@ mod tests {
         let (ui_tx, mut ui_rx) = mpsc::channel(64);
 
         let handle = tokio::spawn(run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+        drain_initial_snapshot(&mut ui_rx).await;
 
         // Connect
         ws_tx
@@ -2491,6 +2514,7 @@ mod tests {
         let (ui_tx, mut ui_rx) = mpsc::channel(64);
 
         let handle = tokio::spawn(run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+        drain_initial_snapshot(&mut ui_rx).await;
 
         // Connect
         ws_tx
@@ -2554,6 +2578,7 @@ mod tests {
         let (ui_tx, mut ui_rx) = mpsc::channel(64);
 
         let handle = tokio::spawn(run(ws_rx, llm_rx, cmd_rx, ui_tx, state));
+        drain_initial_snapshot(&mut ui_rx).await;
 
         // Connect
         ws_tx
