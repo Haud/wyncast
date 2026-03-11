@@ -133,14 +133,6 @@ pub(super) async fn handle_full_state_sync(
             state.draft_state.picks.len(),
         );
 
-        // Recalculate valuations with the updated pool
-        crate::valuation::recalculate_all(
-            &mut state.available_players,
-            &state.config.league,
-            &state.config.strategy,
-            &state.draft_state,
-        );
-
         // Update inflation and scarcity
         state.inflation.update(
             &state.available_players,
