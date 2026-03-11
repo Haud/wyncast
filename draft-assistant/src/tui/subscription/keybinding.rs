@@ -90,6 +90,11 @@ pub fn alt(code: KeyCode) -> KeyTrigger {
     KeyTrigger::Exact(code, KeyModifiers::ALT)
 }
 
+/// Helper: Shift+key.
+pub fn shift(code: KeyCode) -> KeyTrigger {
+    KeyTrigger::Exact(code, KeyModifiers::SHIFT)
+}
+
 // ---------------------------------------------------------------------------
 // KeyBindingEntry (internal)
 // ---------------------------------------------------------------------------
