@@ -13,6 +13,7 @@ use draft_assistant::db::Database;
 use draft_assistant::draft::pick::{DraftPick, Position};
 use draft_assistant::draft::state::DraftState;
 use draft_assistant::llm::client::LlmClient;
+use draft_assistant::llm::prompt::BudgetContext;
 use draft_assistant::protocol::*;
 use draft_assistant::valuation::projections::{AllProjections, PitcherType};
 use draft_assistant::valuation::zscore::PlayerValuation;
@@ -688,6 +689,18 @@ fn nomination_analysis_prompt_contains_required_sections() {
         eligible_slots: vec![],
     };
 
+    let budget = BudgetContext {
+        budget_remaining: 260,
+        empty_slots: 26,
+        max_safe_bid: 235,
+        avg_per_slot: 10.0,
+        pick_number: 1,
+        total_picks: 260,
+        engine_bid_floor: 21,
+        engine_bid_ceiling: 39,
+        engine_verdict: "STRONG TARGET".to_string(),
+    };
+
     let prompt = draft_assistant::llm::prompt::build_nomination_analysis_prompt(
         &player,
         &nomination,
@@ -697,6 +710,7 @@ fn nomination_analysis_prompt_contains_required_sections() {
         &state.available_players,
         &state.draft_state,
         &state.inflation,
+        &budget,
     );
 
     // Verify required sections are present
@@ -740,6 +754,18 @@ fn nomination_analysis_prompt_contains_required_sections() {
 fn nomination_planning_prompt_contains_required_sections() {
     let state = create_test_app_state_from_fixtures();
 
+    let budget = BudgetContext {
+        budget_remaining: 260,
+        empty_slots: 26,
+        max_safe_bid: 235,
+        avg_per_slot: 10.0,
+        pick_number: 1,
+        total_picks: 260,
+        engine_bid_floor: 0,
+        engine_bid_ceiling: 0,
+        engine_verdict: String::new(),
+    };
+
     let prompt = draft_assistant::llm::prompt::build_nomination_planning_prompt(
         &state.draft_state.my_team().unwrap().roster,
         &state.category_needs,
@@ -747,6 +773,7 @@ fn nomination_planning_prompt_contains_required_sections() {
         &state.available_players,
         &state.draft_state,
         &state.inflation,
+        &budget,
     );
 
     // Verify required sections are present
@@ -1516,6 +1543,18 @@ fn end_to_end_pipeline() {
             eligible_slots: vec![],
         };
 
+        let budget = BudgetContext {
+            budget_remaining: 260,
+            empty_slots: 26,
+            max_safe_bid: 235,
+            avg_per_slot: 10.0,
+            pick_number: state.draft_state.pick_count + 1,
+            total_picks: state.draft_state.total_picks,
+            engine_bid_floor: 21,
+            engine_bid_ceiling: 39,
+            engine_verdict: "STRONG TARGET".to_string(),
+        };
+
         let prompt = draft_assistant::llm::prompt::build_nomination_analysis_prompt(
             player,
             &nomination,
@@ -1525,6 +1564,7 @@ fn end_to_end_pipeline() {
             &state.available_players,
             &state.draft_state,
             &state.inflation,
+            &budget,
         );
 
         assert!(!prompt.is_empty(), "Prompt should not be empty");

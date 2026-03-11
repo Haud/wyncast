@@ -27,7 +27,8 @@ use crate::draft::state::{
     StateUpdatePayload, TeamBudgetPayload,
 };
 use crate::llm::client::LlmClient;
-use crate::llm::prompt;
+use crate::llm::prompt::{self, BudgetContext};
+
 use crate::onboarding::{OnboardingManager, OnboardingProgress, RealFileSystem};
 use crate::protocol::{
     AppMode, AppSnapshot, ConnectionStatus, LlmEvent, NominationInfo,
@@ -382,7 +383,7 @@ impl AppState {
         self.draft_state.current_nomination = Some(nomination.clone());
 
         // Trigger LLM nomination analysis (sets llm_mode, clears text, spawns task)
-        self.trigger_nomination_analysis(nomination);
+        self.trigger_nomination_analysis(nomination, analysis.as_ref());
 
         analysis
     }
@@ -424,7 +425,7 @@ impl AppState {
     ///
     /// Cancels any in-flight analysis task, builds the analysis prompt from
     /// current state, and spawns a streaming task via the request manager.
-    pub fn trigger_nomination_analysis(&mut self, nomination: &ActiveNomination) {
+    pub fn trigger_nomination_analysis(&mut self, nomination: &ActiveNomination, analysis: Option<&InstantAnalysis>) {
         // Secondary guard: if already analyzing this exact player, skip to avoid
         // canceling and restarting the active LLM task. This is a backstop for
         // cases where preserve_llm in handle_full_state_sync doesn't fully prevent
@@ -457,6 +458,10 @@ impl AppState {
                 return;
             }
         };
+
+        // Extract budget info from my_team before the borrow ends
+        let my_team_budget = my_team.budget_remaining;
+        let my_roster = my_team.roster.clone();
 
         // Find the nominated player in our pool
         let player = self
@@ -491,16 +496,53 @@ impl AppState {
             eligible_slots: nomination.eligible_slots.clone(),
         };
 
+        // Build budget context for the LLM
+        let empty_slots = my_roster.empty_slots();
+        let max_safe_bid = if empty_slots > 1 {
+            my_team_budget.saturating_sub((empty_slots as u32) - 1)
+        } else {
+            my_team_budget
+        };
+        let avg_per_slot = if empty_slots > 0 {
+            my_team_budget as f64 / empty_slots as f64
+        } else {
+            0.0
+        };
+
+        let (engine_bid_floor, engine_bid_ceiling, engine_verdict) = match analysis {
+            Some(a) => (a.bid_floor, a.bid_ceiling, a.verdict.label().to_string()),
+            None => {
+                // Fallback: compute inline
+                let adjusted = self.inflation.adjust(player.dollar_value);
+                let floor = (adjusted * 0.70).round().max(1.0) as u32;
+                let ceiling = adjusted.round().max(1.0) as u32;
+                (floor, ceiling, "UNKNOWN".to_string())
+            }
+        };
+
+        let budget = BudgetContext {
+            budget_remaining: my_team_budget,
+            empty_slots,
+            max_safe_bid,
+            avg_per_slot,
+            pick_number: self.draft_state.pick_count + 1,
+            total_picks: self.draft_state.total_picks,
+            engine_bid_floor,
+            engine_bid_ceiling,
+            engine_verdict,
+        };
+
         let system = prompt::system_prompt(self.config.strategy.strategy_overview.as_deref());
         let user_content = prompt::build_nomination_analysis_prompt(
             &player,
             &nom_info,
-            &my_team.roster,
+            &my_roster,
             &self.category_needs,
             &self.scarcity,
             &self.available_players,
             &self.draft_state,
             &self.inflation,
+            &budget,
         );
 
         let max_tokens = self.config.strategy.llm.analysis_max_tokens;
@@ -538,14 +580,45 @@ impl AppState {
             }
         };
 
+        // Extract budget info from my_team before the borrow ends
+        let my_team_budget = my_team.budget_remaining;
+        let my_roster = my_team.roster.clone();
+
+        // Build budget context for the LLM
+        let empty_slots = my_roster.empty_slots();
+        let max_safe_bid = if empty_slots > 1 {
+            my_team_budget.saturating_sub((empty_slots as u32) - 1)
+        } else {
+            my_team_budget
+        };
+        let avg_per_slot = if empty_slots > 0 {
+            my_team_budget as f64 / empty_slots as f64
+        } else {
+            0.0
+        };
+
+        let budget = BudgetContext {
+            budget_remaining: my_team_budget,
+            empty_slots,
+            max_safe_bid,
+            avg_per_slot,
+            pick_number: self.draft_state.pick_count + 1,
+            total_picks: self.draft_state.total_picks,
+            // Planning prompt doesn't have a specific player, so use zeros for engine fields
+            engine_bid_floor: 0,
+            engine_bid_ceiling: 0,
+            engine_verdict: String::new(),
+        };
+
         let system = prompt::system_prompt(self.config.strategy.strategy_overview.as_deref());
         let user_content = prompt::build_nomination_planning_prompt(
-            &my_team.roster,
+            &my_roster,
             &self.category_needs,
             &self.scarcity,
             &self.available_players,
             &self.draft_state,
             &self.inflation,
+            &budget,
         );
 
         let max_tokens = self.config.strategy.llm.planning_max_tokens;
