@@ -644,7 +644,7 @@ impl DraftScreen {
             DraftScreenMessage::Modal(m) => {
                 if let Some(action) = self.modal_layer.update(m) {
                     match action {
-                        ModalLayerAction::QuitConfirm(crate::tui::confirm_dialog::ConfirmResult::Confirmed(_)) => {
+                        ModalLayerAction::QuitConfirm(crate::tui::confirm_dialog::ConfirmResult::Confirmed('y' | 'q')) => {
                             return Some(Action::Command(UserCommand::Quit));
                         }
                         ModalLayerAction::PositionFilter(PositionFilterModalAction::Selected(pos)) => {

@@ -132,8 +132,12 @@ impl ConfirmDialog {
                 None
             }
             ConfirmMessage::Confirm(ch) => {
-                self.open = false;
-                Some(ConfirmResult::Confirmed(ch))
+                if self.options.iter().any(|o| o.key == ch) {
+                    self.open = false;
+                    Some(ConfirmResult::Confirmed(ch))
+                } else {
+                    None
+                }
             }
             ConfirmMessage::Cancel => {
                 self.open = false;
@@ -346,6 +350,15 @@ mod tests {
         let result = centered_rect(28, 5, area);
         assert_eq!(result.width, 0);
         assert_eq!(result.height, 0);
+    }
+
+    #[test]
+    fn update_confirm_unrecognized_char_is_ignored() {
+        let mut d = ConfirmDialog::quit();
+        d.open = true;
+        let result = d.update(ConfirmMessage::Confirm('x'));
+        assert!(d.open, "dialog should stay open for unrecognized char");
+        assert!(result.is_none(), "unrecognized char should return None");
     }
 
     // -- View tests --

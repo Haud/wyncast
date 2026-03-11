@@ -188,6 +188,16 @@ mod tests {
     }
 
     #[test]
+    fn update_quit_confirm_unrecognized_char_ignored() {
+        let mut layer = ModalLayer::new();
+        layer.quit_confirm.open = true;
+        let msg = ModalLayerMessage::QuitConfirm(ConfirmMessage::Confirm('x'));
+        let action = layer.update(msg);
+        assert!(action.is_none(), "unrecognized char should produce no action");
+        assert!(layer.quit_confirm.open, "dialog should remain open");
+    }
+
+    #[test]
     fn update_position_filter_selected() {
         let mut layer = ModalLayer::new();
         layer.update(ModalLayerMessage::PositionFilter(
