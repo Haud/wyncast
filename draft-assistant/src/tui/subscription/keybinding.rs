@@ -85,6 +85,11 @@ pub fn ctrl(code: KeyCode) -> KeyTrigger {
     KeyTrigger::Exact(code, KeyModifiers::CONTROL)
 }
 
+/// Helper: Alt+key.
+pub fn alt(code: KeyCode) -> KeyTrigger {
+    KeyTrigger::Exact(code, KeyModifiers::ALT)
+}
+
 // ---------------------------------------------------------------------------
 // KeyBindingEntry (internal)
 // ---------------------------------------------------------------------------
