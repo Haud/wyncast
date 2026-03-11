@@ -55,31 +55,38 @@ pub struct SellCandidate {
 /// When a strategy overview is provided (from the strategy wizard), it is
 /// appended so the LLM understands the user's strategic intent.
 pub fn system_prompt(strategy_overview: Option<&str>) -> String {
-    let mut prompt = "You are a fantasy baseball auction draft advisor for a 10-team H2H Most Categories league.\n\
-     \n\
-     Categories: R, HR, RBI, BB, SB, AVG (hitting) | K, W, SV, HD, ERA, WHIP (pitching)\n\
-     Format: Salary cap auction, $260 budget, 26-player rosters.\n\
-     Key edges: BB (walks) and HD (holds) are non-standard \u{2014} most opponents undervalue these.\n\
-     Strategy: Stars-and-scrubs. 65% hitting budget, 35% pitching. Soft-punt SV, compete in all others.\n\
-     \n\
-     For each nominated player, you will provide:\n\
-     1. VERDICT: One of BID TO WIN / BID IF CHEAP / DRIVE UP PRICE / PASS\n\
-     2. BID RANGE: A minimum (steal price) and maximum (walk-away price)\n\
-     3. FIT: How this player fits my specific roster and category needs\n\
-     4. STRATEGY: What to think about \u{2014} competing bidders, comparable players available later, draft position implications\n\
-     \n\
-     Be concise and direct. Use the pre-computed numbers I provide \u{2014} do NOT do arithmetic. Focus on trade-offs and context the numbers don't capture."
-        .to_string();
-
-    if let Some(overview) = strategy_overview {
-        let trimmed = overview.trim();
-        if !trimmed.is_empty() {
-            prompt.push_str("\n\n--- MY DRAFT STRATEGY ---\n");
-            prompt.push_str(trimmed);
+    let strategy_section = match strategy_overview {
+        Some(overview) if !overview.trim().is_empty() => {
+            format!(
+                "--- MY DRAFT STRATEGY ---\n\
+                 {}\n\
+                 \n\
+                 Your recommendations MUST align with this strategy. Evaluate every player through the lens of my strategic priorities above.",
+                overview.trim()
+            )
         }
-    }
+        _ => "No specific draft strategy provided. Give balanced recommendations based on value."
+            .to_string(),
+    };
 
-    prompt
+    format!(
+        "You are a fantasy baseball auction draft advisor for a 10-team H2H Most Categories league.\n\
+         \n\
+         Categories: R, HR, RBI, BB, SB, AVG (hitting) | K, W, SV, HD, ERA, WHIP (pitching)\n\
+         Format: Salary cap auction, $260 budget, 26-player rosters.\n\
+         Key edges: BB (walks) and HD (holds) are non-standard \u{2014} most opponents undervalue these.\n\
+         \n\
+         {}\n\
+         \n\
+         For each nominated player, you will provide:\n\
+         1. VERDICT: One of BID TO WIN / BID IF CHEAP / DRIVE UP PRICE / PASS\n\
+         2. BID RANGE: A minimum (steal price) and maximum (walk-away price)\n\
+         3. FIT: How this player fits my specific roster and category needs\n\
+         4. STRATEGY: What to think about \u{2014} competing bidders, comparable players available later, draft position implications\n\
+         \n\
+         Be concise and direct. Use the pre-computed numbers I provide \u{2014} do NOT do arithmetic. Focus on trade-offs and context the numbers don't capture.",
+        strategy_section
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1106,10 +1113,16 @@ mod tests {
         );
         assert!(sp.contains("BB (walks)"), "should mention BB edge");
         assert!(sp.contains("HD (holds)"), "should mention HD edge");
-        assert!(sp.contains("Stars-and-scrubs"), "should mention strategy");
         assert!(sp.contains("VERDICT"), "should mention verdict");
         assert!(sp.contains("BID RANGE"), "should mention bid range");
-        assert!(sp.contains("Soft-punt SV"), "should mention SV punt");
+        assert!(
+            sp.contains("No specific draft strategy provided"),
+            "should show fallback when no strategy provided"
+        );
+        assert!(
+            !sp.contains("Stars-and-scrubs"),
+            "should not contain hardcoded strategy"
+        );
     }
 
     #[test]
@@ -1123,6 +1136,14 @@ mod tests {
             sp.contains("Target elite closers early"),
             "should include strategy text"
         );
+        assert!(
+            sp.contains("Your recommendations MUST align with this strategy"),
+            "should include alignment instruction"
+        );
+        assert!(
+            !sp.contains("No specific draft strategy provided"),
+            "should not show fallback when strategy is provided"
+        );
     }
 
     #[test]
@@ -1131,6 +1152,10 @@ mod tests {
         assert!(
             !sp.contains("MY DRAFT STRATEGY"),
             "should not include strategy header for whitespace-only overview"
+        );
+        assert!(
+            sp.contains("No specific draft strategy provided"),
+            "should show fallback for whitespace-only overview"
         );
     }
 
