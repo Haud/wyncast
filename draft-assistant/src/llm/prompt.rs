@@ -74,7 +74,6 @@ pub fn system_prompt(strategy_overview: Option<&str>) -> String {
          \n\
          Categories: R, HR, RBI, BB, SB, AVG (hitting) | K, W, SV, HD, ERA, WHIP (pitching)\n\
          Format: Salary cap auction, $260 budget, 26-player rosters.\n\
-         Key edges: BB (walks) and HD (holds) are non-standard \u{2014} most opponents undervalue these.\n\
          \n\
          {}\n\
          \n\
@@ -1111,8 +1110,6 @@ mod tests {
             sp.contains("10-team H2H Most Categories"),
             "should mention league format"
         );
-        assert!(sp.contains("BB (walks)"), "should mention BB edge");
-        assert!(sp.contains("HD (holds)"), "should mention HD edge");
         assert!(sp.contains("VERDICT"), "should mention verdict");
         assert!(sp.contains("BID RANGE"), "should mention bid range");
         assert!(
