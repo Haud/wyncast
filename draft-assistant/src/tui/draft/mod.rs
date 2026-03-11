@@ -20,7 +20,7 @@ use crate::tui::layout::build_layout;
 use crate::tui::scroll::ScrollDirection;
 use crate::tui::subscription::{Subscription, SubscriptionId};
 use crate::tui::subscription::keybinding::{
-    exact, KeyBindingRecipe, KeybindHint as KbHint, KeybindManager, PRIORITY_NORMAL,
+    exact, shift, KeyBindingRecipe, KeybindHint as KbHint, KeybindManager, PRIORITY_NORMAL,
 };
 use crate::tui::widgets;
 use crate::tui::{BudgetStatus, FocusPanel, TeamSummary};
@@ -499,7 +499,7 @@ impl DraftScreen {
                     KbHint::new("Tab", "Focus"),
                 )
                 .bind(
-                    exact(KeyCode::BackTab),
+                    shift(KeyCode::BackTab),
                     |_| DraftScreenMessage::FocusPrev,
                     None,
                 );
