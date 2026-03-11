@@ -46,6 +46,29 @@ pub struct SellCandidate {
     pub reason: String,
 }
 
+/// Pre-computed budget constraints passed to the LLM for fiscal discipline.
+#[derive(Debug, Clone)]
+pub struct BudgetContext {
+    /// Budget remaining for the user's team.
+    pub budget_remaining: u32,
+    /// Number of empty roster slots still to fill.
+    pub empty_slots: usize,
+    /// Maximum safe bid: budget_remaining - (empty_slots - 1). Every remaining slot costs at least $1.
+    pub max_safe_bid: u32,
+    /// Average dollars per remaining slot: budget_remaining / empty_slots.
+    pub avg_per_slot: f64,
+    /// Current draft pick number.
+    pub pick_number: usize,
+    /// Total picks in the draft.
+    pub total_picks: usize,
+    /// Pre-computed bid floor from the instant analysis engine (70% of adjusted value).
+    pub engine_bid_floor: u32,
+    /// Pre-computed bid ceiling from the instant analysis engine (adjusted + scarcity premium).
+    pub engine_bid_ceiling: u32,
+    /// The engine's verdict label (e.g. "STRONG TARGET", "CONDITIONAL", "PASS").
+    pub engine_verdict: String,
+}
+
 // ---------------------------------------------------------------------------
 // System prompt
 // ---------------------------------------------------------------------------
@@ -83,7 +106,11 @@ pub fn system_prompt(strategy_overview: Option<&str>) -> String {
          3. FIT: How this player fits my specific roster and category needs\n\
          4. STRATEGY: What to think about \u{2014} competing bidders, comparable players available later, draft position implications\n\
          \n\
-         Be concise and direct. Use the pre-computed numbers I provide \u{2014} do NOT do arithmetic. Focus on trade-offs and context the numbers don't capture.",
+         Be concise and direct. Use the pre-computed numbers I provide \u{2014} do NOT do arithmetic. Focus on trade-offs and context the numbers don't capture.\n\
+         \n\
+         BUDGET DISCIPLINE: You must NEVER recommend a maximum bid above the user's max safe bid. \
+         Always consider how a bid affects the remaining budget-per-slot average. \
+         If a player's adjusted value exceeds the max safe bid, say so explicitly and recommend passing or bidding only to drive up the price for opponents.",
         strategy_section
     )
 }
@@ -106,6 +133,7 @@ pub fn build_nomination_analysis_prompt(
     available_players: &[PlayerValuation],
     draft_state: &DraftState,
     inflation: &InflationTracker,
+    budget: &BudgetContext,
 ) -> String {
     let adjusted_value = inflation.adjust(player.dollar_value);
     let positions_str = player
@@ -140,18 +168,13 @@ pub fn build_nomination_analysis_prompt(
     // Section 3: MY ROSTER
     prompt.push_str("## MY ROSTER\n");
     prompt.push_str(&format_roster_for_prompt(my_roster));
-    if let Some(my_team) = draft_state.my_team() {
-        prompt.push_str(&format!(
-            "Budget: ${} remaining | {} slots open\n\n",
-            my_team.budget_remaining,
-            my_roster.empty_slots(),
-        ));
-    } else {
-        prompt.push_str(&format!(
-            "Budget: (unknown) | {} slots open\n\n",
-            my_roster.empty_slots(),
-        ));
-    }
+    prompt.push_str(&format!(
+        "Budget: ${} remaining | {} slots open | Max safe bid: ${} | Avg ${:.0}/slot\n\n",
+        budget.budget_remaining,
+        budget.empty_slots,
+        budget.max_safe_bid,
+        budget.avg_per_slot,
+    ));
 
     // Section 4: CATEGORY NEEDS
     prompt.push_str("## CATEGORY NEEDS\n");
@@ -170,6 +193,24 @@ pub fn build_nomination_analysis_prompt(
                 entry.dropoff,
             ));
         }
+    }
+    prompt.push('\n');
+
+    // Section 5b: BUDGET CONSTRAINTS
+    prompt.push_str("## BUDGET CONSTRAINTS\n");
+    prompt.push_str(&format!(
+        "  Draft progress: Pick {} of {}\n",
+        budget.pick_number, budget.total_picks,
+    ));
+    prompt.push_str(&format!(
+        "  Engine verdict: {} | Bid floor: ${} | Bid ceiling: ${}\n",
+        budget.engine_verdict, budget.engine_bid_floor, budget.engine_bid_ceiling,
+    ));
+    if budget.engine_bid_ceiling > budget.max_safe_bid {
+        prompt.push_str(&format!(
+            "  WARNING: Bid ceiling (${}) exceeds max safe bid (${}). Budget-constrained.\n",
+            budget.engine_bid_ceiling, budget.max_safe_bid,
+        ));
     }
     prompt.push('\n');
 
@@ -227,20 +268,25 @@ pub fn build_nomination_planning_prompt(
     available_players: &[PlayerValuation],
     draft_state: &DraftState,
     inflation: &InflationTracker,
+    budget: &BudgetContext,
 ) -> String {
-    let my_team = draft_state.my_team();
-    let my_budget = my_team.map(|t| t.budget_remaining).unwrap_or(0);
-    let my_team_id = my_team.map(|t| t.team_id.as_str()).unwrap_or("");
+    let my_team_id = draft_state
+        .my_team()
+        .map(|t| t.team_id.as_str())
+        .unwrap_or("");
     let mut prompt = String::with_capacity(2048);
 
     // Section 1: Header
     prompt.push_str(&format!(
         "## NOMINATION PLANNING\n\
-         Pick #{} | My budget: ${} | Inflation rate: {:.2}x | {} open slots\n\n",
-        draft_state.picks.len() + 1,
-        my_budget,
+         Pick {} of {} | My budget: ${} | Inflation rate: {:.2}x | {} open slots | Avg ${:.0}/slot | Max bid: ${}\n\n",
+        budget.pick_number,
+        budget.total_picks,
+        budget.budget_remaining,
         inflation.inflation_rate,
-        my_roster.empty_slots(),
+        budget.empty_slots,
+        budget.avg_per_slot,
+        budget.max_safe_bid,
     ));
 
     // Section 2: MY ROSTER state
@@ -1025,6 +1071,20 @@ mod tests {
         state
     }
 
+    fn test_budget_context() -> BudgetContext {
+        BudgetContext {
+            budget_remaining: 260,
+            empty_slots: 26,
+            max_safe_bid: 235,
+            avg_per_slot: 10.0,
+            pick_number: 1,
+            total_picks: 260,
+            engine_bid_floor: 21,
+            engine_bid_ceiling: 39,
+            engine_verdict: "STRONG TARGET".to_string(),
+        }
+    }
+
     fn make_hitter(name: &str, vor: f64, positions: Vec<Position>, dollar: f64) -> PlayerValuation {
         PlayerValuation {
             name: name.into(),
@@ -1190,6 +1250,7 @@ mod tests {
             &available,
             &draft_state,
             &inflation,
+            &test_budget_context(),
         );
 
         assert!(
@@ -1250,6 +1311,7 @@ mod tests {
             &available,
             &draft_state,
             &inflation,
+            &test_budget_context(),
         );
 
         assert!(prompt.contains("$30"), "should contain dollar value");
@@ -1280,6 +1342,7 @@ mod tests {
             &available,
             &draft_state,
             &inflation,
+            &test_budget_context(),
         );
 
         assert!(
@@ -1343,6 +1406,7 @@ mod tests {
             &available,
             &draft_state,
             &inflation,
+            &test_budget_context(),
         );
 
         assert!(prompt.contains("Team 2"), "should list opponent teams");
@@ -1656,5 +1720,49 @@ mod tests {
         assert!(profile.contains("W"), "should show W category");
         assert!(profile.contains("ERA"), "should show ERA category");
         assert!(profile.contains("WHIP"), "should show WHIP category");
+    }
+
+    // ---- Budget constraints tests ----
+
+    #[test]
+    fn nomination_analysis_prompt_contains_budget_constraints() {
+        let player = make_hitter("Test Player", 8.0, vec![Position::FirstBase], 30.0);
+        let nomination = NominationInfo {
+            player_name: "Test Player".into(),
+            position: "1B".into(),
+            nominated_by: "Team 3".into(),
+            current_bid: 5,
+            current_bidder: Some("Team 3".into()),
+            time_remaining: Some(25),
+            eligible_slots: vec![],
+        };
+        let roster = Roster::new(&test_roster_config());
+        let needs = CategoryNeeds::uniform(0.5);
+        let league = test_league_config();
+        let available = vec![player.clone()];
+        let scarcity = compute_scarcity(&available, &league);
+        let draft_state = create_test_draft_state();
+        let inflation = InflationTracker::new();
+        let budget = test_budget_context();
+
+        let prompt = build_nomination_analysis_prompt(
+            &player,
+            &nomination,
+            &roster,
+            &needs,
+            &scarcity,
+            &available,
+            &draft_state,
+            &inflation,
+            &budget,
+        );
+
+        assert!(prompt.contains("## BUDGET CONSTRAINTS"), "should have budget constraints section");
+        assert!(prompt.contains("Max safe bid: $235"), "should contain max safe bid");
+        assert!(prompt.contains("Avg $10/slot"), "should contain avg per slot");
+        assert!(prompt.contains("Engine verdict: STRONG TARGET"), "should contain engine verdict");
+        assert!(prompt.contains("Bid floor: $21"), "should contain bid floor");
+        assert!(prompt.contains("Bid ceiling: $39"), "should contain bid ceiling");
+        assert!(prompt.contains("Pick 1 of 260"), "should contain draft progress");
     }
 }
