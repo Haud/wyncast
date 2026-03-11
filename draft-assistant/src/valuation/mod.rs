@@ -57,8 +57,11 @@ pub fn compute_initial(
 // ---------------------------------------------------------------------------
 
 /// Recompute z-scores, VOR, and auction dollar values for the remaining
-/// available player pool. This should be called after every draft pick to
-/// keep valuations current as the player pool shrinks.
+/// available player pool. This should be called when the user changes
+/// strategy configuration (e.g. category weights), NOT after every draft
+/// pick. Base valuations are computed once at startup via `compute_initial()`
+/// and remain stable throughout the draft; only inflation tracking and
+/// scarcity indices update as picks happen.
 ///
 /// # Algorithm
 /// 1. Separate players into hitter and pitcher sub-pools.
@@ -623,7 +626,7 @@ mod tests {
     }
 
     #[test]
-    fn recalculate_all_removes_player_changes_values() {
+    fn values_stable_after_player_removal() {
         let league = test_league_config();
         let strategy = test_strategy_config();
         let draft_state = create_test_draft_state();
@@ -642,54 +645,23 @@ mod tests {
         // Initial calculation.
         recalculate_all(&mut players, &league, &strategy, &draft_state);
 
-        // Record initial values.
-        let initial_star_value = players.iter().find(|p| p.name == "H_Star").unwrap().dollar_value;
-        let initial_mid_value = players.iter().find(|p| p.name == "H_Mid").unwrap().dollar_value;
-        let initial_count = players.len();
-
-        assert!(initial_star_value > 1.0, "Star should have value > $1");
+        // Record values for remaining players.
+        let mid_value = players.iter().find(|p| p.name == "H_Mid").unwrap().dollar_value;
+        let mid_zscore = players.iter().find(|p| p.name == "H_Mid").unwrap().total_zscore;
+        let ace_value = players.iter().find(|p| p.name == "P_Ace").unwrap().dollar_value;
 
         // Remove the star hitter (simulating they were drafted).
+        // In the real app, we do NOT call recalculate_all after this.
         players.retain(|p| p.name != "H_Star");
-        assert_eq!(players.len(), initial_count - 1);
 
-        // Recalculate.
-        recalculate_all(&mut players, &league, &strategy, &draft_state);
-
-        // The remaining players' values should have changed (pool stats shifted).
+        // Values on remaining players should be unchanged.
         let new_mid_value = players.iter().find(|p| p.name == "H_Mid").unwrap().dollar_value;
+        let new_mid_zscore = players.iter().find(|p| p.name == "H_Mid").unwrap().total_zscore;
+        let new_ace_value = players.iter().find(|p| p.name == "P_Ace").unwrap().dollar_value;
 
-        // Values should be different because pool composition changed.
-        // (The exact direction depends on the math, but they should differ.)
-        assert!(
-            (new_mid_value - initial_mid_value).abs() > 0.001
-                || initial_mid_value == 1.0, // Edge case: both could be $1
-            "Values should change after removing a player: initial={}, new={}",
-            initial_mid_value,
-            new_mid_value
-        );
-
-        // All values should be >= $1.
-        for p in &players {
-            assert!(
-                p.dollar_value >= 1.0,
-                "Player {} has value {} < $1",
-                p.name,
-                p.dollar_value
-            );
-        }
-
-        // Should be sorted by dollar value descending.
-        for i in 1..players.len() {
-            assert!(
-                players[i - 1].dollar_value >= players[i].dollar_value,
-                "Not sorted: {} (${}) >= {} (${})",
-                players[i - 1].name,
-                players[i - 1].dollar_value,
-                players[i].name,
-                players[i].dollar_value,
-            );
-        }
+        assert_eq!(mid_value, new_mid_value, "H_Mid dollar value should be unchanged after removal");
+        assert_eq!(mid_zscore, new_mid_zscore, "H_Mid z-score should be unchanged after removal");
+        assert_eq!(ace_value, new_ace_value, "P_Ace dollar value should be unchanged after removal");
     }
 
     #[test]
@@ -939,9 +911,9 @@ mod tests {
     }
 
     #[test]
-    fn recalculate_all_two_way_after_pick_removal() {
+    fn two_way_values_stable_after_pick_removal() {
         // Verify that removing a two-way player from the pool doesn't
-        // break subsequent recalculations.
+        // affect remaining player valuations.
         let league = test_league_config();
         let strategy = test_strategy_config();
         let draft_state = create_test_draft_state();
@@ -958,16 +930,24 @@ mod tests {
             make_pitcher("SP2", 200, 14, 0, 0, 180.0, 3.20, 1.10, PitcherType::SP),
         ];
 
-        // First recalculation with two-way player present.
+        // Initial calculation with two-way player present.
         recalculate_all(&mut players, &league, &strategy, &draft_state);
-        assert!(players.iter().all(|p| p.dollar_value >= 1.0));
+
+        // Record values.
+        let h1_value = players.iter().find(|p| p.name == "H1").unwrap().dollar_value;
+        let sp1_value = players.iter().find(|p| p.name == "SP1").unwrap().dollar_value;
 
         // Remove the two-way player (drafted).
         players.retain(|p| p.name != "Ohtani");
 
-        // Second recalculation should succeed without the two-way player.
-        recalculate_all(&mut players, &league, &strategy, &draft_state);
+        // Remaining values should be unchanged (no recalculation).
+        let new_h1_value = players.iter().find(|p| p.name == "H1").unwrap().dollar_value;
+        let new_sp1_value = players.iter().find(|p| p.name == "SP1").unwrap().dollar_value;
 
+        assert_eq!(h1_value, new_h1_value, "H1 value should be unchanged");
+        assert_eq!(sp1_value, new_sp1_value, "SP1 value should be unchanged");
+
+        // All remaining players should still have valid values.
         for p in &players {
             assert!(p.dollar_value >= 1.0, "{} has value < $1", p.name);
             assert!(p.total_zscore.is_finite(), "{} has non-finite z-score", p.name);

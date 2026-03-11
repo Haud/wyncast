@@ -209,8 +209,7 @@ impl AppState {
     /// 1. Record in DraftState
     /// 2. Persist to DB
     /// 3. Remove from available player pool
-    /// 4. Recalculate valuations
-    /// 5. Update inflation and scarcity
+    /// 4. Update inflation and scarcity
     pub fn process_new_picks(
         &mut self,
         new_picks: Vec<crate::draft::pick::DraftPick>,
@@ -260,14 +259,6 @@ impl AppState {
                 true
             });
         }
-
-        // Recalculate valuations with the updated pool
-        crate::valuation::recalculate_all(
-            &mut self.available_players,
-            &self.config.league,
-            &self.config.strategy,
-            &self.draft_state,
-        );
 
         // Update inflation
         self.inflation.update(
