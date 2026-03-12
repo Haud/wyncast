@@ -140,6 +140,18 @@ pub(super) async fn handle_full_state_sync(
             &state.config.league,
         );
         state.scarcity = compute_scarcity(&state.available_players, &state.config.league);
+    } else {
+        info!(
+            "FULL_STATE_SYNC: grid data unavailable, requesting keyframe retry"
+        );
+        // Request a retry — by the time the extension responds, the grid
+        // may have rendered.
+        if let Some(ref ws_tx) = state.ws_outbound_tx {
+            let request = serde_json::json!({ "type": "REQUEST_KEYFRAME" });
+            if let Err(e) = ws_tx.try_send(request.to_string()) {
+                warn!("Failed to send REQUEST_KEYFRAME for grid retry: {}", e);
+            }
+        }
     }
 
     // Build stub previous_extension_state for compute_state_diff so that
