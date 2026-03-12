@@ -249,23 +249,20 @@ function disconnect() {
  * current state rather than starting from a blank slate.
  */
 function requestFullStateSyncFromContentScript() {
-  browser.tabs.query({ url: '*://fantasy.espn.com/baseball/draft*' }).then((tabs) => {
-    if (!tabs || tabs.length === 0) {
-      log('No active ESPN draft tab found for FULL_STATE_SYNC request');
-      return;
-    }
-    // Send to all matching ESPN draft tabs (usually just one)
-    tabs.forEach((tab) => {
-      browser.tabs.sendMessage(tab.id, {
-        source: 'wyndham-draft-sync-bg',
-        type: 'REQUEST_FULL_STATE_SYNC',
-      }).catch((err) => {
-        // Content script may not be loaded yet (e.g. page still loading)
-        log('Could not reach content script on tab', tab.id, ':', err.message || err);
-      });
+  if (activeContentScriptTabs.size === 0) {
+    log('No active content script tabs for FULL_STATE_SYNC request');
+    return;
+  }
+  // Send directly to tracked content script tabs instead of querying by URL.
+  // This is more reliable because ESPN's SPA navigation can change the URL
+  // without destroying the content script, causing tabs.query to miss it.
+  activeContentScriptTabs.forEach((tabId) => {
+    browser.tabs.sendMessage(tabId, {
+      source: 'wyndham-draft-sync-bg',
+      type: 'REQUEST_FULL_STATE_SYNC',
+    }).catch((err) => {
+      log('Could not reach content script on tab', tabId, ':', err.message || err);
     });
-  }).catch((err) => {
-    warn('Failed to query tabs for FULL_STATE_SYNC request:', err.message || err);
   });
 }
 

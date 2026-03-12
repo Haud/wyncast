@@ -871,6 +871,21 @@ function computeFingerprint(state) {
   const teams = state.teams || [];
   const teamBudgets = teams.map((t) => t.teamName + ':' + t.budget).join(',');
 
+  // Include draft board grid filled slot count so that late-rendering
+  // grids trigger a fingerprint change (and thus a new FULL_STATE_SYNC
+  // via the periodic keyframe).
+  let gridFilledCount = 0;
+  try {
+    const pickCells = document.querySelectorAll(SELECTORS.draftBoardCell);
+    pickCells.forEach((cell) => {
+      if (cell.classList.contains('completedPick')) {
+        gridFilledCount++;
+      }
+    });
+  } catch (e) {
+    // Grid not available
+  }
+
   return (
     picks.length +
     '|' +
@@ -892,7 +907,9 @@ function computeFingerprint(state) {
     '|' +
     (state.totalPicks ?? '') +
     '|' +
-    (state.draftId || '')
+    (state.draftId || '') +
+    '|g' +
+    gridFilledCount
   );
 }
 
