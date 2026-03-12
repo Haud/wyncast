@@ -25,6 +25,8 @@ let heartbeatTimer = null;
 let reconnectTimer = null;
 let reconnectDelay = RECONNECT_BASE_MS;
 let isConnected = false;
+const activeContentScriptTabs = new Set();
+let intentionalDisconnect = false;
 
 // ---------------------------------------------------------------------------
 // Logging
@@ -114,6 +116,11 @@ function stopHeartbeat() {
  * Schedule a reconnection attempt with exponential backoff.
  */
 function scheduleReconnect() {
+  if (activeContentScriptTabs.size === 0) {
+    log('No active content script tabs; skipping reconnect');
+    return;
+  }
+
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
   }
@@ -178,7 +185,12 @@ function connect() {
     isConnected = false;
     ws = null;
     stopHeartbeat();
-    scheduleReconnect();
+
+    if (intentionalDisconnect) {
+      intentionalDisconnect = false;
+    } else {
+      scheduleReconnect();
+    }
   };
 
   ws.onerror = (event) => {
@@ -198,6 +210,33 @@ function connect() {
       warn('Failed to parse backend message:', e.message || e);
     }
   };
+}
+
+/**
+ * Cleanly disconnect the WebSocket. Used when all content script tabs have
+ * closed so we don't hold an idle connection to the backend.
+ */
+function disconnect() {
+  log('Disconnecting WebSocket (no active content script tabs)');
+  stopHeartbeat();
+
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+
+  reconnectDelay = RECONNECT_BASE_MS;
+
+  if (ws) {
+    intentionalDisconnect = true;
+    try {
+      ws.close();
+    } catch (e) {
+      // Ignore close errors
+    }
+    ws = null;
+    isConnected = false;
+  }
 }
 
 /**
@@ -253,6 +292,16 @@ browser.runtime.onMessage.addListener((message, sender) => {
   const tabId = sender.tab ? sender.tab.id : null;
   log('Relaying', message.type, 'from tab', tabId);
 
+  // Track content script tabs and connect lazily on first message
+  if (tabId !== null) {
+    const wasEmpty = activeContentScriptTabs.size === 0;
+    activeContentScriptTabs.add(tabId);
+    if (wasEmpty) {
+      log('First active content script tab detected; connecting');
+      connect();
+    }
+  }
+
   // Build a protocol-compliant message with ONLY the fields that
   // protocol.rs ExtensionMessage expects. Do not add extra fields like
   // tabId or relayTimestamp -- serde will reject unknown fields.
@@ -275,8 +324,43 @@ browser.runtime.onMessage.addListener((message, sender) => {
 });
 
 // ---------------------------------------------------------------------------
+// Tab lifecycle tracking
+// ---------------------------------------------------------------------------
+
+/**
+ * When a tracked tab is closed, remove it from the active set.
+ * If no content script tabs remain, disconnect from the backend.
+ */
+browser.tabs.onRemoved.addListener((tabId) => {
+  if (activeContentScriptTabs.has(tabId)) {
+    activeContentScriptTabs.delete(tabId);
+    log('Tab', tabId, 'closed; active tabs:', activeContentScriptTabs.size);
+    if (activeContentScriptTabs.size === 0) {
+      disconnect();
+    }
+  }
+});
+
+/**
+ * When a tracked tab navigates away from the ESPN draft page, remove it.
+ * If no content script tabs remain, disconnect from the backend.
+ */
+browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (!activeContentScriptTabs.has(tabId)) {
+    return;
+  }
+  if (changeInfo.status === 'loading' && changeInfo.url &&
+      !changeInfo.url.includes('fantasy.espn.com/baseball/draft')) {
+    activeContentScriptTabs.delete(tabId);
+    log('Tab', tabId, 'navigated away from draft; active tabs:', activeContentScriptTabs.size);
+    if (activeContentScriptTabs.size === 0) {
+      disconnect();
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Initialization
 // ---------------------------------------------------------------------------
 
 log('Background script starting');
-connect();
