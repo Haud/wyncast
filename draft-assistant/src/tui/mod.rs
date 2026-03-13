@@ -129,6 +129,14 @@ pub struct BudgetStatus {
     pub max_bid: u32,
     /// Average dollars remaining per empty roster slot.
     pub avg_per_slot: f64,
+    /// Hitting dollars spent.
+    pub hitting_spent: u32,
+    /// Hitting budget target (salary_cap * hitting_budget_fraction).
+    pub hitting_target: u32,
+    /// Pitching dollars spent.
+    pub pitching_spent: u32,
+    /// Pitching budget target (salary_cap * (1 - hitting_budget_fraction)).
+    pub pitching_target: u32,
 }
 
 impl Default for BudgetStatus {
@@ -140,6 +148,10 @@ impl Default for BudgetStatus {
             inflation_rate: 1.0,
             max_bid: 0,
             avg_per_slot: 0.0,
+            hitting_spent: 0,
+            hitting_target: 0,
+            pitching_spent: 0,
+            pitching_target: 0,
         }
     }
 }
@@ -492,6 +504,10 @@ mod tests {
         assert!((budget.inflation_rate - 1.0).abs() < f64::EPSILON);
         assert_eq!(budget.max_bid, 0);
         assert!((budget.avg_per_slot - 0.0).abs() < f64::EPSILON);
+        assert_eq!(budget.hitting_spent, 0);
+        assert_eq!(budget.hitting_target, 0);
+        assert_eq!(budget.pitching_spent, 0);
+        assert_eq!(budget.pitching_target, 0);
     }
 
     /// Helper to build a test AppSnapshot with sensible defaults.
@@ -511,6 +527,10 @@ mod tests {
             inflation_rate: 1.0,
             max_bid: 0,
             avg_per_slot: 0.0,
+            hitting_spent: 0,
+            hitting_target: 0,
+            pitching_spent: 0,
+            pitching_target: 0,
             team_snapshots: vec![],
             llm_configured: true,
         }
@@ -555,6 +575,10 @@ mod tests {
         snapshot.inflation_rate = 1.15;
         snapshot.max_bid = 140;
         snapshot.avg_per_slot = 10.0;
+        snapshot.hitting_spent = 70;
+        snapshot.hitting_target = 169;
+        snapshot.pitching_spent = 30;
+        snapshot.pitching_target = 91;
         snapshot.team_snapshots = vec![
             TeamSnapshot {
                 name: "Team 1".into(),
@@ -577,6 +601,10 @@ mod tests {
         assert!((app.draft_screen.budget.inflation_rate - 1.15).abs() < f64::EPSILON);
         assert_eq!(app.draft_screen.budget.max_bid, 140);
         assert!((app.draft_screen.inflation - 1.15).abs() < f64::EPSILON);
+        assert_eq!(app.draft_screen.budget.hitting_spent, 70);
+        assert_eq!(app.draft_screen.budget.hitting_target, 169);
+        assert_eq!(app.draft_screen.budget.pitching_spent, 30);
+        assert_eq!(app.draft_screen.budget.pitching_target, 91);
         assert_eq!(app.draft_screen.team_summaries.len(), 2);
         assert_eq!(app.draft_screen.team_summaries[0].name, "Team 1");
         assert_eq!(app.draft_screen.team_summaries[0].budget_remaining, 160);

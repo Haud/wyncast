@@ -22,6 +22,7 @@ use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::db::Database;
+use crate::draft::pick::{playing_positions_from_slots, Position};
 use crate::draft::state::{
     ActiveNomination, DraftState, NominationPayload, PickPayload,
     StateUpdatePayload, TeamBudgetPayload,
@@ -302,6 +303,42 @@ impl AppState {
                 (Vec::new(), 0, self.config.league.salary_cap, self.config.league.salary_cap, 0.0)
             };
 
+        // Compute hitter/pitcher budget split
+        let salary_cap = self.config.league.salary_cap;
+        let hitting_frac = self.config.strategy.hitting_budget_fraction;
+        let hitting_target = (salary_cap as f64 * hitting_frac).round() as u32;
+        let pitching_target = salary_cap.saturating_sub(hitting_target);
+
+        let (hitting_spent, pitching_spent) = if let Some(team) = my_team {
+            let my_team_id = &team.team_id;
+            let mut h_spent: u32 = 0;
+            let mut p_spent: u32 = 0;
+            for pick in &self.draft_state.picks {
+                if pick.team_id != *my_team_id {
+                    continue;
+                }
+                let is_hitter = match Position::from_str_pos(&pick.position) {
+                    Some(pos) if !matches!(pos, Position::Bench | Position::InjuredList) => {
+                        pos.is_hitter()
+                    }
+                    Some(_) => {
+                        // Bench or IL: fall back to eligible_slots
+                        let playing = playing_positions_from_slots(&pick.eligible_slots);
+                        playing.iter().any(|p| p.is_hitter())
+                    }
+                    None => continue, // unparseable position, skip
+                };
+                if is_hitter {
+                    h_spent += pick.price;
+                } else {
+                    p_spent += pick.price;
+                }
+            }
+            (h_spent, p_spent)
+        } else {
+            (0, 0)
+        };
+
         let team_snapshots = self
             .draft_state
             .teams
@@ -329,10 +366,14 @@ impl AppState {
             my_roster,
             budget_spent,
             budget_remaining,
-            salary_cap: self.config.league.salary_cap,
+            salary_cap,
             inflation_rate: self.inflation.inflation_rate,
             max_bid,
             avg_per_slot,
+            hitting_spent,
+            hitting_target,
+            pitching_spent,
+            pitching_target,
             team_snapshots,
             llm_configured: matches!(*self.llm_client, LlmClient::Active(_)),
         }
