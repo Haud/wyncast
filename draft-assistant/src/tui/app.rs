@@ -249,6 +249,10 @@ impl App {
             inflation_rate: snapshot.inflation_rate,
             max_bid: snapshot.max_bid,
             avg_per_slot: snapshot.avg_per_slot,
+            hitting_spent: snapshot.hitting_spent,
+            hitting_target: snapshot.hitting_target,
+            pitching_spent: snapshot.pitching_spent,
+            pitching_target: snapshot.pitching_target,
         };
 
         ds.inflation = snapshot.inflation_rate;

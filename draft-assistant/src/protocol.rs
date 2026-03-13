@@ -556,6 +556,14 @@ pub struct AppSnapshot {
     pub max_bid: u32,
     /// Average dollars remaining per empty roster slot.
     pub avg_per_slot: f64,
+    /// Hitting dollars spent by user's team.
+    pub hitting_spent: u32,
+    /// Hitting budget target (salary_cap * hitting_budget_fraction).
+    pub hitting_target: u32,
+    /// Pitching dollars spent by user's team.
+    pub pitching_spent: u32,
+    /// Pitching budget target (salary_cap * (1 - hitting_budget_fraction)).
+    pub pitching_target: u32,
     /// Per-team summaries (name, budget, slots filled/total).
     pub team_snapshots: Vec<TeamSnapshot>,
     /// Whether the LLM client is configured (has a valid API key).
@@ -949,6 +957,10 @@ mod tests {
             inflation_rate: 1.0,
             max_bid: 0,
             avg_per_slot: 0.0,
+            hitting_spent: 0,
+            hitting_target: 0,
+            pitching_spent: 0,
+            pitching_target: 0,
             team_snapshots: vec![],
             llm_configured: true,
         };
@@ -1309,6 +1321,10 @@ mod tests {
             inflation_rate: 1.0,
             max_bid: 0,
             avg_per_slot: 0.0,
+            hitting_spent: 0,
+            hitting_target: 0,
+            pitching_spent: 0,
+            pitching_target: 0,
             team_snapshots: vec![],
             llm_configured: false,
         };
