@@ -7,7 +7,7 @@ and sign the extension for unlisted distribution via AMO.
 Requirements:
     - Python 3.6+
     - web-ext (npm install -g web-ext)
-    - AMO API credentials (env vars or .amo-credentials file)
+    - AMO API credentials (env vars, .env file, or .amo-credentials file)
 """
 
 import shutil
@@ -16,7 +16,9 @@ import sys
 from pathlib import Path
 
 EXTENSION_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = EXTENSION_DIR.parent
 CREDENTIALS_FILE = EXTENSION_DIR / ".amo-credentials"
+ENV_FILE = PROJECT_DIR / ".env"
 ARTIFACTS_DIR = EXTENSION_DIR / "web-ext-artifacts"
 
 
@@ -30,8 +32,36 @@ def check_web_ext() -> str:
     return path
 
 
+def parse_env_file(path: Path) -> dict:
+    """Parse a .env file into a dict of key-value pairs.
+
+    Supports KEY=VALUE lines. Ignores comments (#) and blank lines.
+    Strips optional surrounding quotes from values.
+    """
+    env = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        # Strip matching surrounding quotes
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        env[key] = value
+    return env
+
+
 def load_credentials() -> tuple:
-    """Load AMO API credentials from env vars or .amo-credentials file.
+    """Load AMO API credentials from env vars, .env file, or .amo-credentials file.
+
+    Lookup order:
+      1. Environment variables (AMO_JWT_ISSUER, AMO_JWT_SECRET)
+      2. .env file in draft-assistant/ (same keys)
+      3. Legacy .amo-credentials file in extension/
 
     Returns (issuer, secret) tuple.
     """
@@ -42,6 +72,13 @@ def load_credentials() -> tuple:
 
     if issuer and secret:
         return issuer, secret
+
+    if ENV_FILE.exists():
+        env = parse_env_file(ENV_FILE)
+        issuer = env.get("AMO_JWT_ISSUER")
+        secret = env.get("AMO_JWT_SECRET")
+        if issuer and secret:
+            return issuer, secret
 
     if CREDENTIALS_FILE.exists():
         lines = CREDENTIALS_FILE.read_text().strip().splitlines()
@@ -59,7 +96,11 @@ def load_credentials() -> tuple:
     print("     export AMO_JWT_ISSUER='your-api-key'", file=sys.stderr)
     print("     export AMO_JWT_SECRET='your-api-secret'", file=sys.stderr)
     print("", file=sys.stderr)
-    print("  2. Credentials file (extension/.amo-credentials):", file=sys.stderr)
+    print("  2. .env file (draft-assistant/.env):", file=sys.stderr)
+    print("     AMO_JWT_ISSUER=your-api-key", file=sys.stderr)
+    print("     AMO_JWT_SECRET=your-api-secret", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("  3. Credentials file (extension/.amo-credentials):", file=sys.stderr)
     print("     Line 1: API key (JWT issuer)", file=sys.stderr)
     print("     Line 2: API secret", file=sys.stderr)
     print("", file=sys.stderr)
