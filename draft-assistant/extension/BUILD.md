@@ -29,7 +29,18 @@ $env:AMO_JWT_ISSUER = 'your-api-key'
 $env:AMO_JWT_SECRET = 'your-api-secret'
 ```
 
-### Option 2: Credentials File
+### Option 2: `.env` File (recommended for local development)
+
+Create `draft-assistant/.env`:
+
+```
+AMO_JWT_ISSUER=your-api-key
+AMO_JWT_SECRET=your-api-secret
+```
+
+This file is git-ignored.
+
+### Option 3: Credentials File (legacy)
 
 Create `extension/.amo-credentials` with two lines:
 
@@ -39,6 +50,16 @@ your-api-secret
 ```
 
 This file is git-ignored.
+
+### Syncing from 1Password
+
+If your AMO credentials are stored in 1Password, you can auto-populate the `.env` file:
+
+```sh
+python3 extension/sync_env.py
+```
+
+This requires the [1Password CLI](https://developer.1password.com/docs/cli/) (`brew install 1password-cli`).
 
 ## Build and Sign
 
