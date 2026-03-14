@@ -51,7 +51,7 @@ async function ensureOffscreen() {
 
   creatingOffscreen = chrome.offscreen.createDocument({
     url: OFFSCREEN_URL,
-    reasons: ['WEBSOCKET'],
+    reasons: ['WORKERS'],
     justification: 'Persistent WebSocket connection to draft assistant backend',
   });
 
