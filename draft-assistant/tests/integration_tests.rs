@@ -805,7 +805,8 @@ fn nomination_planning_prompt_contains_required_sections() {
 
 #[test]
 fn system_prompt_contains_league_context() {
-    let system = draft_assistant::llm::prompt::system_prompt(None);
+    let league = LeagueConfig::default();
+    let system = draft_assistant::llm::prompt::system_prompt(&league, None);
 
     assert!(
         system.contains("fantasy baseball"),

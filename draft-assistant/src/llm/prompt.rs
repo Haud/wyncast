@@ -5,6 +5,7 @@
 // pre-computed numbers so the LLM focuses on trade-offs and context
 // rather than arithmetic.
 
+use crate::config::LeagueConfig;
 use crate::draft::pick::Position;
 use crate::draft::roster::Roster;
 use crate::draft::state::DraftState;
@@ -70,6 +71,40 @@ pub struct BudgetContext {
 }
 
 // ---------------------------------------------------------------------------
+// League context helpers
+// ---------------------------------------------------------------------------
+
+/// Format scoring type from config value to display string.
+fn format_scoring_type(scoring_type: &str) -> String {
+    match scoring_type {
+        "h2h_most_categories" => "H2H Most Categories".to_string(),
+        other => other.replace('_', " "),
+    }
+}
+
+/// Count draftable roster slots (total minus IL).
+fn draftable_roster_size(roster: &std::collections::HashMap<String, usize>) -> usize {
+    roster
+        .iter()
+        .filter(|(k, _)| k.as_str() != "IL")
+        .map(|(_, v)| v)
+        .sum()
+}
+
+/// Format league context line from config for use in LLM prompts.
+pub fn format_league_context(league: &LeagueConfig) -> String {
+    let scoring = format_scoring_type(&league.scoring_type);
+    let roster_size = draftable_roster_size(&league.roster);
+    let batting = league.batting_categories.categories.join(", ");
+    let pitching = league.pitching_categories.categories.join(", ");
+    format!(
+        "{}-team {}, salary cap ${}, {}-player rosters.\n\
+         Categories: {} (hitting) | {} (pitching)",
+        league.num_teams, scoring, league.salary_cap, roster_size, batting, pitching
+    )
+}
+
+// ---------------------------------------------------------------------------
 // System prompt
 // ---------------------------------------------------------------------------
 
@@ -77,7 +112,7 @@ pub struct BudgetContext {
 ///
 /// When a strategy overview is provided (from the strategy wizard), it is
 /// appended so the LLM understands the user's strategic intent.
-pub fn system_prompt(strategy_overview: Option<&str>) -> String {
+pub fn system_prompt(league: &LeagueConfig, strategy_overview: Option<&str>) -> String {
     let strategy_section = match strategy_overview {
         Some(overview) if !overview.trim().is_empty() => {
             format!(
@@ -92,11 +127,11 @@ pub fn system_prompt(strategy_overview: Option<&str>) -> String {
             .to_string(),
     };
 
+    let league_ctx = format_league_context(league);
     format!(
-        "You are a fantasy baseball auction draft advisor for a 10-team H2H Most Categories league.\n\
+        "You are a fantasy baseball auction draft advisor.\n\
          \n\
-         Categories: R, HR, RBI, BB, SB, AVG (hitting) | K, W, SV, HD, ERA, WHIP (pitching)\n\
-         Format: Salary cap auction, $260 budget, 26-player rosters.\n\
+         {}\n\
          \n\
          {}\n\
          \n\
@@ -111,7 +146,7 @@ pub fn system_prompt(strategy_overview: Option<&str>) -> String {
          BUDGET DISCIPLINE: You must NEVER recommend a maximum bid above the user's max safe bid. \
          Always consider how a bid affects the remaining budget-per-slot average. \
          If a player's adjusted value exceeds the max safe bid, say so explicitly and recommend passing or bidding only to drive up the price for opponents.",
-        strategy_section
+        league_ctx, strategy_section
     )
 }
 
@@ -1165,7 +1200,8 @@ mod tests {
 
     #[test]
     fn system_prompt_contains_key_elements() {
-        let sp = system_prompt(None);
+        let league = test_league_config();
+        let sp = system_prompt(&league, None);
         assert!(
             sp.contains("10-team H2H Most Categories"),
             "should mention league format"
@@ -1184,7 +1220,8 @@ mod tests {
 
     #[test]
     fn system_prompt_includes_strategy_overview() {
-        let sp = system_prompt(Some("Target elite closers early, punt saves entirely."));
+        let league = test_league_config();
+        let sp = system_prompt(&league, Some("Target elite closers early, punt saves entirely."));
         assert!(
             sp.contains("--- MY DRAFT STRATEGY ---"),
             "should include strategy header"
@@ -1205,7 +1242,8 @@ mod tests {
 
     #[test]
     fn system_prompt_skips_empty_overview() {
-        let sp = system_prompt(Some("   "));
+        let league = test_league_config();
+        let sp = system_prompt(&league, Some("   "));
         assert!(
             !sp.contains("MY DRAFT STRATEGY"),
             "should not include strategy header for whitespace-only overview"
@@ -1213,6 +1251,34 @@ mod tests {
         assert!(
             sp.contains("No specific draft strategy provided"),
             "should show fallback for whitespace-only overview"
+        );
+    }
+
+    #[test]
+    fn system_prompt_uses_league_config_values() {
+        let mut league = test_league_config();
+        league.num_teams = 12;
+        league.salary_cap = 300;
+        league.scoring_type = "roto".into();
+        league.batting_categories.categories =
+            vec!["R".into(), "HR".into(), "OBP".into()];
+        league.pitching_categories.categories =
+            vec!["K".into(), "ERA".into(), "WHIP".into()];
+
+        let sp = system_prompt(&league, None);
+        assert!(sp.contains("12-team"), "should reflect num_teams from config");
+        assert!(sp.contains("$300"), "should reflect salary_cap from config");
+        assert!(
+            sp.contains("OBP"),
+            "should reflect custom batting categories"
+        );
+        assert!(
+            !sp.contains("BB"),
+            "should not contain categories not in config"
+        );
+        assert!(
+            !sp.contains("H2H Most Categories"),
+            "should reflect scoring_type from config"
         );
     }
 
