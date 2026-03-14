@@ -998,7 +998,7 @@ mod tests {
 
     #[test]
     fn generic_client_google_url_contains_model() {
-        let model = "gemini-2.5-pro";
+        let model = "gemini-3.1-pro-preview";
         let client = GenericLlmClient::new(
             LlmProvider::Google,
             "key".to_string(),
@@ -1427,7 +1427,7 @@ mod tests {
     fn from_config_google_with_key_returns_active() {
         let config = make_test_config_for_provider(
             LlmProvider::Google,
-            "gemini-2.5-pro".to_string(),
+            "gemini-3.1-pro-preview".to_string(),
             Some("google-api-key".to_string()),
             None,
         );
@@ -1439,7 +1439,7 @@ mod tests {
     fn from_config_google_without_key_returns_disabled() {
         let config = make_test_config_for_provider(
             LlmProvider::Google,
-            "gemini-2.5-pro".to_string(),
+            "gemini-3.1-pro-preview".to_string(),
             None,
             None,
         );
@@ -1451,7 +1451,7 @@ mod tests {
     fn from_config_google_empty_key_returns_disabled() {
         let config = make_test_config_for_provider(
             LlmProvider::Google,
-            "gemini-2.5-pro".to_string(),
+            "gemini-3.1-pro-preview".to_string(),
             Some(String::new()),
             None,
         );

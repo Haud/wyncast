@@ -907,12 +907,17 @@ impl LlmSetupState {
     }
 
     fn update_settings_finish_api_key(&mut self) -> Option<UserCommand> {
+        let new_key = self.api_key_input.value().to_string();
+        let has_key = !new_key.is_empty() || self.has_saved_api_key;
+        // If provider changed in cascade and no key available, stay in editing
+        let provider_changed = self.selected_provider_idx != self.settings_saved_provider_idx;
+        if provider_changed && !has_key {
+            return None;
+        }
         self.api_key_editing = false;
         self.settings_dirty = true;
         self.settings_editing_field = None;
         self.active_section = LlmSetupSection::ApiKey;
-        let new_key = self.api_key_input.value().to_string();
-        let has_key = !new_key.is_empty() || self.has_saved_api_key;
         if self.has_config_changed_from_snapshot() && has_key {
             self.settings_needs_connection_test = true;
             self.connection_status = LlmConnectionStatus::Testing;
@@ -978,37 +983,79 @@ impl LlmSetupState {
             None => return None,
         };
         match editing {
-            LlmSetupSection::Provider | LlmSetupSection::Model => {
+            LlmSetupSection::Provider => {
                 if self.in_settings_mode {
-                    self.settings_editing_field = None;
-                    let has_key = !self.api_key_input.value().is_empty()
-                        || self.has_saved_api_key;
-                    if self.has_config_changed_from_snapshot() && has_key {
-                        self.settings_needs_connection_test = true;
-                        self.connection_status = LlmConnectionStatus::Testing;
-                        let new_key = self.api_key_input.value().to_string();
-                        if !new_key.is_empty() {
-                            return Some(UserCommand::OnboardingAction(
-                                OnboardingAction::SetApiKey(new_key),
-                            ));
-                        } else {
-                            return Some(UserCommand::OnboardingAction(
-                                OnboardingAction::TestConnection,
-                            ));
-                        }
+                    let provider_changed = self.selected_provider_idx != self.settings_saved_provider_idx;
+                    if provider_changed {
+                        // Provider changed: reset model for new provider and cascade to model selection
+                        self.selected_model_idx = 0;
+                        self.settings_dirty = true;
+                        self.settings_editing_field = Some(LlmSetupSection::Model);
+                        self.active_section = LlmSetupSection::Model;
+                        let provider = self.selected_provider().clone();
+                        Some(UserCommand::OnboardingAction(
+                            OnboardingAction::SetProvider(provider),
+                        ))
+                    } else {
+                        // No change, just close
+                        self.settings_editing_field = None;
+                        None
                     }
-                    None
                 } else {
                     // Onboarding: advance to next field in sequence
-                    if editing == LlmSetupSection::Provider {
-                        self.active_section = LlmSetupSection::Model;
-                        self.settings_editing_field = Some(LlmSetupSection::Model);
-                    } else {
-                        self.active_section = LlmSetupSection::ApiKey;
+                    self.active_section = LlmSetupSection::Model;
+                    self.settings_editing_field = Some(LlmSetupSection::Model);
+                    None
+                }
+            }
+            LlmSetupSection::Model => {
+                if self.in_settings_mode {
+                    let provider_changed = self.selected_provider_idx != self.settings_saved_provider_idx;
+                    if provider_changed {
+                        // Provider was changed earlier in cascade, continue to API key
+                        self.settings_dirty = true;
                         self.settings_editing_field = Some(LlmSetupSection::ApiKey);
-                        self.api_key_backup = self.api_key_input.value().to_string();
+                        self.active_section = LlmSetupSection::ApiKey;
+                        // Clear API key since provider changed (different provider = different key)
+                        self.api_key_input.set_value("");
+                        self.has_saved_api_key = false;
+                        self.saved_api_key_mask = String::new();
+                        self.api_key_backup = String::new();
                         self.api_key_editing = true;
+                        let model_id = self
+                            .selected_model()
+                            .map(|m| m.model_id.to_string())
+                            .unwrap_or_default();
+                        Some(UserCommand::OnboardingAction(
+                            OnboardingAction::SetModel(model_id),
+                        ))
+                    } else {
+                        // Only model changed, close dropdown
+                        self.settings_editing_field = None;
+                        let has_key = !self.api_key_input.value().is_empty()
+                            || self.has_saved_api_key;
+                        if self.has_config_changed_from_snapshot() && has_key {
+                            self.settings_needs_connection_test = true;
+                            self.connection_status = LlmConnectionStatus::Testing;
+                            let new_key = self.api_key_input.value().to_string();
+                            if !new_key.is_empty() {
+                                return Some(UserCommand::OnboardingAction(
+                                    OnboardingAction::SetApiKey(new_key),
+                                ));
+                            } else {
+                                return Some(UserCommand::OnboardingAction(
+                                    OnboardingAction::TestConnection,
+                                ));
+                            }
+                        }
+                        None
                     }
+                } else {
+                    // Onboarding: advance to API key
+                    self.active_section = LlmSetupSection::ApiKey;
+                    self.settings_editing_field = Some(LlmSetupSection::ApiKey);
+                    self.api_key_backup = self.api_key_input.value().to_string();
+                    self.api_key_editing = true;
                     None
                 }
             }
