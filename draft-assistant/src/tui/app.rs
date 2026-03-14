@@ -11,7 +11,7 @@ use std::time::Duration;
 use crossterm::event::KeyCode;
 use ratatui::Frame;
 
-use crate::protocol::{AppMode, AppSnapshot, SettingsSection, TabId, UiUpdate};
+use crate::protocol::{AppMode, AppSnapshot, ConnectionStatus, SettingsSection, TabId, UiUpdate, UserCommand};
 use crate::tui::subscription::{Subscription, SubscriptionId};
 use crate::tui::subscription::keybinding::{
     ctrl, KeyBindingRecipe, KeybindManager, PRIORITY_MODAL,
@@ -24,6 +24,7 @@ use super::draft::main_panel::available::AvailablePanelMessage;
 use super::draft::main_panel::MainPanelMessage;
 use super::draft::sidebar::plan::PlanPanelMessage;
 use super::draft::{DraftScreen, DraftScreenMessage};
+use super::home::HomeMessage;
 use super::llm_stream::LlmStreamMessage;
 use super::onboarding::{self, OnboardingMessage};
 use super::settings::{self, SettingsMessage};
@@ -293,7 +294,11 @@ impl App {
                 settings::render(frame, self);
             }
             AppMode::Draft => {
-                self.draft_screen.view(frame, &self.active_keybinds);
+                if self.draft_screen.connection_status == ConnectionStatus::Disconnected {
+                    super::home::render(frame, self);
+                } else {
+                    self.draft_screen.view(frame, &self.active_keybinds);
+                }
             }
         }
     }
@@ -316,6 +321,8 @@ pub enum AppMessage {
     Quit,
     /// Delegate a message to the draft screen.
     Draft(DraftScreenMessage),
+    /// Delegate a message to the home screen (draft mode, disconnected).
+    Home(HomeMessage),
     /// Delegate a message to the settings screen.
     Settings(SettingsMessage),
     /// Delegate a message to the onboarding screen.
@@ -336,6 +343,10 @@ impl App {
         match msg {
             AppMessage::Quit => Some(Action::Quit),
             AppMessage::Draft(m) => self.draft_screen.update(m),
+            AppMessage::Home(m) => match m {
+                HomeMessage::OpenSettings => Some(Action::Command(UserCommand::OpenSettings)),
+                HomeMessage::Quit => Some(Action::Quit),
+            },
             AppMessage::Settings(m) => {
                 settings::update(
                     self.settings_tab,
@@ -394,10 +405,15 @@ impl App {
         .build();
 
         let mode_sub = match &self.app_mode {
-            AppMode::Draft => self
-                .draft_screen
-                .subscription(kb)
-                .map(AppMessage::Draft),
+            AppMode::Draft => {
+                if self.draft_screen.connection_status == ConnectionStatus::Disconnected {
+                    super::home::subscription(kb).map(AppMessage::Home)
+                } else {
+                    self.draft_screen
+                        .subscription(kb)
+                        .map(AppMessage::Draft)
+                }
+            }
             AppMode::Settings(_) => settings::subscription(
                 self.settings_tab,
                 &self.llm_setup,
