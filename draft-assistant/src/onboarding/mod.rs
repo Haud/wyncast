@@ -463,7 +463,7 @@ mod tests {
         let progress = OnboardingProgress {
             current_step: OnboardingStep::Complete,
             llm_provider: Some(LlmProvider::Google),
-            llm_model: Some("gemini-2.0-flash".to_string()),
+            llm_model: Some("gemini-3-flash-preview".to_string()),
             strategy_configured: true,
         };
         let creds = CredentialsConfig {
@@ -531,7 +531,7 @@ mod tests {
         let progress = OnboardingProgress {
             current_step: OnboardingStep::Complete,
             llm_provider: Some(LlmProvider::Google),
-            llm_model: Some("gemini-2.5-pro".to_string()),
+            llm_model: Some("gemini-3.1-pro-preview".to_string()),
             strategy_configured: true,
         };
         let creds = CredentialsConfig {
@@ -687,7 +687,7 @@ mod tests {
         let progress = OnboardingProgress {
             current_step: OnboardingStep::Complete,
             llm_provider: Some(LlmProvider::Google),
-            llm_model: Some("gemini-2.5-pro".to_string()),
+            llm_model: Some("gemini-3.1-pro-preview".to_string()),
             strategy_configured: true,
         };
 
@@ -696,7 +696,7 @@ mod tests {
 
         assert_eq!(loaded.current_step, OnboardingStep::Complete);
         assert_eq!(loaded.llm_provider, Some(LlmProvider::Google));
-        assert_eq!(loaded.llm_model.as_deref(), Some("gemini-2.5-pro"));
+        assert_eq!(loaded.llm_model.as_deref(), Some("gemini-3.1-pro-preview"));
         assert!(loaded.strategy_configured);
     }
 

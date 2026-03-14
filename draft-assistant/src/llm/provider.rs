@@ -96,14 +96,14 @@ pub const SUPPORTED_MODELS: &[ModelOption] = &[
     // Google
     ModelOption {
         provider: LlmProvider::Google,
-        model_id: "gemini-2.5-pro",
-        display_name: "Gemini 2.5 Pro",
+        model_id: "gemini-3.1-pro-preview",
+        display_name: "Gemini 3.1 Pro",
         tier: ModelTier::Thinking,
     },
     ModelOption {
         provider: LlmProvider::Google,
-        model_id: "gemini-2.0-flash",
-        display_name: "Gemini 2.0 Flash",
+        model_id: "gemini-3-flash-preview",
+        display_name: "Gemini 3 Flash",
         tier: ModelTier::Fast,
     },
     // OpenAI
