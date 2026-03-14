@@ -291,6 +291,11 @@ browser.runtime.onMessage.addListener((message, sender) => {
 
   // Track content script tabs and connect lazily on first message
   if (tabId !== null) {
+    // Only track tabs on the ESPN draft page — ignore team/league/etc pages.
+    const tabUrl = sender.tab ? sender.tab.url : '';
+    if (!tabUrl.includes('fantasy.espn.com/baseball/draft')) {
+      return;
+    }
     const wasEmpty = activeContentScriptTabs.size === 0;
     activeContentScriptTabs.add(tabId);
     if (wasEmpty) {

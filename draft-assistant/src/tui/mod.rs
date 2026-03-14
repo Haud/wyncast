@@ -8,6 +8,7 @@ pub mod action;
 pub mod app;
 pub mod confirm_dialog;
 pub mod draft;
+pub mod home;
 pub mod layout;
 pub mod llm_stream;
 pub mod onboarding;
@@ -268,7 +269,7 @@ pub(crate) fn render_help_bar_draft(
 }
 
 /// Render a list of keybind hints into the help bar area.
-fn render_keybind_hints(frame: &mut Frame, area: Rect, keybinds: &[KeybindHint]) {
+pub(crate) fn render_keybind_hints(frame: &mut Frame, area: Rect, keybinds: &[KeybindHint]) {
     let mut spans: Vec<Span> = Vec::new();
     for (i, hint) in keybinds.iter().enumerate() {
         if i > 0 {
