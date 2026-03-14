@@ -437,6 +437,9 @@ pub(super) async fn handle_onboarding_action(
                 }
             }
         }
+        OnboardingAction::TestConnectionWith { .. } => {
+            // Only used in settings mode; ignore during onboarding.
+        }
         other => {
             // Any unexpected variants during onboarding are handled by the
             // settings path or ignored.
@@ -565,6 +568,36 @@ pub(super) async fn handle_settings_action(
             state.reload_llm_client();
             // Auto-trigger connection test so the user doesn't need a second Enter.
             Box::pin(handle_settings_action(state, OnboardingAction::TestConnection, ui_tx)).await;
+        }
+        OnboardingAction::TestConnectionWith { provider, model_id, api_key } => {
+            // Test with explicit params — does NOT mutate app state.
+            // Used by the settings cascade so Esc can cleanly revert.
+            if api_key.is_empty() {
+                let _ = ui_tx
+                    .send(UiUpdate::OnboardingUpdate(
+                        OnboardingUpdate::ConnectionTestResult {
+                            success: false,
+                            message: "No API key entered".to_string(),
+                        },
+                    ))
+                    .await;
+                return;
+            }
+            let tx = ui_tx.clone();
+            tokio::spawn(async move {
+                let result = test_api_connection(&provider, &api_key, &model_id).await;
+                let _ = tx
+                    .send(UiUpdate::OnboardingUpdate(
+                        OnboardingUpdate::ConnectionTestResult {
+                            success: result.is_ok(),
+                            message: match &result {
+                                Ok(msg) => msg.clone(),
+                                Err(msg) => msg.clone(),
+                            },
+                        },
+                    ))
+                    .await;
+            });
         }
         OnboardingAction::TestConnection => {
             // Same as onboarding: spawn async test

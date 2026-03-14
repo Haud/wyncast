@@ -285,6 +285,14 @@ pub enum OnboardingAction {
     SetApiKey(String),
     /// Request an API connection test.
     TestConnection,
+    /// Test the API connection with explicit provider, model, and key.
+    /// Unlike `TestConnection`, this does NOT read from or mutate app state.
+    /// Used by the settings cascade flow where the user hasn't saved yet.
+    TestConnectionWith {
+        provider: LlmProvider,
+        model_id: String,
+        api_key: String,
+    },
     /// Save all LLM settings (provider, model, API key) in a single batch.
     /// Used by the settings page to defer persistence until the user presses 's'.
     SaveLlmConfig {
