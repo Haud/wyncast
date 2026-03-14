@@ -564,7 +564,7 @@ impl AppState {
             engine_verdict,
         };
 
-        let system = prompt::system_prompt(self.config.strategy.strategy_overview.as_deref());
+        let system = prompt::system_prompt(&self.config.league, self.config.strategy.strategy_overview.as_deref());
         let user_content = prompt::build_nomination_analysis_prompt(
             &player,
             &nom_info,
@@ -642,7 +642,7 @@ impl AppState {
             engine_verdict: String::new(),
         };
 
-        let system = prompt::system_prompt(self.config.strategy.strategy_overview.as_deref());
+        let system = prompt::system_prompt(&self.config.league, self.config.strategy.strategy_overview.as_deref());
         let user_content = prompt::build_nomination_planning_prompt(
             &my_roster,
             &self.category_needs,

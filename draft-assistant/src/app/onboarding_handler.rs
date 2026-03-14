@@ -6,6 +6,7 @@ use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::llm::client::LlmClient;
+use crate::llm::prompt;
 use crate::onboarding::OnboardingStep;
 use crate::protocol::{
     AppMode, OnboardingAction, OnboardingUpdate, UiUpdate,
@@ -346,18 +347,25 @@ pub(super) async fn handle_onboarding_action(
                     let tx = ui_tx.clone();
 
                     // Build the prompt for strategy configuration
-                    let system = "You are a fantasy baseball strategy advisor. Given the user's \
+                    let league_ctx = prompt::format_league_context(&state.config.league);
+                    let cat_keys: Vec<&str> = state.config.league.batting_categories.categories.iter()
+                        .chain(state.config.league.pitching_categories.categories.iter())
+                        .map(|s| s.as_str())
+                        .collect();
+                    let system = format!(
+                        "You are a fantasy baseball strategy advisor. Given the user's \
                         strategy description, output ONLY a valid JSON object (no markdown, no \
                         explanation) with exactly these fields:\n\
                         - \"hitting_budget_pct\": integer 0-100 (percentage of budget for hitting)\n\
-                        - \"category_weights\": object with keys R, HR, RBI, BB, SB, AVG, K, W, SV, HD, ERA, WHIP, \
+                        - \"category_weights\": object with keys {cat_keys}, \
                         each a float where 1.0 = normal importance, >1.0 = overweight, <1.0 = underweight (min 0.0, max 5.0)\n\
                         - \"strategy_overview\": a 2-3 sentence prose summary of the strategy that captures the key \
                         decisions (budget split, punt categories, target player profiles, market edges). This will be \
                         fed to the draft-time AI advisor for context.\n\n\
-                        League: 10-team H2H Most Categories, salary cap $260, 26 keepers.\n\
-                        Categories: R, HR, RBI, BB, SB, AVG (hitting) | K, W, SV, HD, ERA, WHIP (pitching)\n\
-                        Key edges: BB (walks) and HD (holds) are non-standard and undervalued.";
+                        {league_ctx}",
+                        cat_keys = cat_keys.join(", "),
+                        league_ctx = league_ctx,
+                    );
 
                     let user_content = format!(
                         "Configure my draft strategy based on this description:\n\n{}",
