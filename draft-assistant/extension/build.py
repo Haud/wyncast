@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""Build and sign the Wyndham Draft Sync Firefox extension.
+"""Build the Wyndham Draft Sync browser extension for Firefox and/or Chrome.
 
-Cross-platform (Windows, macOS, Linux) script that uses web-ext to build
-and sign the extension for unlisted distribution via AMO.
+Usage:
+    python build.py firefox     # Build Firefox extension (+ sign via AMO)
+    python build.py chrome      # Build Chrome extension (unpacked / zip)
+    python build.py all         # Build both
+
+Cross-platform (Windows, macOS, Linux).
 
 Requirements:
     - Python 3.6+
-    - web-ext (npm install -g web-ext)
-    - AMO API credentials (env vars, .env file, or .amo-credentials file)
+    - web-ext (npm install -g web-ext) — Firefox only
+    - AMO API credentials (env vars, .env file, or .amo-credentials file) — Firefox only
 """
 
 import shutil
@@ -17,9 +21,29 @@ from pathlib import Path
 
 EXTENSION_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = EXTENSION_DIR.parent
+DIST_DIR = EXTENSION_DIR / "dist"
 CREDENTIALS_FILE = EXTENSION_DIR / ".amo-credentials"
 ENV_FILE = PROJECT_DIR / ".env"
-ARTIFACTS_DIR = EXTENSION_DIR / "web-ext-artifacts"
+
+# Shared source files copied into every browser build
+SHARED_FILES = [
+    ("src/browser-polyfill.js", "browser-polyfill.js"),
+    ("src/background-core.js", "background-core.js"),
+    ("src/content_scripts/espn.js", "content_scripts/espn.js"),
+]
+
+# Browser-specific files (relative to EXTENSION_DIR/<browser>/)
+FIREFOX_FILES = [
+    "manifest.json",
+    "background.js",
+]
+
+CHROME_FILES = [
+    "manifest.json",
+    "background.js",
+    "offscreen.html",
+    "offscreen.js",
+]
 
 
 def check_web_ext() -> str:
@@ -111,7 +135,7 @@ def load_credentials() -> tuple:
     sys.exit(1)
 
 
-def run_command(args: list, description: str) -> None:
+def run_command(args: list, description: str, cwd: str = None) -> None:
     """Run a subprocess command. Print output and exit on failure."""
     print(f"\n{'='*60}")
     print(f"  {description}")
@@ -119,7 +143,7 @@ def run_command(args: list, description: str) -> None:
 
     result = subprocess.run(
         args,
-        cwd=str(EXTENSION_DIR),
+        cwd=cwd or str(EXTENSION_DIR),
         capture_output=True,
         text=True,
     )
@@ -137,39 +161,58 @@ def run_command(args: list, description: str) -> None:
         sys.exit(result.returncode)
 
 
-def clean_artifacts() -> None:
-    """Remove the artifacts directory so each build produces a single clean output."""
-    if ARTIFACTS_DIR.exists():
-        shutil.rmtree(ARTIFACTS_DIR)
+def assemble_dist(browser: str) -> Path:
+    """Assemble the dist directory for a browser target.
+
+    Copies shared files and browser-specific files into dist/<browser>/.
+    Returns the path to the dist directory.
+    """
+    dist = DIST_DIR / browser
+    if dist.exists():
+        shutil.rmtree(dist)
+    dist.mkdir(parents=True)
+
+    # Copy shared files
+    for src_rel, dst_rel in SHARED_FILES:
+        src = EXTENSION_DIR / src_rel
+        dst = dist / dst_rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+
+    # Copy icons directory (if it has real files beyond .gitkeep)
+    icons_src = EXTENSION_DIR / "icons"
+    if icons_src.exists():
+        icons_dst = dist / "icons"
+        icons_dst.mkdir(parents=True, exist_ok=True)
+        for icon_file in icons_src.iterdir():
+            if icon_file.name != ".gitkeep":
+                shutil.copy2(icon_file, icons_dst / icon_file.name)
+
+    # Copy browser-specific files
+    browser_files = FIREFOX_FILES if browser == "firefox" else CHROME_FILES
+    browser_dir = EXTENSION_DIR / browser
+    for filename in browser_files:
+        src = browser_dir / filename
+        dst = dist / filename
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+
+    print(f"Assembled {browser} extension in {dist}")
+    return dist
 
 
-def find_xpi() -> Path:
-    """Find the signed .xpi file in web-ext-artifacts/."""
-    if not ARTIFACTS_DIR.exists():
-        print("Error: web-ext-artifacts/ directory not found.", file=sys.stderr)
-        sys.exit(1)
-
-    xpi_files = list(ARTIFACTS_DIR.glob("*.xpi"))
-    if not xpi_files:
-        print("Error: No .xpi file found in web-ext-artifacts/.", file=sys.stderr)
-        sys.exit(1)
-
-    return xpi_files[0]
-
-
-def main() -> None:
+def build_firefox() -> None:
+    """Build and sign the Firefox extension."""
     web_ext = check_web_ext()
     issuer, secret = load_credentials()
 
-    # Clean previous artifacts so the output is always a single .xpi
-    clean_artifacts()
-
-    source_dir = str(EXTENSION_DIR)
+    dist = assemble_dist("firefox")
 
     # Build
     run_command(
-        [web_ext, "build", f"--source-dir={source_dir}", "--overwrite-dest"],
-        "Building extension",
+        [web_ext, "build", f"--source-dir={dist}", "--overwrite-dest",
+         f"--artifacts-dir={dist / 'web-ext-artifacts'}"],
+        "Building Firefox extension",
     )
 
     # Sign
@@ -177,17 +220,49 @@ def main() -> None:
         [
             web_ext,
             "sign",
-            f"--source-dir={source_dir}",
+            f"--source-dir={dist}",
             "--channel=unlisted",
             f"--api-key={issuer}",
             f"--api-secret={secret}",
+            f"--artifacts-dir={dist / 'web-ext-artifacts'}",
         ],
-        "Signing extension",
+        "Signing Firefox extension",
     )
 
     # Report result
-    xpi = find_xpi()
-    print(f"\nSigned extension: {xpi}")
+    artifacts = dist / "web-ext-artifacts"
+    xpi_files = list(artifacts.glob("*.xpi")) if artifacts.exists() else []
+    if xpi_files:
+        print(f"\nSigned Firefox extension: {xpi_files[0]}")
+    else:
+        print("\nWarning: No .xpi file found after signing.", file=sys.stderr)
+
+
+def build_chrome() -> None:
+    """Build the Chrome extension (produces unpacked directory for developer mode)."""
+    dist = assemble_dist("chrome")
+    print(f"\nChrome extension ready at: {dist}")
+    print("Load it in Chrome via chrome://extensions (developer mode, 'Load unpacked').")
+
+
+def main() -> None:
+    if len(sys.argv) < 2:
+        print("Usage: python build.py <firefox|chrome|all>", file=sys.stderr)
+        sys.exit(1)
+
+    target = sys.argv[1].lower()
+
+    if target == "firefox":
+        build_firefox()
+    elif target == "chrome":
+        build_chrome()
+    elif target == "all":
+        build_firefox()
+        build_chrome()
+    else:
+        print(f"Unknown target: {target}", file=sys.stderr)
+        print("Usage: python build.py <firefox|chrome|all>", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

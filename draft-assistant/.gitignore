@@ -5,3 +5,5 @@ config/
 .env
 extension/.amo-credentials
 extension/web-ext-artifacts/
+extension/dist/
+__pycache__/
