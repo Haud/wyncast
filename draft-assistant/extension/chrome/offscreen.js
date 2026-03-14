@@ -6,6 +6,41 @@
 
 const EXTENSION_VERSION = chrome.runtime.getManifest().version;
 
+// Single message listener that dispatches to the appropriate callback.
+// Avoids registering multiple independent onMessage listeners.
+let contentScriptCallback = null;
+let tabRemovedCallback = null;
+let tabUpdatedCallback = null;
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (!message || message.target !== 'offscreen') {
+    return;
+  }
+
+  // Content script message (has payload, no action)
+  if (message.payload && !message.action) {
+    if (contentScriptCallback) {
+      const sender = { tab: message.senderTab || null };
+      contentScriptCallback(message.payload, sender);
+    }
+    return;
+  }
+
+  // Tab lifecycle events
+  if (message.action === 'tabRemoved' && message.tabId != null) {
+    if (tabRemovedCallback) {
+      tabRemovedCallback(message.tabId);
+    }
+    return;
+  }
+
+  if (message.action === 'tabUpdated' && message.tabId != null && message.changeInfo) {
+    if (tabUpdatedCallback) {
+      tabUpdatedCallback(message.tabId, message.changeInfo);
+    }
+  }
+});
+
 initBackgroundCore({
   platform: 'chrome',
   extensionVersion: EXTENSION_VERSION,
@@ -21,34 +56,18 @@ initBackgroundCore({
     });
   },
 
-  // Listen for messages forwarded from the service worker.
-  // The service worker tags forwarded content script messages with
-  // target: 'offscreen'.
+  // Register callback for content script messages forwarded by the service worker.
   onContentScriptMessage: (callback) => {
-    chrome.runtime.onMessage.addListener((message, sender) => {
-      if (message && message.target === 'offscreen' && message.payload) {
-        // Reconstruct a sender-like object with the original tab info
-        const fakeSender = { tab: message.senderTab || null };
-        callback(message.payload, fakeSender);
-      }
-    });
+    contentScriptCallback = callback;
   },
 
-  // Tab lifecycle events are forwarded from the service worker as
-  // target: 'offscreen' messages with action: 'tabRemoved' / 'tabUpdated'.
+  // Register callback for tab removal events forwarded by the service worker.
   onTabRemoved: (callback) => {
-    chrome.runtime.onMessage.addListener((message) => {
-      if (message && message.target === 'offscreen' && message.action === 'tabRemoved') {
-        callback(message.tabId);
-      }
-    });
+    tabRemovedCallback = callback;
   },
 
+  // Register callback for tab update events forwarded by the service worker.
   onTabUpdated: (callback) => {
-    chrome.runtime.onMessage.addListener((message) => {
-      if (message && message.target === 'offscreen' && message.action === 'tabUpdated') {
-        callback(message.tabId, message.changeInfo);
-      }
-    });
+    tabUpdatedCallback = callback;
   },
 });

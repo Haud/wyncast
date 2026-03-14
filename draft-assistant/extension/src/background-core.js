@@ -8,12 +8,30 @@
 // Configuration
 // ---------------------------------------------------------------------------
 
+// Must match the WebSocket port in ws_server.rs
 const WS_URL = 'ws://localhost:9001';
 const HEARTBEAT_INTERVAL_MS = 5000;
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
+const ESPN_DRAFT_HOSTNAME = 'fantasy.espn.com';
+const ESPN_DRAFT_PATH_PREFIX = '/baseball/draft';
 
 const LOG_PREFIX = '[WyndhamDraftSync:BG]';
+
+/**
+ * Check if a URL is an ESPN fantasy baseball draft page.
+ * Uses proper URL parsing to prevent substring spoofing.
+ */
+function isEspnDraftUrl(urlStr) {
+  if (!urlStr) return false;
+  try {
+    const parsed = new URL(urlStr);
+    return parsed.hostname === ESPN_DRAFT_HOSTNAME &&
+           parsed.pathname.startsWith(ESPN_DRAFT_PATH_PREFIX);
+  } catch (e) {
+    return false;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // State
@@ -292,7 +310,7 @@ function initBackgroundCore(config) {
     // Track content script tabs and connect lazily on first message
     if (tabId !== null) {
       const tabUrl = sender.tab ? sender.tab.url : '';
-      if (!tabUrl.includes('fantasy.espn.com/baseball/draft')) {
+      if (!isEspnDraftUrl(tabUrl)) {
         return;
       }
       const wasEmpty = activeContentScriptTabs.size === 0;
@@ -313,9 +331,7 @@ function initBackgroundCore(config) {
 
     // Forward to WebSocket
     if (isConnected) {
-      if (wsSend(forwarded)) {
-        // Message sent successfully
-      } else {
+      if (!wsSend(forwarded)) {
         warn('WebSocket send failed; message dropped');
       }
     } else {
@@ -339,7 +355,7 @@ function initBackgroundCore(config) {
       return;
     }
     if (changeInfo.status === 'loading' && changeInfo.url &&
-        !changeInfo.url.includes('fantasy.espn.com/baseball/draft')) {
+        !isEspnDraftUrl(changeInfo.url)) {
       activeContentScriptTabs.delete(tabId);
       log('Tab', tabId, 'navigated away from draft; active tabs:', activeContentScriptTabs.size);
       if (activeContentScriptTabs.size === 0) {
