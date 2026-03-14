@@ -8,13 +8,13 @@
     "activeTab"
   ],
   "background": {
-    "scripts": ["background.js"],
+    "scripts": ["browser-polyfill.js", "background-core.js", "background.js"],
     "persistent": true
   },
   "content_scripts": [
     {
       "matches": ["*://fantasy.espn.com/baseball/*"],
-      "js": ["content_scripts/espn.js"],
+      "js": ["browser-polyfill.js", "content_scripts/espn.js"],
       "run_at": "document_idle"
     }
   ],

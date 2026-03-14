@@ -1,12 +1,19 @@
-"""Tests for build.py — credential loading and .env parsing."""
+"""Tests for build.py — credential loading, .env parsing, and dist assembly."""
 
+import json
 import os
-import textwrap
+import shutil
+import sys
+import unittest
 from pathlib import Path
 from unittest import mock
+from unittest.mock import patch
 
-import pytest
+# Add the extension directory to the path so we can import build
+EXTENSION_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(EXTENSION_DIR))
 
+import build  # noqa: E402
 from build import ENV_FILE, CREDENTIALS_FILE, load_credentials, parse_env_file
 
 
@@ -14,107 +21,267 @@ from build import ENV_FILE, CREDENTIALS_FILE, load_credentials, parse_env_file
 # parse_env_file
 # ---------------------------------------------------------------------------
 
-class TestParseEnvFile:
-    def test_basic_key_value(self, tmp_path):
-        f = tmp_path / ".env"
-        f.write_text("FOO=bar\nBAZ=qux\n")
-        assert parse_env_file(f) == {"FOO": "bar", "BAZ": "qux"}
+class TestParseEnvFile(unittest.TestCase):
+    def test_basic_key_value(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / ".env"
+            f.write_text("FOO=bar\nBAZ=qux\n")
+            self.assertEqual(parse_env_file(f), {"FOO": "bar", "BAZ": "qux"})
 
-    def test_strips_single_quotes(self, tmp_path):
-        f = tmp_path / ".env"
-        f.write_text("KEY='value'\n")
-        assert parse_env_file(f) == {"KEY": "value"}
+    def test_strips_single_quotes(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / ".env"
+            f.write_text("KEY='value'\n")
+            self.assertEqual(parse_env_file(f), {"KEY": "value"})
 
-    def test_strips_double_quotes(self, tmp_path):
-        f = tmp_path / ".env"
-        f.write_text('KEY="value"\n')
-        assert parse_env_file(f) == {"KEY": "value"}
+    def test_strips_double_quotes(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / ".env"
+            f.write_text('KEY="value"\n')
+            self.assertEqual(parse_env_file(f), {"KEY": "value"})
 
-    def test_ignores_comments_and_blanks(self, tmp_path):
-        f = tmp_path / ".env"
-        f.write_text("# comment\n\nKEY=val\n  # indented comment\n")
-        assert parse_env_file(f) == {"KEY": "val"}
+    def test_ignores_comments_and_blanks(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / ".env"
+            f.write_text("# comment\n\nKEY=val\n  # indented comment\n")
+            self.assertEqual(parse_env_file(f), {"KEY": "val"})
 
-    def test_ignores_lines_without_equals(self, tmp_path):
-        f = tmp_path / ".env"
-        f.write_text("NO_EQUALS\nGOOD=yes\n")
-        assert parse_env_file(f) == {"GOOD": "yes"}
+    def test_ignores_lines_without_equals(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / ".env"
+            f.write_text("NO_EQUALS\nGOOD=yes\n")
+            self.assertEqual(parse_env_file(f), {"GOOD": "yes"})
 
-    def test_value_with_equals(self, tmp_path):
-        f = tmp_path / ".env"
-        f.write_text("KEY=val=ue\n")
-        assert parse_env_file(f) == {"KEY": "val=ue"}
+    def test_value_with_equals(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / ".env"
+            f.write_text("KEY=val=ue\n")
+            self.assertEqual(parse_env_file(f), {"KEY": "val=ue"})
 
-    def test_whitespace_around_key_and_value(self, tmp_path):
-        f = tmp_path / ".env"
-        f.write_text("  KEY  =  value  \n")
-        assert parse_env_file(f) == {"KEY": "value"}
+    def test_whitespace_around_key_and_value(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / ".env"
+            f.write_text("  KEY  =  value  \n")
+            self.assertEqual(parse_env_file(f), {"KEY": "value"})
 
 
 # ---------------------------------------------------------------------------
 # load_credentials
 # ---------------------------------------------------------------------------
 
-class TestLoadCredentials:
-    def test_env_vars_take_priority(self, tmp_path, monkeypatch):
-        """Environment variables should win over all file-based methods."""
-        monkeypatch.setenv("AMO_JWT_ISSUER", "env-issuer")
-        monkeypatch.setenv("AMO_JWT_SECRET", "env-secret")
-        assert load_credentials() == ("env-issuer", "env-secret")
+class TestLoadCredentials(unittest.TestCase):
+    def test_env_vars_take_priority(self):
+        with mock.patch.dict(os.environ, {"AMO_JWT_ISSUER": "env-issuer", "AMO_JWT_SECRET": "env-secret"}):
+            self.assertEqual(load_credentials(), ("env-issuer", "env-secret"))
 
-    def test_dot_env_file(self, tmp_path, monkeypatch):
-        """Falls back to .env file when env vars are absent."""
-        monkeypatch.delenv("AMO_JWT_ISSUER", raising=False)
-        monkeypatch.delenv("AMO_JWT_SECRET", raising=False)
+    def test_dot_env_file(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / ".env"
+            env_file.write_text("AMO_JWT_ISSUER=file-issuer\nAMO_JWT_SECRET=file-secret\n")
+            with mock.patch.dict(os.environ, {}, clear=True), \
+                 mock.patch("build.ENV_FILE", env_file), \
+                 mock.patch("build.CREDENTIALS_FILE", Path(tmp) / "nonexistent"):
+                self.assertEqual(load_credentials(), ("file-issuer", "file-secret"))
 
-        env_file = tmp_path / ".env"
-        env_file.write_text("AMO_JWT_ISSUER=file-issuer\nAMO_JWT_SECRET=file-secret\n")
+    def test_amo_credentials_file(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            creds = Path(tmp) / ".amo-credentials"
+            creds.write_text("legacy-issuer\nlegacy-secret\n")
+            with mock.patch.dict(os.environ, {}, clear=True), \
+                 mock.patch("build.ENV_FILE", Path(tmp) / "nonexistent"), \
+                 mock.patch("build.CREDENTIALS_FILE", creds):
+                self.assertEqual(load_credentials(), ("legacy-issuer", "legacy-secret"))
 
-        with mock.patch("build.ENV_FILE", env_file), \
-             mock.patch("build.CREDENTIALS_FILE", tmp_path / "nonexistent"):
-            assert load_credentials() == ("file-issuer", "file-secret")
+    def test_exits_when_no_credentials(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {}, clear=True), \
+                 mock.patch("build.ENV_FILE", Path(tmp) / "nonexistent"), \
+                 mock.patch("build.CREDENTIALS_FILE", Path(tmp) / "also-nonexistent"):
+                with self.assertRaises(SystemExit):
+                    load_credentials()
 
-    def test_amo_credentials_file(self, tmp_path, monkeypatch):
-        """Falls back to .amo-credentials when env vars and .env are absent."""
-        monkeypatch.delenv("AMO_JWT_ISSUER", raising=False)
-        monkeypatch.delenv("AMO_JWT_SECRET", raising=False)
+    def test_env_vars_override_dot_env(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / ".env"
+            env_file.write_text("AMO_JWT_ISSUER=file-issuer\nAMO_JWT_SECRET=file-secret\n")
+            with mock.patch.dict(os.environ, {"AMO_JWT_ISSUER": "env-issuer", "AMO_JWT_SECRET": "env-secret"}), \
+                 mock.patch("build.ENV_FILE", env_file):
+                self.assertEqual(load_credentials(), ("env-issuer", "env-secret"))
 
-        creds = tmp_path / ".amo-credentials"
-        creds.write_text("legacy-issuer\nlegacy-secret\n")
+    def test_dot_env_with_quotes(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / ".env"
+            env_file.write_text("AMO_JWT_ISSUER='quoted-issuer'\nAMO_JWT_SECRET=\"quoted-secret\"\n")
+            with mock.patch.dict(os.environ, {}, clear=True), \
+                 mock.patch("build.ENV_FILE", env_file), \
+                 mock.patch("build.CREDENTIALS_FILE", Path(tmp) / "nonexistent"):
+                self.assertEqual(load_credentials(), ("quoted-issuer", "quoted-secret"))
 
-        with mock.patch("build.ENV_FILE", tmp_path / "nonexistent"), \
-             mock.patch("build.CREDENTIALS_FILE", creds):
-            assert load_credentials() == ("legacy-issuer", "legacy-secret")
 
-    def test_exits_when_no_credentials(self, tmp_path, monkeypatch):
-        """Should sys.exit when no credentials source is available."""
-        monkeypatch.delenv("AMO_JWT_ISSUER", raising=False)
-        monkeypatch.delenv("AMO_JWT_SECRET", raising=False)
+# ---------------------------------------------------------------------------
+# Dist assembly
+# ---------------------------------------------------------------------------
 
-        with mock.patch("build.ENV_FILE", tmp_path / "nonexistent"), \
-             mock.patch("build.CREDENTIALS_FILE", tmp_path / "also-nonexistent"):
-            with pytest.raises(SystemExit):
-                load_credentials()
+class BuildTestCase(unittest.TestCase):
+    """Base test case that cleans the dist directory before/after each test."""
 
-    def test_env_vars_override_dot_env(self, tmp_path, monkeypatch):
-        """Env vars should take priority even when .env file exists."""
-        monkeypatch.setenv("AMO_JWT_ISSUER", "env-issuer")
-        monkeypatch.setenv("AMO_JWT_SECRET", "env-secret")
+    def setUp(self):
+        if build.DIST_DIR.exists():
+            shutil.rmtree(build.DIST_DIR)
 
-        env_file = tmp_path / ".env"
-        env_file.write_text("AMO_JWT_ISSUER=file-issuer\nAMO_JWT_SECRET=file-secret\n")
+    def tearDown(self):
+        if build.DIST_DIR.exists():
+            shutil.rmtree(build.DIST_DIR)
 
-        with mock.patch("build.ENV_FILE", env_file):
-            assert load_credentials() == ("env-issuer", "env-secret")
 
-    def test_dot_env_with_quotes(self, tmp_path, monkeypatch):
-        """.env values with quotes should be stripped."""
-        monkeypatch.delenv("AMO_JWT_ISSUER", raising=False)
-        monkeypatch.delenv("AMO_JWT_SECRET", raising=False)
+class TestAssembleDistFirefox(BuildTestCase):
+    """Tests for assembling the Firefox dist directory."""
 
-        env_file = tmp_path / ".env"
-        env_file.write_text("AMO_JWT_ISSUER='quoted-issuer'\nAMO_JWT_SECRET=\"quoted-secret\"\n")
+    def test_creates_dist_directory(self):
+        dist = build.assemble_dist("firefox")
+        self.assertTrue(dist.exists())
+        self.assertEqual(dist, build.DIST_DIR / "firefox")
 
-        with mock.patch("build.ENV_FILE", env_file), \
-             mock.patch("build.CREDENTIALS_FILE", tmp_path / "nonexistent"):
-            assert load_credentials() == ("quoted-issuer", "quoted-secret")
+    def test_copies_shared_files(self):
+        dist = build.assemble_dist("firefox")
+        self.assertTrue((dist / "browser-polyfill.js").exists())
+        self.assertTrue((dist / "background-core.js").exists())
+        self.assertTrue((dist / "content_scripts" / "espn.js").exists())
+
+    def test_copies_firefox_specific_files(self):
+        dist = build.assemble_dist("firefox")
+        self.assertTrue((dist / "manifest.json").exists())
+        self.assertTrue((dist / "background.js").exists())
+
+    def test_does_not_include_chrome_files(self):
+        dist = build.assemble_dist("firefox")
+        self.assertFalse((dist / "offscreen.html").exists())
+        self.assertFalse((dist / "offscreen.js").exists())
+
+    def test_shared_polyfill_content_matches_source(self):
+        dist = build.assemble_dist("firefox")
+        src_content = (EXTENSION_DIR / "src" / "browser-polyfill.js").read_text()
+        dst_content = (dist / "browser-polyfill.js").read_text()
+        self.assertEqual(src_content, dst_content)
+
+    def test_manifest_is_mv2(self):
+        dist = build.assemble_dist("firefox")
+        manifest = json.loads((dist / "manifest.json").read_text())
+        self.assertEqual(manifest["manifest_version"], 2)
+        self.assertIn("browser_specific_settings", manifest)
+
+    def test_cleans_existing_dist(self):
+        dist = build.assemble_dist("firefox")
+        marker = dist / "should_be_removed.txt"
+        marker.write_text("stale")
+
+        dist = build.assemble_dist("firefox")
+        self.assertFalse(marker.exists())
+
+
+class TestAssembleDistChrome(BuildTestCase):
+    """Tests for assembling the Chrome dist directory."""
+
+    def test_creates_dist_directory(self):
+        dist = build.assemble_dist("chrome")
+        self.assertTrue(dist.exists())
+        self.assertEqual(dist, build.DIST_DIR / "chrome")
+
+    def test_copies_shared_files(self):
+        dist = build.assemble_dist("chrome")
+        self.assertTrue((dist / "browser-polyfill.js").exists())
+        self.assertTrue((dist / "background-core.js").exists())
+        self.assertTrue((dist / "content_scripts" / "espn.js").exists())
+
+    def test_copies_chrome_specific_files(self):
+        dist = build.assemble_dist("chrome")
+        self.assertTrue((dist / "manifest.json").exists())
+        self.assertTrue((dist / "background.js").exists())
+        self.assertTrue((dist / "offscreen.html").exists())
+        self.assertTrue((dist / "offscreen.js").exists())
+
+    def test_does_not_include_firefox_files(self):
+        dist = build.assemble_dist("chrome")
+        manifest = json.loads((dist / "manifest.json").read_text())
+        self.assertNotIn("browser_specific_settings", manifest)
+
+    def test_manifest_is_mv3(self):
+        dist = build.assemble_dist("chrome")
+        manifest = json.loads((dist / "manifest.json").read_text())
+        self.assertEqual(manifest["manifest_version"], 3)
+        self.assertIn("offscreen", manifest["permissions"])
+        self.assertIn("service_worker", manifest["background"])
+
+    def test_offscreen_html_references_scripts(self):
+        dist = build.assemble_dist("chrome")
+        html = (dist / "offscreen.html").read_text()
+        self.assertIn("browser-polyfill.js", html)
+        self.assertIn("background-core.js", html)
+        self.assertIn("offscreen.js", html)
+
+
+class TestBothBrowsers(BuildTestCase):
+    """Tests that apply to both browser targets."""
+
+    def test_both_targets_share_same_polyfill(self):
+        ff_dist = build.assemble_dist("firefox")
+        cr_dist = build.assemble_dist("chrome")
+        self.assertEqual(
+            (ff_dist / "browser-polyfill.js").read_text(),
+            (cr_dist / "browser-polyfill.js").read_text(),
+        )
+
+    def test_both_targets_share_same_core(self):
+        ff_dist = build.assemble_dist("firefox")
+        cr_dist = build.assemble_dist("chrome")
+        self.assertEqual(
+            (ff_dist / "background-core.js").read_text(),
+            (cr_dist / "background-core.js").read_text(),
+        )
+
+    def test_both_targets_share_same_content_script(self):
+        ff_dist = build.assemble_dist("firefox")
+        cr_dist = build.assemble_dist("chrome")
+        self.assertEqual(
+            (ff_dist / "content_scripts" / "espn.js").read_text(),
+            (cr_dist / "content_scripts" / "espn.js").read_text(),
+        )
+
+    def test_both_targets_have_same_version(self):
+        ff_dist = build.assemble_dist("firefox")
+        cr_dist = build.assemble_dist("chrome")
+        ff_manifest = json.loads((ff_dist / "manifest.json").read_text())
+        cr_manifest = json.loads((cr_dist / "manifest.json").read_text())
+        self.assertEqual(ff_manifest["version"], cr_manifest["version"])
+
+
+class TestMainCli(BuildTestCase):
+    """Tests for the CLI argument handling."""
+
+    def test_no_args_exits(self):
+        with patch.object(sys, "argv", ["build.py"]):
+            with self.assertRaises(SystemExit) as ctx:
+                build.main()
+            self.assertEqual(ctx.exception.code, 1)
+
+    def test_invalid_target_exits(self):
+        with patch.object(sys, "argv", ["build.py", "opera"]):
+            with self.assertRaises(SystemExit) as ctx:
+                build.main()
+            self.assertEqual(ctx.exception.code, 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -17,17 +17,21 @@ fn default_credentials_config_is_empty() {
     assert!(config.openai_api_key.is_none());
 }
 
-/// Verify that extension/manifest.json is valid JSON.
+/// Verify that browser-specific manifest.json files are valid JSON.
 #[test]
-fn extension_manifest_is_valid_json() {
-    let content = std::fs::read_to_string("extension/manifest.json")
-        .expect("extension/manifest.json should exist");
-    let parsed: Result<serde_json::Value, _> = serde_json::from_str(&content);
-    assert!(
-        parsed.is_ok(),
-        "extension/manifest.json is not valid JSON: {:?}",
-        parsed.err()
-    );
+fn extension_manifests_are_valid_json() {
+    let manifests = ["extension/firefox/manifest.json", "extension/chrome/manifest.json"];
+    for path in manifests {
+        let content =
+            std::fs::read_to_string(path).unwrap_or_else(|_| panic!("{} should exist", path));
+        let parsed: Result<serde_json::Value, _> = serde_json::from_str(&content);
+        assert!(
+            parsed.is_ok(),
+            "{} is not valid JSON: {:?}",
+            path,
+            parsed.err()
+        );
+    }
 }
 
 /// Verify that all expected directories exist.
@@ -43,7 +47,10 @@ fn directory_structure_exists() {
         "data",
         "data/projections",
         "extension",
-        "extension/content_scripts",
+        "extension/src",
+        "extension/src/content_scripts",
+        "extension/firefox",
+        "extension/chrome",
         "extension/icons",
         "tests",
         "tests/fixtures",

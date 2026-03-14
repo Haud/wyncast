@@ -1,6 +1,6 @@
-// Background script for Wyndham Draft Sync extension.
+// Shared background core for Wyndham Draft Sync extension.
 // Manages WebSocket connection to the Rust backend and relays messages from
-// content scripts.
+// content scripts. Used by both Firefox (background page) and Chrome (offscreen document).
 
 'use strict';
 
@@ -8,13 +8,30 @@
 // Configuration
 // ---------------------------------------------------------------------------
 
+// Must match the WebSocket port in ws_server.rs
 const WS_URL = 'ws://localhost:9001';
 const HEARTBEAT_INTERVAL_MS = 5000;
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
-const EXTENSION_VERSION = browser.runtime.getManifest().version;
+const ESPN_DRAFT_HOSTNAME = 'fantasy.espn.com';
+const ESPN_DRAFT_PATH_PREFIX = '/baseball/draft';
 
 const LOG_PREFIX = '[WyndhamDraftSync:BG]';
+
+/**
+ * Check if a URL is an ESPN fantasy baseball draft page.
+ * Uses proper URL parsing to prevent substring spoofing.
+ */
+function isEspnDraftUrl(urlStr) {
+  if (!urlStr) return false;
+  try {
+    const parsed = new URL(urlStr);
+    return parsed.hostname === ESPN_DRAFT_HOSTNAME &&
+           parsed.pathname.startsWith(ESPN_DRAFT_PATH_PREFIX);
+  } catch (e) {
+    return false;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // State
@@ -67,13 +84,14 @@ function wsSend(message) {
 
 /**
  * Send the EXTENSION_CONNECTED handshake message.
+ * Uses the platform string from the config.
  */
-function sendHandshake() {
+function sendHandshake(config) {
   const handshake = {
     type: 'EXTENSION_CONNECTED',
     payload: {
-      platform: 'firefox',
-      extensionVersion: EXTENSION_VERSION,
+      platform: config.platform,
+      extensionVersion: config.extensionVersion,
     },
   };
   if (wsSend(handshake)) {
@@ -115,7 +133,7 @@ function stopHeartbeat() {
 /**
  * Schedule a reconnection attempt with exponential backoff.
  */
-function scheduleReconnect() {
+function scheduleReconnect(config) {
   if (activeContentScriptTabs.size === 0) {
     log('No active content script tabs; skipping reconnect');
     return;
@@ -129,7 +147,7 @@ function scheduleReconnect() {
 
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
-    connect();
+    connect(config);
   }, reconnectDelay);
 
   // Exponential backoff: double the delay each time, up to the max
@@ -137,9 +155,27 @@ function scheduleReconnect() {
 }
 
 /**
+ * Request a FULL_STATE_SYNC from the active ESPN draft tab content script.
+ */
+function requestFullStateSyncFromContentScript(config) {
+  if (activeContentScriptTabs.size === 0) {
+    log('No active content script tabs for FULL_STATE_SYNC request');
+    return;
+  }
+  activeContentScriptTabs.forEach((tabId) => {
+    config.sendToContentScript(tabId, {
+      source: 'wyndham-draft-sync-bg',
+      type: 'REQUEST_FULL_STATE_SYNC',
+    }).catch((err) => {
+      log('Could not reach content script on tab', tabId, ':', err.message || err);
+    });
+  });
+}
+
+/**
  * Establish a WebSocket connection to the backend.
  */
-function connect() {
+function connect(config) {
   // Clean up any existing connection
   if (ws) {
     try {
@@ -156,7 +192,7 @@ function connect() {
     ws = new WebSocket(WS_URL);
   } catch (e) {
     error('Failed to create WebSocket:', e.message || e);
-    scheduleReconnect();
+    scheduleReconnect(config);
     return;
   }
 
@@ -168,16 +204,15 @@ function connect() {
     reconnectDelay = RECONNECT_BASE_MS;
 
     // Send handshake
-    sendHandshake();
+    sendHandshake(config);
 
     // Start heartbeat
     startHeartbeat();
 
     // Request a full state snapshot from the content script so the backend
     // can rebuild draft state from scratch rather than applying diffs against
-    // a blank slate. This is critical when resuming a mid-draft session after
-    // a disconnect. We use a small delay to allow the handshake to complete.
-    requestFullStateSyncFromContentScript();
+    // a blank slate.
+    requestFullStateSyncFromContentScript(config);
   };
 
   ws.onclose = (event) => {
@@ -189,7 +224,7 @@ function connect() {
     if (intentionalDisconnect) {
       intentionalDisconnect = false;
     } else {
-      scheduleReconnect();
+      scheduleReconnect(config);
     }
   };
 
@@ -204,7 +239,7 @@ function connect() {
       const msg = JSON.parse(event.data);
       if (msg.type === 'REQUEST_KEYFRAME') {
         log('Backend requested keyframe — forwarding to content script');
-        requestFullStateSyncFromContentScript();
+        requestFullStateSyncFromContentScript(config);
       }
     } catch (e) {
       warn('Failed to parse backend message:', e.message || e);
@@ -239,130 +274,95 @@ function disconnect() {
   }
 }
 
-/**
- * Request a FULL_STATE_SYNC from the active ESPN draft tab content script.
- *
- * Sends a REQUEST_FULL_STATE_SYNC message to any active ESPN draft tab so
- * the content script will respond with a FULL_STATE_SYNC message (which is
- * then forwarded to the backend via WebSocket). This is called whenever the
- * WebSocket connects or reconnects so the backend can rebuild from the full
- * current state rather than starting from a blank slate.
- */
-function requestFullStateSyncFromContentScript() {
-  if (activeContentScriptTabs.size === 0) {
-    log('No active content script tabs for FULL_STATE_SYNC request');
-    return;
-  }
-  // Send directly to tracked content script tabs instead of querying by URL.
-  // This is more reliable because ESPN's SPA navigation can change the URL
-  // without destroying the content script, causing tabs.query to miss it.
-  activeContentScriptTabs.forEach((tabId) => {
-    browser.tabs.sendMessage(tabId, {
-      source: 'wyndham-draft-sync-bg',
-      type: 'REQUEST_FULL_STATE_SYNC',
-    }).catch((err) => {
-      log('Could not reach content script on tab', tabId, ':', err.message || err);
-    });
-  });
-}
-
 // ---------------------------------------------------------------------------
-// Message relay from content scripts
+// Public API
 // ---------------------------------------------------------------------------
 
 /**
- * Handle messages from content scripts.
- * Constructs a protocol-compliant message and forwards to the backend.
+ * Initialize the background core with platform-specific configuration.
  *
- * IMPORTANT: The Rust backend deserializes ExtensionMessage using
- * #[serde(tag = "type")] (internally-tagged enum). Only fields defined in
- * protocol.rs are allowed at the top level -- extra fields will cause
- * deserialization to fail silently.
+ * @param {Object} config
+ * @param {string} config.platform - 'firefox' or 'chrome'
+ * @param {string} config.extensionVersion - Extension version string
+ * @param {(tabId: number, message: Object) => Promise} config.sendToContentScript
+ *   - Send a message to a content script tab
+ * @param {(callback: (message, sender) => void) => void} config.onContentScriptMessage
+ *   - Register a listener for messages from content scripts
+ * @param {(callback: (tabId: number) => void) => void} config.onTabRemoved
+ *   - Register a listener for tab removal events
+ * @param {(callback: (tabId: number, changeInfo: Object) => void) => void} config.onTabUpdated
+ *   - Register a listener for tab update events
  */
-browser.runtime.onMessage.addListener((message, sender) => {
-  // Only process messages from our content script
-  if (!message || message.source !== 'wyndham-draft-sync') {
-    return;
-  }
+// eslint-disable-next-line no-unused-vars
+function initBackgroundCore(config) {
+  log('Background core starting (platform:', config.platform + ')');
 
-  // Log tab context for debugging (not forwarded to backend)
-  const tabId = sender.tab ? sender.tab.id : null;
-  log('Relaying', message.type, 'from tab', tabId);
-
-  // Track content script tabs and connect lazily on first message
-  if (tabId !== null) {
-    // Only track tabs on the ESPN draft page — ignore team/league/etc pages.
-    const tabUrl = sender.tab ? sender.tab.url : '';
-    if (!tabUrl.includes('fantasy.espn.com/baseball/draft')) {
+  // --- Message relay from content scripts ---
+  config.onContentScriptMessage((message, sender) => {
+    // Only process messages from our content script
+    if (!message || message.source !== 'wyndham-draft-sync') {
       return;
     }
-    const wasEmpty = activeContentScriptTabs.size === 0;
-    activeContentScriptTabs.add(tabId);
-    if (wasEmpty) {
-      log('First active content script tab detected; connecting');
-      connect();
+
+    const tabId = sender.tab ? sender.tab.id : null;
+    log('Relaying', message.type, 'from tab', tabId);
+
+    // Track content script tabs and connect lazily on first message
+    if (tabId !== null) {
+      const tabUrl = sender.tab ? sender.tab.url : '';
+      if (!isEspnDraftUrl(tabUrl)) {
+        return;
+      }
+      const wasEmpty = activeContentScriptTabs.size === 0;
+      activeContentScriptTabs.add(tabId);
+      if (wasEmpty) {
+        log('First active content script tab detected; connecting');
+        connect(config);
+      }
     }
-  }
 
-  // Build a protocol-compliant message with ONLY the fields that
-  // protocol.rs ExtensionMessage expects. Do not add extra fields like
-  // tabId or relayTimestamp -- serde will reject unknown fields.
-  const forwarded = {
-    type: message.type,
-    timestamp: message.timestamp,
-    payload: message.payload,
-  };
+    // Build a protocol-compliant message with ONLY the fields that
+    // protocol.rs ExtensionMessage expects.
+    const forwarded = {
+      type: message.type,
+      timestamp: message.timestamp,
+      payload: message.payload,
+    };
 
-  // Forward to WebSocket
-  if (isConnected) {
-    if (wsSend(forwarded)) {
-      // Message sent successfully
+    // Forward to WebSocket
+    if (isConnected) {
+      if (!wsSend(forwarded)) {
+        warn('WebSocket send failed; message dropped');
+      }
     } else {
-      warn('WebSocket send failed; message dropped');
+      warn('WebSocket not connected; dropping message of type:', message.type);
     }
-  } else {
-    warn('WebSocket not connected; dropping message of type:', message.type);
-  }
-});
+  });
 
-// ---------------------------------------------------------------------------
-// Tab lifecycle tracking
-// ---------------------------------------------------------------------------
-
-/**
- * When a tracked tab is closed, remove it from the active set.
- * If no content script tabs remain, disconnect from the backend.
- */
-browser.tabs.onRemoved.addListener((tabId) => {
-  if (activeContentScriptTabs.has(tabId)) {
-    activeContentScriptTabs.delete(tabId);
-    log('Tab', tabId, 'closed; active tabs:', activeContentScriptTabs.size);
-    if (activeContentScriptTabs.size === 0) {
-      disconnect();
+  // --- Tab lifecycle tracking ---
+  config.onTabRemoved((tabId) => {
+    if (activeContentScriptTabs.has(tabId)) {
+      activeContentScriptTabs.delete(tabId);
+      log('Tab', tabId, 'closed; active tabs:', activeContentScriptTabs.size);
+      if (activeContentScriptTabs.size === 0) {
+        disconnect();
+      }
     }
-  }
-});
+  });
 
-/**
- * When a tracked tab navigates away from the ESPN draft page, remove it.
- * If no content script tabs remain, disconnect from the backend.
- */
-browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (!activeContentScriptTabs.has(tabId)) {
-    return;
-  }
-  if (changeInfo.status === 'loading' && changeInfo.url &&
-      !changeInfo.url.includes('fantasy.espn.com/baseball/draft')) {
-    activeContentScriptTabs.delete(tabId);
-    log('Tab', tabId, 'navigated away from draft; active tabs:', activeContentScriptTabs.size);
-    if (activeContentScriptTabs.size === 0) {
-      disconnect();
+  config.onTabUpdated((tabId, changeInfo) => {
+    if (!activeContentScriptTabs.has(tabId)) {
+      return;
     }
-  }
-});
+    if (changeInfo.status === 'loading' && changeInfo.url &&
+        !isEspnDraftUrl(changeInfo.url)) {
+      activeContentScriptTabs.delete(tabId);
+      log('Tab', tabId, 'navigated away from draft; active tabs:', activeContentScriptTabs.size);
+      if (activeContentScriptTabs.size === 0) {
+        disconnect();
+      }
+    }
+  });
 
-// ---------------------------------------------------------------------------
-// Initialization
-// ---------------------------------------------------------------------------
-
-log('Background script starting');
+  log('Background core initialized');
+}
