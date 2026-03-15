@@ -25,19 +25,16 @@ DIST_DIR = EXTENSION_DIR / "dist"
 CREDENTIALS_FILE = EXTENSION_DIR / ".amo-credentials"
 ENV_FILE = PROJECT_DIR / ".env"
 
-# Shared source files copied into every browser build
+# Shared source files (at extension root) copied into Chrome dist builds.
+# Firefox loads directly from the extension root, so no copy needed.
 SHARED_FILES = [
-    ("src/browser-polyfill.js", "browser-polyfill.js"),
-    ("src/background-core.js", "background-core.js"),
-    ("src/content_scripts/espn.js", "content_scripts/espn.js"),
+    ("browser-polyfill.js", "browser-polyfill.js"),
+    ("background-core.js", "background-core.js"),
+    ("content_scripts/espn.js", "content_scripts/espn.js"),
 ]
 
-# Browser-specific files (relative to EXTENSION_DIR/<browser>/)
-FIREFOX_FILES = [
-    "manifest.json",
-    "background.js",
-]
-
+# Firefox files live at extension root (no separate directory needed).
+# Only Chrome needs browser-specific file listings for dist assembly.
 CHROME_FILES = [
     "manifest.json",
     "background.js",
@@ -161,18 +158,18 @@ def run_command(args: list, description: str, cwd: str = None) -> None:
         sys.exit(result.returncode)
 
 
-def assemble_dist(browser: str) -> Path:
-    """Assemble the dist directory for a browser target.
+def assemble_chrome_dist() -> Path:
+    """Assemble the dist directory for Chrome.
 
-    Copies shared files and browser-specific files into dist/<browser>/.
-    Returns the path to the dist directory.
+    Copies shared files (from extension root) and Chrome-specific files
+    into dist/chrome/. Returns the path to the dist directory.
     """
-    dist = DIST_DIR / browser
+    dist = DIST_DIR / "chrome"
     if dist.exists():
         shutil.rmtree(dist)
     dist.mkdir(parents=True)
 
-    # Copy shared files
+    # Copy shared files from extension root
     for src_rel, dst_rel in SHARED_FILES:
         src = EXTENSION_DIR / src_rel
         dst = dist / dst_rel
@@ -188,50 +185,71 @@ def assemble_dist(browser: str) -> Path:
             if icon_file.name != ".gitkeep":
                 shutil.copy2(icon_file, icons_dst / icon_file.name)
 
-    # Copy browser-specific files
-    browser_files = FIREFOX_FILES if browser == "firefox" else CHROME_FILES
-    browser_dir = EXTENSION_DIR / browser
-    for filename in browser_files:
-        src = browser_dir / filename
+    # Copy Chrome-specific files
+    chrome_dir = EXTENSION_DIR / "chrome"
+    for filename in CHROME_FILES:
+        src = chrome_dir / filename
         dst = dist / filename
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
 
-    print(f"Assembled {browser} extension in {dist}")
+    print(f"Assembled Chrome extension in {dist}")
     return dist
 
 
 def build_firefox() -> None:
-    """Build and sign the Firefox extension."""
+    """Build and sign the Firefox extension.
+
+    Firefox files live at the extension root, so web-ext runs directly
+    against EXTENSION_DIR with --ignore-files to exclude non-extension files.
+    """
     web_ext = check_web_ext()
     issuer, secret = load_credentials()
 
-    dist = assemble_dist("firefox")
+    artifacts_dir = DIST_DIR / "firefox" / "web-ext-artifacts"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+    ignore_files = [
+        "chrome/",
+        "dist/",
+        "*.py",
+        "*.pyc",
+        "__pycache__",
+        "icons/.gitkeep",
+        "BUILD.md",
+        ".amo-credentials",
+        ".gitkeep",
+    ]
 
     # Build
-    run_command(
-        [web_ext, "build", f"--source-dir={dist}", "--overwrite-dest",
-         f"--artifacts-dir={dist / 'web-ext-artifacts'}"],
-        "Building Firefox extension",
-    )
+    build_args = [
+        web_ext, "build",
+        f"--source-dir={EXTENSION_DIR}",
+        "--overwrite-dest",
+        f"--artifacts-dir={artifacts_dir}",
+    ]
+    for pattern in ignore_files:
+        build_args.append(f"--ignore-files={pattern}")
+
+    run_command(build_args, "Building Firefox extension")
 
     # Sign
-    run_command(
-        [
-            web_ext,
-            "sign",
-            f"--source-dir={dist}",
-            "--channel=unlisted",
-            f"--api-key={issuer}",
-            f"--api-secret={secret}",
-            f"--artifacts-dir={dist / 'web-ext-artifacts'}",
-        ],
-        "Signing Firefox extension",
-    )
+    sign_args = [
+        web_ext,
+        "sign",
+        f"--source-dir={EXTENSION_DIR}",
+        "--channel=unlisted",
+        f"--api-key={issuer}",
+        f"--api-secret={secret}",
+        f"--artifacts-dir={artifacts_dir}",
+    ]
+    for pattern in ignore_files:
+        sign_args.append(f"--ignore-files={pattern}")
+
+    run_command(sign_args, "Signing Firefox extension")
 
     # Report result
-    artifacts = dist / "web-ext-artifacts"
-    xpi_files = list(artifacts.glob("*.xpi")) if artifacts.exists() else []
+    xpi_files = list(artifacts_dir.glob("*.xpi")) if artifacts_dir.exists() else []
     if xpi_files:
         print(f"\nSigned Firefox extension: {xpi_files[0]}")
     else:
@@ -240,7 +258,7 @@ def build_firefox() -> None:
 
 def build_chrome() -> None:
     """Build the Chrome extension (produces unpacked directory for developer mode)."""
-    dist = assemble_dist("chrome")
+    dist = assemble_chrome_dist()
     print(f"\nChrome extension ready at: {dist}")
     print("Load it in Chrome via chrome://extensions (developer mode, 'Load unpacked').")
 

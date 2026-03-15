@@ -146,86 +146,65 @@ class BuildTestCase(unittest.TestCase):
             shutil.rmtree(build.DIST_DIR)
 
 
-class TestAssembleDistFirefox(BuildTestCase):
-    """Tests for assembling the Firefox dist directory."""
+class TestFirefoxExtensionRoot(BuildTestCase):
+    """Tests that Firefox extension files exist at the extension root."""
 
-    def test_creates_dist_directory(self):
-        dist = build.assemble_dist("firefox")
-        self.assertTrue(dist.exists())
-        self.assertEqual(dist, build.DIST_DIR / "firefox")
+    def test_manifest_exists_at_root(self):
+        self.assertTrue((EXTENSION_DIR / "manifest.json").exists())
 
-    def test_copies_shared_files(self):
-        dist = build.assemble_dist("firefox")
-        self.assertTrue((dist / "browser-polyfill.js").exists())
-        self.assertTrue((dist / "background-core.js").exists())
-        self.assertTrue((dist / "content_scripts" / "espn.js").exists())
+    def test_background_js_exists_at_root(self):
+        self.assertTrue((EXTENSION_DIR / "background.js").exists())
 
-    def test_copies_firefox_specific_files(self):
-        dist = build.assemble_dist("firefox")
-        self.assertTrue((dist / "manifest.json").exists())
-        self.assertTrue((dist / "background.js").exists())
-
-    def test_does_not_include_chrome_files(self):
-        dist = build.assemble_dist("firefox")
-        self.assertFalse((dist / "offscreen.html").exists())
-        self.assertFalse((dist / "offscreen.js").exists())
-
-    def test_shared_polyfill_content_matches_source(self):
-        dist = build.assemble_dist("firefox")
-        src_content = (EXTENSION_DIR / "src" / "browser-polyfill.js").read_text()
-        dst_content = (dist / "browser-polyfill.js").read_text()
-        self.assertEqual(src_content, dst_content)
+    def test_shared_files_exist_at_root(self):
+        self.assertTrue((EXTENSION_DIR / "browser-polyfill.js").exists())
+        self.assertTrue((EXTENSION_DIR / "background-core.js").exists())
+        self.assertTrue((EXTENSION_DIR / "content_scripts" / "espn.js").exists())
 
     def test_manifest_is_mv2(self):
-        dist = build.assemble_dist("firefox")
-        manifest = json.loads((dist / "manifest.json").read_text())
+        manifest = json.loads((EXTENSION_DIR / "manifest.json").read_text())
         self.assertEqual(manifest["manifest_version"], 2)
         self.assertIn("browser_specific_settings", manifest)
 
-    def test_cleans_existing_dist(self):
-        dist = build.assemble_dist("firefox")
-        marker = dist / "should_be_removed.txt"
-        marker.write_text("stale")
-
-        dist = build.assemble_dist("firefox")
-        self.assertFalse(marker.exists())
+    def test_no_chrome_files_at_root(self):
+        self.assertFalse((EXTENSION_DIR / "offscreen.html").exists())
+        self.assertFalse((EXTENSION_DIR / "offscreen.js").exists())
 
 
-class TestAssembleDistChrome(BuildTestCase):
+class TestAssembleChromeDist(BuildTestCase):
     """Tests for assembling the Chrome dist directory."""
 
     def test_creates_dist_directory(self):
-        dist = build.assemble_dist("chrome")
+        dist = build.assemble_chrome_dist()
         self.assertTrue(dist.exists())
         self.assertEqual(dist, build.DIST_DIR / "chrome")
 
     def test_copies_shared_files(self):
-        dist = build.assemble_dist("chrome")
+        dist = build.assemble_chrome_dist()
         self.assertTrue((dist / "browser-polyfill.js").exists())
         self.assertTrue((dist / "background-core.js").exists())
         self.assertTrue((dist / "content_scripts" / "espn.js").exists())
 
     def test_copies_chrome_specific_files(self):
-        dist = build.assemble_dist("chrome")
+        dist = build.assemble_chrome_dist()
         self.assertTrue((dist / "manifest.json").exists())
         self.assertTrue((dist / "background.js").exists())
         self.assertTrue((dist / "offscreen.html").exists())
         self.assertTrue((dist / "offscreen.js").exists())
 
     def test_does_not_include_firefox_files(self):
-        dist = build.assemble_dist("chrome")
+        dist = build.assemble_chrome_dist()
         manifest = json.loads((dist / "manifest.json").read_text())
         self.assertNotIn("browser_specific_settings", manifest)
 
     def test_manifest_is_mv3(self):
-        dist = build.assemble_dist("chrome")
+        dist = build.assemble_chrome_dist()
         manifest = json.loads((dist / "manifest.json").read_text())
         self.assertEqual(manifest["manifest_version"], 3)
         self.assertIn("offscreen", manifest["permissions"])
         self.assertIn("service_worker", manifest["background"])
 
     def test_offscreen_html_references_scripts(self):
-        dist = build.assemble_dist("chrome")
+        dist = build.assemble_chrome_dist()
         html = (dist / "offscreen.html").read_text()
         self.assertIn("browser-polyfill.js", html)
         self.assertIn("background-core.js", html)
@@ -235,34 +214,30 @@ class TestAssembleDistChrome(BuildTestCase):
 class TestBothBrowsers(BuildTestCase):
     """Tests that apply to both browser targets."""
 
-    def test_both_targets_share_same_polyfill(self):
-        ff_dist = build.assemble_dist("firefox")
-        cr_dist = build.assemble_dist("chrome")
+    def test_chrome_dist_shares_polyfill_with_root(self):
+        cr_dist = build.assemble_chrome_dist()
         self.assertEqual(
-            (ff_dist / "browser-polyfill.js").read_text(),
+            (EXTENSION_DIR / "browser-polyfill.js").read_text(),
             (cr_dist / "browser-polyfill.js").read_text(),
         )
 
-    def test_both_targets_share_same_core(self):
-        ff_dist = build.assemble_dist("firefox")
-        cr_dist = build.assemble_dist("chrome")
+    def test_chrome_dist_shares_core_with_root(self):
+        cr_dist = build.assemble_chrome_dist()
         self.assertEqual(
-            (ff_dist / "background-core.js").read_text(),
+            (EXTENSION_DIR / "background-core.js").read_text(),
             (cr_dist / "background-core.js").read_text(),
         )
 
-    def test_both_targets_share_same_content_script(self):
-        ff_dist = build.assemble_dist("firefox")
-        cr_dist = build.assemble_dist("chrome")
+    def test_chrome_dist_shares_content_script_with_root(self):
+        cr_dist = build.assemble_chrome_dist()
         self.assertEqual(
-            (ff_dist / "content_scripts" / "espn.js").read_text(),
+            (EXTENSION_DIR / "content_scripts" / "espn.js").read_text(),
             (cr_dist / "content_scripts" / "espn.js").read_text(),
         )
 
     def test_both_targets_have_same_version(self):
-        ff_dist = build.assemble_dist("firefox")
-        cr_dist = build.assemble_dist("chrome")
-        ff_manifest = json.loads((ff_dist / "manifest.json").read_text())
+        cr_dist = build.assemble_chrome_dist()
+        ff_manifest = json.loads((EXTENSION_DIR / "manifest.json").read_text())
         cr_manifest = json.loads((cr_dist / "manifest.json").read_text())
         self.assertEqual(ff_manifest["version"], cr_manifest["version"])
 
