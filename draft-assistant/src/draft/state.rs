@@ -98,15 +98,35 @@ impl DraftState {
     /// After teams are registered via `reconcile_budgets()`, this method
     /// finds and sets `my_team_idx` by matching the name.
     pub fn set_my_team_by_name(&mut self, team_name: &str) {
-        if let Some(idx) = self.teams.iter().position(|t| t.team_name == team_name) {
+        // Try exact match first
+        let idx = self.teams.iter().position(|t| t.team_name == team_name)
+            // Fallback: case-insensitive match
+            .or_else(|| {
+                self.teams.iter().position(|t| {
+                    t.team_name.eq_ignore_ascii_case(team_name)
+                })
+            })
+            // Fallback: one name contains the other (handles truncation)
+            .or_else(|| {
+                let lower = team_name.to_lowercase();
+                self.teams.iter().position(|t| {
+                    let t_lower = t.team_name.to_lowercase();
+                    t_lower.contains(&lower) || lower.contains(&t_lower)
+                })
+            });
+
+        if let Some(idx) = idx {
             if self.my_team_idx != idx {
                 info!("Setting my_team_idx to {} (team: '{}')", idx, team_name);
             }
             self.my_team_idx = idx;
         } else {
             warn!(
-                "Could not find team matching '{}' — my_team_idx remains at {}",
-                team_name, self.my_team_idx
+                "Could not find team matching '{}' among {} teams [{}] — my_team_idx remains at {}",
+                team_name,
+                self.teams.len(),
+                self.teams.iter().map(|t| t.team_name.as_str()).collect::<Vec<_>>().join(", "),
+                self.my_team_idx
             );
         }
     }

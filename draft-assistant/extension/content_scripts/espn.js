@@ -360,6 +360,24 @@ function identifyMyTeam() {
     // Could not identify own team from pick train
   }
 
+  // Fallback: roster dropdown's selected option is always the user's team
+  try {
+    const dropdown = document.querySelector(SELECTORS.teamIdDropdown);
+    if (dropdown && dropdown.selectedIndex >= 0) {
+      const selected = dropdown.options[dropdown.selectedIndex];
+      if (selected) {
+        const teamName = selected.textContent.trim();
+        if (teamName) {
+          log('Identified my team from roster dropdown:', teamName);
+          cachedMyTeamName = teamName;
+          return cachedMyTeamName;
+        }
+      }
+    }
+  } catch (e) {
+    // Roster dropdown not available
+  }
+
   // Fallback: find any pick with the my-pick CSS class in the pick history tables
   try {
     const myPickEl = document.querySelector('div.pick-history-tables .player-column.my-pick');
@@ -842,6 +860,8 @@ function scrapeDom() {
     if (myTeamName) {
       // Use team name as ID since ESPN DOM doesn't expose numeric team IDs
       state.myTeamId = myTeamName;
+    } else {
+      warn('Failed to identify my team from any source (pick train, roster dropdown, pick history)');
     }
 
     // Extract draft identifier
