@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# draft-assistant installer for macOS / Linux
+# wyncast installer for macOS / Linux
 
 # --- Colors ---
 GREEN='\033[0;32m'
@@ -31,19 +31,19 @@ else
     DATA_DIR="$HOME/.local/share/wyncast"
 fi
 
-echo -e "${BLUE}Installing draft-assistant (${PLATFORM})...${NC}"
+echo -e "${BLUE}Installing wyncast (${PLATFORM})...${NC}"
 echo ""
 
 # --- Install binary ---
 mkdir -p "$BIN_DIR"
-cp "$SCRIPT_DIR/bin/draft-assistant" "$BIN_DIR/draft-assistant"
-chmod +x "$BIN_DIR/draft-assistant"
-echo -e "${GREEN}✓${NC} Installed binary to ${BIN_DIR}/draft-assistant"
+cp "$SCRIPT_DIR/bin/wyncast" "$BIN_DIR/wyncast"
+chmod +x "$BIN_DIR/wyncast"
+echo -e "${GREEN}✓${NC} Installed binary to ${BIN_DIR}/wyncast"
 
 # --- macOS: clear quarantine ---
 if [[ "$PLATFORM" == "macos" ]]; then
     if command -v xattr &>/dev/null; then
-        xattr -dr com.apple.quarantine "$BIN_DIR/draft-assistant" 2>/dev/null || true
+        xattr -dr com.apple.quarantine "$BIN_DIR/wyncast" 2>/dev/null || true
         echo -e "${GREEN}✓${NC} Cleared macOS quarantine flag"
     fi
 fi
@@ -55,7 +55,7 @@ add_to_path() {
         echo -e "${GREEN}✓${NC} PATH already configured in $(basename "$rcfile")"
     else
         echo '' >> "$rcfile"
-        echo '# Added by draft-assistant installer' >> "$rcfile"
+        echo '# Added by wyncast installer' >> "$rcfile"
         echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$rcfile"
         echo -e "${GREEN}✓${NC} Added ~/.local/bin to PATH in $(basename "$rcfile")"
         echo -e "${YELLOW}  Restart your shell or run: source ${rcfile}${NC}"
@@ -119,4 +119,4 @@ echo "       ${DATA_DIR}/extensions/chrome/"
 echo ""
 echo -e "${BLUE}Notes:${NC}"
 echo "  - Config file auto-generates on first run"
-echo "  - Run 'draft-assistant' to start"
+echo "  - Run 'wyncast' to start"
