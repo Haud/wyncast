@@ -31,7 +31,17 @@ fn project_dirs() -> ProjectDirs {
 /// indicate a misconfigured home directory) or if the directory cannot be
 /// created.
 pub fn app_data_dir() -> PathBuf {
-    let dir = project_dirs().data_dir().to_path_buf();
+    let dirs = project_dirs();
+    let dir = if cfg!(windows) {
+        // data_dir() on Windows appends a \data suffix under the project root.
+        // Use the project root directly so paths are consistent across platforms.
+        dirs.data_dir()
+            .parent()
+            .expect("data_dir should have a parent")
+            .to_path_buf()
+    } else {
+        dirs.data_dir().to_path_buf()
+    };
 
     std::fs::create_dir_all(&dir)
         .unwrap_or_else(|e| panic!("failed to create app data directory {}: {e}", dir.display()));
