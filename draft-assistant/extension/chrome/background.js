@@ -15,6 +15,20 @@ let offscreenReady = false;
 const knownDraftTabs = new Set();
 
 /**
+ * Send the init message to the offscreen document with data it cannot
+ * obtain on its own (e.g. extension version from getManifest()).
+ */
+function sendOffscreenInit() {
+  chrome.runtime.sendMessage({
+    target: 'offscreen',
+    action: 'init',
+    extensionVersion: chrome.runtime.getManifest().version,
+  }).catch((err) => {
+    console.warn(LOG_PREFIX, 'Failed to send init to offscreen:', err.message || err);
+  });
+}
+
+/**
  * Ensure the offscreen document exists. Creates it if needed.
  * Uses a lock to prevent duplicate creation attempts.
  * Caches the result so subsequent calls skip the IPC check.
@@ -32,6 +46,7 @@ async function ensureOffscreen() {
 
   if (contexts.length > 0) {
     offscreenReady = true;
+    sendOffscreenInit();
     return;
   }
 
@@ -45,6 +60,7 @@ async function ensureOffscreen() {
     });
     if (recheck.length > 0) {
       offscreenReady = true;
+      sendOffscreenInit();
     }
     return;
   }
@@ -59,6 +75,7 @@ async function ensureOffscreen() {
     await creatingOffscreen;
     offscreenReady = true;
     console.log(LOG_PREFIX, 'Offscreen document created');
+    sendOffscreenInit();
   } catch (err) {
     console.error(LOG_PREFIX, 'Failed to create offscreen document:', err.message || err);
   } finally {

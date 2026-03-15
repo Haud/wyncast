@@ -4,16 +4,56 @@
 
 'use strict';
 
-const EXTENSION_VERSION = chrome.runtime.getManifest().version;
-
 // Single message listener that dispatches to the appropriate callback.
 // Avoids registering multiple independent onMessage listeners.
 let contentScriptCallback = null;
 let tabRemovedCallback = null;
 let tabUpdatedCallback = null;
+let initialized = false;
 
 chrome.runtime.onMessage.addListener((message) => {
   if (!message || message.target !== 'offscreen') {
+    return;
+  }
+
+  // Init message from the service worker with the extension version.
+  // chrome.runtime.getManifest() is not available in offscreen documents,
+  // so the service worker passes the version after creating us.
+  if (message.action === 'init' && message.extensionVersion) {
+    if (initialized) {
+      return;
+    }
+    initialized = true;
+    initBackgroundCore({
+      platform: 'chrome',
+      extensionVersion: message.extensionVersion,
+
+      // Offscreen documents can't access chrome.tabs, so ask the service worker
+      // to relay messages to content script tabs.
+      sendToContentScript: (tabId, msg) => {
+        return chrome.runtime.sendMessage({
+          target: 'service-worker',
+          action: 'relayToTab',
+          tabId: tabId,
+          message: msg,
+        });
+      },
+
+      // Register callback for content script messages forwarded by the service worker.
+      onContentScriptMessage: (callback) => {
+        contentScriptCallback = callback;
+      },
+
+      // Register callback for tab removal events forwarded by the service worker.
+      onTabRemoved: (callback) => {
+        tabRemovedCallback = callback;
+      },
+
+      // Register callback for tab update events forwarded by the service worker.
+      onTabUpdated: (callback) => {
+        tabUpdatedCallback = callback;
+      },
+    });
     return;
   }
 
@@ -39,35 +79,4 @@ chrome.runtime.onMessage.addListener((message) => {
       tabUpdatedCallback(message.tabId, message.changeInfo);
     }
   }
-});
-
-initBackgroundCore({
-  platform: 'chrome',
-  extensionVersion: EXTENSION_VERSION,
-
-  // Offscreen documents can't access chrome.tabs, so ask the service worker
-  // to relay messages to content script tabs.
-  sendToContentScript: (tabId, message) => {
-    return chrome.runtime.sendMessage({
-      target: 'service-worker',
-      action: 'relayToTab',
-      tabId: tabId,
-      message: message,
-    });
-  },
-
-  // Register callback for content script messages forwarded by the service worker.
-  onContentScriptMessage: (callback) => {
-    contentScriptCallback = callback;
-  },
-
-  // Register callback for tab removal events forwarded by the service worker.
-  onTabRemoved: (callback) => {
-    tabRemovedCallback = callback;
-  },
-
-  // Register callback for tab update events forwarded by the service worker.
-  onTabUpdated: (callback) => {
-    tabUpdatedCallback = callback;
-  },
 });
