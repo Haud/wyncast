@@ -75,10 +75,10 @@ else
 fi
 
 # --- Copy projection data ---
-mkdir -p "$DATA_DIR/data/projections"
-cp "$SCRIPT_DIR/data/projections/hitters.csv" "$DATA_DIR/data/projections/hitters.csv"
-cp "$SCRIPT_DIR/data/projections/pitchers.csv" "$DATA_DIR/data/projections/pitchers.csv"
-echo -e "${GREEN}✓${NC} Installed projection data to ${DATA_DIR}/data/projections/"
+mkdir -p "$DATA_DIR/projections"
+cp "$SCRIPT_DIR/projections/hitters.csv" "$DATA_DIR/projections/hitters.csv"
+cp "$SCRIPT_DIR/projections/pitchers.csv" "$DATA_DIR/projections/pitchers.csv"
+echo -e "${GREEN}✓${NC} Installed projection data to ${DATA_DIR}/projections/"
 
 # --- Copy extensions ---
 if [[ -d "$SCRIPT_DIR/extensions" ]]; then

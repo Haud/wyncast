@@ -331,8 +331,8 @@ pub struct DataPaths {
 impl Default for DataPaths {
     fn default() -> Self {
         Self {
-            hitters: "data/projections/hitters.csv".to_string(),
-            pitchers: "data/projections/pitchers.csv".to_string(),
+            hitters: "projections/hitters.csv".to_string(),
+            pitchers: "projections/pitchers.csv".to_string(),
         }
     }
 }
@@ -693,7 +693,7 @@ mod tests {
 
         // Infrastructure assertions
         assert_eq!(config.ws_port, 9001);
-        assert_eq!(config.data_paths.hitters, "data/projections/hitters.csv");
+        assert_eq!(config.data_paths.hitters, "projections/hitters.csv");
 
         let _ = fs::remove_dir_all(&tmp);
     }
@@ -1096,8 +1096,8 @@ gs_per_week = 7
         assert!(config.strategy.llm.prefire_planning);
 
         assert_eq!(config.ws_port, 9001);
-        assert_eq!(config.data_paths.hitters, "data/projections/hitters.csv");
-        assert_eq!(config.data_paths.pitchers, "data/projections/pitchers.csv");
+        assert_eq!(config.data_paths.hitters, "projections/hitters.csv");
+        assert_eq!(config.data_paths.pitchers, "projections/pitchers.csv");
 
         assert!(config.credentials.anthropic_api_key.is_none());
         assert!(config.credentials.google_api_key.is_none());
