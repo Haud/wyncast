@@ -131,6 +131,9 @@ def stage_files(project_dir, dist_dir, target, is_windows, skip_extensions):
         shutil.copy2(str(scripts_dir / "install.sh"), str(install_dst))
         os.chmod(str(install_dst), 0o755)
 
+    # README
+    shutil.copy2(str(scripts_dir / "INSTALL_README.md"), str(dist_dir / "README.md"))
+
 
 def create_archive(dist_parent, dist_name, is_windows):
     """Create a .tar.gz or .zip archive and return the archive path."""
