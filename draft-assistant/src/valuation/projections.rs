@@ -273,36 +273,31 @@ pub fn load_all(config: &Config) -> Result<AllProjections, ProjectionError> {
 
 /// Resolve a data file path from the config.
 ///
-/// If the path is absolute, use it as-is. If it is relative, look for it in
-/// the following order:
+/// If the path is absolute, use it as-is. If it is relative:
 ///
-/// 1. Relative to the OS app data directory (`~/.local/share/wyncast` on Linux)
-/// 2. Relative to the current working directory (fallback for development)
-///
-/// Returns the first path that exists, or falls back to the app data dir
-/// path if neither exists (so the caller gets a meaningful "file not found" error).
+/// - **Debug builds** (`cargo build`/`cargo run`): resolve relative to CWD
+///   (dev workflow, files live in the repo checkout).
+/// - **Release builds** (`cargo build --release`): resolve relative to the
+///   OS app data directory (`~/.local/share/wyncast` on Linux).
 fn resolve_data_path(raw: &str) -> std::path::PathBuf {
     let p = Path::new(raw);
     if p.is_absolute() {
         return p.to_path_buf();
     }
 
-    let app_data_candidate = crate::app_dirs::app_data_dir().join(p);
-    if app_data_candidate.exists() {
-        return app_data_candidate;
-    }
-
-    // Fall back to CWD-relative (useful for `cargo run` during development).
-    if let Ok(cwd) = std::env::current_dir() {
-        let cwd_candidate = cwd.join(p);
-        if cwd_candidate.exists() {
-            return cwd_candidate;
+    #[cfg(debug_assertions)]
+    {
+        // Dev: resolve relative to CWD (run from repo root)
+        if let Ok(cwd) = std::env::current_dir() {
+            let candidate = cwd.join(p);
+            if candidate.exists() {
+                return candidate;
+            }
         }
     }
 
-    // Neither exists — return the app data dir path so the caller gets a
-    // descriptive error pointing to the preferred location.
-    app_data_candidate
+    // Release (and debug fallback): resolve relative to app data dir
+    crate::app_dirs::app_data_dir().join(p)
 }
 
 /// Load all projection data from explicit paths. Exposed for testing and flexibility.
