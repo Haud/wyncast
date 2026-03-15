@@ -104,8 +104,8 @@ def stage_files(project_dir, dist_dir, target, is_windows, skip_extensions):
     exe_suffix = ".exe" if is_windows else ""
     bin_dir = dist_dir / "bin"
     bin_dir.mkdir(parents=True)
-    src_bin = project_dir / "target" / target / "release" / ("draft-assistant" + exe_suffix)
-    shutil.copy2(str(src_bin), str(bin_dir / ("draft-assistant" + exe_suffix)))
+    src_bin = project_dir / "target" / target / "release" / ("wyncast" + exe_suffix)
+    shutil.copy2(str(src_bin), str(bin_dir / ("wyncast" + exe_suffix)))
 
     # Projection data
     proj_dir = dist_dir / "data" / "projections"

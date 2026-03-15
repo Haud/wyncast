@@ -1,19 +1,19 @@
-# draft-assistant installer for Windows
+# wyncast installer for Windows
 $ErrorActionPreference = 'Stop'
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # --- Paths ---
-$BinDir = Join-Path $env:LOCALAPPDATA "Programs\draft-assistant"
+$BinDir = Join-Path $env:LOCALAPPDATA "Programs\wyncast"
 $DataDir = Join-Path $env:APPDATA "wyncast"
 
-Write-Host "Installing draft-assistant (Windows)..." -ForegroundColor Blue
+Write-Host "Installing wyncast (Windows)..." -ForegroundColor Blue
 Write-Host ""
 
 # --- Install binary ---
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
-Copy-Item "$ScriptDir\bin\draft-assistant.exe" "$BinDir\draft-assistant.exe" -Force
-Write-Host "[OK] Installed binary to $BinDir\draft-assistant.exe" -ForegroundColor Green
+Copy-Item "$ScriptDir\bin\wyncast.exe" "$BinDir\wyncast.exe" -Force
+Write-Host "[OK] Installed binary to $BinDir\wyncast.exe" -ForegroundColor Green
 
 # --- Add to PATH ---
 $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -85,4 +85,4 @@ Write-Host "       $ExtensionsDir\chrome\"
 Write-Host ""
 Write-Host "Notes:" -ForegroundColor Blue
 Write-Host "  - Config file auto-generates on first run"
-Write-Host "  - Run 'draft-assistant' to start"
+Write-Host "  - Run 'wyncast' to start"
