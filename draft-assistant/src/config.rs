@@ -79,10 +79,6 @@ pub struct LeagueConfig {
     /// from ESPN's live draft data via the extension.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub teams: HashMap<String, String>,
-    /// The user's team identifier (optional). When omitted, the user's team
-    /// is identified dynamically from the ESPN extension's `myTeamId` field.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub my_team: Option<MyTeam>,
 }
 
 impl Default for LeagueConfig {
@@ -131,7 +127,6 @@ impl Default for LeagueConfig {
             roster,
             roster_limits: RosterLimits::default(),
             teams: HashMap::new(),
-            my_team: None,
         }
     }
 }
@@ -156,11 +151,6 @@ impl Default for RosterLimits {
             gs_per_week: 7,
         }
     }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct MyTeam {
-    pub team_id: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -673,9 +663,8 @@ mod tests {
         assert_eq!(config.league.roster.get("RP"), Some(&6));
         assert_eq!(config.league.roster_limits.max_rp, 7);
         assert_eq!(config.league.roster_limits.gs_per_week, 7);
-        // Teams and my_team are now optional (populated from ESPN live data)
+        // Teams are now optional (populated from ESPN live data)
         assert!(config.league.teams.is_empty());
-        assert!(config.league.my_team.is_none());
 
         // Strategy assertions
         assert!((config.strategy.hitting_budget_fraction - 0.65).abs() < f64::EPSILON);
@@ -1077,7 +1066,6 @@ gs_per_week = 7
         assert_eq!(config.league.roster_limits.max_rp, 7);
         assert_eq!(config.league.roster_limits.gs_per_week, 7);
         assert!(config.league.teams.is_empty());
-        assert!(config.league.my_team.is_none());
 
         assert!((config.strategy.hitting_budget_fraction - 0.65).abs() < f64::EPSILON);
         assert!((config.strategy.weights.R - 1.0).abs() < f64::EPSILON);

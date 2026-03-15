@@ -1703,7 +1703,6 @@ mod tests {
                     gs_per_week: 7,
                 },
                 teams: HashMap::new(),
-                my_team: None,
             },
             strategy: StrategyConfig {
                 hitting_budget_fraction: 0.65,
@@ -1783,7 +1782,6 @@ mod tests {
                     gs_per_week: 7,
                 },
                 teams: HashMap::new(),
-                my_team: None,
             },
             strategy: StrategyConfig {
                 hitting_budget_fraction: 0.65,

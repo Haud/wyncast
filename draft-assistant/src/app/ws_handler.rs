@@ -655,7 +655,7 @@ fn build_state_from_grid(
     {
         info!("Identified my team from grid isMyTeam flag: {} (idx={})",
             board.teams[idx].team_name, idx);
-        state.draft_state.my_team_idx = idx;
+        state.draft_state.my_team_idx = Some(idx);
     } else {
         // Fallback: use is_my_pick from pick history to identify the user's team
         let my_team_from_history = pick_history.as_ref().and_then(|history| {
@@ -664,12 +664,12 @@ fn build_state_from_grid(
         if let Some(ref team_name) = my_team_from_history {
             if let Some(idx) = state.draft_state.teams.iter().position(|t| t.team_name == *team_name) {
                 info!("Identified my team from pick history is_my_pick: {} (idx={})", team_name, idx);
-                state.draft_state.my_team_idx = idx;
+                state.draft_state.my_team_idx = Some(idx);
             } else {
                 warn!("Pick history identified my team as '{}' but no matching team found in grid", team_name);
             }
         } else {
-            warn!("Could not identify my team from grid or pick history — my_team_idx defaults to 0");
+            warn!("Could not identify my team from grid or pick history — my_team_idx remains None");
         }
     }
 
