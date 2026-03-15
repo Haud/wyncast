@@ -5,7 +5,7 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # --- Paths ---
 $BinDir = Join-Path $env:LOCALAPPDATA "Programs\wyncast"
-$DataDir = Join-Path $env:APPDATA "wyncast"
+$DataDir = Join-Path $env:APPDATA "wyncast\data"
 
 Write-Host "Installing wyncast (Windows)..." -ForegroundColor Blue
 Write-Host ""
