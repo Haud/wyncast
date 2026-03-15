@@ -108,9 +108,9 @@ def stage_files(project_dir, dist_dir, target, is_windows, skip_extensions):
     shutil.copy2(str(src_bin), str(bin_dir / ("wyncast" + exe_suffix)))
 
     # Projection data
-    proj_dir = dist_dir / "data" / "projections"
+    proj_dir = dist_dir / "projections"
     proj_dir.mkdir(parents=True)
-    src_proj = project_dir / "data" / "projections"
+    src_proj = project_dir / "projections"
     shutil.copy2(str(src_proj / "hitters.csv"), str(proj_dir / "hitters.csv"))
     shutil.copy2(str(src_proj / "pitchers.csv"), str(proj_dir / "pitchers.csv"))
 

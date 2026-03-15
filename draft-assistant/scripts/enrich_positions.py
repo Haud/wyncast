@@ -13,8 +13,8 @@ Usage:
         --league-id 12345 \
         --espn-s2 "AAAA..." \
         --swid "{XXXX-XXXX-...}" \
-        --hitters data/projections/2026/hitters.csv \
-        --pitchers data/projections/2026/pitchers.csv
+        --hitters projections/2026/hitters.csv \
+        --pitchers projections/2026/pitchers.csv
 
 Dependencies: Python 3.8+ standard library only.
 """
@@ -468,13 +468,13 @@ def parse_args(argv=None):
     parser.add_argument("--swid", required=True, help="SWID cookie value")
     parser.add_argument(
         "--hitters",
-        default="data/projections/2026/hitters.csv",
-        help="Path to hitters CSV (default: data/projections/2026/hitters.csv)",
+        default="projections/2026/hitters.csv",
+        help="Path to hitters CSV (default: projections/2026/hitters.csv)",
     )
     parser.add_argument(
         "--pitchers",
-        default="data/projections/2026/pitchers.csv",
-        help="Path to pitchers CSV (default: data/projections/2026/pitchers.csv)",
+        default="projections/2026/pitchers.csv",
+        help="Path to pitchers CSV (default: projections/2026/pitchers.csv)",
     )
     parser.add_argument(
         "--season",
