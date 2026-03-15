@@ -20,7 +20,7 @@ fn default_credentials_config_is_empty() {
 /// Verify that browser-specific manifest.json files are valid JSON.
 #[test]
 fn extension_manifests_are_valid_json() {
-    let manifests = ["extension/firefox/manifest.json", "extension/chrome/manifest.json"];
+    let manifests = ["extension/manifest.json", "extension/chrome/manifest.json"];
     for path in manifests {
         let content =
             std::fs::read_to_string(path).unwrap_or_else(|_| panic!("{} should exist", path));
@@ -46,9 +46,7 @@ fn directory_structure_exists() {
         "src/tui/widgets",
         "projections",
         "extension",
-        "extension/src",
-        "extension/src/content_scripts",
-        "extension/firefox",
+        "extension/content_scripts",
         "extension/chrome",
         "extension/icons",
         "tests",

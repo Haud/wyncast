@@ -30,6 +30,19 @@ python3 extension/build.py firefox
 
 ## Firefox
 
+### Development (temporary add-on)
+
+For local development, you can load the extension directly from the `extension/` root
+without any build step:
+
+1. Open Firefox and navigate to `about:debugging`
+2. Click **This Firefox** in the left sidebar
+3. Click **Load Temporary Add-on...**
+4. Select `extension/manifest.json`
+
+The extension will remain loaded until Firefox is restarted. To reload after making
+changes, click the **Reload** button next to the extension in `about:debugging`.
+
 ### AMO API Credentials
 
 Get your API keys at: https://addons.mozilla.org/developers/addon/api/key/
@@ -88,10 +101,10 @@ python extension/build.py firefox
 ```
 
 The script will:
-1. Assemble shared + Firefox-specific files into `dist/firefox/`
+1. Run `web-ext` directly against the extension root (excluding non-extension files)
 2. Build the extension into a `.zip`
 3. Submit it to AMO for signing (unlisted channel)
-4. Download the signed `.xpi` and print its path
+4. Download the signed `.xpi` into `dist/firefox/web-ext-artifacts/`
 
 ### Installing in Firefox
 
