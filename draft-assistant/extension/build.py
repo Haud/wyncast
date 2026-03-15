@@ -34,6 +34,11 @@ SHARED_FILES = [
 ]
 
 # Firefox files live at extension root (no separate directory needed).
+FIREFOX_FILES = [
+    "manifest.json",
+    "background.js",
+]
+
 # Only Chrome needs browser-specific file listings for dist assembly.
 CHROME_FILES = [
     "manifest.json",
@@ -156,6 +161,44 @@ def run_command(args: list, description: str, cwd: str = None) -> None:
             file=sys.stderr,
         )
         sys.exit(result.returncode)
+
+
+def assemble_firefox_dist() -> Path:
+    """Assemble the dist directory for Firefox.
+
+    Copies shared files (from extension root) and Firefox-specific files
+    into dist/firefox/. Returns the path to the dist directory.
+    """
+    dist = DIST_DIR / "firefox"
+    if dist.exists():
+        shutil.rmtree(dist)
+    dist.mkdir(parents=True)
+
+    # Copy shared files from extension root
+    for src_rel, dst_rel in SHARED_FILES:
+        src = EXTENSION_DIR / src_rel
+        dst = dist / dst_rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+
+    # Copy icons directory (if it has real files beyond .gitkeep)
+    icons_src = EXTENSION_DIR / "icons"
+    if icons_src.exists():
+        icons_dst = dist / "icons"
+        icons_dst.mkdir(parents=True, exist_ok=True)
+        for icon_file in icons_src.iterdir():
+            if icon_file.name != ".gitkeep":
+                shutil.copy2(icon_file, icons_dst / icon_file.name)
+
+    # Copy Firefox-specific files (from extension root)
+    for filename in FIREFOX_FILES:
+        src = EXTENSION_DIR / filename
+        dst = dist / filename
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+
+    print(f"Assembled Firefox extension in {dist}")
+    return dist
 
 
 def assemble_chrome_dist() -> Path:

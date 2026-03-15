@@ -88,8 +88,8 @@ def build_extensions(project_dir):
     ext_dir = str(project_dir / "extension")
     if ext_dir not in sys.path:
         sys.path.insert(0, ext_dir)
-    from build import assemble_dist
-    assemble_dist("firefox")
+    from build import assemble_firefox_dist
+    assemble_firefox_dist()
 
 
 def stage_files(project_dir, dist_dir, target, is_windows, skip_extensions):

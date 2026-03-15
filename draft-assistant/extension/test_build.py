@@ -170,6 +170,44 @@ class TestFirefoxExtensionRoot(BuildTestCase):
         self.assertFalse((EXTENSION_DIR / "offscreen.js").exists())
 
 
+class TestAssembleFirefoxDist(BuildTestCase):
+    """Tests for assembling the Firefox dist directory."""
+
+    def test_creates_dist_directory(self):
+        dist = build.assemble_firefox_dist()
+        self.assertTrue(dist.exists())
+        self.assertEqual(dist, build.DIST_DIR / "firefox")
+
+    def test_copies_shared_files(self):
+        dist = build.assemble_firefox_dist()
+        self.assertTrue((dist / "browser-polyfill.js").exists())
+        self.assertTrue((dist / "background-core.js").exists())
+        self.assertTrue((dist / "content_scripts" / "espn.js").exists())
+
+    def test_copies_firefox_specific_files(self):
+        dist = build.assemble_firefox_dist()
+        self.assertTrue((dist / "manifest.json").exists())
+        self.assertTrue((dist / "background.js").exists())
+
+    def test_manifest_is_mv2(self):
+        dist = build.assemble_firefox_dist()
+        manifest = json.loads((dist / "manifest.json").read_text())
+        self.assertEqual(manifest["manifest_version"], 2)
+        self.assertIn("browser_specific_settings", manifest)
+
+    def test_does_not_include_chrome_files(self):
+        dist = build.assemble_firefox_dist()
+        self.assertFalse((dist / "offscreen.html").exists())
+        self.assertFalse((dist / "offscreen.js").exists())
+
+    def test_cleans_existing_dist(self):
+        dist = build.assemble_firefox_dist()
+        marker = dist / "stale_file.txt"
+        marker.write_text("stale")
+        build.assemble_firefox_dist()
+        self.assertFalse(marker.exists())
+
+
 class TestAssembleChromeDist(BuildTestCase):
     """Tests for assembling the Chrome dist directory."""
 
