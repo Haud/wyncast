@@ -338,21 +338,57 @@ function scrapeTeamBudgets() {
 
 /**
  * Identify my team from the pick train using the own-team modifier class.
+ * Falls back to the pick history `my-pick` CSS class if the pick train
+ * method fails (ESPN may change CSS classes across updates).
  * Returns the team name, or null if not found.
  */
 function identifyMyTeam() {
+  if (cachedMyTeamName) return cachedMyTeamName;
+
+  // Primary: CSS class on pick train
   try {
     const ownContent = document.querySelector(SELECTORS.myTeamContent);
     if (ownContent) {
       const nameEl = ownContent.querySelector(SELECTORS.teamBudgetName);
       if (nameEl) {
         const name = nameEl.textContent.trim();
-        return name.replace(/^\d+\.\s*/, '');
+        cachedMyTeamName = name.replace(/^\d+\.\s*/, '');
+        return cachedMyTeamName;
       }
     }
   } catch (e) {
-    // Could not identify own team
+    // Could not identify own team from pick train
   }
+
+  // Fallback: find any pick with the my-pick CSS class in the pick history tables
+  try {
+    const myPickEl = document.querySelector('div.pick-history-tables .player-column.my-pick');
+    if (myPickEl) {
+      // Navigate up to the row, find the team name cell
+      const row = myPickEl.closest('[aria-rowindex]');
+      if (row) {
+        const cells = Array.from(row.querySelectorAll('[role="gridcell"]'));
+        cells.sort((a, b) => {
+          const leftA = parseFloat(a.style.left);
+          const leftB = parseFloat(b.style.left);
+          return (isNaN(leftA) ? Infinity : leftA) - (isNaN(leftB) ? Infinity : leftB);
+        });
+        // Cell 3 (index 2) is the team name cell
+        if (cells.length >= 3) {
+          const boldTeam = cells[2].querySelector('span.fw-bold');
+          const teamName = boldTeam ? boldTeam.textContent.trim() : cells[2].textContent.trim();
+          if (teamName) {
+            log('Identified my team from pick history my-pick class:', teamName);
+            cachedMyTeamName = teamName;
+            return cachedMyTeamName;
+          }
+        }
+      }
+    }
+  } catch (e) {
+    // Fallback identification failed
+  }
+
   return null;
 }
 
@@ -860,6 +896,9 @@ let lastFingerprint = null;
 
 /** Cached team ID mapping (static for the duration of a draft) */
 let cachedTeamIdMapping = null;
+
+/** Cached my team name (static for the duration of a draft) */
+let cachedMyTeamName = null;
 
 /**
  * Compute a lightweight fingerprint of the state for deduplication.

@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use tracing::warn;
+use tracing::{info, warn};
 
 use super::pick::DraftPick;
 use super::roster::Roster;
@@ -99,6 +99,9 @@ impl DraftState {
     /// finds and sets `my_team_idx` by matching the name.
     pub fn set_my_team_by_name(&mut self, team_name: &str) {
         if let Some(idx) = self.teams.iter().position(|t| t.team_name == team_name) {
+            if self.my_team_idx != idx {
+                info!("Setting my_team_idx to {} (team: '{}')", idx, team_name);
+            }
             self.my_team_idx = idx;
         } else {
             warn!(
