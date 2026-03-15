@@ -372,6 +372,15 @@ pub(super) async fn handle_state_update(
             if !my_team_name.is_empty() {
                 state.draft_state.set_my_team_by_name(my_team_name);
             }
+        } else {
+            // Third fallback: use is_my_pick from pick history
+            let my_team_from_history = ext_payload.pick_history.as_ref().and_then(|history| {
+                history.iter().find(|p| p.is_my_pick).map(|p| p.team_name.clone())
+            });
+            if let Some(ref team_name) = my_team_from_history {
+                info!("Identified my team from pick history is_my_pick fallback: {}", team_name);
+                state.draft_state.set_my_team_by_name(team_name);
+            }
         }
     }
 
@@ -644,7 +653,24 @@ fn build_state_from_grid(
         .iter()
         .position(|t| t.is_my_team)
     {
+        info!("Identified my team from grid isMyTeam flag: {} (idx={})",
+            board.teams[idx].team_name, idx);
         state.draft_state.my_team_idx = idx;
+    } else {
+        // Fallback: use is_my_pick from pick history to identify the user's team
+        let my_team_from_history = pick_history.as_ref().and_then(|history| {
+            history.iter().find(|p| p.is_my_pick).map(|p| p.team_name.clone())
+        });
+        if let Some(ref team_name) = my_team_from_history {
+            if let Some(idx) = state.draft_state.teams.iter().position(|t| t.team_name == *team_name) {
+                info!("Identified my team from pick history is_my_pick: {} (idx={})", team_name, idx);
+                state.draft_state.my_team_idx = idx;
+            } else {
+                warn!("Pick history identified my team as '{}' but no matching team found in grid", team_name);
+            }
+        } else {
+            warn!("Could not identify my team from grid or pick history — my_team_idx defaults to 0");
+        }
     }
 
     // Compute total picks and nomination order now that teams are registered
