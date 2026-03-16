@@ -306,22 +306,23 @@ function extractNominatingTeamFromPickTrain() {
 /**
  * Extract team budgets from the pick train carousel.
  * Returns an array of { teamId, teamName, budget } objects.
- * The teamId is extracted from the leading number in the team name (e.g. "1. London Ligers" -> "1").
+ * The teamId is resolved from the roster dropdown mapping (ESPN numeric ID).
+ * The leading number in the team name (e.g. "1. London Ligers") is draft order,
+ * NOT the ESPN team ID.
  */
 function scrapeTeamBudgets() {
   const teams = [];
   try {
     const items = document.querySelectorAll(SELECTORS.teamBudgetItems);
+    const lookup = buildTeamIdLookup();
     items.forEach((item) => {
       const name = extractText(item, SELECTORS.teamBudgetName);
       const cashStr = extractText(item, SELECTORS.teamBudgetCash);
       if (name) {
-        // Extract the leading number as teamId and strip it from the name
         const match = name.match(/^(\d+)\.\s*(.*)/);
-        const teamId = match ? match[1] : '';
         const cleanName = match ? match[2] : name;
         teams.push({
-          teamId: teamId,
+          teamId: lookup[cleanName] || '',
           teamName: cleanName,
           budget: parsePrice(cashStr),
         });
@@ -378,6 +379,8 @@ function scrapePickLog() {
       ? Math.max(pickLabel.current - 1, entriesArray.length)
       : entriesArray.length;
 
+    const lookup = buildTeamIdLookup();
+
     entriesArray.forEach((entry, idx) => {
       const playerName = extractText(entry, SELECTORS.pickLogPlayerName);
       let position = extractText(entry, SELECTORS.pickLogPlayerPos);
@@ -398,7 +401,7 @@ function scrapePickLog() {
         const assignedSlot = espnSlotIdFromPositionStr(position);
         picks.push({
           pickNumber: completedPicks - entriesArray.length + idx + 1,
-          teamId: teamName,
+          teamId: lookup[teamName] || '',
           teamName: teamName,
           playerId: '',
           playerName: playerName,
@@ -513,6 +516,7 @@ function scrapeDraftBoard() {
     if (headerCells.length === 0) return result;
 
     const teamsByColumn = {};
+    const lookup = buildTeamIdLookup();
     headerCells.forEach((cell) => {
       // Extract column from grid-area style (e.g. "1 / 3" -> column 3)
       const gridArea = cell.style.gridArea || '';
@@ -531,6 +535,7 @@ function scrapeDraftBoard() {
       }
 
       teamsByColumn[column] = {
+        teamId: lookup[teamName] || '',
         teamName: teamName,
         column: column,
         isMyTeam: false,
@@ -631,6 +636,8 @@ function scrapePickHistory() {
       warn('Could not determine picks per round from tables, falling back to', picksPerRound);
     }
 
+    const lookup = buildTeamIdLookup();
+
     tables.forEach((table) => {
       // Extract round number from caption
       const captionEl = table.querySelector(SELECTORS.pickHistoryCaption);
@@ -721,6 +728,7 @@ function scrapePickHistory() {
           playerName: playerName,
           espnPlayerId: espnPlayerId,
           eligiblePositions: eligiblePositions,
+          teamId: lookup[teamName] || '',
           teamName: teamName,
           price: price,
           isMyPick: isMyPick,
@@ -731,6 +739,17 @@ function scrapePickHistory() {
     error('Error scraping pick history:', e);
   }
   return picks;
+}
+
+/**
+ * Build a name -> ESPN team ID lookup map from the cached mapping.
+ * Returns an object where keys are team names and values are ESPN team IDs.
+ */
+function buildTeamIdLookup() {
+  const mapping = scrapeTeamIdMapping(); // uses cache if available
+  const lookup = {};
+  mapping.forEach(m => { lookup[m.teamName] = m.espnTeamId; });
+  return lookup;
 }
 
 /**
@@ -800,11 +819,11 @@ function scrapeDom() {
       state.totalPicks = pickLabel.total;
     }
 
-    // Identify my team
+    // Identify my team — resolve to ESPN team ID via the roster dropdown mapping
     const myTeamName = identifyMyTeam();
     if (myTeamName) {
-      // Use team name as ID since ESPN DOM doesn't expose numeric team IDs
-      state.myTeamId = myTeamName;
+      const lookup = buildTeamIdLookup();
+      state.myTeamId = lookup[myTeamName] || null;
     }
 
     // Extract draft identifier

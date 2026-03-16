@@ -1101,7 +1101,7 @@ mod tests {
     fn create_test_draft_state() -> DraftState {
         let mut state = DraftState::new(260, &test_roster_config());
         state.reconcile_budgets(&test_espn_budgets());
-        state.set_my_team_by_name("Team 1");
+        state.set_my_team_by_id("1");
         state
     }
 
@@ -1452,7 +1452,7 @@ mod tests {
         // Record a pick so Team 2 has spent money
         draft_state.record_pick(DraftPick {
             pick_number: 1,
-            team_id: "team_2".into(),
+            team_id: "2".into(),
             team_name: "Team 2".into(),
             player_name: "Drafted Player".into(),
             position: "SP".into(),
@@ -1504,7 +1504,7 @@ mod tests {
         // Draft a first baseman for $25
         draft_state.record_pick(DraftPick {
             pick_number: 1,
-            team_id: "team_2".into(),
+            team_id: "2".into(),
             team_name: "Team 2".into(),
             player_name: "Other 1B".into(),
             position: "1B".into(),
@@ -1517,7 +1517,7 @@ mod tests {
         // Draft an SP (different position)
         draft_state.record_pick(DraftPick {
             pick_number: 2,
-            team_id: "team_3".into(),
+            team_id: "3".into(),
             team_name: "Team 3".into(),
             player_name: "Ace SP".into(),
             position: "SP".into(),

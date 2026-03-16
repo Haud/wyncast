@@ -602,7 +602,7 @@ mod tests {
     fn create_test_draft_state() -> DraftState {
         let mut state = DraftState::new(260, &test_roster_config());
         state.reconcile_budgets(&test_espn_budgets());
-        state.set_my_team_by_name("Team 1");
+        state.set_my_team_by_id("1");
         state
     }
 

@@ -1239,7 +1239,7 @@ mod tests {
         let mut draft_state = DraftState::new(260, &test_roster_config());
         // Register teams from ESPN data and set my team
         draft_state.reconcile_budgets(&test_espn_budgets());
-        draft_state.set_my_team_by_name("Team 1");
+        draft_state.set_my_team_by_id("1");
 
         let mut available = test_players();
 
@@ -1914,7 +1914,7 @@ mod tests {
     fn create_test_app_state_no_teams() -> AppState {
         let config = test_config();
         let draft_state = DraftState::new(260, &test_roster_config());
-        // Do NOT call reconcile_budgets or set_my_team_by_name
+        // Do NOT call reconcile_budgets or set_my_team_by_id
 
         let available = test_players();
 
@@ -1952,7 +1952,7 @@ mod tests {
                 time_remaining: Some(30),
                 eligible_slots: vec![],
             }),
-            my_team_id: Some("Team 1".into()),
+            my_team_id: Some("1".into()),
             teams: vec![
                 crate::protocol::TeamBudgetData {
                     team_id: Some("1".into()),
@@ -2029,7 +2029,7 @@ mod tests {
                 time_remaining: Some(30),
                 eligible_slots: vec![],
             }),
-            my_team_id: Some("Team 1".into()),
+            my_team_id: Some("1".into()),
             teams: vec![],  // No teams!
             pick_count: None,
             total_picks: None,
@@ -2069,7 +2069,7 @@ mod tests {
                 time_remaining: Some(25),  // Time ticked down
                 eligible_slots: vec![],
             }),
-            my_team_id: Some("Team 1".into()),
+            my_team_id: Some("1".into()),
             teams: vec![
                 crate::protocol::TeamBudgetData {
                     team_id: Some("1".into()),
@@ -2143,7 +2143,7 @@ mod tests {
                 time_remaining: Some(30),
                 eligible_slots: vec![],
             }),
-            my_team_id: Some("Team 1".into()),
+            my_team_id: Some("1".into()),
             teams: vec![
                 crate::protocol::TeamBudgetData {
                     team_id: Some("1".into()),
@@ -2909,7 +2909,7 @@ mod tests {
     /// - Teams not registered yet
     /// - Picks arrive before reconcile_budgets
     /// - Then reconcile_budgets registers teams and replays pending picks
-    /// - Then set_my_team_by_name
+    /// - Then set_my_team_by_id
     /// - Then build_snapshot
     #[test]
     fn first_state_update_roster_correctness() {
@@ -2949,7 +2949,7 @@ mod tests {
         state.process_new_picks(vec![
             DraftPick {
                 pick_number: 1,
-                team_id: "Team Alpha".into(), // DOM scraping uses name as ID
+                team_id: "1".into(),
                 team_name: "Team Alpha".into(),
                 player_name: "H_Star".into(),
                 position: "1B".into(),
@@ -2960,7 +2960,7 @@ mod tests {
             },
             DraftPick {
                 pick_number: 2,
-                team_id: "Team Beta".into(),
+                team_id: "2".into(),
                 team_name: "Team Beta".into(),
                 player_name: "P_Ace".into(),
                 position: "SP".into(),
@@ -2994,7 +2994,7 @@ mod tests {
         assert!(reconcile.teams_registered);
 
         // Step 3: set my team
-        state.draft_state.set_my_team_by_name("Team Alpha");
+        state.draft_state.set_my_team_by_id("1");
 
         // Step 4: build snapshot
         let snapshot = state.build_snapshot();
@@ -3196,14 +3196,14 @@ mod tests {
     /// (as happens with DOM scraping where teamId = team name, not numeric ID).
     /// The team_name fallback should correctly route picks.
     #[test]
-    fn picks_with_name_as_team_id_route_correctly() {
+    fn picks_with_espn_team_id_route_correctly() {
         let mut state = create_test_app_state();
 
-        // Simulate DOM scraping where teamId = teamName (not numeric)
+        // Picks use ESPN numeric team IDs (as resolved by the extension)
         state.process_new_picks(vec![
             DraftPick {
                 pick_number: 1,
-                team_id: "Team 1".into(), // name as ID (DOM scraping style)
+                team_id: "1".into(),
                 team_name: "Team 1".into(),
                 player_name: "H_Star".into(),
                 position: "1B".into(),
@@ -3214,7 +3214,7 @@ mod tests {
             },
             DraftPick {
                 pick_number: 2,
-                team_id: "Team 2".into(), // name as ID
+                team_id: "2".into(),
                 team_name: "Team 2".into(),
                 player_name: "P_Ace".into(),
                 position: "SP".into(),
@@ -3443,7 +3443,7 @@ mod tests {
             assigned_slot: None,
             }],
             current_nomination: None,
-            my_team_id: Some("Team 1".into()),
+            my_team_id: Some("1".into()),
             teams: vec![
                 crate::protocol::TeamBudgetData {
                     team_id: Some("1".into()),
@@ -3487,7 +3487,7 @@ mod tests {
             assigned_slot: None,
             }],
             current_nomination: None,
-            my_team_id: Some("Team 1".into()),
+            my_team_id: Some("1".into()),
             teams: vec![
                 crate::protocol::TeamBudgetData {
                     team_id: Some("1".into()),

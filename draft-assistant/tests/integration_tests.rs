@@ -172,7 +172,7 @@ fn create_test_app_state_from_fixtures() -> AppState {
 
     let mut draft_state = DraftState::new(260, &roster_config());
     draft_state.reconcile_budgets(&ten_team_budgets());
-    draft_state.set_my_team_by_name("Team 1");
+    draft_state.set_my_team_by_id("1");
 
     // Recalculate with draft state for consistency
     draft_assistant::valuation::recalculate_all(
@@ -359,7 +359,7 @@ fn build_state_update_json(
         "payload": {
             "picks": picks,
             "currentNomination": nom_value,
-            "myTeamId": "team_1",
+            "myTeamId": "1",
             "source": "test"
         }
     })
@@ -1346,7 +1346,7 @@ fn inflation_increases_with_overpay() {
     // Record an extremely expensive pick (overpay)
     let pick = DraftPick {
         pick_number: 1,
-        team_id: "team_3".into(),
+        team_id: "3".into(),
         team_name: "Team 3".into(),
         player_name: "Shohei Ohtani".into(),
         position: "DH".into(),
@@ -1601,7 +1601,7 @@ fn end_to_end_pipeline() {
 fn draft_log_no_duplicates_on_espn_renumbering() {
     let mut draft_state = DraftState::new(260, &roster_config());
     draft_state.reconcile_budgets(&ten_team_budgets());
-    draft_state.set_my_team_by_name("Team 1");
+    draft_state.set_my_team_by_id("1");
 
     // Record the first pick normally
     draft_state.record_pick(DraftPick {
@@ -1653,7 +1653,7 @@ fn draft_log_no_duplicates_on_espn_renumbering() {
 fn draft_log_no_duplicates_by_espn_player_id() {
     let mut draft_state = DraftState::new(260, &roster_config());
     draft_state.reconcile_budgets(&ten_team_budgets());
-    draft_state.set_my_team_by_name("Team 1");
+    draft_state.set_my_team_by_id("1");
 
     draft_state.record_pick(DraftPick {
         pick_number: 1,
@@ -1741,7 +1741,7 @@ fn draft_log_resilient_to_virtualized_list_renumbering() {
 
     let mut draft_state = DraftState::new(260, &roster_config());
     draft_state.reconcile_budgets(&ten_team_budgets());
-    draft_state.set_my_team_by_name("Team 1");
+    draft_state.set_my_team_by_id("1");
 
     // First state update: 3 picks with numbers 1, 2, 3
     let payload1 = StateUpdatePayload {
@@ -2018,8 +2018,10 @@ fn build_state_update_json_with_teams(
 
     let teams: Vec<serde_json::Value> = team_budgets
         .iter()
-        .map(|(name, budget)| {
+        .enumerate()
+        .map(|(i, (name, budget))| {
             serde_json::json!({
+                "teamId": format!("{}", i + 1),
                 "teamName": name,
                 "budget": budget
             })
@@ -2045,7 +2047,7 @@ fn build_state_update_json_with_teams(
         "payload": {
             "picks": picks,
             "currentNomination": nom_value,
-            "myTeamId": "Team 1",
+            "myTeamId": "1",
             "teams": teams,
             "source": "test"
         }
@@ -2692,8 +2694,10 @@ fn build_state_update_json_with_custom_nomination(
 
     let teams: Vec<serde_json::Value> = team_budgets
         .iter()
-        .map(|(name, budget)| {
+        .enumerate()
+        .map(|(i, (name, budget))| {
             serde_json::json!({
+                "teamId": format!("{}", i + 1),
                 "teamName": name,
                 "budget": budget
             })
@@ -2706,7 +2710,7 @@ fn build_state_update_json_with_custom_nomination(
         "payload": {
             "picks": picks,
             "currentNomination": nomination.unwrap_or(serde_json::Value::Null),
-            "myTeamId": "Team 1",
+            "myTeamId": "1",
             "teams": teams,
             "source": "test"
         }
