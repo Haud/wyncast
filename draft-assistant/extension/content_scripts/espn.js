@@ -105,9 +105,6 @@ const SELECTORS = {
   pickLogPlayerPos: 'span.playerinfo__playerpos',
   pickLogInfo: 'div.pick-info',
 
-  // My team identification via pick train
-  myTeamContent: 'div.content.auction-pick-component--own',
-
   // Draft board grid (always fully rendered, never virtualized)
   draftBoardGrid: 'div.draftBoardGrid',
   draftBoardHeader: 'div.draft-board-grid-header',
@@ -337,77 +334,21 @@ function scrapeTeamBudgets() {
 }
 
 /**
- * Identify my team from the pick train using the own-team modifier class.
- * Falls back to the pick history `my-pick` CSS class if the pick train
- * method fails (ESPN may change CSS classes across updates).
- * Returns the team name, or null if not found.
+ * Identify my team from the roster dropdown's selected value.
+ * ESPN always defaults this dropdown to the logged-in user's team.
+ * Returns the team name, or null if the dropdown hasn't rendered yet.
  */
 function identifyMyTeam() {
   if (cachedMyTeamName) return cachedMyTeamName;
 
-  // Primary: roster dropdown's selected value (always the user's own team)
-  try {
-    const dropdown = document.querySelector(SELECTORS.teamIdDropdown);
-    if (dropdown && dropdown.selectedIndex >= 0) {
-      const selectedOption = dropdown.options[dropdown.selectedIndex];
-      if (selectedOption) {
-        const name = selectedOption.textContent.trim();
-        if (name) {
-          log('Identified my team from roster dropdown:', name);
-          cachedMyTeamName = name;
-          return cachedMyTeamName;
-        }
-      }
-    }
-  } catch (e) {
-    // Roster dropdown not available
-  }
+  const dropdown = document.querySelector(SELECTORS.teamIdDropdown);
+  if (!dropdown || dropdown.selectedIndex < 0) return null;
 
-  // Fallback 1: CSS class on pick train
-  try {
-    const ownContent = document.querySelector(SELECTORS.myTeamContent);
-    if (ownContent) {
-      const nameEl = ownContent.querySelector(SELECTORS.teamBudgetName);
-      if (nameEl) {
-        const name = nameEl.textContent.trim();
-        cachedMyTeamName = name.replace(/^\d+\.\s*/, '');
-        return cachedMyTeamName;
-      }
-    }
-  } catch (e) {
-    // Could not identify own team from pick train
-  }
+  const name = dropdown.options[dropdown.selectedIndex].textContent.trim();
+  if (!name) return null;
 
-  // Fallback 2: find any pick with the my-pick CSS class in the pick history tables
-  try {
-    const myPickEl = document.querySelector('div.pick-history-tables .player-column.my-pick');
-    if (myPickEl) {
-      // Navigate up to the row, find the team name cell
-      const row = myPickEl.closest('[aria-rowindex]');
-      if (row) {
-        const cells = Array.from(row.querySelectorAll('[role="gridcell"]'));
-        cells.sort((a, b) => {
-          const leftA = parseFloat(a.style.left);
-          const leftB = parseFloat(b.style.left);
-          return (isNaN(leftA) ? Infinity : leftA) - (isNaN(leftB) ? Infinity : leftB);
-        });
-        // Cell 3 (index 2) is the team name cell
-        if (cells.length >= 3) {
-          const boldTeam = cells[2].querySelector('span.fw-bold');
-          const teamName = boldTeam ? boldTeam.textContent.trim() : cells[2].textContent.trim();
-          if (teamName) {
-            log('Identified my team from pick history my-pick class:', teamName);
-            cachedMyTeamName = teamName;
-            return cachedMyTeamName;
-          }
-        }
-      }
-    }
-  } catch (e) {
-    // Fallback identification failed
-  }
-
-  return null;
+  cachedMyTeamName = name;
+  return cachedMyTeamName;
 }
 
 /**
@@ -583,7 +524,6 @@ function scrapeDraftBoard() {
       const teamName = nameSpan ? nameSpan.textContent.trim() : '';
       if (!teamName) return;
 
-      const isMyTeam = cell.classList.contains('myTeam');
       const isOnTheClock = cell.classList.contains('onTheClock');
 
       if (isOnTheClock) {
@@ -593,7 +533,7 @@ function scrapeDraftBoard() {
       teamsByColumn[column] = {
         teamName: teamName,
         column: column,
-        isMyTeam: isMyTeam,
+        isMyTeam: false,
         isOnTheClock: isOnTheClock,
         slots: [],
       };
@@ -639,22 +579,12 @@ function scrapeDraftBoard() {
       team.slots.push(slot);
     });
 
-    // Convert to array
+    // Convert to array and mark the user's team
     result.teams = Object.values(teamsByColumn);
-
-    // If no team was identified as myTeam via CSS class, fall back to the
-    // roster dropdown which reliably identifies the user's own team.
-    const anyMyTeam = result.teams.some((t) => t.isMyTeam);
-    if (!anyMyTeam) {
-      const myName = identifyMyTeam();
-      if (myName) {
-        for (const team of result.teams) {
-          if (team.teamName === myName) {
-            team.isMyTeam = true;
-            break;
-          }
-        }
-      }
+    const myName = identifyMyTeam();
+    if (myName) {
+      const myTeam = result.teams.find((t) => t.teamName === myName);
+      if (myTeam) myTeam.isMyTeam = true;
     }
   } catch (e) {
     error('Error scraping draft board:', e);
