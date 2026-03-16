@@ -340,7 +340,6 @@ mod tests {
                 gs_per_week: 7,
             },
             teams: HashMap::new(),
-            my_team: None,
         }
     }
 

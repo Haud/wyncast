@@ -42,6 +42,3 @@ team_7 = "Thunder"
 team_8 = "Cyclones"
 team_9 = "Flames"
 team_10 = "Vipers"
-
-[league.my_team]
-team_id = "team_1"

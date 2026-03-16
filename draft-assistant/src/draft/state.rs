@@ -58,8 +58,8 @@ pub struct DraftState {
     pub pick_count: usize,
     /// Total number of picks in the draft (sum of all draftable slots).
     pub total_picks: usize,
-    /// Index into `teams` for the user's team.
-    pub my_team_idx: usize,
+    /// Index into `teams` for the user's team (`None` until identified).
+    pub my_team_idx: Option<usize>,
     /// Order of team indices for nominations (round-robin, etc.).
     pub nomination_order: Vec<usize>,
     /// The salary cap per team (stored for restore).
@@ -72,8 +72,8 @@ impl DraftState {
     /// Create a new draft state.
     ///
     /// Teams start empty and are populated dynamically from ESPN's live data
-    /// via `reconcile_budgets()`. The `my_team_idx` defaults to 0 and is
-    /// updated when the extension identifies the user's team.
+    /// via `reconcile_budgets()`. The `my_team_idx` defaults to `None` and is
+    /// set when the extension identifies the user's team.
     ///
     /// # Arguments
     /// - `salary_cap`: Per-team salary cap
@@ -85,7 +85,7 @@ impl DraftState {
             current_nomination: None,
             pick_count: 0,
             total_picks: 0,
-            my_team_idx: 0,
+            my_team_idx: None,
             nomination_order: Vec::new(),
             salary_cap,
             roster_config: roster_config.clone(),
@@ -99,13 +99,13 @@ impl DraftState {
     /// finds and sets `my_team_idx` by matching the name.
     pub fn set_my_team_by_name(&mut self, team_name: &str) {
         if let Some(idx) = self.teams.iter().position(|t| t.team_name == team_name) {
-            if self.my_team_idx != idx {
+            if self.my_team_idx != Some(idx) {
                 info!("Setting my_team_idx to {} (team: '{}')", idx, team_name);
             }
-            self.my_team_idx = idx;
+            self.my_team_idx = Some(idx);
         } else {
             warn!(
-                "Could not find team matching '{}' — my_team_idx remains at {}",
+                "Could not find team matching '{}' — my_team_idx remains at {:?}",
                 team_name, self.my_team_idx
             );
         }
@@ -281,7 +281,7 @@ impl DraftState {
     ///
     /// Returns `None` before `reconcile_budgets()` has populated the team list.
     pub fn my_team(&self) -> Option<&TeamState> {
-        self.teams.get(self.my_team_idx)
+        self.my_team_idx.and_then(|idx| self.teams.get(idx))
     }
 
     /// Restore the draft state by replaying a sequence of picks.
@@ -642,7 +642,7 @@ mod tests {
         assert_eq!(state.teams.len(), 0);
         assert_eq!(state.pick_count, 0);
         assert_eq!(state.total_picks, 0);
-        assert_eq!(state.my_team_idx, 0);
+        assert_eq!(state.my_team_idx, None);
         assert!(state.current_nomination.is_none());
     }
 
