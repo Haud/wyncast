@@ -7,6 +7,8 @@ pub mod scarcity;
 pub mod vor;
 pub mod zscore;
 
+use std::collections::HashMap;
+
 use crate::config::{Config, LeagueConfig, StrategyConfig};
 use crate::draft::state::DraftState;
 use projections::AllProjections;
@@ -34,12 +36,13 @@ use zscore::{
 pub fn compute_initial(
     projections: &AllProjections,
     config: &Config,
+    roster_config: &HashMap<String, usize>,
 ) -> anyhow::Result<Vec<PlayerValuation>> {
     // Step 1: Z-scores
     let mut players = zscore::compute_initial_zscores(projections, config);
 
     // Step 2: VOR adjustment
-    vor::apply_vor(&mut players, &config.league);
+    vor::apply_vor(&mut players, roster_config, config.league.num_teams);
 
     // Snapshot initial VOR for stable scarcity computation.
     for player in players.iter_mut() {
@@ -47,7 +50,7 @@ pub fn compute_initial(
     }
 
     // Step 3: Auction dollar conversion
-    auction::apply_auction_values(&mut players, &config.league, &config.strategy);
+    auction::apply_auction_values(&mut players, roster_config, config.league.num_teams, config.league.salary_cap, &config.strategy);
 
     Ok(players)
 }
@@ -73,6 +76,7 @@ pub fn compute_initial(
 /// The `available_players` vector is mutated in place.
 pub fn recalculate_all(
     available_players: &mut Vec<PlayerValuation>,
+    roster_config: &HashMap<String, usize>,
     league: &LeagueConfig,
     strategy: &StrategyConfig,
     _draft_state: &DraftState,
@@ -413,10 +417,10 @@ pub fn recalculate_all(
     }
 
     // ---- 3. Recompute VOR ----
-    vor::apply_vor(available_players, league);
+    vor::apply_vor(available_players, roster_config, league.num_teams);
 
     // ---- 4. Recompute auction values ----
-    auction::apply_auction_values(available_players, league, strategy);
+    auction::apply_auction_values(available_players, roster_config, league.num_teams, league.salary_cap, strategy);
 
     // Step 5: apply_auction_values already sorts by dollar_value descending.
 }
@@ -435,21 +439,6 @@ mod tests {
     use std::collections::HashMap;
 
     fn test_league_config() -> LeagueConfig {
-        let mut roster = HashMap::new();
-        roster.insert("C".into(), 1);
-        roster.insert("1B".into(), 1);
-        roster.insert("2B".into(), 1);
-        roster.insert("3B".into(), 1);
-        roster.insert("SS".into(), 1);
-        roster.insert("LF".into(), 1);
-        roster.insert("CF".into(), 1);
-        roster.insert("RF".into(), 1);
-        roster.insert("UTIL".into(), 1);
-        roster.insert("SP".into(), 5);
-        roster.insert("RP".into(), 6);
-        roster.insert("BE".into(), 6);
-        roster.insert("IL".into(), 5);
-
         LeagueConfig {
             name: "Test League".into(),
             platform: "espn".into(),
@@ -468,7 +457,6 @@ mod tests {
                     "HD".into(), "ERA".into(), "WHIP".into(),
                 ],
             },
-            roster,
             roster_limits: RosterLimits {
                 max_sp: 7,
                 max_rp: 7,
@@ -642,7 +630,8 @@ mod tests {
         ];
 
         // Initial calculation.
-        recalculate_all(&mut players, &league, &strategy, &draft_state);
+        let roster = test_roster_config();
+        recalculate_all(&mut players, &roster, &league, &strategy, &draft_state);
 
         // Record values for remaining players.
         let mid_value = players.iter().find(|p| p.name == "H_Mid").unwrap().dollar_value;
@@ -670,7 +659,8 @@ mod tests {
         let draft_state = create_test_draft_state();
 
         let mut players: Vec<PlayerValuation> = Vec::new();
-        recalculate_all(&mut players, &league, &strategy, &draft_state);
+        let roster = test_roster_config();
+        recalculate_all(&mut players, &roster, &league, &strategy, &draft_state);
         assert!(players.is_empty());
     }
 
@@ -686,7 +676,8 @@ mod tests {
             make_pitcher("RP1", 80, 2, 35, 0, 65.0, 2.50, 0.95, PitcherType::RP),
         ];
 
-        recalculate_all(&mut players, &league, &strategy, &draft_state);
+        let roster = test_roster_config();
+        recalculate_all(&mut players, &roster, &league, &strategy, &draft_state);
 
         // All should have valid values.
         for p in &players {
@@ -706,7 +697,8 @@ mod tests {
             make_hitter("H2", 70, 20, 65, 45, 10, 520, 0.270, vec![Position::ThirdBase]),
         ];
 
-        recalculate_all(&mut players, &league, &strategy, &draft_state);
+        let roster = test_roster_config();
+        recalculate_all(&mut players, &roster, &league, &strategy, &draft_state);
 
         for p in &players {
             assert!(p.dollar_value >= 1.0);
@@ -802,7 +794,8 @@ mod tests {
             make_pitcher("P_Mid", 150, 10, 0, 0, 160.0, 3.80, 1.20, PitcherType::SP),
         ];
 
-        recalculate_all(&mut players, &league, &strategy, &draft_state);
+        let roster = test_roster_config();
+        recalculate_all(&mut players, &roster, &league, &strategy, &draft_state);
 
         // The two-way player should have a valid dollar value.
         let ohtani = players.iter().find(|p| p.name == "Ohtani").unwrap();
@@ -873,7 +866,8 @@ mod tests {
             make_pitcher("FillerSP2", 160, 11, 0, 0, 170.0, 3.60, 1.15, PitcherType::SP),
         ];
 
-        recalculate_all(&mut with_two_way, &league, &strategy, &draft_state);
+        let roster = test_roster_config();
+        recalculate_all(&mut with_two_way, &roster, &league, &strategy, &draft_state);
 
         let two_way_value = with_two_way.iter().find(|p| p.name == "TwoWay").unwrap().dollar_value;
 
@@ -887,7 +881,7 @@ mod tests {
             make_pitcher("FillerSP2", 160, 11, 0, 0, 170.0, 3.60, 1.15, PitcherType::SP),
         ];
 
-        recalculate_all(&mut without_two_way, &league, &strategy, &draft_state);
+        recalculate_all(&mut without_two_way, &roster, &league, &strategy, &draft_state);
 
         let split_hitter_value = without_two_way.iter().find(|p| p.name == "SplitH").unwrap().dollar_value;
         let split_pitcher_value = without_two_way.iter().find(|p| p.name == "SplitP").unwrap().dollar_value;
@@ -930,7 +924,8 @@ mod tests {
         ];
 
         // Initial calculation with two-way player present.
-        recalculate_all(&mut players, &league, &strategy, &draft_state);
+        let roster = test_roster_config();
+        recalculate_all(&mut players, &roster, &league, &strategy, &draft_state);
 
         // Record values.
         let h1_value = players.iter().find(|p| p.name == "H1").unwrap().dollar_value;

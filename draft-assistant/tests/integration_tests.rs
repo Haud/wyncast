@@ -88,7 +88,6 @@ fn inline_config() -> Config {
                 "WHIP".into(),
             ],
         },
-        roster: roster_config(),
         roster_limits: RosterLimits {
             max_sp: 7,
             max_rp: 7,
@@ -151,7 +150,7 @@ fn load_fixture_players(config: &Config) -> Vec<PlayerValuation> {
     )
     .expect("fixture CSVs should load");
 
-    draft_assistant::valuation::compute_initial(&projections, config)
+    draft_assistant::valuation::compute_initial(&projections, config, &roster_config())
         .expect("initial valuation should succeed")
 }
 
@@ -175,8 +174,10 @@ fn create_test_app_state_from_fixtures() -> AppState {
     draft_state.set_my_team_by_id("1");
 
     // Recalculate with draft state for consistency
+    let roster = roster_config();
     draft_assistant::valuation::recalculate_all(
         &mut available,
+        &roster,
         &config.league,
         &config.strategy,
         &draft_state,
@@ -805,7 +806,7 @@ fn nomination_planning_prompt_contains_required_sections() {
 #[test]
 fn system_prompt_contains_league_context() {
     let league = LeagueConfig::default();
-    let system = draft_assistant::llm::prompt::system_prompt(&league, None);
+    let system = draft_assistant::llm::prompt::system_prompt(&league, None, None);
 
     assert!(
         system.contains("fantasy baseball"),

@@ -347,7 +347,7 @@ pub(super) async fn handle_onboarding_action(
                     let tx = ui_tx.clone();
 
                     // Build the prompt for strategy configuration
-                    let league_ctx = prompt::format_league_context(&state.config.league);
+                    let league_ctx = prompt::format_league_context(&state.config.league, state.roster_config.as_ref());
                     let cat_keys: Vec<&str> = state.config.league.batting_categories.categories.iter()
                         .chain(state.config.league.pitching_categories.categories.iter())
                         .map(|s| s.as_str())
@@ -674,13 +674,15 @@ pub(super) async fn handle_settings_action(
             state.reload_llm_client();
 
             // Recalculate valuations with new strategy weights
+            let roster = state.roster_config.clone().unwrap_or_else(super::AppState::default_roster_config);
             valuation::recalculate_all(
                 &mut state.available_players,
+                &roster,
                 &state.config.league,
                 &state.config.strategy,
                 &state.draft_state,
             );
-            state.scarcity = compute_scarcity(&state.available_players, &state.config.league);
+            state.scarcity = compute_scarcity(&state.available_players, &roster);
 
             // Send updated snapshot to TUI (stay in Settings mode)
             let snapshot = state.build_snapshot();

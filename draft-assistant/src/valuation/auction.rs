@@ -5,6 +5,8 @@
 // according to a configurable fraction, and dollars are distributed
 // proportionally to positive VOR within each pool.
 
+use std::collections::HashMap;
+
 use crate::config::{LeagueConfig, StrategyConfig};
 use crate::draft::state::DraftState;
 use crate::valuation::zscore::PlayerValuation;
@@ -38,9 +40,8 @@ pub struct AuctionValues {
 /// This is the sum of all roster slot counts, **excluding** IL slots.
 /// IL slots are not counted because injured-list players do not consume
 /// salary cap space in the auction.
-pub fn roster_size(league: &LeagueConfig) -> usize {
-    league
-        .roster
+pub fn roster_size(roster_config: &HashMap<String, usize>) -> usize {
+    roster_config
         .iter()
         .filter(|(key, _)| {
             let upper = key.to_uppercase();
@@ -69,12 +70,14 @@ pub fn roster_size(league: &LeagueConfig) -> usize {
 pub fn compute_auction_values(
     hitters: &[&PlayerValuation],
     pitchers: &[&PlayerValuation],
-    league: &LeagueConfig,
+    roster_config: &HashMap<String, usize>,
+    num_teams: usize,
+    salary_cap: u32,
     strategy: &StrategyConfig,
 ) -> AuctionValues {
-    let total_dollars = league.num_teams as f64 * league.salary_cap as f64;
-    let roster = roster_size(league);
-    let min_bids = league.num_teams as f64 * roster as f64;
+    let total_dollars = num_teams as f64 * salary_cap as f64;
+    let roster = roster_size(roster_config);
+    let min_bids = num_teams as f64 * roster as f64;
     let distributable = (total_dollars - min_bids).max(0.0);
 
     let hitting_distributable = distributable * strategy.hitting_budget_fraction;
@@ -246,14 +249,16 @@ impl Default for InflationTracker {
 /// 4. Re-sort the full list descending by dollar value.
 pub fn apply_auction_values(
     players: &mut Vec<PlayerValuation>,
-    league: &LeagueConfig,
+    roster_config: &HashMap<String, usize>,
+    num_teams: usize,
+    salary_cap: u32,
     strategy: &StrategyConfig,
 ) {
     // Separate references by type for the conversion computation.
     let hitters: Vec<&PlayerValuation> = players.iter().filter(|p| !p.is_pitcher).collect();
     let pitchers: Vec<&PlayerValuation> = players.iter().filter(|p| p.is_pitcher).collect();
 
-    let auction = compute_auction_values(&hitters, &pitchers, league, strategy);
+    let auction = compute_auction_values(&hitters, &pitchers, roster_config, num_teams, salary_cap, strategy);
 
     // Apply dollar values to each player.
     for player in players.iter_mut() {
@@ -289,9 +294,7 @@ mod tests {
         (a - b).abs() < epsilon
     }
 
-    /// Build a minimal LeagueConfig for auction testing.
-    /// Roster: C(1)+1B(1)+2B(1)+3B(1)+SS(1)+LF(1)+CF(1)+RF(1)+UTIL(1)+SP(5)+RP(6)+BE(6)+IL(5) = 26 (excl IL)
-    fn test_league_config() -> LeagueConfig {
+    fn test_roster_config() -> HashMap<String, usize> {
         let mut roster = HashMap::new();
         roster.insert("C".into(), 1);
         roster.insert("1B".into(), 1);
@@ -306,42 +309,11 @@ mod tests {
         roster.insert("RP".into(), 6);
         roster.insert("BE".into(), 6);
         roster.insert("IL".into(), 5);
-
-        LeagueConfig {
-            name: "Test League".into(),
-            platform: "espn".into(),
-            num_teams: 10,
-            scoring_type: "h2h_most_categories".into(),
-            salary_cap: 260,
-            batting_categories: CategoriesSection {
-                categories: vec![
-                    "R".into(),
-                    "HR".into(),
-                    "RBI".into(),
-                    "BB".into(),
-                    "SB".into(),
-                    "AVG".into(),
-                ],
-            },
-            pitching_categories: CategoriesSection {
-                categories: vec![
-                    "K".into(),
-                    "W".into(),
-                    "SV".into(),
-                    "HD".into(),
-                    "ERA".into(),
-                    "WHIP".into(),
-                ],
-            },
-            roster,
-            roster_limits: RosterLimits {
-                max_sp: 7,
-                max_rp: 7,
-                gs_per_week: 7,
-            },
-            teams: HashMap::new(),
-        }
+        roster
     }
+
+    const TEST_NUM_TEAMS: usize = 10;
+    const TEST_SALARY_CAP: u32 = 260;
 
     fn test_strategy_config() -> StrategyConfig {
         StrategyConfig {
@@ -468,15 +440,15 @@ mod tests {
 
     #[test]
     fn roster_size_excludes_il() {
-        let league = test_league_config();
+        let roster = test_roster_config();
         // C(1)+1B(1)+2B(1)+3B(1)+SS(1)+LF(1)+CF(1)+RF(1)+UTIL(1)+SP(5)+RP(6)+BE(6) = 26
         // IL(5) is excluded.
-        assert_eq!(roster_size(&league), 26);
+        assert_eq!(roster_size(&roster), 26);
     }
 
     #[test]
     fn basic_auction_values() {
-        let league = test_league_config();
+        let roster = test_roster_config();
         let strategy = test_strategy_config();
 
         // 10 teams * 260 = 2600 total
@@ -499,7 +471,7 @@ mod tests {
         let h_refs: Vec<&PlayerValuation> = hitters.iter().collect();
         let p_refs: Vec<&PlayerValuation> = pitchers.iter().collect();
 
-        let av = compute_auction_values(&h_refs, &p_refs, &league, &strategy);
+        let av = compute_auction_values(&h_refs, &p_refs, &roster, TEST_NUM_TEAMS, TEST_SALARY_CAP, &strategy);
 
         assert!(
             approx_eq(av.hitting_budget, 1521.0, 0.01),
@@ -598,7 +570,7 @@ mod tests {
     #[test]
     fn budget_sum_sanity_check() {
         // Create a realistic-ish pool and verify dollar values sum to ~$2600.
-        let league = test_league_config();
+        let roster = test_roster_config();
         let strategy = test_strategy_config();
 
         let mut players = Vec::new();
@@ -628,7 +600,7 @@ mod tests {
             players.push(make_pitcher(&format!("P{}", i + 1), vor, pt));
         }
 
-        apply_auction_values(&mut players, &league, &strategy);
+        apply_auction_values(&mut players, &roster, TEST_NUM_TEAMS, TEST_SALARY_CAP, &strategy);
 
         let total: f64 = players.iter().map(|p| p.dollar_value).sum();
 
@@ -679,7 +651,7 @@ mod tests {
 
     #[test]
     fn budget_split_approximately_correct() {
-        let league = test_league_config();
+        let roster = test_roster_config();
         let strategy = test_strategy_config();
 
         let mut players = Vec::new();
@@ -701,7 +673,7 @@ mod tests {
             ));
         }
 
-        apply_auction_values(&mut players, &league, &strategy);
+        apply_auction_values(&mut players, &roster, TEST_NUM_TEAMS, TEST_SALARY_CAP, &strategy);
 
         let hitting_total: f64 = players
             .iter()
@@ -733,7 +705,7 @@ mod tests {
 
     #[test]
     fn zero_pitchers_no_divide_by_zero() {
-        let league = test_league_config();
+        let roster = test_roster_config();
         let strategy = test_strategy_config();
 
         let mut players = Vec::new();
@@ -742,7 +714,7 @@ mod tests {
         }
         // No pitchers at all
 
-        apply_auction_values(&mut players, &league, &strategy);
+        apply_auction_values(&mut players, &roster, TEST_NUM_TEAMS, TEST_SALARY_CAP, &strategy);
 
         // Should not panic. All hitters should have valid dollar values.
         for player in &players {
@@ -763,7 +735,7 @@ mod tests {
 
     #[test]
     fn zero_hitters_no_divide_by_zero() {
-        let league = test_league_config();
+        let roster = test_roster_config();
         let strategy = test_strategy_config();
 
         let mut players = Vec::new();
@@ -776,7 +748,7 @@ mod tests {
         }
         // No hitters at all
 
-        apply_auction_values(&mut players, &league, &strategy);
+        apply_auction_values(&mut players, &roster, TEST_NUM_TEAMS, TEST_SALARY_CAP, &strategy);
 
         for player in &players {
             assert!(
@@ -796,7 +768,7 @@ mod tests {
 
     #[test]
     fn all_negative_vor_everyone_gets_one_dollar() {
-        let league = test_league_config();
+        let roster = test_roster_config();
         let strategy = test_strategy_config();
 
         let mut players = vec![
@@ -806,7 +778,7 @@ mod tests {
             make_pitcher("P2", -4.0, PitcherType::RP),
         ];
 
-        apply_auction_values(&mut players, &league, &strategy);
+        apply_auction_values(&mut players, &roster, TEST_NUM_TEAMS, TEST_SALARY_CAP, &strategy);
 
         for player in &players {
             assert!(
@@ -820,7 +792,7 @@ mod tests {
 
     #[test]
     fn sorted_by_dollar_value_descending() {
-        let league = test_league_config();
+        let roster = test_roster_config();
         let strategy = test_strategy_config();
 
         let mut players = vec![
@@ -831,7 +803,7 @@ mod tests {
             make_pitcher("Scrub", -2.0, PitcherType::RP),
         ];
 
-        apply_auction_values(&mut players, &league, &strategy);
+        apply_auction_values(&mut players, &roster, TEST_NUM_TEAMS, TEST_SALARY_CAP, &strategy);
 
         for i in 1..players.len() {
             assert!(
@@ -847,12 +819,12 @@ mod tests {
 
     #[test]
     fn empty_player_pool() {
-        let league = test_league_config();
+        let roster = test_roster_config();
         let strategy = test_strategy_config();
 
         let mut players: Vec<PlayerValuation> = Vec::new();
 
-        apply_auction_values(&mut players, &league, &strategy);
+        apply_auction_values(&mut players, &roster, TEST_NUM_TEAMS, TEST_SALARY_CAP, &strategy);
 
         assert!(players.is_empty());
     }
@@ -860,7 +832,7 @@ mod tests {
     #[test]
     fn known_small_dataset_dollar_values() {
         // Verify exact dollar values with a small, fully known dataset.
-        let league = test_league_config();
+        let roster = test_roster_config();
         let strategy = test_strategy_config();
 
         // 10 teams, $260 cap, 26 roster slots (excl IL)
@@ -885,7 +857,7 @@ mod tests {
         // P1: 8.0 * 81.9 + 1 = 656.2
         // P2: 2.0 * 81.9 + 1 = 164.8
 
-        apply_auction_values(&mut players, &league, &strategy);
+        apply_auction_values(&mut players, &roster, TEST_NUM_TEAMS, TEST_SALARY_CAP, &strategy);
 
         let h1 = players.iter().find(|p| p.name == "H1").unwrap();
         let h2 = players.iter().find(|p| p.name == "H2").unwrap();
@@ -926,12 +898,12 @@ mod tests {
     #[test]
     fn roster_size_with_dl_alias() {
         // Ensure "DL" is also excluded like "IL".
-        let mut league = test_league_config();
-        league.roster.remove("IL");
-        league.roster.insert("DL".into(), 3);
+        let mut roster = test_roster_config();
+        roster.remove("IL");
+        roster.insert("DL".into(), 3);
 
         // Should still be 26 (same active slots, DL excluded)
-        assert_eq!(roster_size(&league), 26);
+        assert_eq!(roster_size(&roster), 26);
     }
 
     // ---- Inflation Tracker tests ----
@@ -1021,7 +993,6 @@ mod tests {
         use crate::draft::pick::DraftPick;
         use crate::draft::state::DraftState;
 
-        let league = test_league_config(); // 10 teams, $260 cap
         let mut roster_config = HashMap::new();
         roster_config.insert("C".into(), 1);
         roster_config.insert("1B".into(), 1);
@@ -1061,6 +1032,7 @@ mod tests {
         ];
 
         let mut tracker = InflationTracker::new();
+        let league = LeagueConfig::default();
         tracker.update(&available, &draft_state, &league);
 
         // total_budget = 10 * 260 = 2600

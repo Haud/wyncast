@@ -90,7 +90,8 @@ async fn main() -> anyhow::Result<()> {
         projections.pitchers.len()
     );
 
-    let available_players = valuation::compute_initial(&projections, &config)
+    let default_roster = draft_assistant::app::AppState::default_roster_config();
+    let available_players = valuation::compute_initial(&projections, &config, &default_roster)
         .context("failed to compute initial valuations")?;
     info!(
         "Computed valuations for {} players",
@@ -100,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
     // 5. Initialize DraftState (teams populated dynamically from ESPN live data)
     let draft_state = draft::state::DraftState::new(
         config.league.salary_cap,
-        &config.league.roster,
+        &default_roster,
     );
 
     // 6. Create mpsc channels (before AppState so llm_tx can be passed in)

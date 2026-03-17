@@ -98,17 +98,18 @@ pub(super) async fn handle_full_state_sync(
 
     // Reset in-memory draft state so the snapshot is applied from scratch.
     // Preserve salary_cap and roster_config (stored inside DraftState).
+    let roster = state.roster_config.clone().unwrap_or_else(AppState::default_roster_config);
     state.draft_state = DraftState::new(
         state.config.league.salary_cap,
-        &state.config.league.roster,
+        &roster,
     );
 
     // Reset valuation pool and derived state so they're rebuilt cleanly
     // after all snapshot picks are applied.
     state.available_players =
-        valuation::compute_initial(&state.all_projections, &state.config)
+        valuation::compute_initial(&state.all_projections, &state.config, &roster)
             .unwrap_or_default();
-    state.scarcity = compute_scarcity(&state.available_players, &state.config.league);
+    state.scarcity = compute_scarcity(&state.available_players, &roster);
     state.inflation = InflationTracker::new();
     state.category_needs = CategoryNeeds::default();
 
@@ -139,7 +140,8 @@ pub(super) async fn handle_full_state_sync(
             &state.draft_state,
             &state.config.league,
         );
-        state.scarcity = compute_scarcity(&state.available_players, &state.config.league);
+        let roster = state.roster_config.clone().unwrap_or_else(AppState::default_roster_config);
+        state.scarcity = compute_scarcity(&state.available_players, &roster);
     } else {
         info!(
             "FULL_STATE_SYNC: grid data unavailable, requesting keyframe retry"
@@ -280,15 +282,16 @@ pub(super) async fn handle_state_update(
                 state.draft_id = new_draft_id.clone();
                 state.espn_draft_id = Some(ext_draft_id.clone());
                 // Reset in-memory draft state for the new draft
+                let roster = state.roster_config.clone().unwrap_or_else(AppState::default_roster_config);
                 state.draft_state = DraftState::new(
                     state.config.league.salary_cap,
-                    &state.config.league.roster,
+                    &roster,
                 );
                 state.available_players =
-                    valuation::compute_initial(&state.all_projections, &state.config)
+                    valuation::compute_initial(&state.all_projections, &state.config, &roster)
                         .unwrap_or_default();
                 state.scarcity =
-                    compute_scarcity(&state.available_players, &state.config.league);
+                    compute_scarcity(&state.available_players, &roster);
                 state.inflation = InflationTracker::new();
                 state.previous_extension_state = None;
                 // Clear LLM state so stale analysis from the previous draft
@@ -616,7 +619,7 @@ fn build_state_from_grid(
         let mut team = TeamState {
             team_id: resolved_team_id,
             team_name: db_team.team_name.clone(),
-            roster: Roster::new(&state.config.league.roster),
+            roster: Roster::new(&state.roster_config.clone().unwrap_or_else(AppState::default_roster_config)),
             budget_spent: spent,
             budget_remaining: salary_cap.saturating_sub(spent),
             // NOTE: These grid-computed budgets are provisional. reconcile_budgets()

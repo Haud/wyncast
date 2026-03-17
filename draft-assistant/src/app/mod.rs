@@ -137,6 +137,9 @@ pub struct AppState {
     /// Set to true after the first grid-based rebuild to avoid redundant writes
     /// on subsequent 10-second FULL_STATE_SYNC keyframes.
     pub grid_picks_persisted: bool,
+    /// Roster configuration inferred from ESPN or set from defaults.
+    /// `None` until roster is inferred from the ESPN draft board.
+    pub roster_config: Option<std::collections::HashMap<String, usize>>,
 }
 
 impl AppState {
@@ -157,7 +160,8 @@ impl AppState {
         app_mode: AppMode,
         onboarding_manager: OnboardingManager<RealFileSystem>,
     ) -> Self {
-        let scarcity = compute_scarcity(&available_players, &config.league);
+        let default_roster = Self::default_roster_config();
+        let scarcity = compute_scarcity(&available_players, &default_roster);
         let inflation = InflationTracker::new();
         let onboarding_progress = onboarding_manager.load_progress();
 
@@ -189,7 +193,27 @@ impl AppState {
             connection_test_result: Arc::new(AtomicI8::new(CONNECTION_NEVER_TESTED)),
             connection_test_generation: Arc::new(AtomicU64::new(0)),
             grid_picks_persisted: false,
+            roster_config: Some(default_roster),
         }
+    }
+
+    /// Default roster configuration (used until ESPN provides the actual roster layout).
+    pub fn default_roster_config() -> std::collections::HashMap<String, usize> {
+        let mut roster = std::collections::HashMap::new();
+        roster.insert("C".to_string(), 1);
+        roster.insert("1B".to_string(), 1);
+        roster.insert("2B".to_string(), 1);
+        roster.insert("3B".to_string(), 1);
+        roster.insert("SS".to_string(), 1);
+        roster.insert("LF".to_string(), 1);
+        roster.insert("CF".to_string(), 1);
+        roster.insert("RF".to_string(), 1);
+        roster.insert("UTIL".to_string(), 1);
+        roster.insert("SP".to_string(), 5);
+        roster.insert("RP".to_string(), 6);
+        roster.insert("BE".to_string(), 6);
+        roster.insert("IL".to_string(), 5);
+        roster
     }
 
     /// Reconstruct the LLM client from the current config.
@@ -269,7 +293,9 @@ impl AppState {
         );
 
         // Update scarcity
-        self.scarcity = compute_scarcity(&self.available_players, &self.config.league);
+        if let Some(ref roster) = self.roster_config {
+            self.scarcity = compute_scarcity(&self.available_players, roster);
+        }
 
         // Update category needs (for now, uniform - real implementation in TUI tasks)
         // Category needs would be recomputed based on the user's roster composition.
@@ -564,7 +590,7 @@ impl AppState {
             engine_verdict,
         };
 
-        let system = prompt::system_prompt(&self.config.league, self.config.strategy.strategy_overview.as_deref());
+        let system = prompt::system_prompt(&self.config.league, self.roster_config.as_ref(), self.config.strategy.strategy_overview.as_deref());
         let user_content = prompt::build_nomination_analysis_prompt(
             &player,
             &nom_info,
@@ -642,7 +668,7 @@ impl AppState {
             engine_verdict: String::new(),
         };
 
-        let system = prompt::system_prompt(&self.config.league, self.config.strategy.strategy_overview.as_deref());
+        let system = prompt::system_prompt(&self.config.league, self.roster_config.as_ref(), self.config.strategy.strategy_overview.as_deref());
         let user_content = prompt::build_nomination_planning_prompt(
             &my_roster,
             &self.category_needs,
@@ -905,21 +931,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn test_league_config() -> LeagueConfig {
-        let mut roster = HashMap::new();
-        roster.insert("C".into(), 1);
-        roster.insert("1B".into(), 1);
-        roster.insert("2B".into(), 1);
-        roster.insert("3B".into(), 1);
-        roster.insert("SS".into(), 1);
-        roster.insert("LF".into(), 1);
-        roster.insert("CF".into(), 1);
-        roster.insert("RF".into(), 1);
-        roster.insert("UTIL".into(), 1);
-        roster.insert("SP".into(), 5);
-        roster.insert("RP".into(), 6);
-        roster.insert("BE".into(), 6);
-        roster.insert("IL".into(), 5);
-
         LeagueConfig {
             name: "Test League".into(),
             platform: "espn".into(),
@@ -946,7 +957,6 @@ mod tests {
                     "WHIP".into(),
                 ],
             },
-            roster,
             roster_limits: RosterLimits {
                 max_sp: 7,
                 max_rp: 7,
@@ -1244,8 +1254,10 @@ mod tests {
         let mut available = test_players();
 
         // Run initial valuation so dollar values are set
+        let test_roster = AppState::default_roster_config();
         crate::valuation::recalculate_all(
             &mut available,
+            &test_roster,
             &config.league,
             &config.strategy,
             &draft_state,
@@ -2919,8 +2931,10 @@ mod tests {
         assert!(draft_state.teams.is_empty());
 
         let mut available = test_players();
+        let test_roster = AppState::default_roster_config();
         crate::valuation::recalculate_all(
             &mut available,
+            &test_roster,
             &config.league,
             &config.strategy,
             &draft_state,

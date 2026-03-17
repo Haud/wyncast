@@ -73,7 +73,6 @@ pub struct LeagueConfig {
     pub salary_cap: u32,
     pub batting_categories: CategoriesSection,
     pub pitching_categories: CategoriesSection,
-    pub roster: HashMap<String, usize>,
     pub roster_limits: RosterLimits,
     /// Static team definitions (optional). Teams are now populated dynamically
     /// from ESPN's live draft data via the extension.
@@ -83,21 +82,6 @@ pub struct LeagueConfig {
 
 impl Default for LeagueConfig {
     fn default() -> Self {
-        let mut roster = HashMap::new();
-        roster.insert("C".to_string(), 1);
-        roster.insert("1B".to_string(), 1);
-        roster.insert("2B".to_string(), 1);
-        roster.insert("3B".to_string(), 1);
-        roster.insert("SS".to_string(), 1);
-        roster.insert("LF".to_string(), 1);
-        roster.insert("CF".to_string(), 1);
-        roster.insert("RF".to_string(), 1);
-        roster.insert("UTIL".to_string(), 1);
-        roster.insert("SP".to_string(), 5);
-        roster.insert("RP".to_string(), 6);
-        roster.insert("BE".to_string(), 6);
-        roster.insert("IL".to_string(), 5);
-
         Self {
             name: "Wyndham Lewis Vorticist Baseball".to_string(),
             platform: "espn".to_string(),
@@ -124,7 +108,6 @@ impl Default for LeagueConfig {
                     "WHIP".to_string(),
                 ],
             },
-            roster,
             roster_limits: RosterLimits::default(),
             teams: HashMap::new(),
         }
@@ -659,8 +642,6 @@ mod tests {
             config.league.pitching_categories.categories,
             vec!["K", "W", "SV", "HD", "ERA", "WHIP"]
         );
-        assert_eq!(config.league.roster.get("SP"), Some(&5));
-        assert_eq!(config.league.roster.get("RP"), Some(&6));
         assert_eq!(config.league.roster_limits.max_rp, 7);
         assert_eq!(config.league.roster_limits.gs_per_week, 7);
         // Teams are now optional (populated from ESPN live data)
@@ -1049,19 +1030,6 @@ gs_per_week = 7
             config.league.pitching_categories.categories,
             vec!["K", "W", "SV", "HD", "ERA", "WHIP"]
         );
-        assert_eq!(config.league.roster.get("C"), Some(&1));
-        assert_eq!(config.league.roster.get("1B"), Some(&1));
-        assert_eq!(config.league.roster.get("2B"), Some(&1));
-        assert_eq!(config.league.roster.get("3B"), Some(&1));
-        assert_eq!(config.league.roster.get("SS"), Some(&1));
-        assert_eq!(config.league.roster.get("LF"), Some(&1));
-        assert_eq!(config.league.roster.get("CF"), Some(&1));
-        assert_eq!(config.league.roster.get("RF"), Some(&1));
-        assert_eq!(config.league.roster.get("UTIL"), Some(&1));
-        assert_eq!(config.league.roster.get("SP"), Some(&5));
-        assert_eq!(config.league.roster.get("RP"), Some(&6));
-        assert_eq!(config.league.roster.get("BE"), Some(&6));
-        assert_eq!(config.league.roster.get("IL"), Some(&5));
         assert_eq!(config.league.roster_limits.max_sp, 7);
         assert_eq!(config.league.roster_limits.max_rp, 7);
         assert_eq!(config.league.roster_limits.gs_per_week, 7);
