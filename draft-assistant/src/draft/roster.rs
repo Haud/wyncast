@@ -34,18 +34,33 @@ pub struct Roster {
     pub slots: Vec<RosterSlot>,
 }
 
+/// Whether a roster slot position can accept a player of the given position.
+///
+/// Returns true if:
+/// - The slot position matches the player position exactly, OR
+/// - The slot is a combo slot whose `accepted_positions()` contains the player position.
+fn slot_accepts(slot_pos: Position, player_pos: Position) -> bool {
+    if slot_pos == player_pos {
+        return true;
+    }
+    if slot_pos.is_combo_slot() {
+        return slot_pos.accepted_positions().contains(&player_pos);
+    }
+    false
+}
+
 impl Roster {
     /// Create a new roster from a config mapping position strings to slot counts.
     ///
-    /// The roster config comes from league.toml `[league.roster]`, e.g.:
-    /// `{"C": 1, "1B": 1, "SP": 5, "RP": 6, "BE": 6, "IL": 5, ...}`
+    /// The roster config may contain combo slot keys like "OF", "MI", "CI", "P"
+    /// which create combo-slot positions that accept multiple concrete positions.
     ///
     /// Slots are created in deterministic order based on `Position::sort_order()`.
     pub fn new(roster_config: &HashMap<String, usize>) -> Self {
         let mut slots: Vec<RosterSlot> = Vec::new();
 
         for (pos_str, &count) in roster_config {
-            if let Some(pos) = Position::from_str_pos(pos_str) {
+            if let Some(pos) = Position::from_roster_slot_str(pos_str) {
                 for _ in 0..count {
                     slots.push(RosterSlot {
                         position: pos,
@@ -131,7 +146,17 @@ impl Roster {
             }
         }
 
-        // 2. Try UTIL slot (for hitters only)
+        // 2b. Try combo slot that accepts this position (OF for outfielders, MI for 2B/SS, etc.)
+        if let Some(slot) = self
+            .slots
+            .iter_mut()
+            .find(|s| s.position.is_combo_slot() && slot_accepts(s.position, pos) && s.player.is_none())
+        {
+            slot.player = Some(player);
+            return true;
+        }
+
+        // 3. Try UTIL slot (for hitters only)
         if pos.is_hitter() {
             if let Some(slot) = self
                 .slots
@@ -218,7 +243,7 @@ impl Roster {
                 if let Some(slot) = self
                     .slots
                     .iter_mut()
-                    .find(|s| s.position == pos && s.player.is_none())
+                    .find(|s| slot_accepts(s.position, pos) && s.player.is_none())
                 {
                     slot.player = Some(player);
                     return true;
@@ -234,10 +259,11 @@ impl Roster {
                 if pos.is_meta_slot() {
                     continue;
                 }
+                // Try exact match first, then combo slots that accept this position
                 if let Some(slot) = self
                     .slots
                     .iter_mut()
-                    .find(|s| s.position == pos && s.player.is_none())
+                    .find(|s| slot_accepts(s.position, pos) && s.player.is_none())
                 {
                     slot.player = Some(player);
                     return true;
@@ -272,7 +298,7 @@ impl Roster {
 
     /// Whether there is an empty slot for any of the given ESPN eligible slots.
     ///
-    /// Checks eligible position slots, UTIL (if hitter), and bench.
+    /// Checks eligible position slots (including combo slots), UTIL (if hitter), and bench.
     pub fn has_empty_slot_for_slots(&self, eligible_slots: &[u16], is_hitter: bool) -> bool {
         // Check each eligible position slot
         for &slot_id in eligible_slots {
@@ -280,7 +306,12 @@ impl Roster {
                 if pos.is_meta_slot() {
                     continue;
                 }
-                if self.has_empty_slot(pos) {
+                // Check exact match or combo slot that accepts this position
+                let has_slot = self
+                    .slots
+                    .iter()
+                    .any(|s| slot_accepts(s.position, pos) && s.player.is_none());
+                if has_slot {
                     return true;
                 }
             }
@@ -978,5 +1009,206 @@ mod tests {
             .find(|s| s.position == Position::StartingPitcher && s.player.is_some())
             .unwrap();
         assert_eq!(sp_slot.player.as_ref().unwrap().name, "SP Player");
+    }
+
+    // -- Combo roster slot tests (roster config with OF/MI/CI/P keys) --
+
+    fn combo_roster_config() -> HashMap<String, usize> {
+        let mut config = HashMap::new();
+        config.insert("C".to_string(), 1);
+        config.insert("1B".to_string(), 1);
+        config.insert("2B".to_string(), 1);
+        config.insert("3B".to_string(), 1);
+        config.insert("SS".to_string(), 1);
+        config.insert("OF".to_string(), 3); // combo OF slots instead of LF/CF/RF
+        config.insert("MI".to_string(), 1);
+        config.insert("CI".to_string(), 1);
+        config.insert("UTIL".to_string(), 1);
+        config.insert("SP".to_string(), 2);
+        config.insert("RP".to_string(), 2);
+        config.insert("P".to_string(), 2); // generic pitcher slots
+        config.insert("BE".to_string(), 3);
+        config.insert("IL".to_string(), 2);
+        config
+    }
+
+    #[test]
+    fn new_roster_with_combo_slots() {
+        let roster = Roster::new(&combo_roster_config());
+        let of_count = roster
+            .slots
+            .iter()
+            .filter(|s| s.position == Position::Outfield)
+            .count();
+        assert_eq!(of_count, 3);
+        let mi_count = roster
+            .slots
+            .iter()
+            .filter(|s| s.position == Position::MiddleInfield)
+            .count();
+        assert_eq!(mi_count, 1);
+        let ci_count = roster
+            .slots
+            .iter()
+            .filter(|s| s.position == Position::CornerInfield)
+            .count();
+        assert_eq!(ci_count, 1);
+        let p_count = roster
+            .slots
+            .iter()
+            .filter(|s| s.position == Position::GenericPitcher)
+            .count();
+        assert_eq!(p_count, 2);
+    }
+
+    #[test]
+    fn add_player_of_into_combo_of_slot() {
+        let mut roster = Roster::new(&combo_roster_config());
+        // LF player placed into an OF combo slot
+        assert!(roster.add_player("LF Player", "LF", 10, None));
+        let of_filled: Vec<_> = roster
+            .slots
+            .iter()
+            .filter(|s| s.position == Position::Outfield && s.player.is_some())
+            .collect();
+        assert_eq!(of_filled.len(), 1);
+        assert_eq!(of_filled[0].player.as_ref().unwrap().name, "LF Player");
+    }
+
+    #[test]
+    fn add_player_ss_into_mi_slot() {
+        let mut roster = Roster::new(&combo_roster_config());
+        // Fill the SS slot
+        roster.add_player("SS Player", "SS", 10, None);
+        // Second SS player should go into MI slot
+        assert!(roster.add_player("SS Player 2", "SS", 8, None));
+        let mi_filled: Vec<_> = roster
+            .slots
+            .iter()
+            .filter(|s| s.position == Position::MiddleInfield && s.player.is_some())
+            .collect();
+        assert_eq!(mi_filled.len(), 1);
+        assert_eq!(mi_filled[0].player.as_ref().unwrap().name, "SS Player 2");
+    }
+
+    #[test]
+    fn add_player_2b_into_mi_slot() {
+        let mut roster = Roster::new(&combo_roster_config());
+        // Fill the 2B slot
+        roster.add_player("2B Player", "2B", 10, None);
+        // Second 2B should go into MI
+        assert!(roster.add_player("2B Player 2", "2B", 8, None));
+        let mi_filled: Vec<_> = roster
+            .slots
+            .iter()
+            .filter(|s| s.position == Position::MiddleInfield && s.player.is_some())
+            .collect();
+        assert_eq!(mi_filled.len(), 1);
+        assert_eq!(mi_filled[0].player.as_ref().unwrap().name, "2B Player 2");
+    }
+
+    #[test]
+    fn add_player_1b_into_ci_slot() {
+        let mut roster = Roster::new(&combo_roster_config());
+        // Fill the 1B slot
+        roster.add_player("1B Player", "1B", 10, None);
+        // Second 1B should go into CI
+        assert!(roster.add_player("1B Player 2", "1B", 8, None));
+        let ci_filled: Vec<_> = roster
+            .slots
+            .iter()
+            .filter(|s| s.position == Position::CornerInfield && s.player.is_some())
+            .collect();
+        assert_eq!(ci_filled.len(), 1);
+        assert_eq!(ci_filled[0].player.as_ref().unwrap().name, "1B Player 2");
+    }
+
+    #[test]
+    fn add_player_3b_into_ci_slot() {
+        let mut roster = Roster::new(&combo_roster_config());
+        // Fill the 3B slot
+        roster.add_player("3B Player", "3B", 10, None);
+        // Second 3B should go into CI
+        assert!(roster.add_player("3B Player 2", "3B", 8, None));
+        let ci_filled: Vec<_> = roster
+            .slots
+            .iter()
+            .filter(|s| s.position == Position::CornerInfield && s.player.is_some())
+            .collect();
+        assert_eq!(ci_filled.len(), 1);
+        assert_eq!(ci_filled[0].player.as_ref().unwrap().name, "3B Player 2");
+    }
+
+    #[test]
+    fn add_player_sp_into_generic_p_slot() {
+        let mut roster = Roster::new(&combo_roster_config());
+        // Fill both SP slots
+        roster.add_player("SP1", "SP", 10, None);
+        roster.add_player("SP2", "SP", 10, None);
+        // Third SP should go into generic P slot
+        assert!(roster.add_player("SP3", "SP", 8, None));
+        let p_filled: Vec<_> = roster
+            .slots
+            .iter()
+            .filter(|s| s.position == Position::GenericPitcher && s.player.is_some())
+            .collect();
+        assert_eq!(p_filled.len(), 1);
+        assert_eq!(p_filled[0].player.as_ref().unwrap().name, "SP3");
+    }
+
+    #[test]
+    fn add_player_rp_into_generic_p_slot() {
+        let mut roster = Roster::new(&combo_roster_config());
+        // Fill both RP slots
+        roster.add_player("RP1", "RP", 10, None);
+        roster.add_player("RP2", "RP", 10, None);
+        // Third RP should go into generic P slot
+        assert!(roster.add_player("RP3", "RP", 8, None));
+        let p_filled: Vec<_> = roster
+            .slots
+            .iter()
+            .filter(|s| s.position == Position::GenericPitcher && s.player.is_some())
+            .collect();
+        assert_eq!(p_filled.len(), 1);
+        assert_eq!(p_filled[0].player.as_ref().unwrap().name, "RP3");
+    }
+
+    #[test]
+    fn add_player_with_slots_combo_roster_of_placement() {
+        let mut roster = Roster::new(&combo_roster_config());
+        // Player eligible at OF (slot 5), UTIL (12), BE (16), IL (17)
+        let slots = vec![5, 12, 16, 17];
+        assert!(roster.add_player_with_slots("Juan Soto", "OF", 40, &slots, None, None));
+        // Should be placed in an OF combo slot
+        let of_filled: Vec<_> = roster
+            .slots
+            .iter()
+            .filter(|s| s.position == Position::Outfield && s.player.is_some())
+            .collect();
+        assert_eq!(of_filled.len(), 1);
+        assert_eq!(of_filled[0].player.as_ref().unwrap().name, "Juan Soto");
+    }
+
+    #[test]
+    fn has_empty_slot_for_slots_with_combo_roster() {
+        let mut roster = Roster::new(&combo_roster_config());
+        // Fill all 3 OF combo slots
+        roster.add_player("OF1", "LF", 10, None);
+        roster.add_player("OF2", "CF", 10, None);
+        roster.add_player("OF3", "RF", 10, None);
+        // No more OF slots, but UTIL should still be available for hitters
+        let slots = vec![5]; // just OF combo
+        assert!(roster.has_empty_slot_for_slots(&slots, true));
+    }
+
+    #[test]
+    fn has_empty_slot_for_slots_combo_p_available() {
+        let mut roster = Roster::new(&combo_roster_config());
+        // Fill SP slots
+        roster.add_player("SP1", "SP", 10, None);
+        roster.add_player("SP2", "SP", 10, None);
+        // SP slots full, but P combo slots should be available
+        let slots = vec![14]; // just SP
+        assert!(roster.has_empty_slot_for_slots(&slots, false));
     }
 }
