@@ -43,6 +43,14 @@ pub enum Position {
     Utility,
     Bench,
     InjuredList,
+    /// Generic OF roster slot — accepts LF, CF, RF.
+    Outfield,
+    /// MI combo slot — accepts 2B, SS.
+    MiddleInfield,
+    /// CI combo slot — accepts 1B, 3B.
+    CornerInfield,
+    /// Generic P slot — accepts SP, RP.
+    GenericPitcher,
 }
 
 impl Position {
@@ -90,6 +98,10 @@ impl Position {
             Position::Utility => "UTIL",
             Position::Bench => "BE",
             Position::InjuredList => "IL",
+            Position::Outfield => "OF",
+            Position::MiddleInfield => "MI",
+            Position::CornerInfield => "CI",
+            Position::GenericPitcher => "P",
         }
     }
 
@@ -107,6 +119,9 @@ impl Position {
                 | Position::RightField
                 | Position::DesignatedHitter
                 | Position::Utility
+                | Position::Outfield
+                | Position::MiddleInfield
+                | Position::CornerInfield
         )
     }
 
@@ -118,6 +133,58 @@ impl Position {
         )
     }
 
+    /// Whether this is a combo roster slot (OF, MI, CI, P).
+    pub fn is_combo_slot(&self) -> bool {
+        matches!(
+            self,
+            Position::Outfield
+                | Position::MiddleInfield
+                | Position::CornerInfield
+                | Position::GenericPitcher
+        )
+    }
+
+    /// Concrete positions that a slot accepts.
+    ///
+    /// For regular positions, returns `vec![self]`.
+    /// For combo slots, returns the constituent positions:
+    /// - Outfield → [LF, CF, RF]
+    /// - MiddleInfield → [2B, SS]
+    /// - CornerInfield → [1B, 3B]
+    /// - GenericPitcher → [SP, RP]
+    pub fn accepted_positions(&self) -> Vec<Position> {
+        match self {
+            Position::Outfield => vec![
+                Position::LeftField,
+                Position::CenterField,
+                Position::RightField,
+            ],
+            Position::MiddleInfield => vec![Position::SecondBase, Position::ShortStop],
+            Position::CornerInfield => vec![Position::FirstBase, Position::ThirdBase],
+            Position::GenericPitcher => vec![Position::StartingPitcher, Position::ReliefPitcher],
+            other => vec![*other],
+        }
+    }
+
+    /// Parse a roster slot string into a Position enum.
+    ///
+    /// Like `from_str_pos()` but maps combo slot strings to their combo variants:
+    /// - "OF" → Outfield (not CenterField)
+    /// - "MI" → MiddleInfield
+    /// - "CI" → CornerInfield
+    /// - "P"  → GenericPitcher
+    ///
+    /// All other strings delegate to `from_str_pos()`.
+    pub fn from_roster_slot_str(s: &str) -> Option<Self> {
+        match s.to_uppercase().as_str() {
+            "OF" => Some(Position::Outfield),
+            "MI" => Some(Position::MiddleInfield),
+            "CI" => Some(Position::CornerInfield),
+            "P" => Some(Position::GenericPitcher),
+            other => Self::from_str_pos(other),
+        }
+    }
+
     /// Deterministic ordering index for roster slot display.
     pub fn sort_order(&self) -> u8 {
         match self {
@@ -125,16 +192,20 @@ impl Position {
             Position::FirstBase => 1,
             Position::SecondBase => 2,
             Position::ThirdBase => 3,
-            Position::ShortStop => 4,
-            Position::LeftField => 5,
-            Position::CenterField => 6,
-            Position::RightField => 7,
-            Position::Utility => 8,
-            Position::DesignatedHitter => 9,
-            Position::StartingPitcher => 10,
-            Position::ReliefPitcher => 11,
-            Position::Bench => 12,
-            Position::InjuredList => 13,
+            Position::CornerInfield => 4,
+            Position::ShortStop => 5,
+            Position::MiddleInfield => 6,
+            Position::LeftField => 7,
+            Position::CenterField => 8,
+            Position::RightField => 9,
+            Position::Outfield => 10,
+            Position::DesignatedHitter => 11,
+            Position::Utility => 12,
+            Position::StartingPitcher => 13,
+            Position::ReliefPitcher => 14,
+            Position::GenericPitcher => 15,
+            Position::Bench => 16,
+            Position::InjuredList => 17,
         }
     }
 }
@@ -150,7 +221,7 @@ impl fmt::Display for Position {
 // ---------------------------------------------------------------------------
 
 /// Map an ESPN slot ID to a Position enum value.
-/// Returns None for combo/flex slots not in our league (MI, CI, P, generic OF).
+/// Returns the combo variant for combo slots (OF, MI, CI, P).
 pub fn position_from_espn_slot(slot_id: u16) -> Option<Position> {
     match slot_id {
         ESPN_SLOT_C => Some(Position::Catcher),
@@ -158,16 +229,20 @@ pub fn position_from_espn_slot(slot_id: u16) -> Option<Position> {
         ESPN_SLOT_2B => Some(Position::SecondBase),
         ESPN_SLOT_3B => Some(Position::ThirdBase),
         ESPN_SLOT_SS => Some(Position::ShortStop),
+        ESPN_SLOT_OF => Some(Position::Outfield),
+        ESPN_SLOT_MI => Some(Position::MiddleInfield),
+        ESPN_SLOT_CI => Some(Position::CornerInfield),
         ESPN_SLOT_LF => Some(Position::LeftField),
         ESPN_SLOT_CF => Some(Position::CenterField),
         ESPN_SLOT_RF => Some(Position::RightField),
         ESPN_SLOT_DH => Some(Position::DesignatedHitter),
         ESPN_SLOT_UTIL => Some(Position::Utility),
+        ESPN_SLOT_P => Some(Position::GenericPitcher),
         ESPN_SLOT_SP => Some(Position::StartingPitcher),
         ESPN_SLOT_RP => Some(Position::ReliefPitcher),
         ESPN_SLOT_BE => Some(Position::Bench),
         ESPN_SLOT_IL => Some(Position::InjuredList),
-        _ => None, // Combo slots (MI, CI, P, generic OF) not directly mappable
+        _ => None,
     }
 }
 
@@ -204,6 +279,10 @@ pub fn espn_slot_from_position(pos: Position) -> u16 {
         Position::ReliefPitcher => ESPN_SLOT_RP,
         Position::Bench => ESPN_SLOT_BE,
         Position::InjuredList => ESPN_SLOT_IL,
+        Position::Outfield => ESPN_SLOT_OF,
+        Position::MiddleInfield => ESPN_SLOT_MI,
+        Position::CornerInfield => ESPN_SLOT_CI,
+        Position::GenericPitcher => ESPN_SLOT_P,
     }
 }
 
@@ -217,13 +296,16 @@ pub fn playing_positions_from_slots(eligible_slots: &[u16]) -> Vec<Position> {
         .collect()
 }
 
-/// Map a position string (e.g. "C", "1B", "SP", "BE") to the ESPN slot ID.
+/// Map a position string (e.g. "C", "1B", "SP", "BE", "OF", "MI") to the ESPN slot ID.
 ///
 /// This is the Rust equivalent of `espnSlotIdFromPositionStr()` in the
 /// extension. Useful for converting draft board `rosterSlot` strings into
 /// ESPN slot IDs for roster placement.
+///
+/// Uses `from_roster_slot_str()` so combo slot strings ("OF", "MI", "CI", "P")
+/// map to their proper ESPN slot IDs (5, 6, 7, 13).
 pub fn espn_slot_from_position_str(s: &str) -> Option<u16> {
-    Position::from_str_pos(s).map(espn_slot_from_position)
+    Position::from_roster_slot_str(s).map(espn_slot_from_position)
 }
 
 /// A single draft pick record.
@@ -319,6 +401,7 @@ mod tests {
 
     #[test]
     fn display_str_roundtrip() {
+        // Non-combo positions roundtrip through from_str_pos
         let positions = [
             Position::Catcher,
             Position::FirstBase,
@@ -343,6 +426,27 @@ mod tests {
     }
 
     #[test]
+    fn display_str_roundtrip_combo_variants() {
+        // Combo variants roundtrip through from_roster_slot_str (not from_str_pos)
+        let combo_positions = [
+            Position::Outfield,
+            Position::MiddleInfield,
+            Position::CornerInfield,
+            Position::GenericPitcher,
+        ];
+        for pos in combo_positions {
+            let s = pos.display_str();
+            let parsed = Position::from_roster_slot_str(s);
+            assert_eq!(
+                parsed,
+                Some(pos),
+                "Combo roundtrip failed for {}",
+                s
+            );
+        }
+    }
+
+    #[test]
     fn is_hitter_correct() {
         assert!(Position::Catcher.is_hitter());
         assert!(Position::FirstBase.is_hitter());
@@ -354,8 +458,12 @@ mod tests {
         assert!(Position::RightField.is_hitter());
         assert!(Position::DesignatedHitter.is_hitter());
         assert!(Position::Utility.is_hitter());
+        assert!(Position::Outfield.is_hitter());
+        assert!(Position::MiddleInfield.is_hitter());
+        assert!(Position::CornerInfield.is_hitter());
         assert!(!Position::StartingPitcher.is_hitter());
         assert!(!Position::ReliefPitcher.is_hitter());
+        assert!(!Position::GenericPitcher.is_hitter());
         assert!(!Position::Bench.is_hitter());
         assert!(!Position::InjuredList.is_hitter());
     }
@@ -448,11 +556,23 @@ mod tests {
     }
 
     #[test]
-    fn position_from_espn_slot_combo_slots_return_none() {
-        assert_eq!(position_from_espn_slot(ESPN_SLOT_OF), None);
-        assert_eq!(position_from_espn_slot(ESPN_SLOT_MI), None);
-        assert_eq!(position_from_espn_slot(ESPN_SLOT_CI), None);
-        assert_eq!(position_from_espn_slot(ESPN_SLOT_P), None);
+    fn position_from_espn_slot_combo_slots_return_combo_variants() {
+        assert_eq!(
+            position_from_espn_slot(ESPN_SLOT_OF),
+            Some(Position::Outfield)
+        );
+        assert_eq!(
+            position_from_espn_slot(ESPN_SLOT_MI),
+            Some(Position::MiddleInfield)
+        );
+        assert_eq!(
+            position_from_espn_slot(ESPN_SLOT_CI),
+            Some(Position::CornerInfield)
+        );
+        assert_eq!(
+            position_from_espn_slot(ESPN_SLOT_P),
+            Some(Position::GenericPitcher)
+        );
     }
 
     #[test]
@@ -478,6 +598,10 @@ mod tests {
             Position::ReliefPitcher,
             Position::Bench,
             Position::InjuredList,
+            Position::Outfield,
+            Position::MiddleInfield,
+            Position::CornerInfield,
+            Position::GenericPitcher,
         ];
         for pos in positions {
             let slot_id = espn_slot_from_position(pos);
@@ -640,5 +764,152 @@ mod tests {
         assert!(!Position::DesignatedHitter.is_meta_slot());
         assert!(!Position::StartingPitcher.is_meta_slot());
         assert!(!Position::ReliefPitcher.is_meta_slot());
+        assert!(!Position::Outfield.is_meta_slot());
+        assert!(!Position::MiddleInfield.is_meta_slot());
+        assert!(!Position::CornerInfield.is_meta_slot());
+        assert!(!Position::GenericPitcher.is_meta_slot());
+    }
+
+    // -- from_roster_slot_str tests --
+
+    #[test]
+    fn from_roster_slot_str_combo_slots() {
+        assert_eq!(
+            Position::from_roster_slot_str("OF"),
+            Some(Position::Outfield)
+        );
+        assert_eq!(
+            Position::from_roster_slot_str("MI"),
+            Some(Position::MiddleInfield)
+        );
+        assert_eq!(
+            Position::from_roster_slot_str("CI"),
+            Some(Position::CornerInfield)
+        );
+        assert_eq!(
+            Position::from_roster_slot_str("P"),
+            Some(Position::GenericPitcher)
+        );
+    }
+
+    #[test]
+    fn from_roster_slot_str_case_insensitive() {
+        assert_eq!(
+            Position::from_roster_slot_str("of"),
+            Some(Position::Outfield)
+        );
+        assert_eq!(
+            Position::from_roster_slot_str("mi"),
+            Some(Position::MiddleInfield)
+        );
+        assert_eq!(
+            Position::from_roster_slot_str("ci"),
+            Some(Position::CornerInfield)
+        );
+        assert_eq!(
+            Position::from_roster_slot_str("p"),
+            Some(Position::GenericPitcher)
+        );
+    }
+
+    #[test]
+    fn from_roster_slot_str_delegates_non_combo() {
+        assert_eq!(
+            Position::from_roster_slot_str("C"),
+            Some(Position::Catcher)
+        );
+        assert_eq!(
+            Position::from_roster_slot_str("1B"),
+            Some(Position::FirstBase)
+        );
+        assert_eq!(
+            Position::from_roster_slot_str("SP"),
+            Some(Position::StartingPitcher)
+        );
+        assert_eq!(
+            Position::from_roster_slot_str("BE"),
+            Some(Position::Bench)
+        );
+        assert_eq!(Position::from_roster_slot_str("XX"), None);
+    }
+
+    // -- is_combo_slot tests --
+
+    #[test]
+    fn is_combo_slot_true_for_combo_variants() {
+        assert!(Position::Outfield.is_combo_slot());
+        assert!(Position::MiddleInfield.is_combo_slot());
+        assert!(Position::CornerInfield.is_combo_slot());
+        assert!(Position::GenericPitcher.is_combo_slot());
+    }
+
+    #[test]
+    fn is_combo_slot_false_for_regular_positions() {
+        assert!(!Position::Catcher.is_combo_slot());
+        assert!(!Position::FirstBase.is_combo_slot());
+        assert!(!Position::SecondBase.is_combo_slot());
+        assert!(!Position::ThirdBase.is_combo_slot());
+        assert!(!Position::ShortStop.is_combo_slot());
+        assert!(!Position::LeftField.is_combo_slot());
+        assert!(!Position::CenterField.is_combo_slot());
+        assert!(!Position::RightField.is_combo_slot());
+        assert!(!Position::StartingPitcher.is_combo_slot());
+        assert!(!Position::ReliefPitcher.is_combo_slot());
+        assert!(!Position::DesignatedHitter.is_combo_slot());
+        assert!(!Position::Utility.is_combo_slot());
+        assert!(!Position::Bench.is_combo_slot());
+        assert!(!Position::InjuredList.is_combo_slot());
+    }
+
+    // -- accepted_positions tests --
+
+    #[test]
+    fn accepted_positions_combo_slots() {
+        assert_eq!(
+            Position::Outfield.accepted_positions(),
+            vec![Position::LeftField, Position::CenterField, Position::RightField]
+        );
+        assert_eq!(
+            Position::MiddleInfield.accepted_positions(),
+            vec![Position::SecondBase, Position::ShortStop]
+        );
+        assert_eq!(
+            Position::CornerInfield.accepted_positions(),
+            vec![Position::FirstBase, Position::ThirdBase]
+        );
+        assert_eq!(
+            Position::GenericPitcher.accepted_positions(),
+            vec![Position::StartingPitcher, Position::ReliefPitcher]
+        );
+    }
+
+    #[test]
+    fn accepted_positions_regular_slots() {
+        assert_eq!(
+            Position::Catcher.accepted_positions(),
+            vec![Position::Catcher]
+        );
+        assert_eq!(
+            Position::FirstBase.accepted_positions(),
+            vec![Position::FirstBase]
+        );
+        assert_eq!(
+            Position::StartingPitcher.accepted_positions(),
+            vec![Position::StartingPitcher]
+        );
+        assert_eq!(
+            Position::Bench.accepted_positions(),
+            vec![Position::Bench]
+        );
+    }
+
+    // -- espn_slot_from_position_str with combo slots --
+
+    #[test]
+    fn espn_slot_from_position_str_combo_slots() {
+        assert_eq!(espn_slot_from_position_str("OF"), Some(ESPN_SLOT_OF));
+        assert_eq!(espn_slot_from_position_str("MI"), Some(ESPN_SLOT_MI));
+        assert_eq!(espn_slot_from_position_str("CI"), Some(ESPN_SLOT_CI));
+        assert_eq!(espn_slot_from_position_str("P"), Some(ESPN_SLOT_P));
     }
 }
