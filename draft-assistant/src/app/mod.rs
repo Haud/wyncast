@@ -159,9 +159,12 @@ impl AppState {
         ws_outbound_tx: Option<mpsc::Sender<String>>,
         app_mode: AppMode,
         onboarding_manager: OnboardingManager<RealFileSystem>,
+        roster_config: Option<std::collections::HashMap<String, usize>>,
     ) -> Self {
-        let default_roster = Self::default_roster_config();
-        let scarcity = compute_scarcity(&available_players, &default_roster);
+        let scarcity = match &roster_config {
+            Some(rc) => compute_scarcity(&available_players, rc),
+            None => Vec::new(),
+        };
         let inflation = InflationTracker::new();
         let onboarding_progress = onboarding_manager.load_progress();
 
@@ -193,11 +196,11 @@ impl AppState {
             connection_test_result: Arc::new(AtomicI8::new(CONNECTION_NEVER_TESTED)),
             connection_test_generation: Arc::new(AtomicU64::new(0)),
             grid_picks_persisted: false,
-            roster_config: Some(default_roster),
+            roster_config,
         }
     }
 
-    /// Default roster configuration (used until ESPN provides the actual roster layout).
+    /// Default roster configuration (used as fallback until ESPN provides the actual roster layout).
     pub fn default_roster_config() -> std::collections::HashMap<String, usize> {
         let mut roster = std::collections::HashMap::new();
         roster.insert("C".to_string(), 1);
@@ -214,6 +217,22 @@ impl AppState {
         roster.insert("BE".to_string(), 6);
         roster.insert("IL".to_string(), 5);
         roster
+    }
+
+    /// Apply a roster configuration inferred from the ESPN draft board.
+    ///
+    /// Sets the roster_config, recomputes initial valuations from projections,
+    /// and recomputes scarcity indices.
+    pub fn apply_roster_config(&mut self, roster: std::collections::HashMap<String, usize>) {
+        info!("Applying roster config: {:?}", roster);
+        self.roster_config = Some(roster.clone());
+        self.available_players = crate::valuation::compute_initial(
+            &self.all_projections,
+            &self.config,
+            &roster,
+        )
+        .unwrap_or_default();
+        self.scarcity = compute_scarcity(&self.available_players, &roster);
     }
 
     /// Reconstruct the LLM client from the current config.
@@ -1268,7 +1287,7 @@ mod tests {
         let llm_client = LlmClient::Disabled;
         let (llm_tx, _llm_rx) = mpsc::channel(16);
 
-        AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx, None, AppMode::Draft, test_onboarding_manager())
+        AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx, None, AppMode::Draft, test_onboarding_manager(), Some(test_roster_config()))
     }
 
     /// Drain the initial `StateSnapshot` that `run()` sends before entering
@@ -1935,7 +1954,7 @@ mod tests {
         let (llm_tx, _llm_rx) = mpsc::channel(16);
 
         let draft_id = Database::generate_draft_id();
-        AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx, None, AppMode::Draft, test_onboarding_manager())
+        AppState::new(config, draft_state, available, empty_projections(), db, draft_id, llm_client, llm_tx, None, AppMode::Draft, test_onboarding_manager(), Some(test_roster_config()))
     }
 
     #[tokio::test]
@@ -2956,6 +2975,7 @@ mod tests {
             None,
             AppMode::Draft,
             test_onboarding_manager(),
+            Some(test_roster_config()),
         );
 
         // Step 1: process_new_picks while teams are empty

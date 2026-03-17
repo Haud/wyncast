@@ -80,7 +80,7 @@ async fn main() -> anyhow::Result<()> {
         id
     };
 
-    // 4. Load projections and compute initial valuations
+    // 4. Load projections (valuations deferred until roster config is inferred from ESPN)
     info!("Loading projections...");
     let projections = valuation::projections::load_all(&config)
         .context("failed to load projections")?;
@@ -90,18 +90,16 @@ async fn main() -> anyhow::Result<()> {
         projections.pitchers.len()
     );
 
-    let default_roster = draft_assistant::app::AppState::default_roster_config();
-    let available_players = valuation::compute_initial(&projections, &config, &default_roster)
-        .context("failed to compute initial valuations")?;
-    info!(
-        "Computed valuations for {} players",
-        available_players.len()
-    );
+    // Valuations are deferred until ESPN provides the roster configuration.
+    // Start with empty available_players; apply_roster_config() will compute them.
+    let available_players = Vec::new();
+    info!("Valuations deferred — waiting for ESPN roster config");
 
-    // 5. Initialize DraftState (teams populated dynamically from ESPN live data)
+    // 5. Initialize DraftState with empty roster config (teams populated dynamically)
+    let empty_roster = std::collections::HashMap::new();
     let draft_state = draft::state::DraftState::new(
         config.league.salary_cap,
-        &default_roster,
+        &empty_roster,
     );
 
     // 6. Create mpsc channels (before AppState so llm_tx can be passed in)
@@ -132,6 +130,7 @@ async fn main() -> anyhow::Result<()> {
         Some(ws_outbound_tx),
         initial_app_mode.clone(),
         onboarding_manager,
+        None, // roster_config deferred until ESPN connection
     );
     info!("Starting fresh — waiting for first keyframe from extension");
 

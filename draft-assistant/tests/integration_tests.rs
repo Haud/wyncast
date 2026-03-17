@@ -192,7 +192,7 @@ fn create_test_app_state_from_fixtures() -> AppState {
         std::env::temp_dir().join(format!("wyncast_integ_test_{}", std::process::id())),
         draft_assistant::onboarding::RealFileSystem,
     );
-    AppState::new(config, draft_state, available, projections, db, draft_id, llm_client, llm_tx, None, AppMode::Draft, onboarding_manager)
+    AppState::new(config, draft_state, available, projections, db, draft_id, llm_client, llm_tx, None, AppMode::Draft, onboarding_manager, Some(roster_config()))
 }
 
 /// Drain the initial `StateSnapshot` that `run()` sends before entering
