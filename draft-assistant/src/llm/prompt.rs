@@ -101,7 +101,7 @@ pub fn format_league_context(league: &LeagueConfig, roster_config: Option<&std::
             let roster_size = draftable_roster_size(rc);
             format!("{}-player rosters", roster_size)
         }
-        None => "roster pending".to_string(),
+        None => "roster pending (waiting for ESPN connection)".to_string(),
     };
     format!(
         "{}-team {}, salary cap ${}, {}.\n\
