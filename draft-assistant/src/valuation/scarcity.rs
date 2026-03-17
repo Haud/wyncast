@@ -84,26 +84,38 @@ pub struct ScarcityEntry {
 }
 
 // ---------------------------------------------------------------------------
-// All roster positions to track
-// ---------------------------------------------------------------------------
-
-/// Positions that have dedicated roster slots (we skip Bench, IL, etc.).
-const TRACKED_POSITIONS: &[Position] = &[
-    Position::Catcher,
-    Position::FirstBase,
-    Position::SecondBase,
-    Position::ThirdBase,
-    Position::ShortStop,
-    Position::LeftField,
-    Position::CenterField,
-    Position::RightField,
-    Position::StartingPitcher,
-    Position::ReliefPitcher,
-];
-
-// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Derive tracked positions from roster config keys.
+///
+/// Skips meta slots (BE, IL). For combo slots (OF, MI, CI, P), expands to
+/// their constituent concrete positions so scarcity is tracked at the
+/// concrete level (e.g. LF, CF, RF instead of just OF).
+fn derive_tracked_positions(roster_config: &HashMap<String, usize>) -> Vec<Position> {
+    let mut positions = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for key in roster_config.keys() {
+        if let Some(pos) = Position::from_roster_slot_str(key) {
+            if pos.is_meta_slot() {
+                continue;
+            }
+            if pos.is_combo_slot() {
+                // Expand combo slots to concrete positions for tracking
+                for concrete in pos.accepted_positions() {
+                    if seen.insert(concrete) {
+                        positions.push(concrete);
+                    }
+                }
+            } else if seen.insert(pos) {
+                positions.push(pos);
+            }
+        }
+    }
+
+    positions
+}
 
 /// Check whether a player is eligible at a given position.
 ///
@@ -114,6 +126,15 @@ fn player_eligible_at(p: &PlayerValuation, pos: Position) -> bool {
     // Primary: explicit positions list
     if p.positions.contains(&pos) {
         return true;
+    }
+    // For combo positions (e.g. Outfield), check if the player is eligible
+    // at any of the constituent concrete positions.
+    if pos.is_combo_slot() {
+        for concrete in pos.accepted_positions() {
+            if p.positions.contains(&concrete) {
+                return true;
+            }
+        }
     }
     // Fallback: best_position assigned by VOR
     if p.best_position == Some(pos) {
@@ -142,11 +163,12 @@ fn player_eligible_at(p: &PlayerValuation, pos: Position) -> bool {
 /// 6. Assign urgency based on count thresholds.
 pub fn compute_scarcity(
     available_players: &[PlayerValuation],
-    _roster_config: &HashMap<String, usize>,
+    roster_config: &HashMap<String, usize>,
 ) -> Vec<ScarcityEntry> {
+    let tracked = derive_tracked_positions(roster_config);
     let mut entries = Vec::new();
 
-    for &pos in TRACKED_POSITIONS {
+    for &pos in &tracked {
         // Collect players eligible at this position with positive VOR.
         // Check positions list first; fall back to best_position and
         // pitcher_type for players that lack ESPN position overlay data.
