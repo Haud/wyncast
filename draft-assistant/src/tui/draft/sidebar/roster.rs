@@ -108,7 +108,27 @@ impl RosterPanel {
             .take(visible_rows.max(1))
             .map(|slot| {
                 let is_highlight =
-                    nominated_position.map_or(false, |pos| slot.position == *pos);
+                    nominated_position.map_or(false, |pos| {
+                        // Exact match
+                        if slot.position == *pos {
+                            return true;
+                        }
+                        // Combo-aware: if nominated position is concrete (e.g. LF),
+                        // also highlight combo slots that accept it (e.g. OF).
+                        if slot.position.is_combo_slot()
+                            && slot.position.accepted_positions().contains(pos)
+                        {
+                            return true;
+                        }
+                        // Reverse: if nominated position is combo (e.g. OF),
+                        // also highlight concrete slots it accepts (e.g. LF/CF/RF).
+                        if pos.is_combo_slot()
+                            && pos.accepted_positions().contains(&slot.position)
+                        {
+                            return true;
+                        }
+                        false
+                    });
                 format_slot(slot, is_highlight)
             })
             .collect();

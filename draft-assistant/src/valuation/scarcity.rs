@@ -4,7 +4,8 @@
 // how steeply talent drops off after the top options. This drives urgency
 // ratings that inform draft-day bidding decisions.
 
-use crate::config::LeagueConfig;
+use std::collections::HashMap;
+
 use crate::draft::pick::Position;
 use crate::valuation::projections::PitcherType;
 use crate::valuation::zscore::PlayerValuation;
@@ -83,26 +84,38 @@ pub struct ScarcityEntry {
 }
 
 // ---------------------------------------------------------------------------
-// All roster positions to track
-// ---------------------------------------------------------------------------
-
-/// Positions that have dedicated roster slots (we skip Bench, IL, etc.).
-const TRACKED_POSITIONS: &[Position] = &[
-    Position::Catcher,
-    Position::FirstBase,
-    Position::SecondBase,
-    Position::ThirdBase,
-    Position::ShortStop,
-    Position::LeftField,
-    Position::CenterField,
-    Position::RightField,
-    Position::StartingPitcher,
-    Position::ReliefPitcher,
-];
-
-// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Derive tracked positions from roster config keys.
+///
+/// Skips meta slots (BE, IL). For combo slots (OF, MI, CI, P), expands to
+/// their constituent concrete positions so scarcity is tracked at the
+/// concrete level (e.g. LF, CF, RF instead of just OF).
+fn derive_tracked_positions(roster_config: &HashMap<String, usize>) -> Vec<Position> {
+    let mut positions = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for key in roster_config.keys() {
+        if let Some(pos) = Position::from_roster_slot_str(key) {
+            if pos.is_meta_slot() {
+                continue;
+            }
+            if pos.is_combo_slot() {
+                // Expand combo slots to concrete positions for tracking
+                for concrete in pos.accepted_positions() {
+                    if seen.insert(concrete) {
+                        positions.push(concrete);
+                    }
+                }
+            } else if seen.insert(pos) {
+                positions.push(pos);
+            }
+        }
+    }
+
+    positions
+}
 
 /// Check whether a player is eligible at a given position.
 ///
@@ -113,6 +126,15 @@ fn player_eligible_at(p: &PlayerValuation, pos: Position) -> bool {
     // Primary: explicit positions list
     if p.positions.contains(&pos) {
         return true;
+    }
+    // For combo positions (e.g. Outfield), check if the player is eligible
+    // at any of the constituent concrete positions.
+    if pos.is_combo_slot() {
+        for concrete in pos.accepted_positions() {
+            if p.positions.contains(&concrete) {
+                return true;
+            }
+        }
     }
     // Fallback: best_position assigned by VOR
     if p.best_position == Some(pos) {
@@ -141,11 +163,12 @@ fn player_eligible_at(p: &PlayerValuation, pos: Position) -> bool {
 /// 6. Assign urgency based on count thresholds.
 pub fn compute_scarcity(
     available_players: &[PlayerValuation],
-    _league: &LeagueConfig,
+    roster_config: &HashMap<String, usize>,
 ) -> Vec<ScarcityEntry> {
+    let tracked = derive_tracked_positions(roster_config);
     let mut entries = Vec::new();
 
-    for &pos in TRACKED_POSITIONS {
+    for &pos in &tracked {
         // Collect players eligible at this position with positive VOR.
         // Check positions list first; fall back to best_position and
         // pitcher_type for players that lack ESPN position overlay data.
@@ -221,18 +244,16 @@ pub fn scarcity_for_position(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::*;
     use crate::valuation::projections::PitcherType;
     use crate::valuation::zscore::{
         CategoryZScores, HitterZScores, PitcherZScores, PlayerProjectionData,
     };
-    use std::collections::HashMap;
 
     fn approx_eq(a: f64, b: f64, epsilon: f64) -> bool {
         (a - b).abs() < epsilon
     }
 
-    fn test_league_config() -> LeagueConfig {
+    fn test_roster_config() -> HashMap<String, usize> {
         let mut roster = HashMap::new();
         roster.insert("C".into(), 1);
         roster.insert("1B".into(), 1);
@@ -247,33 +268,7 @@ mod tests {
         roster.insert("RP".into(), 6);
         roster.insert("BE".into(), 6);
         roster.insert("IL".into(), 5);
-
-        LeagueConfig {
-            name: "Test League".into(),
-            platform: "espn".into(),
-            num_teams: 10,
-            scoring_type: "h2h_most_categories".into(),
-            salary_cap: 260,
-            batting_categories: CategoriesSection {
-                categories: vec![
-                    "R".into(), "HR".into(), "RBI".into(),
-                    "BB".into(), "SB".into(), "AVG".into(),
-                ],
-            },
-            pitching_categories: CategoriesSection {
-                categories: vec![
-                    "K".into(), "W".into(), "SV".into(),
-                    "HD".into(), "ERA".into(), "WHIP".into(),
-                ],
-            },
-            roster,
-            roster_limits: RosterLimits {
-                max_sp: 7,
-                max_rp: 7,
-                gs_per_week: 7,
-            },
-            teams: HashMap::new(),
-        }
+        roster
     }
 
     fn make_hitter(name: &str, vor: f64, positions: Vec<Position>) -> PlayerValuation {
@@ -341,7 +336,7 @@ mod tests {
 
     #[test]
     fn scarcity_dropoff_calculation() {
-        let league = test_league_config();
+        let roster = test_roster_config();
 
         // Create a pool with known VOR values at catcher
         let players = vec![
@@ -351,7 +346,7 @@ mod tests {
             make_hitter("C4", 1.0, vec![Position::Catcher]),
         ];
 
-        let scarcity = compute_scarcity(&players, &league);
+        let scarcity = compute_scarcity(&players, &roster);
         let c_entry = scarcity_for_position(&scarcity, Position::Catcher).unwrap();
 
         assert_eq!(c_entry.players_above_replacement, 4);
@@ -363,7 +358,7 @@ mod tests {
 
     #[test]
     fn scarcity_critical_with_few_players() {
-        let league = test_league_config();
+        let roster = test_roster_config();
 
         // Only 2 shortstops with positive VOR -> Critical
         let players = vec![
@@ -371,7 +366,7 @@ mod tests {
             make_hitter("SS2", 2.0, vec![Position::ShortStop]),
         ];
 
-        let scarcity = compute_scarcity(&players, &league);
+        let scarcity = compute_scarcity(&players, &roster);
         let ss_entry = scarcity_for_position(&scarcity, Position::ShortStop).unwrap();
 
         assert_eq!(ss_entry.players_above_replacement, 2);
@@ -383,10 +378,10 @@ mod tests {
 
     #[test]
     fn scarcity_empty_position() {
-        let league = test_league_config();
+        let roster = test_roster_config();
         let players: Vec<PlayerValuation> = Vec::new();
 
-        let scarcity = compute_scarcity(&players, &league);
+        let scarcity = compute_scarcity(&players, &roster);
         let c_entry = scarcity_for_position(&scarcity, Position::Catcher).unwrap();
 
         assert_eq!(c_entry.players_above_replacement, 0);
@@ -397,7 +392,7 @@ mod tests {
 
     #[test]
     fn scarcity_low_with_many_players() {
-        let league = test_league_config();
+        let roster = test_roster_config();
 
         // 10 first basemen with positive VOR -> Low urgency
         let players: Vec<PlayerValuation> = (0..10)
@@ -410,7 +405,7 @@ mod tests {
             })
             .collect();
 
-        let scarcity = compute_scarcity(&players, &league);
+        let scarcity = compute_scarcity(&players, &roster);
         let fb_entry = scarcity_for_position(&scarcity, Position::FirstBase).unwrap();
 
         assert_eq!(fb_entry.players_above_replacement, 10);
@@ -422,7 +417,7 @@ mod tests {
 
     #[test]
     fn scarcity_excludes_negative_vor() {
-        let league = test_league_config();
+        let roster = test_roster_config();
 
         let players = vec![
             make_hitter("2B_good", 3.0, vec![Position::SecondBase]),
@@ -430,7 +425,7 @@ mod tests {
             make_hitter("2B_bad2", -3.0, vec![Position::SecondBase]),
         ];
 
-        let scarcity = compute_scarcity(&players, &league);
+        let scarcity = compute_scarcity(&players, &roster);
         let sb_entry = scarcity_for_position(&scarcity, Position::SecondBase).unwrap();
 
         // Only 1 player with positive VOR
@@ -440,7 +435,7 @@ mod tests {
 
     #[test]
     fn scarcity_pitcher_positions() {
-        let league = test_league_config();
+        let roster = test_roster_config();
 
         let mut players = Vec::new();
         for i in 0..6 {
@@ -458,7 +453,7 @@ mod tests {
             ));
         }
 
-        let scarcity = compute_scarcity(&players, &league);
+        let scarcity = compute_scarcity(&players, &roster);
 
         let sp_entry = scarcity_for_position(&scarcity, Position::StartingPitcher).unwrap();
         assert_eq!(sp_entry.players_above_replacement, 6);
@@ -471,7 +466,7 @@ mod tests {
 
     #[test]
     fn scarcity_sorted_by_urgency() {
-        let league = test_league_config();
+        let roster = test_roster_config();
 
         // Create a mix: catchers (2 = Critical), SS (4 = High), 1B (10 = Low)
         let mut players = Vec::new();
@@ -485,7 +480,7 @@ mod tests {
             players.push(make_hitter(&format!("1B_{}", i), 10.0 - i as f64, vec![Position::FirstBase]));
         }
 
-        let scarcity = compute_scarcity(&players, &league);
+        let scarcity = compute_scarcity(&players, &roster);
 
         // Critical positions should come first
         let first_urgency = scarcity[0].urgency;
@@ -536,7 +531,7 @@ mod tests {
     /// caused all scarcity gauges to show Critical.
     #[test]
     fn full_pool_draft_start_not_all_critical() {
-        let league = test_league_config();
+        let roster = test_roster_config();
 
         // Simulate a full draft pool: 15 players per hitter position
         // and 15 SP + 15 RP, all with positive VOR and best_position set.
@@ -586,7 +581,7 @@ mod tests {
             players.push(p);
         }
 
-        let scarcity = compute_scarcity(&players, &league);
+        let scarcity = compute_scarcity(&players, &roster);
 
         // No position should be Critical with 15 players per position
         let critical_count = scarcity
@@ -623,7 +618,7 @@ mod tests {
     /// compute_scarcity via the best_position fallback.
     #[test]
     fn scarcity_uses_best_position_fallback() {
-        let league = test_league_config();
+        let roster = test_roster_config();
 
         // Create players with empty positions but best_position set,
         // simulating what VOR backfill produces for players without ESPN data.
@@ -638,7 +633,7 @@ mod tests {
             players.push(p);
         }
 
-        let scarcity = compute_scarcity(&players, &league);
+        let scarcity = compute_scarcity(&players, &roster);
         let ss_entry = scarcity_for_position(&scarcity, Position::ShortStop).unwrap();
 
         assert_eq!(ss_entry.players_above_replacement, 10);

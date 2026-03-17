@@ -1696,7 +1696,6 @@ mod tests {
                 pitching_categories: CategoriesSection {
                     categories: vec!["K".to_string()],
                 },
-                roster: HashMap::new(),
                 roster_limits: RosterLimits {
                     max_sp: 7,
                     max_rp: 7,
@@ -1775,7 +1774,6 @@ mod tests {
                 pitching_categories: CategoriesSection {
                     categories: vec!["K".to_string()],
                 },
-                roster: HashMap::new(),
                 roster_limits: RosterLimits {
                     max_sp: 7,
                     max_rp: 7,

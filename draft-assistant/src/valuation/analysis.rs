@@ -423,21 +423,6 @@ mod tests {
     }
 
     fn test_league_config() -> LeagueConfig {
-        let mut roster = HashMap::new();
-        roster.insert("C".into(), 1);
-        roster.insert("1B".into(), 1);
-        roster.insert("2B".into(), 1);
-        roster.insert("3B".into(), 1);
-        roster.insert("SS".into(), 1);
-        roster.insert("LF".into(), 1);
-        roster.insert("CF".into(), 1);
-        roster.insert("RF".into(), 1);
-        roster.insert("UTIL".into(), 1);
-        roster.insert("SP".into(), 5);
-        roster.insert("RP".into(), 6);
-        roster.insert("BE".into(), 6);
-        roster.insert("IL".into(), 5);
-
         LeagueConfig {
             name: "Test League".into(),
             platform: "espn".into(),
@@ -456,7 +441,6 @@ mod tests {
                     "HD".into(), "ERA".into(), "WHIP".into(),
                 ],
             },
-            roster,
             roster_limits: RosterLimits {
                 max_sp: 7,
                 max_rp: 7,
@@ -543,7 +527,7 @@ mod tests {
             make_hitter("Other C", 3.0, vec![Position::Catcher], 15.0),
         ];
 
-        let scarcity = compute_scarcity(&available, &league);
+        let scarcity = compute_scarcity(&available, &test_roster_config());
         let inflation = InflationTracker::new();
         let needs = CategoryNeeds::uniform(0.5);
 
@@ -574,7 +558,7 @@ mod tests {
         let player = make_hitter("Bad C", -2.0, vec![Position::Catcher], 1.0);
         let available = vec![player.clone()];
 
-        let scarcity = compute_scarcity(&available, &league);
+        let scarcity = compute_scarcity(&available, &test_roster_config());
         let inflation = InflationTracker::new();
         let needs = CategoryNeeds::uniform(0.5);
 
@@ -605,7 +589,7 @@ mod tests {
             make_hitter("Other C", 3.0, vec![Position::Catcher], 10.0),
         ];
 
-        let scarcity = compute_scarcity(&available, &league);
+        let scarcity = compute_scarcity(&available, &test_roster_config());
         let inflation = InflationTracker::new(); // rate = 1.0
         let needs = CategoryNeeds::uniform(0.5);
 
@@ -641,7 +625,7 @@ mod tests {
             ));
         }
 
-        let scarcity = compute_scarcity(&available, &league);
+        let scarcity = compute_scarcity(&available, &test_roster_config());
         let mut inflation = InflationTracker::new();
         inflation.inflation_rate = 1.1;
         let needs = CategoryNeeds::uniform(0.5);
@@ -727,7 +711,7 @@ mod tests {
             ));
         }
 
-        let scarcity = compute_scarcity(&available, &league);
+        let scarcity = compute_scarcity(&available, &test_roster_config());
         let inflation = InflationTracker::new();
         let needs = CategoryNeeds::uniform(0.5);
 
@@ -761,7 +745,7 @@ mod tests {
             ));
         }
 
-        let scarcity = compute_scarcity(&available, &league);
+        let scarcity = compute_scarcity(&available, &test_roster_config());
         let inflation = InflationTracker::new();
         let needs = CategoryNeeds::uniform(0.5);
 

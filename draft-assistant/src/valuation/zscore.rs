@@ -748,7 +748,6 @@ mod tests {
                         "WHIP".into(),
                     ],
                 },
-                roster: std::collections::HashMap::new(),
                 roster_limits: RosterLimits {
                     max_sp: 7,
                     max_rp: 7,

@@ -92,15 +92,21 @@ fn draftable_roster_size(roster: &std::collections::HashMap<String, usize>) -> u
 }
 
 /// Format league context line from config for use in LLM prompts.
-pub fn format_league_context(league: &LeagueConfig) -> String {
+pub fn format_league_context(league: &LeagueConfig, roster_config: Option<&std::collections::HashMap<String, usize>>) -> String {
     let scoring = format_scoring_type(&league.scoring_type);
-    let roster_size = draftable_roster_size(&league.roster);
     let batting = league.batting_categories.categories.join(", ");
     let pitching = league.pitching_categories.categories.join(", ");
+    let roster_info = match roster_config {
+        Some(rc) => {
+            let roster_size = draftable_roster_size(rc);
+            format!("{}-player rosters", roster_size)
+        }
+        None => "roster pending (waiting for ESPN connection)".to_string(),
+    };
     format!(
-        "{}-team {}, salary cap ${}, {}-player rosters.\n\
+        "{}-team {}, salary cap ${}, {}.\n\
          Categories: {} (hitting) | {} (pitching)",
-        league.num_teams, scoring, league.salary_cap, roster_size, batting, pitching
+        league.num_teams, scoring, league.salary_cap, roster_info, batting, pitching
     )
 }
 
@@ -112,7 +118,7 @@ pub fn format_league_context(league: &LeagueConfig) -> String {
 ///
 /// When a strategy overview is provided (from the strategy wizard), it is
 /// appended so the LLM understands the user's strategic intent.
-pub fn system_prompt(league: &LeagueConfig, strategy_overview: Option<&str>) -> String {
+pub fn system_prompt(league: &LeagueConfig, roster_config: Option<&std::collections::HashMap<String, usize>>, strategy_overview: Option<&str>) -> String {
     let strategy_section = match strategy_overview {
         Some(overview) if !overview.trim().is_empty() => {
             format!(
@@ -127,7 +133,7 @@ pub fn system_prompt(league: &LeagueConfig, strategy_overview: Option<&str>) -> 
             .to_string(),
     };
 
-    let league_ctx = format_league_context(league);
+    let league_ctx = format_league_context(league, roster_config);
     format!(
         "You are a fantasy baseball auction draft advisor.\n\
          \n\
@@ -1077,7 +1083,6 @@ mod tests {
                     "WHIP".into(),
                 ],
             },
-            roster: test_roster_config(),
             roster_limits: RosterLimits {
                 max_sp: 7,
                 max_rp: 7,
@@ -1200,7 +1205,7 @@ mod tests {
     #[test]
     fn system_prompt_contains_key_elements() {
         let league = test_league_config();
-        let sp = system_prompt(&league, None);
+        let sp = system_prompt(&league, None, None);
         assert!(
             sp.contains("10-team H2H Most Categories"),
             "should mention league format"
@@ -1220,7 +1225,7 @@ mod tests {
     #[test]
     fn system_prompt_includes_strategy_overview() {
         let league = test_league_config();
-        let sp = system_prompt(&league, Some("Target elite closers early, punt saves entirely."));
+        let sp = system_prompt(&league, None, Some("Target elite closers early, punt saves entirely."));
         assert!(
             sp.contains("--- MY DRAFT STRATEGY ---"),
             "should include strategy header"
@@ -1242,7 +1247,7 @@ mod tests {
     #[test]
     fn system_prompt_skips_empty_overview() {
         let league = test_league_config();
-        let sp = system_prompt(&league, Some("   "));
+        let sp = system_prompt(&league, None, Some("   "));
         assert!(
             !sp.contains("MY DRAFT STRATEGY"),
             "should not include strategy header for whitespace-only overview"
@@ -1264,7 +1269,7 @@ mod tests {
         league.pitching_categories.categories =
             vec!["K".into(), "ERA".into(), "WHIP".into()];
 
-        let sp = system_prompt(&league, None);
+        let sp = system_prompt(&league, None, None);
         assert!(sp.contains("12-team"), "should reflect num_teams from config");
         assert!(sp.contains("$300"), "should reflect salary_cap from config");
         assert!(
@@ -1302,7 +1307,7 @@ mod tests {
             player.clone(),
             make_hitter("Similar CF", 8.0, vec![Position::CenterField], 38.0),
         ];
-        let scarcity = compute_scarcity(&available, &league);
+        let scarcity = compute_scarcity(&available, &test_roster_config());
         let draft_state = create_test_draft_state();
         let inflation = InflationTracker::new();
 
@@ -1363,7 +1368,7 @@ mod tests {
         let needs = CategoryNeeds::uniform(0.5);
         let league = test_league_config();
         let available = vec![player.clone()];
-        let scarcity = compute_scarcity(&available, &league);
+        let scarcity = compute_scarcity(&available, &test_roster_config());
         let draft_state = create_test_draft_state();
         let inflation = InflationTracker::new();
 
@@ -1396,7 +1401,7 @@ mod tests {
             make_hitter("H2", 8.0, vec![Position::SecondBase], 35.0),
             make_pitcher("P1", 7.0, PitcherType::SP, 30.0),
         ];
-        let scarcity = compute_scarcity(&available, &league);
+        let scarcity = compute_scarcity(&available, &test_roster_config());
         let draft_state = create_test_draft_state();
         let inflation = InflationTracker::new();
 
@@ -1446,7 +1451,7 @@ mod tests {
         let needs = CategoryNeeds::uniform(0.5);
         let league = test_league_config();
         let available = vec![make_hitter("H1", 10.0, vec![Position::FirstBase], 40.0)];
-        let scarcity = compute_scarcity(&available, &league);
+        let scarcity = compute_scarcity(&available, &test_roster_config());
         let mut draft_state = create_test_draft_state();
 
         // Record a pick so Team 2 has spent money
@@ -1805,7 +1810,7 @@ mod tests {
         let needs = CategoryNeeds::uniform(0.5);
         let league = test_league_config();
         let available = vec![player.clone()];
-        let scarcity = compute_scarcity(&available, &league);
+        let scarcity = compute_scarcity(&available, &test_roster_config());
         let draft_state = create_test_draft_state();
         let inflation = InflationTracker::new();
         let budget = test_budget_context();

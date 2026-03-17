@@ -105,7 +105,24 @@ impl ScarcityPanel {
             .take(visible_rows.max(1))
             .map(|entry| {
                 let is_nominated =
-                    nominated_position.map_or(false, |pos| entry.position == *pos);
+                    nominated_position.map_or(false, |pos| {
+                        if entry.position == *pos {
+                            return true;
+                        }
+                        // Combo-aware: concrete nominated pos highlights combo entries
+                        if entry.position.is_combo_slot()
+                            && entry.position.accepted_positions().contains(pos)
+                        {
+                            return true;
+                        }
+                        // Reverse: combo nominated pos highlights concrete entries
+                        if pos.is_combo_slot()
+                            && pos.accepted_positions().contains(&entry.position)
+                        {
+                            return true;
+                        }
+                        false
+                    });
                 format_scarcity_entry(entry, is_nominated)
             })
             .collect();

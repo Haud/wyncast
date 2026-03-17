@@ -16,7 +16,29 @@ use crate::valuation::analysis::CategoryNeeds;
 use crate::valuation::auction::InflationTracker;
 use crate::valuation::scarcity::compute_scarcity;
 
+use std::collections::HashMap;
+
 use super::AppState;
+
+/// Infer the roster configuration from the ESPN draft board grid.
+///
+/// Each team in the draft board has a set of roster slots (e.g. "C", "1B",
+/// "OF", "MI", "SP", "BE"). We count the slots from the first team to
+/// build the roster config HashMap.
+fn infer_roster_config(board: &DraftBoardData) -> Option<HashMap<String, usize>> {
+    let team = board.teams.first()?;
+    let mut config: HashMap<String, usize> = HashMap::new();
+    for slot in &team.slots {
+        if !slot.roster_slot.is_empty() {
+            *config.entry(slot.roster_slot.clone()).or_insert(0) += 1;
+        }
+    }
+    if config.is_empty() {
+        None
+    } else {
+        Some(config)
+    }
+}
 
 /// Handle an incoming WebSocket message (JSON from the extension).
 pub(super) async fn handle_ws_message(
@@ -96,19 +118,33 @@ pub(super) async fn handle_full_state_sync(
     // unchanged.
     let saved_nomination = state.draft_state.current_nomination.clone();
 
+    // Infer roster config from the draft board if we haven't yet.
+    if state.roster_config.is_none() {
+        if let Some(ref board) = ext_payload.draft_board {
+            if let Some(inferred) = infer_roster_config(board) {
+                info!(
+                    "Inferred roster config from ESPN draft board: {:?}",
+                    inferred
+                );
+                state.apply_roster_config(inferred);
+            }
+        }
+    }
+
     // Reset in-memory draft state so the snapshot is applied from scratch.
     // Preserve salary_cap and roster_config (stored inside DraftState).
+    let roster = state.roster_config.clone().unwrap_or_else(AppState::default_roster_config);
     state.draft_state = DraftState::new(
         state.config.league.salary_cap,
-        &state.config.league.roster,
+        &roster,
     );
 
     // Reset valuation pool and derived state so they're rebuilt cleanly
     // after all snapshot picks are applied.
     state.available_players =
-        valuation::compute_initial(&state.all_projections, &state.config)
+        valuation::compute_initial(&state.all_projections, &state.config, &roster)
             .unwrap_or_default();
-    state.scarcity = compute_scarcity(&state.available_players, &state.config.league);
+    state.scarcity = compute_scarcity(&state.available_players, &roster);
     state.inflation = InflationTracker::new();
     state.category_needs = CategoryNeeds::default();
 
@@ -139,7 +175,8 @@ pub(super) async fn handle_full_state_sync(
             &state.draft_state,
             &state.config.league,
         );
-        state.scarcity = compute_scarcity(&state.available_players, &state.config.league);
+        let roster = state.roster_config.clone().unwrap_or_else(AppState::default_roster_config);
+        state.scarcity = compute_scarcity(&state.available_players, &roster);
     } else {
         info!(
             "FULL_STATE_SYNC: grid data unavailable, requesting keyframe retry"
@@ -280,15 +317,16 @@ pub(super) async fn handle_state_update(
                 state.draft_id = new_draft_id.clone();
                 state.espn_draft_id = Some(ext_draft_id.clone());
                 // Reset in-memory draft state for the new draft
+                let roster = state.roster_config.clone().unwrap_or_else(AppState::default_roster_config);
                 state.draft_state = DraftState::new(
                     state.config.league.salary_cap,
-                    &state.config.league.roster,
+                    &roster,
                 );
                 state.available_players =
-                    valuation::compute_initial(&state.all_projections, &state.config)
+                    valuation::compute_initial(&state.all_projections, &state.config, &roster)
                         .unwrap_or_default();
                 state.scarcity =
-                    compute_scarcity(&state.available_players, &state.config.league);
+                    compute_scarcity(&state.available_players, &roster);
                 state.inflation = InflationTracker::new();
                 state.previous_extension_state = None;
                 // Clear LLM state so stale analysis from the previous draft
@@ -616,7 +654,7 @@ fn build_state_from_grid(
         let mut team = TeamState {
             team_id: resolved_team_id,
             team_name: db_team.team_name.clone(),
-            roster: Roster::new(&state.config.league.roster),
+            roster: Roster::new(&state.roster_config.clone().unwrap_or_else(AppState::default_roster_config)),
             budget_spent: spent,
             budget_remaining: salary_cap.saturating_sub(spent),
             // NOTE: These grid-computed budgets are provisional. reconcile_budgets()
@@ -791,4 +829,72 @@ fn build_state_from_grid(
     }
 
     true
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::{DraftBoardSlot, DraftBoardTeam};
+
+    #[test]
+    fn infer_roster_config_from_board() {
+        let board = DraftBoardData {
+            teams: vec![DraftBoardTeam {
+                team_id: "1".into(),
+                team_name: "Team 1".into(),
+                column: 0,
+                is_my_team: true,
+                is_on_the_clock: false,
+                slots: vec![
+                    DraftBoardSlot { row: 0, roster_slot: "C".into(), filled: false, first_name: None, last_name: None, pro_team: None, natural_position: None, price: None },
+                    DraftBoardSlot { row: 1, roster_slot: "1B".into(), filled: false, first_name: None, last_name: None, pro_team: None, natural_position: None, price: None },
+                    DraftBoardSlot { row: 2, roster_slot: "OF".into(), filled: false, first_name: None, last_name: None, pro_team: None, natural_position: None, price: None },
+                    DraftBoardSlot { row: 3, roster_slot: "OF".into(), filled: false, first_name: None, last_name: None, pro_team: None, natural_position: None, price: None },
+                    DraftBoardSlot { row: 4, roster_slot: "OF".into(), filled: false, first_name: None, last_name: None, pro_team: None, natural_position: None, price: None },
+                    DraftBoardSlot { row: 5, roster_slot: "MI".into(), filled: false, first_name: None, last_name: None, pro_team: None, natural_position: None, price: None },
+                    DraftBoardSlot { row: 6, roster_slot: "SP".into(), filled: false, first_name: None, last_name: None, pro_team: None, natural_position: None, price: None },
+                    DraftBoardSlot { row: 7, roster_slot: "SP".into(), filled: false, first_name: None, last_name: None, pro_team: None, natural_position: None, price: None },
+                    DraftBoardSlot { row: 8, roster_slot: "BE".into(), filled: false, first_name: None, last_name: None, pro_team: None, natural_position: None, price: None },
+                ],
+            }],
+            on_the_clock_team: None,
+        };
+
+        let config = infer_roster_config(&board).expect("should infer roster config");
+        assert_eq!(config.get("C"), Some(&1));
+        assert_eq!(config.get("1B"), Some(&1));
+        assert_eq!(config.get("OF"), Some(&3));
+        assert_eq!(config.get("MI"), Some(&1));
+        assert_eq!(config.get("SP"), Some(&2));
+        assert_eq!(config.get("BE"), Some(&1));
+    }
+
+    #[test]
+    fn infer_roster_config_empty_board() {
+        let board = DraftBoardData {
+            teams: vec![],
+            on_the_clock_team: None,
+        };
+        assert!(infer_roster_config(&board).is_none());
+    }
+
+    #[test]
+    fn infer_roster_config_empty_slots() {
+        let board = DraftBoardData {
+            teams: vec![DraftBoardTeam {
+                team_id: "1".into(),
+                team_name: "Team 1".into(),
+                column: 0,
+                is_my_team: false,
+                is_on_the_clock: false,
+                slots: vec![],
+            }],
+            on_the_clock_team: None,
+        };
+        assert!(infer_roster_config(&board).is_none());
+    }
 }
