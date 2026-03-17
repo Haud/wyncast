@@ -92,21 +92,20 @@ impl DraftState {
         }
     }
 
-    /// Identify the user's team by matching a team name from the extension.
+    /// Identify the user's team by matching the ESPN team ID.
     ///
-    /// The ESPN extension's `identifyMyTeam()` returns a team name (not an ID).
     /// After teams are registered via `reconcile_budgets()`, this method
-    /// finds and sets `my_team_idx` by matching the name.
-    pub fn set_my_team_by_name(&mut self, team_name: &str) {
-        if let Some(idx) = self.teams.iter().position(|t| t.team_name == team_name) {
+    /// finds and sets `my_team_idx` by matching the team_id.
+    pub fn set_my_team_by_id(&mut self, team_id: &str) {
+        if let Some(idx) = self.teams.iter().position(|t| t.team_id == team_id) {
             if self.my_team_idx != Some(idx) {
-                info!("Setting my_team_idx to {} (team: '{}')", idx, team_name);
+                info!("Setting my_team_idx to {} (team_id: '{}')", idx, team_id);
             }
             self.my_team_idx = Some(idx);
         } else {
             warn!(
-                "Could not find team matching '{}' — my_team_idx remains at {:?}",
-                team_name, self.my_team_idx
+                "Could not find team with team_id '{}' — my_team_idx remains at {:?}",
+                team_id, self.my_team_idx
             );
         }
     }
@@ -118,7 +117,7 @@ impl DraftState {
     ///
     /// Deduplication: if the same player (by identity) has already been
     /// recorded, the call is a no-op. Player identity is determined by
-    /// (player_name, team_name) — this is stable even when ESPN's virtualized
+    /// (player_name, team_id) — this is stable even when ESPN's virtualized
     /// pick list causes pick_number renumbering. Using pick_number alone for
     /// dedup would cause new picks to be silently dropped when their number
     /// had been previously claimed by a renumbered existing pick.
@@ -138,7 +137,7 @@ impl DraftState {
         }
 
         // Skip if this player is already recorded (deduplication by identity).
-        // Player identity = (player_name, team_name), which is stable across
+        // Player identity = (player_name, team_id), which is stable across
         // ESPN's virtualized pick list renumbering. Also checks ESPN player ID
         // when both sides have one.
         let dominated_by_identity = self.picks.iter().any(|p| {
@@ -150,24 +149,25 @@ impl DraftState {
                     return new_id == existing_id;
                 }
             }
-            // Fall back to (player_name, team_name) identity
-            p.player_name == pick.player_name && p.team_name == pick.team_name
+            // Fall back to (player_name, team_id) identity
+            p.player_name == pick.player_name && p.team_id == pick.team_id
         });
         if dominated_by_identity {
             return;
         }
 
-        // Look up team by team_id first; fall back to team_name when the ID
-        // is empty or doesn't match (DOM scraping uses team names as IDs).
-        let team_idx = self
-            .teams
-            .iter()
-            .position(|t| !pick.team_id.is_empty() && t.team_id == pick.team_id)
-            .or_else(|| {
-                self.teams
-                    .iter()
-                    .position(|t| !pick.team_name.is_empty() && t.team_name == pick.team_name)
-            });
+        // Look up team by team_id.
+        let team_idx = if pick.team_id.is_empty() {
+            warn!(
+                "Pick for '{}' has empty team_id, cannot assign to team",
+                pick.player_name
+            );
+            None
+        } else {
+            self.teams
+                .iter()
+                .position(|t| t.team_id == pick.team_id)
+        };
 
         if let Some(team) = team_idx.map(|i| &mut self.teams[i]) {
             team.budget_spent += pick.price;
@@ -196,6 +196,10 @@ impl DraftState {
         // after mid-session rejoins.
         let mut pick = pick;
         pick.pick_number = self.picks.len() as u32 + 1;
+        // Normalize team_id to the resolved team's canonical ID.
+        if let Some(idx) = team_idx {
+            pick.team_id = self.teams[idx].team_id.clone();
+        }
         self.picks.push(pick);
     }
 
@@ -241,12 +245,19 @@ impl DraftState {
 
         let mut budgets_changed = false;
         for budget_data in espn_budgets {
-            // Match by team_name since the pick train names are the canonical identifiers
-            if let Some(team) = self
-                .teams
-                .iter_mut()
-                .find(|t| t.team_name == budget_data.team_name)
-            {
+            // Match by team_id — the authoritative ESPN team identifier
+            let team = if !budget_data.team_id.is_empty() {
+                self.teams
+                    .iter_mut()
+                    .find(|t| t.team_id == budget_data.team_id)
+            } else {
+                warn!(
+                    "Budget data for '{}' has empty team_id, skipping",
+                    budget_data.team_name
+                );
+                None
+            };
+            if let Some(team) = team {
                 let new_remaining = budget_data.budget;
                 let new_spent = self.salary_cap.saturating_sub(budget_data.budget);
                 if team.budget_remaining != new_remaining || team.budget_spent != new_spent {
@@ -474,7 +485,7 @@ pub fn compute_state_diff(
 
     // Build a set of player identities from the previous snapshot.
     // Identity uses player_id (ESPN player ID) when non-empty, falling back
-    // to (player_name, team_name). This matches record_pick's dedup criteria,
+    // to (player_name, team_id). This matches record_pick's dedup criteria,
     // so compute_state_diff never emits a pick that record_pick would reject.
     let prev_player_identities: std::collections::HashSet<String> = previous
         .as_ref()
@@ -485,7 +496,7 @@ pub fn compute_state_diff(
                     if !pk.player_id.is_empty() {
                         pk.player_id.clone()
                     } else {
-                        format!("{}|{}", pk.player_name, pk.team_name)
+                        format!("{}|{}", pk.player_name, pk.team_id)
                     }
                 })
                 .collect()
@@ -496,7 +507,7 @@ pub fn compute_state_diff(
         let identity_key = if !pick_payload.player_id.is_empty() {
             pick_payload.player_id.clone()
         } else {
-            format!("{}|{}", pick_payload.player_name, pick_payload.team_name)
+            format!("{}|{}", pick_payload.player_name, pick_payload.team_id)
         };
         let dominated_by_identity = prev_player_identities.contains(&identity_key);
 
@@ -632,7 +643,7 @@ mod tests {
     fn create_test_state() -> DraftState {
         let mut state = DraftState::new(260, &test_roster_config());
         state.reconcile_budgets(&test_espn_budgets());
-        state.set_my_team_by_name("Team 1");
+        state.set_my_team_by_id("1");
         state
     }
 
@@ -665,10 +676,10 @@ mod tests {
     }
 
     #[test]
-    fn set_my_team_by_name() {
+    fn set_my_team_by_id() {
         let mut state = DraftState::new(260, &test_roster_config());
         state.reconcile_budgets(&test_espn_budgets());
-        state.set_my_team_by_name("Team 3");
+        state.set_my_team_by_id("3");
         let my = state
             .my_team()
             .expect("my_team should be Some after reconcile");
@@ -855,7 +866,7 @@ mod tests {
         // Create a state with teams registered and restore from picks
         let mut state = DraftState::new(260, &roster_config);
         state.reconcile_budgets(&test_espn_budgets());
-        state.set_my_team_by_name("Team 1");
+        state.set_my_team_by_id("1");
         state.restore_from_picks(picks);
 
         assert_eq!(state.pick_count, 3);
@@ -872,7 +883,7 @@ mod tests {
         let roster_config = test_roster_config();
         let mut state = DraftState::new(260, &roster_config);
         state.reconcile_budgets(&test_espn_budgets());
-        state.set_my_team_by_name("Team 1");
+        state.set_my_team_by_id("1");
 
         // Record some picks first
         state.record_pick(DraftPick {
@@ -1832,11 +1843,12 @@ mod tests {
         let roster_config = test_roster_config();
         let mut state = DraftState::new(260, &roster_config);
 
-        // Simulate crash recovery: store picks before teams are registered
+        // Simulate crash recovery: store picks before teams are registered.
+        // Picks use ESPN team IDs (as resolved by the extension).
         let recovery_picks = vec![
             DraftPick {
                 pick_number: 1,
-                team_id: "Team Alpha".to_string(),
+                team_id: "1".to_string(),
                 team_name: "Team Alpha".to_string(),
                 player_name: "Shohei Ohtani".to_string(),
                 position: "DH".to_string(),
@@ -1847,7 +1859,7 @@ mod tests {
             },
             DraftPick {
                 pick_number: 2,
-                team_id: "Team Beta".to_string(),
+                team_id: "2".to_string(),
                 team_name: "Team Beta".to_string(),
                 player_name: "Aaron Judge".to_string(),
                 position: "CF".to_string(),
@@ -1864,7 +1876,7 @@ mod tests {
         // process_new_picks would call record_pick for each.
         state.record_pick(DraftPick {
             pick_number: 1,
-            team_id: "Team Alpha".to_string(),
+            team_id: "1".to_string(),
             team_name: "Team Alpha".to_string(),
             player_name: "Shohei Ohtani".to_string(),
             position: "DH".to_string(),
@@ -1875,7 +1887,7 @@ mod tests {
         });
         state.record_pick(DraftPick {
             pick_number: 2,
-            team_id: "Team Beta".to_string(),
+            team_id: "2".to_string(),
             team_name: "Team Beta".to_string(),
             player_name: "Aaron Judge".to_string(),
             position: "CF".to_string(),
@@ -1887,7 +1899,7 @@ mod tests {
         // Also a new pick
         state.record_pick(DraftPick {
             pick_number: 3,
-            team_id: "Team Alpha".to_string(),
+            team_id: "1".to_string(),
             team_name: "Team Alpha".to_string(),
             player_name: "Mookie Betts".to_string(),
             position: "SS".to_string(),
@@ -1916,7 +1928,7 @@ mod tests {
             },
         ];
         state.reconcile_budgets(&budgets);
-        state.set_my_team_by_name("Team Alpha");
+        state.set_my_team_by_id("1");
 
         // Team Alpha should have exactly 2 players (Ohtani + Betts), not duplicates
         let my_team = state.my_team().unwrap();

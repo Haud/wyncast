@@ -351,12 +351,36 @@ pub(super) async fn handle_state_update(
     };
     let teams_just_registered = reconcile.teams_registered;
 
-    // Set the user's team from the extension's myTeamId.
-    // Must happen after reconcile_budgets so teams are registered.
+    // Set the user's team from ESPN team ID.
+    // Priority: grid isMyTeam flag -> extension myTeamId -> pick history is_my_pick
     if !state.draft_state.teams.is_empty() {
-        if let Some(ref my_team_name) = ext_payload.my_team_id {
-            if !my_team_name.is_empty() {
-                state.draft_state.set_my_team_by_name(my_team_name);
+        // Prefer draft board's isMyTeam — resolve to team_id via board data
+        let my_team_id_from_grid = ext_payload
+            .draft_board
+            .as_ref()
+            .and_then(|db| {
+                db.teams
+                    .iter()
+                    .find(|t| t.is_my_team)
+                    .and_then(|t| if t.team_id.is_empty() { None } else { Some(t.team_id.clone()) })
+            });
+
+        if let Some(ref team_id) = my_team_id_from_grid {
+            state.draft_state.set_my_team_by_id(team_id);
+        } else if let Some(ref my_team_id) = ext_payload.my_team_id {
+            if !my_team_id.is_empty() {
+                state.draft_state.set_my_team_by_id(my_team_id);
+            }
+        } else {
+            // Fallback: use is_my_pick from pick history
+            let my_team_id_from_history = ext_payload.pick_history.as_ref().and_then(|history| {
+                history.iter().find(|p| p.is_my_pick).and_then(|p| {
+                    if p.team_id.is_empty() { None } else { Some(p.team_id.clone()) }
+                })
+            });
+            if let Some(ref team_id) = my_team_id_from_history {
+                info!("Identified my team from pick history is_my_pick fallback: team_id={}", team_id);
+                state.draft_state.set_my_team_by_id(team_id);
             }
         }
     }
@@ -579,8 +603,18 @@ fn build_state_from_grid(
             .filter_map(|s| s.price)
             .sum();
 
+        // Resolve team ID: prefer the ID from the draft board (sent by extension),
+        // fall back to the mapping lookup.
+        let resolved_team_id = if !db_team.team_id.is_empty() {
+            db_team.team_id.clone()
+        } else if let Some(id) = team_id_map.get(db_team.team_name.as_str()) {
+            id.to_string()
+        } else {
+            String::new()
+        };
+
         let mut team = TeamState {
-            team_id: String::new(),
+            team_id: resolved_team_id,
             team_name: db_team.team_name.clone(),
             roster: Roster::new(&state.config.league.roster),
             budget_spent: spent,
@@ -589,11 +623,6 @@ fn build_state_from_grid(
             // in handle_state_update() will overwrite them with ESPN's authoritative
             // pick-train values when available, ensuring consistency.
         };
-
-        // Apply team ID from mapping
-        if let Some(id) = team_id_map.get(db_team.team_name.as_str()) {
-            team.team_id = id.to_string();
-        }
 
         // Fill roster slots from the grid
         for slot in &db_team.slots {
@@ -656,9 +685,19 @@ fn build_state_from_grid(
                 .cloned()
                 .unwrap_or_default();
 
+            // Resolve team ID: prefer the ID from the pick history entry (sent
+            // by extension), fall back to the mapping lookup.
+            let resolved_team_id = if !entry.team_id.is_empty() {
+                entry.team_id.clone()
+            } else if let Some(id) = team_id_map.get(entry.team_name.as_str()) {
+                id.to_string()
+            } else {
+                String::new()
+            };
+
             let pick = DraftPick {
                 pick_number: entry.pick_number,
-                team_id: String::new(), // Will be resolved via team_name
+                team_id: resolved_team_id,
                 team_name: entry.team_name.clone(),
                 player_name: entry.player_name.clone(),
                 position,
@@ -671,12 +710,6 @@ fn build_state_from_grid(
                 eligible_slots,
                 assigned_slot: None, // Pick history doesn't have assigned slot
             };
-
-            // Apply team ID from mapping
-            let mut pick = pick;
-            if let Some(id) = team_id_map.get(entry.team_name.as_str()) {
-                pick.team_id = id.to_string();
-            }
 
             // Add directly to picks list (bypassing record_pick since rosters
             // are already built from the grid). We still need the picks list
@@ -709,10 +742,14 @@ fn build_state_from_grid(
                     .unwrap_or(&slot.roster_slot)
                     .to_string();
 
-                let team_id = team_id_map
-                    .get(db_team.team_name.as_str())
-                    .map(|id| id.to_string())
-                    .unwrap_or_default();
+                let team_id = if !db_team.team_id.is_empty() {
+                    db_team.team_id.clone()
+                } else {
+                    team_id_map
+                        .get(db_team.team_name.as_str())
+                        .map(|id| id.to_string())
+                        .unwrap_or_default()
+                };
 
                 state.draft_state.picks.push(DraftPick {
                     pick_number: pick_num,

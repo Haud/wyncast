@@ -171,6 +171,8 @@ pub struct DraftBoardData {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DraftBoardTeam {
+    #[serde(default)]
+    pub team_id: String,
     pub team_name: String,
     pub column: u16,
     pub is_my_team: bool,
@@ -215,6 +217,8 @@ pub struct PickHistoryEntry {
     pub espn_player_id: String,
     #[serde(default)]
     pub eligible_positions: Vec<String>,
+    #[serde(default)]
+    pub team_id: String,
     pub team_name: String,
     pub price: u32,
     #[serde(default)]

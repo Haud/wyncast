@@ -1038,7 +1038,7 @@ mod tests {
 
         let mut draft_state = DraftState::new(260, &roster_config);
         draft_state.reconcile_budgets(&espn_budgets);
-        draft_state.set_my_team_by_name("Team 1");
+        draft_state.set_my_team_by_id("1");
 
         // Team 1 drafts a player for $50
         draft_state.record_pick(DraftPick {
