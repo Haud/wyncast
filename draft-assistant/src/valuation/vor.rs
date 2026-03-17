@@ -11,33 +11,16 @@ use crate::valuation::projections::PitcherType;
 use crate::valuation::zscore::PlayerValuation;
 
 // ---------------------------------------------------------------------------
-// Roster key -> Position mapping
-// ---------------------------------------------------------------------------
-
-/// Map a roster config key (e.g. "C", "1B", "SP") to the corresponding
-/// `Position` enum variant. Returns `None` for keys that do not represent
-/// draftable starter positions (e.g. "BE", "IL").
-fn roster_key_to_position(key: &str) -> Option<Position> {
-    Position::from_str_pos(key)
-}
-
-/// Positions that represent dedicated hitter roster slots (excluding UTIL).
-const HITTER_POSITION_SLOTS: &[Position] = &[
-    Position::Catcher,
-    Position::FirstBase,
-    Position::SecondBase,
-    Position::ThirdBase,
-    Position::ShortStop,
-    Position::LeftField,
-    Position::CenterField,
-    Position::RightField,
-];
-
-// ---------------------------------------------------------------------------
 // Replacement level computation
 // ---------------------------------------------------------------------------
 
 /// Determine the replacement-level z-score for every relevant position.
+///
+/// Derives hitter and pitcher positions dynamically from the roster config
+/// keys rather than using hardcoded position lists. Combo slots (OF, MI, CI)
+/// are expanded to their constituent concrete positions for player eligibility
+/// matching, and their slot counts are added to the total starter pool.
+/// Generic pitcher (P) slots are split evenly between SP and RP pools.
 ///
 /// Algorithm:
 /// 1. For each dedicated hitter position, find the (N+1)th best player at that
@@ -55,19 +38,38 @@ pub fn determine_replacement_levels(
 ) -> HashMap<Position, f64> {
     let mut replacement_levels: HashMap<Position, f64> = HashMap::new();
 
-    // ---- Hitter replacement levels ----
+    // ---- Derive hitter positions from roster config ----
 
-    // Determine how many starters exist per position from the roster config.
+    // Build position_slots: concrete hitter positions -> total slots per team.
+    // Combo slots (OF, MI, CI) are expanded: their slot counts are added to
+    // each constituent position for player eligibility matching purposes,
+    // and also counted in the total dedicated slots for UTIL calculation.
     let mut position_slots: HashMap<Position, usize> = HashMap::new();
     let mut util_slots: usize = 0;
+    let mut combo_hitter_slots: usize = 0; // total combo slots per team (for UTIL calc)
 
     for (key, &count) in roster_config {
-        if let Some(pos) = roster_key_to_position(key) {
+        if let Some(pos) = Position::from_roster_slot_str(key) {
             if pos == Position::Utility {
                 util_slots = count;
-            } else if HITTER_POSITION_SLOTS.contains(&pos) {
-                position_slots.insert(pos, count);
+            } else if pos == Position::DesignatedHitter {
+                // DH doesn't have dedicated replacement-level tracking;
+                // DH-eligible hitters compete via UTIL.
+                // But count DH slots in the total for UTIL calculation.
+                combo_hitter_slots += count;
+            } else if pos.is_combo_slot() && pos.is_hitter() {
+                // Combo hitter slots (OF, MI, CI): expand to constituent positions.
+                // These slots accept any of their constituent positions, so they
+                // contribute to the total hitter pool but we track replacement
+                // levels at the concrete position level.
+                combo_hitter_slots += count;
+                for concrete in pos.accepted_positions() {
+                    *position_slots.entry(concrete).or_insert(0) += count;
+                }
+            } else if pos.is_hitter() && !pos.is_meta_slot() {
+                *position_slots.entry(pos).or_insert(0) += count;
             }
+            // Skip meta slots (BE, IL) and pitcher positions (handled below)
         }
     }
 
@@ -82,9 +84,12 @@ pub fn determine_replacement_levels(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
+    // Collect the set of hitter positions that have slots.
+    let hitter_positions: Vec<Position> = position_slots.keys().copied().collect();
+
     // For each dedicated hitter position, sort eligible players by zscore and
     // find the replacement level (N*num_teams + 1)th player.
-    for &pos in HITTER_POSITION_SLOTS {
+    for &pos in &hitter_positions {
         let slots = position_slots.get(&pos).copied().unwrap_or(0);
         if slots == 0 {
             continue;
@@ -115,9 +120,21 @@ pub fn determine_replacement_levels(
     }
 
     // Overall hitter replacement level with UTIL consideration.
-    // Total hitter starters = sum of all dedicated slots + UTIL slots, all * num_teams.
-    let dedicated_per_team: usize = position_slots.values().sum();
-    let total_hitter_starters = (dedicated_per_team + util_slots) * num_teams;
+    // Total hitter starters = sum of all concrete position slots + combo slots + DH + UTIL.
+    // Note: concrete position_slots already includes combo slot expansions, so we need
+    // to compute the raw (non-expanded) dedicated count.
+    let raw_dedicated_per_team: usize = roster_config
+        .iter()
+        .filter_map(|(key, &count)| {
+            let pos = Position::from_roster_slot_str(key)?;
+            if pos.is_hitter() && !pos.is_meta_slot() && pos != Position::Utility {
+                Some(count)
+            } else {
+                None
+            }
+        })
+        .sum();
+    let total_hitter_starters = (raw_dedicated_per_team + util_slots) * num_teams;
 
     let overall_hitter_repl = if hitters.len() > total_hitter_starters {
         hitters[total_hitter_starters].total_zscore
@@ -129,7 +146,7 @@ pub fn determine_replacement_levels(
 
     // For each hitter position, take the max of the position-specific
     // replacement and the overall hitter replacement.
-    for &pos in HITTER_POSITION_SLOTS {
+    for &pos in &hitter_positions {
         if let Some(pos_repl) = replacement_levels.get(&pos).copied() {
             let effective = pos_repl.max(overall_hitter_repl);
             replacement_levels.insert(pos, effective);
@@ -144,6 +161,13 @@ pub fn determine_replacement_levels(
 
     let sp_slots = roster_config.get("SP").copied().unwrap_or(0);
     let rp_slots = roster_config.get("RP").copied().unwrap_or(0);
+    let p_slots = roster_config.get("P").copied().unwrap_or(0);
+
+    // Generic P slots are added to both SP and RP pools (pitchers of either
+    // type can fill them, so the replacement level should account for the
+    // expanded pool).
+    let effective_sp_slots = sp_slots + p_slots;
+    let effective_rp_slots = rp_slots + p_slots;
 
     // SP replacement level
     let mut sp_zscores: Vec<f64> = players
@@ -153,7 +177,7 @@ pub fn determine_replacement_levels(
         .collect();
     sp_zscores.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
 
-    let sp_starters = sp_slots * num_teams;
+    let sp_starters = effective_sp_slots * num_teams;
     let sp_repl = if sp_zscores.len() > sp_starters {
         sp_zscores[sp_starters]
     } else if let Some(&last) = sp_zscores.last() {
@@ -171,7 +195,7 @@ pub fn determine_replacement_levels(
         .collect();
     rp_zscores.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
 
-    let rp_starters = rp_slots * num_teams;
+    let rp_starters = effective_rp_slots * num_teams;
     let rp_repl = if rp_zscores.len() > rp_starters {
         rp_zscores[rp_starters]
     } else if let Some(&last) = rp_zscores.last() {
@@ -218,10 +242,17 @@ pub fn compute_vor(
         let mut best_pos: Option<Position> = None;
 
         // If the player has explicit position data, use it. Otherwise, try
-        // all hitter positions so that players without ESPN position overlay
-        // still get a meaningful positional assignment and VOR.
+        // all hitter positions that have replacement levels so that players
+        // without ESPN position overlay still get a meaningful positional
+        // assignment and VOR.
+        let fallback_positions: Vec<Position>;
         let candidate_positions: &[Position] = if player.positions.is_empty() {
-            HITTER_POSITION_SLOTS
+            fallback_positions = replacement_levels
+                .keys()
+                .filter(|p| p.is_hitter() && !p.is_meta_slot())
+                .copied()
+                .collect();
+            &fallback_positions
         } else {
             &player.positions
         };
