@@ -30,13 +30,6 @@ if ($UserPath -and $UserPath.Split(';') -contains $BinDir) {
     Write-Host "     Restart your terminal for PATH changes to take effect" -ForegroundColor Yellow
 }
 
-# --- Copy projection data ---
-$ProjectionsDir = Join-Path $DataDir "projections"
-New-Item -ItemType Directory -Force -Path $ProjectionsDir | Out-Null
-Copy-Item "$ScriptDir\projections\hitters.csv" "$ProjectionsDir\hitters.csv" -Force
-Copy-Item "$ScriptDir\projections\pitchers.csv" "$ProjectionsDir\pitchers.csv" -Force
-Write-Host "[OK] Installed projection data to $ProjectionsDir" -ForegroundColor Green
-
 # --- Copy extensions ---
 $ExtensionsDir = Join-Path $DataDir "extensions"
 $SourceExtensions = Join-Path $ScriptDir "extensions"

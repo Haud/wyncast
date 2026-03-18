@@ -2,7 +2,7 @@
 """Build & package orchestrator for draft-assistant.
 
 Produces a distributable archive (.tar.gz or .zip) containing the binary,
-projection data, browser extensions, and installer script.
+browser extensions, and installer script.
 
 Cross-platform: works on Windows, macOS, and Linux.
 Requires: Python 3.6+, stdlib only (no third-party packages).
@@ -106,13 +106,6 @@ def stage_files(project_dir, dist_dir, target, is_windows, skip_extensions):
     bin_dir.mkdir(parents=True)
     src_bin = project_dir / "target" / target / "release" / ("wyncast" + exe_suffix)
     shutil.copy2(str(src_bin), str(bin_dir / ("wyncast" + exe_suffix)))
-
-    # Projection data
-    proj_dir = dist_dir / "projections"
-    proj_dir.mkdir(parents=True)
-    src_proj = project_dir / "projections"
-    shutil.copy2(str(src_proj / "hitters.csv"), str(proj_dir / "hitters.csv"))
-    shutil.copy2(str(src_proj / "pitchers.csv"), str(proj_dir / "pitchers.csv"))
 
     # Extensions
     if not skip_extensions:
