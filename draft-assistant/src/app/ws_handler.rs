@@ -270,6 +270,18 @@ pub(super) async fn handle_full_state_sync(
     // UI snapshots.
     handle_state_update(state, ext_payload, ui_tx).await;
 
+    // A grid-based rebuild resets and reconstructs ALL state (teams, picks,
+    // rosters, budgets, inflation, scarcity). Always push a snapshot to the
+    // TUI so that everything — including hitting/pitching budget split — is
+    // up to date. handle_state_update may or may not have sent one depending
+    // on its has_changes guard, but a full rebuild is always a "changed" event.
+    if grid_based_rebuild {
+        let snapshot = state.build_snapshot();
+        let _ = ui_tx
+            .send(UiUpdate::StateSnapshot(Box::new(snapshot)))
+            .await;
+    }
+
     // Restore current_nomination after the draft state reset if it wasn't set
     // by handle_state_update (happens when bid/bidder also didn't change, so
     // neither nomination_changed nor bid_updated fired).
