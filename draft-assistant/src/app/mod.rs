@@ -247,6 +247,11 @@ impl AppState {
     }
 
     /// Compute initial valuations if both projections and roster config are available.
+    ///
+    /// After computing the full player pool, removes any players that have
+    /// already been drafted (present in `draft_state.picks`). This handles
+    /// the case where projections arrive after picks have been recorded
+    /// (e.g. backend restart mid-draft).
     fn try_compute_valuations(&mut self) {
         let (Some(projections), Some(roster)) = (&self.all_projections, &self.roster_config) else {
             return;
@@ -257,6 +262,24 @@ impl AppState {
             roster,
         )
         .unwrap_or_default();
+
+        // Remove already-drafted players from the available pool
+        if !self.draft_state.picks.is_empty() {
+            let drafted_names: std::collections::HashSet<&str> = self
+                .draft_state
+                .picks
+                .iter()
+                .map(|p| p.player_name.as_str())
+                .collect();
+            self.available_players
+                .retain(|p| !drafted_names.contains(p.name.as_str()));
+            info!(
+                "Filtered {} drafted players from available pool ({} remaining)",
+                drafted_names.len(),
+                self.available_players.len()
+            );
+        }
+
         self.scarcity = compute_scarcity(&self.available_players, roster);
     }
 

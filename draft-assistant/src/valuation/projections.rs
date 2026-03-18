@@ -348,8 +348,8 @@ pub fn load_all_from_paths(paths: &DataPaths) -> Result<Option<AllProjections>, 
 
 /// Map an ESPN `defaultPositionId` to a position string.
 ///
-/// ESPN IDs: 1=SP, 2=C, 3=1B, 4=2B, 5=3B, 6=SS, 7=LF, 8=CF, 9=RF, 10=DH, 11=RP.
-fn espn_position_name(id: u16) -> &'static str {
+/// ESPN position IDs: 1=SP, 2=C, 3=1B, 4=2B, 5=3B, 6=SS, 7=LF, 8=CF, 9=RF, 10=DH, 11=RP.
+fn espn_default_position_name(id: u16) -> &'static str {
     match id {
         1 => "SP",
         2 => "C",
@@ -366,9 +366,51 @@ fn espn_position_name(id: u16) -> &'static str {
     }
 }
 
-/// Hitter position IDs: C(2), 1B(3), 2B(4), 3B(5), SS(6), LF(7), CF(8), RF(9), DH(10).
+/// Hitter default position IDs: C(2), 1B(3), 2B(4), 3B(5), SS(6), LF(7), CF(8), RF(9), DH(10).
 fn is_hitter_position(id: u16) -> bool {
     matches!(id, 2..=10)
+}
+
+/// Build a slash-separated position string from ESPN eligible slot IDs.
+///
+/// ESPN slot IDs (different from defaultPositionId!):
+///   0=C, 1=1B, 2=2B, 3=3B, 4=SS, 5=OF, 6=MI, 7=CI,
+///   8=LF, 9=CF, 10=RF, 11=DH, 12=UTIL, 13=P, 14=SP, 15=RP, 16=BE, 17=IL
+///
+/// Only includes concrete playing positions (no combo slots like OF/MI/CI/P,
+/// no meta slots like UTIL/BE/IL). The zscore engine's position parser handles
+/// slash-separated strings like "1B/C/DH".
+///
+/// If `hitter_only` is true, only hitter positions are included (C through DH).
+/// If false, only pitcher positions are included (SP, RP).
+fn positions_from_eligible_slots(slots: &[u16], hitter_only: bool) -> String {
+    let mut positions: Vec<&str> = Vec::new();
+    for &slot in slots {
+        let pos = if hitter_only {
+            match slot {
+                0 => "C",
+                1 => "1B",
+                2 => "2B",
+                3 => "3B",
+                4 => "SS",
+                8 => "LF",
+                9 => "CF",
+                10 => "RF",
+                11 => "DH",
+                _ => continue,
+            }
+        } else {
+            match slot {
+                14 => "SP",
+                15 => "RP",
+                _ => continue,
+            }
+        };
+        if !positions.contains(&pos) {
+            positions.push(pos);
+        }
+    }
+    positions.join("/")
 }
 
 /// Convert ESPN projection data into our internal `AllProjections` format.
@@ -400,11 +442,19 @@ pub fn from_espn_projections(espn: &[EspnPlayerProjection]) -> AllProjections {
                     player.name, batting.avg
                 );
             } else {
-                let position = if is_hitter_position(player.default_position_id) {
-                    espn_position_name(player.default_position_id)
-                } else {
-                    // Two-way player with pitcher default position — use DH
-                    "DH"
+                // Build multi-position string from eligible_slots (e.g. "1B/C/DH").
+                // Falls back to defaultPositionId if eligible_slots is empty.
+                let position = {
+                    let from_slots = positions_from_eligible_slots(&player.eligible_slots, true);
+                    if from_slots.is_empty() {
+                        if is_hitter_position(player.default_position_id) {
+                            espn_default_position_name(player.default_position_id).to_string()
+                        } else {
+                            "DH".to_string()
+                        }
+                    } else {
+                        from_slots
+                    }
                 };
                 hitters.push(HitterProjection {
                     name: player.name.trim().to_string(),
@@ -418,7 +468,7 @@ pub fn from_espn_projections(espn: &[EspnPlayerProjection]) -> AllProjections {
                     bb: batting.bb,
                     sb: batting.sb,
                     avg: batting.avg,
-                    espn_position: position.to_string(),
+                    espn_position: position,
                 });
             }
         }
@@ -433,10 +483,13 @@ pub fn from_espn_projections(espn: &[EspnPlayerProjection]) -> AllProjections {
                     player.name
                 );
             } else {
-                let pitcher_type = if player.default_position_id == 11 {
+                // Determine pitcher type from eligible_slots first, then default_position_id.
+                // RP slot (15) → RP, SP slot (14) → SP, else fall back to default position.
+                let pitcher_type = if player.eligible_slots.contains(&15) && !player.eligible_slots.contains(&14) {
+                    PitcherType::RP
+                } else if player.default_position_id == 11 {
                     PitcherType::RP
                 } else {
-                    // SP (1) or two-way player — default to SP
                     PitcherType::SP
                 };
                 pitchers.push(PitcherProjection {
