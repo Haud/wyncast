@@ -33,12 +33,16 @@ const ESPN_SLOT_IL   = 17;
  * slot ID.  Returns null for unrecognised strings.
  *
  * This mirrors espn_slot_from_position() / Position::from_str_pos() in
- * src/draft/pick.rs and is used to convert the position badge shown next to
- * a completed pick in the draft log into the authoritative slot ID that ESPN
- * assigned the player to.  That slot ID is forwarded to the Rust backend as
- * `assignedSlot` so that two-way players like Ohtani land in the correct
- * roster slot (e.g. UTIL) rather than the slot inferred from their primary
- * position (e.g. SP).
+ * src/draft/pick.rs and is used in two contexts:
+ *
+ * 1. Converting the draft board grid's .rosterSlot text (e.g. "UTIL", "SP")
+ *    into the authoritative slot ID that ESPN assigned the player to.
+ * 2. Converting individual position strings from the pick log's position
+ *    badge (e.g. "C", "1B") into eligible slot IDs.
+ *
+ * Note: the pick log position badge shows *eligible* positions (e.g.
+ * "C, 1B, DH"), NOT the actual assigned slot. The grid is the ground truth
+ * for assigned slots.
  */
 function espnSlotIdFromPositionStr(posStr) {
   if (!posStr) return null;
@@ -381,24 +385,49 @@ function scrapePickLog() {
 
     const lookup = buildTeamIdLookup();
 
+    // Build grid player->slot map once for accurate roster slot assignment.
+    // The draft board grid's .rosterSlot element is the ground truth for which
+    // slot ESPN assigned a player to. The pick log's position badge only shows
+    // eligible positions (e.g. "C, 1B, DH"), NOT the actual assigned slot.
+    const gridSlotMap = buildGridPlayerSlotMap();
+
     entriesArray.forEach((entry, idx) => {
       const playerName = extractText(entry, SELECTORS.pickLogPlayerName);
-      let position = extractText(entry, SELECTORS.pickLogPlayerPos);
+      let positionStr = extractText(entry, SELECTORS.pickLogPlayerPos);
       const pickInfoStr = extractText(entry, SELECTORS.pickLogInfo);
 
-      // Handle compound position strings like "SP, RP" — take only the first
-      if (position.includes(',')) {
+      // Parse ALL eligible positions from the position badge (e.g. "SP, RP" -> [14, 15])
+      const eligibleSlots = [];
+      if (positionStr) {
+        positionStr.split(',').forEach(part => {
+          const trimmed = part.trim();
+          if (trimmed) {
+            const slotId = espnSlotIdFromPositionStr(trimmed);
+            if (slotId !== null) {
+              eligibleSlots.push(slotId);
+            }
+          }
+        });
+      }
+
+      // Use the first position string for the display position field
+      let position = positionStr;
+      if (position && position.includes(',')) {
         position = position.split(',')[0].trim();
       }
 
       if (playerName) {
         const { price, teamName } = parsePickInfo(pickInfoStr);
-        // Map the position string scraped from the pick log to the ESPN slot
-        // ID that ESPN assigned the player to.  This is the authoritative
-        // placement slot — e.g. for Ohtani drafted to UTIL the badge reads
-        // "UTIL" and we forward slot ID 12 so the backend places him there
-        // instead of inferring SP from his eligible positions.
-        const assignedSlot = espnSlotIdFromPositionStr(position);
+
+        // Cross-reference with draft board grid for the actual ESPN roster
+        // slot assignment. The grid's .rosterSlot element is the ground truth;
+        // the pick log position badge shows eligible positions, not the actual
+        // slot ESPN chose. If the player isn't in the grid yet (race condition
+        // or grid not loaded), send null and let the backend use eligibleSlots
+        // to find the best fit.
+        const gridSlot = gridSlotMap[playerName];
+        const assignedSlot = gridSlot ? espnSlotIdFromPositionStr(gridSlot) : null;
+
         picks.push({
           pickNumber: completedPicks - entriesArray.length + idx + 1,
           teamId: lookup[teamName] || '',
@@ -407,7 +436,7 @@ function scrapePickLog() {
           playerName: playerName,
           position: position,
           price: price,
-          eligibleSlots: [],
+          eligibleSlots: eligibleSlots,
           assignedSlot: assignedSlot,
         });
       }
@@ -496,6 +525,44 @@ function scrapeCurrentNomination() {
     error('Error scraping nomination:', e);
   }
   return null;
+}
+
+/**
+ * Build a lightweight player-name -> rosterSlot lookup from the draft board grid.
+ *
+ * Scans all completed pick cells in the grid and extracts just the player
+ * full name and the rosterSlot text.  This is much cheaper than a full
+ * scrapeDraftBoard() call because we skip team association, row/col parsing,
+ * and price extraction.
+ *
+ * Used by scrapePickLog() to cross-reference the actual ESPN-assigned roster
+ * slot for each pick, since the pick log's position badge only shows eligible
+ * positions (e.g. "C, 1B, DH") rather than the slot ESPN actually assigned.
+ *
+ * Returns: { "Shohei Ohtani": "UTIL", "Gerrit Cole": "SP", ... }
+ */
+function buildGridPlayerSlotMap() {
+  const map = {};
+  try {
+    const pickCells = document.querySelectorAll(SELECTORS.draftBoardCell);
+    pickCells.forEach(cell => {
+      if (!cell.classList.contains('completedPick')) return;
+      const rosterSlotEl = cell.querySelector('.rosterSlot');
+      const lastNameEl = cell.querySelector('.playerLastName');
+      if (!rosterSlotEl || !lastNameEl) return;
+      const rosterSlot = rosterSlotEl.textContent.trim();
+      const lastName = lastNameEl.textContent.trim();
+      const firstNameEl = cell.querySelector('.playerFirstName');
+      const firstName = firstNameEl ? firstNameEl.textContent.trim() : '';
+      const fullName = (firstName + ' ' + lastName).trim();
+      if (fullName && rosterSlot) {
+        map[fullName] = rosterSlot;
+      }
+    });
+  } catch (e) {
+    // Grid may not be available during early draft stages
+  }
+  return map;
 }
 
 /**
