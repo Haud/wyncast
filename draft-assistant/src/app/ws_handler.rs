@@ -141,9 +141,13 @@ pub(super) async fn handle_full_state_sync(
 
     // Reset valuation pool and derived state so they're rebuilt cleanly
     // after all snapshot picks are applied.
-    state.available_players =
-        valuation::compute_initial(&state.all_projections, &state.config, &roster)
-            .unwrap_or_default();
+    if let Some(ref projections) = state.all_projections {
+        state.available_players =
+            valuation::compute_initial(projections, &state.config, &roster)
+                .unwrap_or_default();
+    } else {
+        state.available_players = Vec::new();
+    }
     state.scarcity = compute_scarcity(&state.available_players, &roster);
     state.inflation = InflationTracker::new();
     state.category_needs = CategoryNeeds::default();
@@ -322,9 +326,12 @@ pub(super) async fn handle_state_update(
                     state.config.league.salary_cap,
                     &roster,
                 );
-                state.available_players =
-                    valuation::compute_initial(&state.all_projections, &state.config, &roster)
-                        .unwrap_or_default();
+                state.available_players = if let Some(ref projections) = state.all_projections {
+                    valuation::compute_initial(projections, &state.config, &roster)
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
                 state.scarcity =
                     compute_scarcity(&state.available_players, &roster);
                 state.inflation = InflationTracker::new();

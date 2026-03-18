@@ -93,13 +93,6 @@ async fn main() -> anyhow::Result<()> {
         None => info!("No CSV projection paths configured — waiting for ESPN projections"),
     }
 
-    // Use CSV projections if available, otherwise start with empty projections
-    // and wait for ESPN to provide them via the extension.
-    let projections = projections.unwrap_or(valuation::projections::AllProjections {
-        hitters: Vec::new(),
-        pitchers: Vec::new(),
-    });
-
     // Valuations are deferred until ESPN provides the roster configuration.
     // Start with empty available_players; apply_roster_config() will compute them.
     let available_players = Vec::new();
