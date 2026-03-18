@@ -267,7 +267,11 @@ pub fn load_pitcher_projections(path: &Path) -> Result<Vec<PitcherProjection>, P
 
 /// Load all projection data using paths from the config and return
 /// the combined `AllProjections`.
-pub fn load_all(config: &Config) -> Result<AllProjections, ProjectionError> {
+///
+/// Returns `Ok(None)` if no CSV paths are configured (both are `None`).
+/// Returns `Err` if only one path is set (must be both or neither)
+/// or if the CSV files cannot be loaded.
+pub fn load_all(config: &Config) -> Result<Option<AllProjections>, ProjectionError> {
     load_all_from_paths(&config.data_paths)
 }
 
@@ -305,32 +309,36 @@ fn resolve_data_path(raw: &str) -> std::path::PathBuf {
 /// Returns `Ok(None)` if both paths are `None` (no CSV overrides configured).
 /// Returns `Err` if only one path is set (must be both or neither),
 /// or if the CSV files cannot be loaded.
-pub fn load_all_from_paths(paths: &DataPaths) -> Result<AllProjections, ProjectionError> {
-    let hitters_str = paths.hitters.as_deref().ok_or_else(|| {
-        ProjectionError::Validation("hitters CSV path is not configured".into())
-    })?;
-    let pitchers_str = paths.pitchers.as_deref().ok_or_else(|| {
-        ProjectionError::Validation("pitchers CSV path is not configured".into())
-    })?;
+pub fn load_all_from_paths(paths: &DataPaths) -> Result<Option<AllProjections>, ProjectionError> {
+    match (&paths.hitters, &paths.pitchers) {
+        (None, None) => Ok(None),
+        (Some(_), None) => Err(ProjectionError::Validation(
+            "hitters CSV path is set but pitchers CSV path is missing".into(),
+        )),
+        (None, Some(_)) => Err(ProjectionError::Validation(
+            "pitchers CSV path is set but hitters CSV path is missing".into(),
+        )),
+        (Some(h), Some(p)) => {
+            let hitters_path = resolve_data_path(h);
+            let pitchers_path = resolve_data_path(p);
 
-    let hitters_path = resolve_data_path(hitters_str);
-    let pitchers_path = resolve_data_path(pitchers_str);
+            let hitters = load_hitter_projections(&hitters_path)?;
+            let pitchers = load_pitcher_projections(&pitchers_path)?;
 
-    let hitters = load_hitter_projections(&hitters_path)?;
-    let pitchers = load_pitcher_projections(&pitchers_path)?;
+            if hitters.is_empty() {
+                return Err(ProjectionError::Validation(
+                    "hitter CSV produced zero valid rows".into(),
+                ));
+            }
+            if pitchers.is_empty() {
+                return Err(ProjectionError::Validation(
+                    "pitcher CSV produced zero valid rows".into(),
+                ));
+            }
 
-    if hitters.is_empty() {
-        return Err(ProjectionError::Validation(
-            "hitter CSV produced zero valid rows".into(),
-        ));
+            Ok(Some(AllProjections { hitters, pitchers }))
+        }
     }
-    if pitchers.is_empty() {
-        return Err(ProjectionError::Validation(
-            "pitcher CSV produced zero valid rows".into(),
-        ));
-    }
-
-    Ok(AllProjections { hitters, pitchers })
 }
 
 // ---------------------------------------------------------------------------

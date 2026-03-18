@@ -148,7 +148,8 @@ fn load_fixture_players(config: &Config) -> Vec<PlayerValuation> {
     let projections = draft_assistant::valuation::projections::load_all_from_paths(
         &config.data_paths,
     )
-    .expect("fixture CSVs should load");
+    .expect("fixture CSVs should load")
+    .expect("fixture CSV paths are configured");
 
     draft_assistant::valuation::compute_initial(&projections, config, &roster_config())
         .expect("initial valuation should succeed")
@@ -160,6 +161,7 @@ fn load_fixture_projections(config: &Config) -> AllProjections {
         &config.data_paths,
     )
     .expect("fixture CSVs should load")
+    .expect("fixture CSV paths are configured")
 }
 
 /// Create a full AppState wired up with fixture data, in-memory DB, and
