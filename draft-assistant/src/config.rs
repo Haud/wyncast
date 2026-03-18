@@ -148,6 +148,7 @@ struct StrategyFile {
     pool: PoolConfig,
     llm: LlmConfig,
     websocket: WebsocketSection,
+    #[serde(default, skip_serializing_if = "DataPaths::is_empty")]
     data_paths: DataPaths,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     strategy_overview: Option<String>,
@@ -297,16 +298,23 @@ fn default_llm_provider() -> LlmProvider {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DataPaths {
-    pub hitters: String,
-    pub pitchers: String,
+    pub hitters: Option<String>,
+    pub pitchers: Option<String>,
 }
 
 impl Default for DataPaths {
     fn default() -> Self {
         Self {
-            hitters: "projections/hitters.csv".to_string(),
-            pitchers: "projections/pitchers.csv".to_string(),
+            hitters: None,
+            pitchers: None,
         }
+    }
+}
+
+impl DataPaths {
+    /// Returns true if both paths are None (no CSV overrides configured).
+    pub fn is_empty(&self) -> bool {
+        self.hitters.is_none() && self.pitchers.is_none()
     }
 }
 
@@ -663,7 +671,8 @@ mod tests {
 
         // Infrastructure assertions
         assert_eq!(config.ws_port, 9001);
-        assert_eq!(config.data_paths.hitters, "projections/hitters.csv");
+        assert!(config.data_paths.hitters.is_none());
+        assert!(config.data_paths.pitchers.is_none());
 
         let _ = fs::remove_dir_all(&tmp);
     }
@@ -1052,8 +1061,8 @@ gs_per_week = 7
         assert!(config.strategy.llm.prefire_planning);
 
         assert_eq!(config.ws_port, 9001);
-        assert_eq!(config.data_paths.hitters, "projections/hitters.csv");
-        assert_eq!(config.data_paths.pitchers, "projections/pitchers.csv");
+        assert!(config.data_paths.hitters.is_none());
+        assert!(config.data_paths.pitchers.is_none());
 
         assert!(config.credentials.anthropic_api_key.is_none());
         assert!(config.credentials.google_api_key.is_none());

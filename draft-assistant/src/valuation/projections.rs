@@ -301,9 +301,20 @@ fn resolve_data_path(raw: &str) -> std::path::PathBuf {
 }
 
 /// Load all projection data from explicit paths. Exposed for testing and flexibility.
+///
+/// Returns `Ok(None)` if both paths are `None` (no CSV overrides configured).
+/// Returns `Err` if only one path is set (must be both or neither),
+/// or if the CSV files cannot be loaded.
 pub fn load_all_from_paths(paths: &DataPaths) -> Result<AllProjections, ProjectionError> {
-    let hitters_path = resolve_data_path(&paths.hitters);
-    let pitchers_path = resolve_data_path(&paths.pitchers);
+    let hitters_str = paths.hitters.as_deref().ok_or_else(|| {
+        ProjectionError::Validation("hitters CSV path is not configured".into())
+    })?;
+    let pitchers_str = paths.pitchers.as_deref().ok_or_else(|| {
+        ProjectionError::Validation("pitchers CSV path is not configured".into())
+    })?;
+
+    let hitters_path = resolve_data_path(hitters_str);
+    let pitchers_path = resolve_data_path(pitchers_str);
 
     let hitters = load_hitter_projections(&hitters_path)?;
     let pitchers = load_pitcher_projections(&pitchers_path)?;
@@ -319,10 +330,7 @@ pub fn load_all_from_paths(paths: &DataPaths) -> Result<AllProjections, Projecti
         ));
     }
 
-    Ok(AllProjections {
-        hitters,
-        pitchers,
-    })
+    Ok(AllProjections { hitters, pitchers })
 }
 
 // ---------------------------------------------------------------------------

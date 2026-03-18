@@ -791,10 +791,7 @@ mod tests {
             },
             credentials: CredentialsConfig::default(),
             ws_port: 9001,
-            data_paths: DataPaths {
-                hitters: "projections/hitters.csv".into(),
-                pitchers: "projections/pitchers.csv".into(),
-            },
+            data_paths: DataPaths::default(),
         }
     }
 

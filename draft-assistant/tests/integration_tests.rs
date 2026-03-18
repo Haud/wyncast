@@ -137,8 +137,8 @@ fn inline_config() -> Config {
         credentials: CredentialsConfig::default(),
         ws_port: 0,
         data_paths: DataPaths {
-            hitters: format!("{}/sample_hitters.csv", FIXTURES),
-            pitchers: format!("{}/sample_pitchers.csv", FIXTURES),
+            hitters: Some(format!("{}/sample_hitters.csv", FIXTURES)),
+            pitchers: Some(format!("{}/sample_pitchers.csv", FIXTURES)),
         },
     }
 }
