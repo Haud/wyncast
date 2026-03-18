@@ -84,7 +84,7 @@ pub struct AppState {
     pub config: Config,
     pub draft_state: DraftState,
     pub available_players: Vec<PlayerValuation>,
-    pub all_projections: AllProjections,
+    pub all_projections: Option<AllProjections>,
     pub inflation: InflationTracker,
     pub scarcity: Vec<ScarcityEntry>,
     pub db: Database,
@@ -151,7 +151,7 @@ impl AppState {
         config: Config,
         draft_state: DraftState,
         available_players: Vec<PlayerValuation>,
-        all_projections: AllProjections,
+        all_projections: Option<AllProjections>,
         db: Database,
         draft_id: String,
         llm_client: LlmClient,
@@ -221,18 +221,66 @@ impl AppState {
 
     /// Apply a roster configuration inferred from the ESPN draft board.
     ///
-    /// Sets the roster_config, recomputes initial valuations from projections,
-    /// and recomputes scarcity indices.
+    /// Sets the roster_config and attempts to compute valuations. If projections
+    /// are not yet available (waiting for ESPN), only stores the config and
+    /// defers valuation until `apply_projections()` is called.
     pub fn apply_roster_config(&mut self, roster: std::collections::HashMap<String, usize>) {
         info!("Applying roster config: {:?}", roster);
-        self.roster_config = Some(roster.clone());
+        self.roster_config = Some(roster);
+        self.try_compute_valuations();
+    }
+
+    /// Store projections and compute valuations if roster config is available.
+    ///
+    /// Called when ESPN projections arrive from the extension. If the roster
+    /// config has already been inferred from the draft board, valuations are
+    /// computed immediately. Otherwise, projections are stored and valuations
+    /// are deferred until `apply_roster_config()` is called.
+    pub fn apply_projections(&mut self, projections: AllProjections) {
+        info!(
+            "Applying projections: {} hitters, {} pitchers",
+            projections.hitters.len(),
+            projections.pitchers.len()
+        );
+        self.all_projections = Some(projections);
+        self.try_compute_valuations();
+    }
+
+    /// Compute initial valuations if both projections and roster config are available.
+    ///
+    /// After computing the full player pool, removes any players that have
+    /// already been drafted (present in `draft_state.picks`). This handles
+    /// the case where projections arrive after picks have been recorded
+    /// (e.g. backend restart mid-draft).
+    fn try_compute_valuations(&mut self) {
+        let (Some(projections), Some(roster)) = (&self.all_projections, &self.roster_config) else {
+            return;
+        };
         self.available_players = crate::valuation::compute_initial(
-            &self.all_projections,
+            projections,
             &self.config,
-            &roster,
+            roster,
         )
         .unwrap_or_default();
-        self.scarcity = compute_scarcity(&self.available_players, &roster);
+
+        // Remove already-drafted players from the available pool
+        if !self.draft_state.picks.is_empty() {
+            let drafted_names: std::collections::HashSet<&str> = self
+                .draft_state
+                .picks
+                .iter()
+                .map(|p| p.player_name.as_str())
+                .collect();
+            self.available_players
+                .retain(|p| !drafted_names.contains(p.name.as_str()));
+            info!(
+                "Filtered {} drafted players from available pool ({} remaining)",
+                drafted_names.len(),
+                self.available_players.len()
+            );
+        }
+
+        self.scarcity = compute_scarcity(&self.available_players, roster);
     }
 
     /// Reconstruct the LLM client from the current config.
@@ -1028,10 +1076,7 @@ mod tests {
             strategy: test_strategy_config(),
             credentials: CredentialsConfig::default(),
             ws_port: 9001,
-            data_paths: DataPaths {
-                hitters: "projections/hitters.csv".into(),
-                pitchers: "projections/pitchers.csv".into(),
-            },
+            data_paths: DataPaths::default(),
         }
     }
 
@@ -1250,11 +1295,11 @@ mod tests {
         ]
     }
 
-    fn empty_projections() -> AllProjections {
-        AllProjections {
+    fn empty_projections() -> Option<AllProjections> {
+        Some(AllProjections {
             hitters: vec![],
             pitchers: vec![],
-        }
+        })
     }
 
     fn test_onboarding_manager() -> OnboardingManager<RealFileSystem> {

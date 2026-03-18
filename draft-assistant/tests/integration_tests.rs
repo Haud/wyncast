@@ -137,8 +137,8 @@ fn inline_config() -> Config {
         credentials: CredentialsConfig::default(),
         ws_port: 0,
         data_paths: DataPaths {
-            hitters: format!("{}/sample_hitters.csv", FIXTURES),
-            pitchers: format!("{}/sample_pitchers.csv", FIXTURES),
+            hitters: Some(format!("{}/sample_hitters.csv", FIXTURES)),
+            pitchers: Some(format!("{}/sample_pitchers.csv", FIXTURES)),
         },
     }
 }
@@ -148,7 +148,8 @@ fn load_fixture_players(config: &Config) -> Vec<PlayerValuation> {
     let projections = draft_assistant::valuation::projections::load_all_from_paths(
         &config.data_paths,
     )
-    .expect("fixture CSVs should load");
+    .expect("fixture CSVs should load")
+    .expect("fixture CSV paths are configured");
 
     draft_assistant::valuation::compute_initial(&projections, config, &roster_config())
         .expect("initial valuation should succeed")
@@ -160,6 +161,7 @@ fn load_fixture_projections(config: &Config) -> AllProjections {
         &config.data_paths,
     )
     .expect("fixture CSVs should load")
+    .expect("fixture CSV paths are configured")
 }
 
 /// Create a full AppState wired up with fixture data, in-memory DB, and
@@ -192,7 +194,7 @@ fn create_test_app_state_from_fixtures() -> AppState {
         std::env::temp_dir().join(format!("wyncast_integ_test_{}", std::process::id())),
         draft_assistant::onboarding::RealFileSystem,
     );
-    AppState::new(config, draft_state, available, projections, db, draft_id, llm_client, llm_tx, None, AppMode::Draft, onboarding_manager, Some(roster_config()))
+    AppState::new(config, draft_state, available, Some(projections), db, draft_id, llm_client, llm_tx, None, AppMode::Draft, onboarding_manager, Some(roster_config()))
 }
 
 /// Drain the initial `StateSnapshot` that `run()` sends before entering

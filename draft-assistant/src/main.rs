@@ -80,15 +80,18 @@ async fn main() -> anyhow::Result<()> {
         id
     };
 
-    // 4. Load projections (valuations deferred until roster config is inferred from ESPN)
+    // 4. Load projections if CSV paths are configured (optional override)
     info!("Loading projections...");
     let projections = valuation::projections::load_all(&config)
         .context("failed to load projections")?;
-    info!(
-        "Loaded {} hitters, {} pitchers",
-        projections.hitters.len(),
-        projections.pitchers.len()
-    );
+    match &projections {
+        Some(p) => info!(
+            "Loaded {} hitters, {} pitchers from CSV overrides",
+            p.hitters.len(),
+            p.pitchers.len()
+        ),
+        None => info!("No CSV projection paths configured — waiting for ESPN projections"),
+    }
 
     // Valuations are deferred until ESPN provides the roster configuration.
     // Start with empty available_players; apply_roster_config() will compute them.

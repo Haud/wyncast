@@ -1743,10 +1743,7 @@ mod tests {
                 openai_api_key: None,
             },
             ws_port: 9001,
-            data_paths: DataPaths {
-                hitters: "data/hitters.csv".to_string(),
-                pitchers: "data/pitchers.csv".to_string(),
-            },
+            data_paths: DataPaths::default(),
         }
     }
 
@@ -1821,10 +1818,7 @@ mod tests {
                 openai_api_key: openai_key,
             },
             ws_port: 9001,
-            data_paths: DataPaths {
-                hitters: "data/hitters.csv".to_string(),
-                pitchers: "data/pitchers.csv".to_string(),
-            },
+            data_paths: DataPaths::default(),
         }
     }
 }

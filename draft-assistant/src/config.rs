@@ -148,6 +148,7 @@ struct StrategyFile {
     pool: PoolConfig,
     llm: LlmConfig,
     websocket: WebsocketSection,
+    #[serde(default, skip_serializing_if = "DataPaths::is_empty")]
     data_paths: DataPaths,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     strategy_overview: Option<String>,
@@ -297,16 +298,23 @@ fn default_llm_provider() -> LlmProvider {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DataPaths {
-    pub hitters: String,
-    pub pitchers: String,
+    pub hitters: Option<String>,
+    pub pitchers: Option<String>,
 }
 
 impl Default for DataPaths {
     fn default() -> Self {
         Self {
-            hitters: "projections/hitters.csv".to_string(),
-            pitchers: "projections/pitchers.csv".to_string(),
+            hitters: None,
+            pitchers: None,
         }
+    }
+}
+
+impl DataPaths {
+    /// Returns true if both paths are None (no CSV overrides configured).
+    pub fn is_empty(&self) -> bool {
+        self.hitters.is_none() && self.pitchers.is_none()
     }
 }
 
@@ -663,7 +671,8 @@ mod tests {
 
         // Infrastructure assertions
         assert_eq!(config.ws_port, 9001);
-        assert_eq!(config.data_paths.hitters, "projections/hitters.csv");
+        assert!(config.data_paths.hitters.is_none());
+        assert!(config.data_paths.pitchers.is_none());
 
         let _ = fs::remove_dir_all(&tmp);
     }
@@ -986,6 +995,37 @@ gs_per_week = 7
         assert_eq!(config.league.num_teams, 10);
         assert_eq!(config.ws_port, 9001);
 
+        // The generated strategy.toml should NOT contain [data_paths] section
+        // since both paths default to None and the section is skipped when empty
+        let strategy_content = fs::read_to_string(tmp.join("config/strategy.toml")).unwrap();
+        assert!(
+            !strategy_content.contains("[data_paths]"),
+            "default strategy.toml should not contain [data_paths] section"
+        );
+        assert!(config.data_paths.hitters.is_none());
+        assert!(config.data_paths.pitchers.is_none());
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn strategy_toml_with_data_paths_overrides() {
+        let tmp = std::env::temp_dir().join("config_test_data_paths_override");
+        let config_dir = tmp.join("config");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&config_dir).unwrap();
+
+        write_default_league_toml(&config_dir);
+
+        // Write a strategy.toml with data_paths set
+        let mut strategy_text = toml::to_string_pretty(&StrategyFile::default()).unwrap();
+        strategy_text.push_str("\n[data_paths]\nhitters = \"custom/hitters.csv\"\npitchers = \"custom/pitchers.csv\"\n");
+        fs::write(config_dir.join("strategy.toml"), strategy_text).unwrap();
+
+        let config = load_config_from(&tmp).expect("should load config with data_paths");
+        assert_eq!(config.data_paths.hitters.as_deref(), Some("custom/hitters.csv"));
+        assert_eq!(config.data_paths.pitchers.as_deref(), Some("custom/pitchers.csv"));
+
         let _ = fs::remove_dir_all(&tmp);
     }
 
@@ -1052,8 +1092,8 @@ gs_per_week = 7
         assert!(config.strategy.llm.prefire_planning);
 
         assert_eq!(config.ws_port, 9001);
-        assert_eq!(config.data_paths.hitters, "projections/hitters.csv");
-        assert_eq!(config.data_paths.pitchers, "projections/pitchers.csv");
+        assert!(config.data_paths.hitters.is_none());
+        assert!(config.data_paths.pitchers.is_none());
 
         assert!(config.credentials.anthropic_api_key.is_none());
         assert!(config.credentials.google_api_key.is_none());

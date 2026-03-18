@@ -70,6 +70,9 @@ pub(super) async fn handle_ws_message(
         ExtensionMessage::ExtensionHeartbeat { .. } => {
             // Heartbeats are logged at trace level, no action needed
         }
+        ExtensionMessage::PlayerProjections { timestamp: _, payload } => {
+            handle_player_projections(state, payload, ui_tx).await;
+        }
     }
 }
 
@@ -141,9 +144,13 @@ pub(super) async fn handle_full_state_sync(
 
     // Reset valuation pool and derived state so they're rebuilt cleanly
     // after all snapshot picks are applied.
-    state.available_players =
-        valuation::compute_initial(&state.all_projections, &state.config, &roster)
-            .unwrap_or_default();
+    if let Some(ref projections) = state.all_projections {
+        state.available_players =
+            valuation::compute_initial(projections, &state.config, &roster)
+                .unwrap_or_default();
+    } else {
+        state.available_players = Vec::new();
+    }
     state.scarcity = compute_scarcity(&state.available_players, &roster);
     state.inflation = InflationTracker::new();
     state.category_needs = CategoryNeeds::default();
@@ -322,9 +329,12 @@ pub(super) async fn handle_state_update(
                     state.config.league.salary_cap,
                     &roster,
                 );
-                state.available_players =
-                    valuation::compute_initial(&state.all_projections, &state.config, &roster)
-                        .unwrap_or_default();
+                state.available_players = if let Some(ref projections) = state.all_projections {
+                    valuation::compute_initial(projections, &state.config, &roster)
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
                 state.scarcity =
                     compute_scarcity(&state.available_players, &roster);
                 state.inflation = InflationTracker::new();
@@ -829,6 +839,53 @@ fn build_state_from_grid(
     }
 
     true
+}
+
+// ---------------------------------------------------------------------------
+// ESPN projection handling
+// ---------------------------------------------------------------------------
+
+/// Handle ESPN player projections received from the extension.
+///
+/// If the user already configured CSV projections (present in `all_projections`),
+/// we skip the ESPN data since CSV takes priority as an explicit override.
+/// Otherwise, convert the ESPN projections and apply them to the app state.
+async fn handle_player_projections(
+    state: &mut AppState,
+    payload: crate::protocol::EspnProjectionsPayload,
+    ui_tx: &mpsc::Sender<crate::protocol::UiUpdate>,
+) {
+    if state.all_projections.is_some() {
+        info!(
+            "Received {} ESPN player projections, but CSV projections already loaded — skipping",
+            payload.players.len()
+        );
+        return;
+    }
+
+    info!(
+        "Received {} ESPN player projections — converting",
+        payload.players.len()
+    );
+    let projections = valuation::projections::from_espn_projections(&payload.players);
+    info!(
+        "Converted ESPN projections: {} hitters, {} pitchers",
+        projections.hitters.len(),
+        projections.pitchers.len()
+    );
+
+    if projections.hitters.is_empty() && projections.pitchers.is_empty() {
+        warn!("ESPN projections produced zero players — ignoring");
+        return;
+    }
+
+    state.apply_projections(projections);
+
+    // Send a state snapshot to the TUI to reflect the newly computed valuations
+    let snapshot = state.build_snapshot();
+    let _ = ui_tx
+        .send(crate::protocol::UiUpdate::StateSnapshot(Box::new(snapshot)))
+        .await;
 }
 
 // ---------------------------------------------------------------------------

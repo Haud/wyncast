@@ -1174,8 +1174,334 @@ browser.runtime.onMessage.addListener((message) => {
   if (message.type === 'REQUEST_FULL_STATE_SYNC') {
     log('Received REQUEST_FULL_STATE_SYNC from background');
     sendFullStateSync();
+    // Re-send cached projections so a restarted backend gets them
+    sendProjectionsToBackend();
   }
 });
+
+// ---------------------------------------------------------------------------
+// ESPN Fantasy API projection fetching
+// ---------------------------------------------------------------------------
+
+/**
+ * ESPN proTeamId -> team abbreviation mapping.
+ * Numeric IDs from ESPN's Fantasy API v3.
+ */
+const PRO_TEAM_MAP = {
+  1: 'ATL', 2: 'BAL', 3: 'BOS', 4: 'CHC', 5: 'CWS', 6: 'CIN', 7: 'CLE',
+  8: 'COL', 9: 'DET', 10: 'HOU', 11: 'KC', 12: 'LAA', 13: 'LAD', 14: 'MIA',
+  15: 'MIL', 16: 'MIN', 17: 'NYM', 18: 'NYY', 19: 'OAK', 20: 'PHI',
+  21: 'PIT', 22: 'SD', 23: 'SF', 24: 'SEA', 25: 'STL', 26: 'TB', 27: 'TEX',
+  28: 'TOR', 29: 'WSH', 30: 'FA',
+};
+
+/**
+ * ESPN batting stat ID -> field name mapping.
+ * IDs from ESPN Fantasy API stats objects (statSourceId: 1 for projections).
+ */
+const BATTING_STAT_MAP = {
+  0: 'ab',    // At Bats
+  1: 'h',     // Hits
+  2: 'avg',   // Batting Average
+  5: 'hr',    // Home Runs
+  10: 'bb',   // Walks (BB)
+  16: 'pa',   // Plate Appearances
+  20: 'r',    // Runs
+  21: 'rbi',  // RBI
+  23: 'sb',   // Stolen Bases
+};
+
+/**
+ * ESPN pitching stat ID -> field name mapping.
+ *
+ * Verified against live data (Paul Skenes SP, closer RP):
+ *   32=G, 33=GS, 34=outs pitched (IP×3), 41=WHIP, 47=ERA,
+ *   48=K, 53=W, 57=SV, 60=HD
+ */
+const PITCHING_STAT_MAP = {
+  32: 'g',    // Games (pitcher appearances)
+  33: 'gs',   // Games Started
+  34: 'outs', // Outs pitched (IP × 3) — converted to IP in extraction
+  41: 'whip', // WHIP
+  47: 'era',  // ERA
+  48: 'k',    // Strikeouts
+  53: 'w',    // Wins
+  57: 'sv',   // Saves
+  60: 'hd',   // Holds
+};
+
+/** Flag to avoid fetching projections from ESPN API multiple times */
+let projectionsFetched = false;
+
+/** Cached converted projection data for re-sending on backend reconnect */
+let cachedProjections = null;
+
+/**
+ * Extract a stat value from ESPN's stats object using our ID mappings.
+ * @param {Object} stats - Object mapping stat ID (string) -> value (number)
+ * @param {Object} statMap - Our mapping of stat ID -> field name
+ * @param {string} fieldName - The field name to look up
+ * @returns {number} The stat value, or 0 if not found
+ */
+function extractStat(stats, statMap, fieldName) {
+  for (const [id, name] of Object.entries(statMap)) {
+    if (name === fieldName && stats[id] !== undefined) {
+      return stats[id];
+    }
+  }
+  return 0;
+}
+
+/**
+ * Extract batting projection from ESPN stats object.
+ * Returns null if this doesn't look like a hitter projection.
+ */
+function extractBattingProjection(stats) {
+  if (!stats) return null;
+
+  const ab = extractStat(stats, BATTING_STAT_MAP, 'ab');
+  const h = extractStat(stats, BATTING_STAT_MAP, 'h');
+  const pa = extractStat(stats, BATTING_STAT_MAP, 'pa') || (ab + extractStat(stats, BATTING_STAT_MAP, 'bb'));
+  const avg = extractStat(stats, BATTING_STAT_MAP, 'avg');
+
+  // If no AB and no PA, this isn't a hitter projection
+  if (ab === 0 && pa === 0) return null;
+
+  return {
+    pa: Math.round(pa),
+    ab: Math.round(ab),
+    h: Math.round(h || (ab * avg)),
+    hr: Math.round(extractStat(stats, BATTING_STAT_MAP, 'hr')),
+    r: Math.round(extractStat(stats, BATTING_STAT_MAP, 'r')),
+    rbi: Math.round(extractStat(stats, BATTING_STAT_MAP, 'rbi')),
+    bb: Math.round(extractStat(stats, BATTING_STAT_MAP, 'bb')),
+    sb: Math.round(extractStat(stats, BATTING_STAT_MAP, 'sb')),
+    avg: avg || (ab > 0 ? h / ab : 0),
+  };
+}
+
+/**
+ * Extract pitching projection from ESPN stats object.
+ * Returns null if this doesn't look like a pitcher projection.
+ *
+ * ESPN stat 34 is outs pitched (IP × 3), not IP directly.
+ */
+function extractPitchingProjection(stats) {
+  if (!stats) return null;
+
+  // ESPN stores innings as outs (stat 34 = IP × 3)
+  const outs = extractStat(stats, PITCHING_STAT_MAP, 'outs');
+  const ip = outs / 3;
+  const g = extractStat(stats, PITCHING_STAT_MAP, 'g');
+
+  // If no outs and no games, this isn't a pitcher projection
+  if (outs === 0 && g === 0) return null;
+
+  return {
+    ip: ip,
+    k: Math.round(extractStat(stats, PITCHING_STAT_MAP, 'k')),
+    w: Math.round(extractStat(stats, PITCHING_STAT_MAP, 'w')),
+    sv: Math.round(extractStat(stats, PITCHING_STAT_MAP, 'sv')),
+    hd: Math.round(extractStat(stats, PITCHING_STAT_MAP, 'hd')),
+    era: extractStat(stats, PITCHING_STAT_MAP, 'era'),
+    whip: extractStat(stats, PITCHING_STAT_MAP, 'whip'),
+    g: Math.round(g),
+    gs: Math.round(extractStat(stats, PITCHING_STAT_MAP, 'gs')),
+  };
+}
+
+/**
+ * Send cached projection data to the background script for relay to the backend.
+ * Called both on initial fetch and on backend reconnect (REQUEST_FULL_STATE_SYNC).
+ */
+function sendProjectionsToBackend() {
+  if (!cachedProjections || cachedProjections.length === 0) return;
+
+  const message = {
+    source: 'wyndham-draft-sync',
+    type: 'PLAYER_PROJECTIONS',
+    timestamp: Date.now(),
+    payload: {
+      players: cachedProjections,
+    },
+  };
+
+  try {
+    browser.runtime.sendMessage(message).catch((err) => {
+      warn('Failed to send PLAYER_PROJECTIONS to background:', err.message || err);
+    });
+  } catch (e) {
+    warn('runtime.sendMessage not available for projections:', e.message || e);
+  }
+
+  log('Sent projections to backend (' + cachedProjections.length + ' players)');
+}
+
+/**
+ * Fetch player projections from ESPN's Fantasy API via page-context injection.
+ *
+ * The content script runs in an isolated world and cannot directly call
+ * ESPN's API with the page's credentials. We inject a <script> element
+ * into the page context (which shares the .espn.com origin and cookies)
+ * to make the API call, then relay the results back via a CustomEvent.
+ */
+function fetchEspnProjections() {
+  if (projectionsFetched) return;
+
+  const params = new URLSearchParams(window.location.search);
+  const leagueId = params.get('leagueId');
+  if (!leagueId) {
+    warn('Cannot fetch projections: no leagueId in URL');
+    return;
+  }
+
+  const year = new Date().getFullYear();
+  log('Fetching ESPN projections for league', leagueId, 'year', year);
+
+  // Build the injected script as a string. It runs in the page context
+  // with full access to ESPN's cookies and CORS allowances.
+  const scriptContent = `
+(async function() {
+  const LOG = '[WyndhamProjections]';
+  try {
+    const BATCH_SIZE = 250;
+    const MAX_PLAYERS = 2000;
+    const url = 'https://lm-api-reads.fantasy.espn.com/apis/v3/games/flb/seasons/${year}/segments/0/leagues/${leagueId}?view=kona_player_info';
+    const proTeamMap = ${JSON.stringify(PRO_TEAM_MAP)};
+
+    // Accumulate all players across paginated fetches before dispatching.
+    const allMapped = [];
+    let offset = 0;
+
+    while (offset < MAX_PLAYERS) {
+      // Minimal filter: sort by draft rank, include ALL players regardless
+      // of draft/roster status. No filterStatus, no sortPercOwned — those
+      // can exclude drafted players like Ohtani.
+      const filter = {
+        players: {
+          sortDraftRanks: { sortPriority: 1, sortAsc: true, value: "STANDARD" },
+          limit: BATCH_SIZE,
+          offset: offset,
+        }
+      };
+
+      console.log(LOG, 'Fetching players offset=' + offset + ' limit=' + BATCH_SIZE);
+      const resp = await fetch(url, {
+        credentials: 'include',
+        headers: {
+          'x-fantasy-filter': JSON.stringify(filter),
+          'Accept': 'application/json',
+        },
+      });
+
+      if (!resp.ok) {
+        console.error(LOG, 'API request failed at offset', offset, ':', resp.status, resp.statusText);
+        break;
+      }
+
+      const data = await resp.json();
+      const players = data.players || [];
+      console.log(LOG, 'Received', players.length, 'players at offset', offset);
+
+      if (players.length === 0) break;
+
+      // Log sample players on the first batch: first 3 + first pitcher found
+      if (offset === 0) {
+        players.slice(0, 3).forEach((p, i) => {
+          const pStats = (p.player && p.player.stats) || [];
+          const projStats = pStats.find(s => s.statSourceId === 1);
+          console.log(LOG, 'Sample hitter', i, p.player.fullName,
+            'posId:', p.player.defaultPositionId,
+            'stats:', projStats ? projStats.stats : 'none');
+        });
+        // Find and log the first SP (posId=1) and first RP (posId=11)
+        for (const posLabel of ['SP', 'RP']) {
+          const targetId = posLabel === 'SP' ? 1 : 11;
+          const pitcher = players.find(p => p.player && p.player.defaultPositionId === targetId);
+          if (pitcher) {
+            const pStats = (pitcher.player.stats || []).find(s => s.statSourceId === 1);
+            console.log(LOG, 'Sample', posLabel, pitcher.player.fullName,
+              'posId:', pitcher.player.defaultPositionId,
+              'stats:', pStats ? pStats.stats : 'none');
+          }
+        }
+      }
+
+      for (const entry of players) {
+        const player = entry.player;
+        if (!player || !player.fullName) continue;
+
+        // Find projection stats (statSourceId: 1 = projections)
+        const projEntry = (player.stats || []).find(s => s.statSourceId === 1);
+        if (!projEntry || !projEntry.stats) continue;
+
+        allMapped.push({
+          espnId: player.id,
+          name: player.fullName,
+          team: proTeamMap[player.proTeamId || 0] || ('T' + (player.proTeamId || 0)),
+          defaultPositionId: player.defaultPositionId || 0,
+          eligibleSlots: player.eligibleSlots || [],
+          rawStats: projEntry.stats,
+        });
+      }
+
+      // If we got fewer than the batch size, we've exhausted the pool
+      if (players.length < BATCH_SIZE) break;
+      offset += BATCH_SIZE;
+    }
+
+    console.log(LOG, 'Total players fetched:', allMapped.length);
+
+    // Dispatch all results at once so the backend receives a single complete set
+    window.dispatchEvent(new CustomEvent('wyncast-projections', {
+      detail: { players: allMapped },
+    }));
+    console.log(LOG, 'Dispatched', allMapped.length, 'player projections');
+
+  } catch (err) {
+    console.error(LOG, 'Failed to fetch projections:', err);
+  }
+})();
+`;
+
+  // Listen for the complete results from the page-context script (single dispatch).
+  window.addEventListener('wyncast-projections', function handler(event) {
+    if (!event.detail || !event.detail.players) return;
+    // Only process once — remove listener after first complete result
+    window.removeEventListener('wyncast-projections', handler);
+
+    const rawPlayers = event.detail.players;
+    log('Received', rawPlayers.length, 'projections from page context');
+
+    // Convert raw ESPN stats to our named-field format
+    const converted = rawPlayers.map(p => {
+      const stats = p.rawStats || {};
+      return {
+        espnId: p.espnId,
+        name: p.name,
+        team: p.team,
+        defaultPositionId: p.defaultPositionId,
+        eligibleSlots: p.eligibleSlots,
+        batting: extractBattingProjection(stats),
+        pitching: extractPitchingProjection(stats),
+      };
+    }).filter(p => p.batting || p.pitching);
+
+    log('Converted', converted.length, 'players with projection stats');
+
+    // Cache for re-sending on backend reconnect
+    cachedProjections = converted;
+    projectionsFetched = true;
+
+    sendProjectionsToBackend();
+  });
+
+  // Inject the script into the page context
+  const script = document.createElement('script');
+  script.textContent = scriptContent;
+  document.documentElement.appendChild(script);
+  script.remove();
+}
 
 // ---------------------------------------------------------------------------
 // Initialization
@@ -1193,6 +1519,9 @@ function init() {
   // Start periodic keyframe: sends a FULL_STATE_SYNC every 10 seconds
   // so the backend always has a recent known-good snapshot
   startPeriodicKeyframe();
+
+  // Fetch ESPN projections from the Fantasy API
+  fetchEspnProjections();
 
   log('Content script initialized');
 }

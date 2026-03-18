@@ -4,6 +4,7 @@
 // column (SP/RP) and an HLD column containing real holds data.
 
 use crate::config::{Config, DataPaths};
+use crate::protocol::EspnPlayerProjection;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::Path;
@@ -267,7 +268,11 @@ pub fn load_pitcher_projections(path: &Path) -> Result<Vec<PitcherProjection>, P
 
 /// Load all projection data using paths from the config and return
 /// the combined `AllProjections`.
-pub fn load_all(config: &Config) -> Result<AllProjections, ProjectionError> {
+///
+/// Returns `Ok(None)` if no CSV paths are configured (both are `None`).
+/// Returns `Err` if only one path is set (must be both or neither)
+/// or if the CSV files cannot be loaded.
+pub fn load_all(config: &Config) -> Result<Option<AllProjections>, ProjectionError> {
     load_all_from_paths(&config.data_paths)
 }
 
@@ -301,28 +306,211 @@ fn resolve_data_path(raw: &str) -> std::path::PathBuf {
 }
 
 /// Load all projection data from explicit paths. Exposed for testing and flexibility.
-pub fn load_all_from_paths(paths: &DataPaths) -> Result<AllProjections, ProjectionError> {
-    let hitters_path = resolve_data_path(&paths.hitters);
-    let pitchers_path = resolve_data_path(&paths.pitchers);
+///
+/// Returns `Ok(None)` if both paths are `None` (no CSV overrides configured).
+/// Returns `Err` if only one path is set (must be both or neither),
+/// or if the CSV files cannot be loaded.
+pub fn load_all_from_paths(paths: &DataPaths) -> Result<Option<AllProjections>, ProjectionError> {
+    match (&paths.hitters, &paths.pitchers) {
+        (None, None) => Ok(None),
+        (Some(_), None) => Err(ProjectionError::Validation(
+            "hitters CSV path is set but pitchers CSV path is missing".into(),
+        )),
+        (None, Some(_)) => Err(ProjectionError::Validation(
+            "pitchers CSV path is set but hitters CSV path is missing".into(),
+        )),
+        (Some(h), Some(p)) => {
+            let hitters_path = resolve_data_path(h);
+            let pitchers_path = resolve_data_path(p);
 
-    let hitters = load_hitter_projections(&hitters_path)?;
-    let pitchers = load_pitcher_projections(&pitchers_path)?;
+            let hitters = load_hitter_projections(&hitters_path)?;
+            let pitchers = load_pitcher_projections(&pitchers_path)?;
 
-    if hitters.is_empty() {
-        return Err(ProjectionError::Validation(
-            "hitter CSV produced zero valid rows".into(),
-        ));
+            if hitters.is_empty() {
+                return Err(ProjectionError::Validation(
+                    "hitter CSV produced zero valid rows".into(),
+                ));
+            }
+            if pitchers.is_empty() {
+                return Err(ProjectionError::Validation(
+                    "pitcher CSV produced zero valid rows".into(),
+                ));
+            }
+
+            Ok(Some(AllProjections { hitters, pitchers }))
+        }
     }
-    if pitchers.is_empty() {
-        return Err(ProjectionError::Validation(
-            "pitcher CSV produced zero valid rows".into(),
-        ));
+}
+
+// ---------------------------------------------------------------------------
+// ESPN projection conversion
+// ---------------------------------------------------------------------------
+
+/// Map an ESPN `defaultPositionId` to a position string.
+///
+/// ESPN position IDs: 1=SP, 2=C, 3=1B, 4=2B, 5=3B, 6=SS, 7=LF, 8=CF, 9=RF, 10=DH, 11=RP.
+fn espn_default_position_name(id: u16) -> &'static str {
+    match id {
+        1 => "SP",
+        2 => "C",
+        3 => "1B",
+        4 => "2B",
+        5 => "3B",
+        6 => "SS",
+        7 => "LF",
+        8 => "CF",
+        9 => "RF",
+        10 => "DH",
+        11 => "RP",
+        _ => "UTIL",
+    }
+}
+
+/// Hitter default position IDs: C(2), 1B(3), 2B(4), 3B(5), SS(6), LF(7), CF(8), RF(9), DH(10).
+fn is_hitter_position(id: u16) -> bool {
+    matches!(id, 2..=10)
+}
+
+/// Build a slash-separated position string from ESPN eligible slot IDs.
+///
+/// ESPN slot IDs (different from defaultPositionId!):
+///   0=C, 1=1B, 2=2B, 3=3B, 4=SS, 5=OF, 6=MI, 7=CI,
+///   8=LF, 9=CF, 10=RF, 11=DH, 12=UTIL, 13=P, 14=SP, 15=RP, 16=BE, 17=IL
+///
+/// Only includes concrete playing positions (no combo slots like OF/MI/CI/P,
+/// no meta slots like UTIL/BE/IL). The zscore engine's position parser handles
+/// slash-separated strings like "1B/C/DH".
+///
+/// If `hitter_only` is true, only hitter positions are included (C through DH).
+/// If false, only pitcher positions are included (SP, RP).
+fn positions_from_eligible_slots(slots: &[u16], hitter_only: bool) -> String {
+    let mut positions: Vec<&str> = Vec::new();
+    for &slot in slots {
+        let pos = if hitter_only {
+            match slot {
+                0 => "C",
+                1 => "1B",
+                2 => "2B",
+                3 => "3B",
+                4 => "SS",
+                8 => "LF",
+                9 => "CF",
+                10 => "RF",
+                11 => "DH",
+                _ => continue,
+            }
+        } else {
+            match slot {
+                14 => "SP",
+                15 => "RP",
+                _ => continue,
+            }
+        };
+        if !positions.contains(&pos) {
+            positions.push(pos);
+        }
+    }
+    positions.join("/")
+}
+
+/// Convert ESPN projection data into our internal `AllProjections` format.
+///
+/// - Players with batting stats AND a hitter `default_position_id` produce a `HitterProjection`.
+/// - Players with pitching stats AND a pitcher `default_position_id` produce a `PitcherProjection`.
+/// - Two-way players (both batting and pitching stats) create entries in both lists.
+///   The valuation engine's `compute_initial_zscores` already handles two-way player
+///   detection by name matching between hitter and pitcher lists.
+/// - Players with no projection stats or invalid data are skipped.
+pub fn from_espn_projections(espn: &[EspnPlayerProjection]) -> AllProjections {
+    let mut hitters = Vec::new();
+    let mut pitchers = Vec::new();
+
+    for player in espn {
+        // Skip players with empty names
+        if player.name.trim().is_empty() {
+            continue;
+        }
+
+        // Create hitter projection if batting stats are present
+        if let Some(ref batting) = player.batting {
+            // Validate stats: skip if any counting stat is unreasonable
+            if batting.ab == 0 && batting.pa == 0 {
+                // No plate appearances — skip hitter entry
+            } else if !batting.avg.is_finite() || batting.avg < 0.0 {
+                warn!(
+                    "Skipping hitter projection for '{}': invalid AVG {}",
+                    player.name, batting.avg
+                );
+            } else {
+                // Build multi-position string from eligible_slots (e.g. "1B/C/DH").
+                // Falls back to defaultPositionId if eligible_slots is empty.
+                let position = {
+                    let from_slots = positions_from_eligible_slots(&player.eligible_slots, true);
+                    if from_slots.is_empty() {
+                        if is_hitter_position(player.default_position_id) {
+                            espn_default_position_name(player.default_position_id).to_string()
+                        } else {
+                            "DH".to_string()
+                        }
+                    } else {
+                        from_slots
+                    }
+                };
+                hitters.push(HitterProjection {
+                    name: player.name.trim().to_string(),
+                    team: player.team.clone(),
+                    pa: batting.pa,
+                    ab: batting.ab,
+                    h: batting.h,
+                    hr: batting.hr,
+                    r: batting.r,
+                    rbi: batting.rbi,
+                    bb: batting.bb,
+                    sb: batting.sb,
+                    avg: batting.avg,
+                    espn_position: position,
+                });
+            }
+        }
+
+        // Create pitcher projection if pitching stats are present
+        if let Some(ref pitching) = player.pitching {
+            if pitching.ip <= 0.0 && pitching.g == 0 {
+                // No innings or games — skip pitcher entry
+            } else if !pitching.era.is_finite() || !pitching.whip.is_finite() {
+                warn!(
+                    "Skipping pitcher projection for '{}': non-finite ERA/WHIP",
+                    player.name
+                );
+            } else {
+                // Determine pitcher type from eligible_slots first, then default_position_id.
+                // RP slot (15) → RP, SP slot (14) → SP, else fall back to default position.
+                let pitcher_type = if player.eligible_slots.contains(&15) && !player.eligible_slots.contains(&14) {
+                    PitcherType::RP
+                } else if player.default_position_id == 11 {
+                    PitcherType::RP
+                } else {
+                    PitcherType::SP
+                };
+                pitchers.push(PitcherProjection {
+                    name: player.name.trim().to_string(),
+                    team: player.team.clone(),
+                    pitcher_type,
+                    ip: pitching.ip,
+                    k: pitching.k,
+                    w: pitching.w,
+                    sv: pitching.sv,
+                    hd: pitching.hd,
+                    era: pitching.era,
+                    whip: pitching.whip,
+                    g: pitching.g,
+                    gs: pitching.gs,
+                });
+            }
+        }
     }
 
-    Ok(AllProjections {
-        hitters,
-        pitchers,
-    })
+    AllProjections { hitters, pitchers }
 }
 
 // ---------------------------------------------------------------------------
@@ -675,6 +863,224 @@ Bobby Witt Jr.,KC, SS ,652,590,171,27,96,87,49,32,0.289";
 
         let hitters = load_hitters_from_reader(csv_data.as_bytes()).unwrap();
         assert_eq!(hitters[0].espn_position, "SS");
+    }
+
+    // -- ESPN projection conversion tests --
+
+    use crate::protocol::{EspnBattingProjection, EspnPitchingProjection, EspnPlayerProjection};
+
+    fn make_espn_hitter(name: &str, pos_id: u16) -> EspnPlayerProjection {
+        EspnPlayerProjection {
+            espn_id: 1,
+            name: name.to_string(),
+            team: "NYY".to_string(),
+            default_position_id: pos_id,
+            eligible_slots: vec![],
+            batting: Some(EspnBattingProjection {
+                pa: 600,
+                ab: 530,
+                h: 150,
+                hr: 30,
+                r: 90,
+                rbi: 85,
+                bb: 60,
+                sb: 10,
+                avg: 0.283,
+            }),
+            pitching: None,
+        }
+    }
+
+    fn make_espn_pitcher(name: &str, pos_id: u16) -> EspnPlayerProjection {
+        EspnPlayerProjection {
+            espn_id: 2,
+            name: name.to_string(),
+            team: "NYY".to_string(),
+            default_position_id: pos_id,
+            eligible_slots: vec![],
+            batting: None,
+            pitching: Some(EspnPitchingProjection {
+                ip: 180.0,
+                k: 200,
+                w: 14,
+                sv: 0,
+                hd: 0,
+                era: 3.20,
+                whip: 1.10,
+                g: 30,
+                gs: 30,
+            }),
+        }
+    }
+
+    #[test]
+    fn espn_pure_hitter_conversion() {
+        let players = vec![make_espn_hitter("Aaron Judge", 9)]; // RF = 9
+        let result = from_espn_projections(&players);
+
+        assert_eq!(result.hitters.len(), 1);
+        assert_eq!(result.pitchers.len(), 0);
+        assert_eq!(result.hitters[0].name, "Aaron Judge");
+        assert_eq!(result.hitters[0].espn_position, "RF");
+        assert_eq!(result.hitters[0].hr, 30);
+        assert_eq!(result.hitters[0].pa, 600);
+        assert!((result.hitters[0].avg - 0.283).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn espn_pure_pitcher_sp_conversion() {
+        let players = vec![make_espn_pitcher("Gerrit Cole", 1)]; // SP = 1
+        let result = from_espn_projections(&players);
+
+        assert_eq!(result.hitters.len(), 0);
+        assert_eq!(result.pitchers.len(), 1);
+        assert_eq!(result.pitchers[0].name, "Gerrit Cole");
+        assert_eq!(result.pitchers[0].pitcher_type, PitcherType::SP);
+        assert_eq!(result.pitchers[0].k, 200);
+        assert!((result.pitchers[0].era - 3.20).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn espn_pure_pitcher_rp_conversion() {
+        let mut rp = make_espn_pitcher("Devin Williams", 11); // RP = 11
+        if let Some(ref mut p) = rp.pitching {
+            p.ip = 60.0;
+            p.sv = 5;
+            p.hd = 20;
+            p.gs = 0;
+        }
+        let result = from_espn_projections(&[rp]);
+
+        assert_eq!(result.pitchers.len(), 1);
+        assert_eq!(result.pitchers[0].pitcher_type, PitcherType::RP);
+        assert_eq!(result.pitchers[0].hd, 20);
+        assert_eq!(result.pitchers[0].sv, 5);
+    }
+
+    #[test]
+    fn espn_two_way_player_creates_both() {
+        let two_way = EspnPlayerProjection {
+            espn_id: 100,
+            name: "Shohei Ohtani".to_string(),
+            team: "LAD".to_string(),
+            default_position_id: 10, // DH
+            eligible_slots: vec![],
+            batting: Some(EspnBattingProjection {
+                pa: 650,
+                ab: 570,
+                h: 170,
+                hr: 44,
+                r: 100,
+                rbi: 95,
+                bb: 70,
+                sb: 20,
+                avg: 0.298,
+            }),
+            pitching: Some(EspnPitchingProjection {
+                ip: 160.0,
+                k: 220,
+                w: 15,
+                sv: 0,
+                hd: 0,
+                era: 2.80,
+                whip: 1.00,
+                g: 28,
+                gs: 28,
+            }),
+        };
+
+        let result = from_espn_projections(&[two_way]);
+        assert_eq!(result.hitters.len(), 1);
+        assert_eq!(result.pitchers.len(), 1);
+        assert_eq!(result.hitters[0].name, "Shohei Ohtani");
+        assert_eq!(result.hitters[0].espn_position, "DH");
+        assert_eq!(result.pitchers[0].name, "Shohei Ohtani");
+        assert_eq!(result.pitchers[0].pitcher_type, PitcherType::SP);
+    }
+
+    #[test]
+    fn espn_no_stats_skipped() {
+        let no_stats = EspnPlayerProjection {
+            espn_id: 999,
+            name: "No Stats Player".to_string(),
+            team: "FA".to_string(),
+            default_position_id: 6, // SS
+            eligible_slots: vec![],
+            batting: None,
+            pitching: None,
+        };
+        let result = from_espn_projections(&[no_stats]);
+        assert_eq!(result.hitters.len(), 0);
+        assert_eq!(result.pitchers.len(), 0);
+    }
+
+    #[test]
+    fn espn_nan_avg_skipped() {
+        let mut bad_hitter = make_espn_hitter("NaN Player", 6);
+        if let Some(ref mut b) = bad_hitter.batting {
+            b.avg = f64::NAN;
+        }
+        let result = from_espn_projections(&[bad_hitter]);
+        assert_eq!(result.hitters.len(), 0);
+    }
+
+    #[test]
+    fn espn_inf_era_skipped() {
+        let mut bad_pitcher = make_espn_pitcher("Inf ERA", 1);
+        if let Some(ref mut p) = bad_pitcher.pitching {
+            p.era = f64::INFINITY;
+        }
+        let result = from_espn_projections(&[bad_pitcher]);
+        assert_eq!(result.pitchers.len(), 0);
+    }
+
+    #[test]
+    fn espn_empty_name_skipped() {
+        let empty_name = EspnPlayerProjection {
+            espn_id: 1,
+            name: "  ".to_string(),
+            team: "NYY".to_string(),
+            default_position_id: 6,
+            eligible_slots: vec![],
+            batting: Some(EspnBattingProjection {
+                pa: 600, ab: 530, h: 150, hr: 30, r: 90, rbi: 85, bb: 60, sb: 10, avg: 0.283,
+            }),
+            pitching: None,
+        };
+        let result = from_espn_projections(&[empty_name]);
+        assert_eq!(result.hitters.len(), 0);
+    }
+
+    #[test]
+    fn espn_zero_pa_hitter_skipped() {
+        let mut zero_pa = make_espn_hitter("Zero PA", 6);
+        if let Some(ref mut b) = zero_pa.batting {
+            b.pa = 0;
+            b.ab = 0;
+        }
+        let result = from_espn_projections(&[zero_pa]);
+        assert_eq!(result.hitters.len(), 0);
+    }
+
+    #[test]
+    fn espn_pitcher_with_hitter_default_pos_uses_sp() {
+        // A two-way player with SP default but only pitching stats
+        let pitcher_hitter_pos = EspnPlayerProjection {
+            espn_id: 50,
+            name: "Pitcher With DH Pos".to_string(),
+            team: "LAA".to_string(),
+            default_position_id: 10, // DH
+            eligible_slots: vec![],
+            batting: None,
+            pitching: Some(EspnPitchingProjection {
+                ip: 150.0, k: 180, w: 12, sv: 0, hd: 0, era: 3.50, whip: 1.20, g: 28, gs: 28,
+            }),
+        };
+        let result = from_espn_projections(&[pitcher_hitter_pos]);
+        // Only pitching stats → only pitcher entry, default to SP for non-RP
+        assert_eq!(result.hitters.len(), 0);
+        assert_eq!(result.pitchers.len(), 1);
+        assert_eq!(result.pitchers[0].pitcher_type, PitcherType::SP);
     }
 
 }
