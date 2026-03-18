@@ -70,6 +70,10 @@ pub(super) async fn handle_ws_message(
         ExtensionMessage::ExtensionHeartbeat { .. } => {
             // Heartbeats are logged at trace level, no action needed
         }
+        ExtensionMessage::PlayerProjections { .. } => {
+            // Handled in a later commit
+            info!("Received PLAYER_PROJECTIONS from extension (not yet handled)");
+        }
     }
 }
 
