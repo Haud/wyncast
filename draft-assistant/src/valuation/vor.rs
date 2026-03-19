@@ -46,8 +46,6 @@ pub fn determine_replacement_levels(
     // and also counted in the total dedicated slots for UTIL calculation.
     let mut position_slots: HashMap<Position, usize> = HashMap::new();
     let mut util_slots: usize = 0;
-    let mut combo_hitter_slots: usize = 0; // total combo slots per team (for UTIL calc)
-
     for (key, &count) in roster_config {
         if let Some(pos) = Position::from_roster_slot_str(key) {
             if pos == Position::Utility {
@@ -55,14 +53,11 @@ pub fn determine_replacement_levels(
             } else if pos == Position::DesignatedHitter {
                 // DH doesn't have dedicated replacement-level tracking;
                 // DH-eligible hitters compete via UTIL.
-                // But count DH slots in the total for UTIL calculation.
-                combo_hitter_slots += count;
             } else if pos.is_combo_slot() && pos.is_hitter() {
                 // Combo hitter slots (OF, MI, CI): expand to constituent positions.
                 // These slots accept any of their constituent positions, so they
                 // contribute to the total hitter pool but we track replacement
                 // levels at the concrete position level.
-                combo_hitter_slots += count;
                 for concrete in pos.accepted_positions() {
                     *position_slots.entry(concrete).or_insert(0) += count;
                 }
