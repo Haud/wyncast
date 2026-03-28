@@ -212,12 +212,12 @@ pub fn recalculate_all(
                     &avg_stats,
                 );
 
-                let total = rz * weights.R
-                    + hrz * weights.HR
-                    + rbiz * weights.RBI
-                    + bbz * weights.BB
-                    + sbz * weights.SB
-                    + avgz * weights.AVG;
+                let total = rz * weights.weight("R")
+                    + hrz * weights.weight("HR")
+                    + rbiz * weights.weight("RBI")
+                    + bbz * weights.weight("BB")
+                    + sbz * weights.weight("SB")
+                    + avgz * weights.weight("AVG");
 
                 let mut zscores = CategoryValues::zeros(registry.len());
                 zscores.set(registry.index_of("R").unwrap(), rz);
@@ -327,12 +327,12 @@ pub fn recalculate_all(
                     &whip_stats,
                 );
 
-                let total = kz * weights.K
-                    + wz * weights.W
-                    + svz * weights.SV
-                    + hdz * weights.HD
-                    + eraz * weights.ERA
-                    + whipz * weights.WHIP;
+                let total = kz * weights.weight("K")
+                    + wz * weights.weight("W")
+                    + svz * weights.weight("SV")
+                    + hdz * weights.weight("HD")
+                    + eraz * weights.weight("ERA")
+                    + whipz * weights.weight("WHIP");
 
                 let mut zscores = CategoryValues::zeros(registry.len());
                 zscores.set(registry.index_of("K").unwrap(), kz);
@@ -369,12 +369,12 @@ pub fn recalculate_all(
                     avg_contribution(ab, avg, *league_avg_avg),
                     avg_stats,
                 );
-                let batting_total = rz * weights.R
-                    + hrz * weights.HR
-                    + rbiz * weights.RBI
-                    + bbz * weights.BB
-                    + sbz * weights.SB
-                    + avgz * weights.AVG;
+                let batting_total = rz * weights.weight("R")
+                    + hrz * weights.weight("HR")
+                    + rbiz * weights.weight("RBI")
+                    + bbz * weights.weight("BB")
+                    + sbz * weights.weight("SB")
+                    + avgz * weights.weight("AVG");
 
                 // Pitching z-scores
                 let kz = compute_zscore(k as f64, k_stats);
@@ -389,12 +389,12 @@ pub fn recalculate_all(
                     whip_contribution(ip, whip, *league_avg_whip),
                     whip_stats,
                 );
-                let pitching_total = kz * weights.K
-                    + wz * weights.W
-                    + svz * weights.SV
-                    + hdz * weights.HD
-                    + eraz * weights.ERA
-                    + whipz * weights.WHIP;
+                let pitching_total = kz * weights.weight("K")
+                    + wz * weights.weight("W")
+                    + svz * weights.weight("SV")
+                    + hdz * weights.weight("HD")
+                    + eraz * weights.weight("ERA")
+                    + whipz * weights.weight("WHIP");
 
                 let mut two_way_zscores = CategoryValues::zeros(registry.len());
                 two_way_zscores.set(registry.index_of("R").unwrap(), rz);
@@ -471,20 +471,11 @@ mod tests {
     fn test_strategy_config() -> StrategyConfig {
         StrategyConfig {
             hitting_budget_fraction: 0.65,
-            weights: CategoryWeights {
-                R: 1.0,
-                HR: 1.0,
-                RBI: 1.0,
-                BB: 1.2,
-                SB: 1.0,
-                AVG: 1.0,
-                K: 1.0,
-                W: 1.0,
-                SV: 0.7,
-                HD: 1.3,
-                ERA: 1.0,
-                WHIP: 1.0,
-            },
+            weights: CategoryWeights::from_pairs([
+                ("R", 1.0), ("HR", 1.0), ("RBI", 1.0), ("BB", 1.2),
+                ("SB", 1.0), ("AVG", 1.0), ("K", 1.0), ("W", 1.0),
+                ("SV", 0.7), ("HD", 1.3), ("ERA", 1.0), ("WHIP", 1.0),
+            ]),
             strategy_overview: None,
             pool: PoolConfig {
                 min_pa: 300,

@@ -99,20 +99,11 @@ fn inline_config() -> Config {
 
     let strategy = StrategyConfig {
         hitting_budget_fraction: 0.65,
-        weights: CategoryWeights {
-            R: 1.0,
-            HR: 1.0,
-            RBI: 1.0,
-            BB: 1.2,
-            SB: 1.0,
-            AVG: 1.0,
-            K: 1.0,
-            W: 1.0,
-            SV: 0.7,
-            HD: 1.3,
-            ERA: 1.0,
-            WHIP: 1.0,
-        },
+        weights: CategoryWeights::from_pairs([
+            ("R", 1.0), ("HR", 1.0), ("RBI", 1.0), ("BB", 1.2),
+            ("SB", 1.0), ("AVG", 1.0), ("K", 1.0), ("W", 1.0),
+            ("SV", 0.7), ("HD", 1.3), ("ERA", 1.0), ("WHIP", 1.0),
+        ]),
         pool: PoolConfig {
             min_pa: 300,
             min_ip_sp: 80.0,

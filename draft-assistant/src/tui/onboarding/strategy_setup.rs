@@ -185,39 +185,31 @@ impl CategoryWeights {
         }
     }
 
-    /// Convert to the config-compatible `CategoryWeights` (f64, uppercase field names).
+    /// Convert to the config-compatible `CategoryWeights` (HashMap-based).
     pub fn to_config_weights(&self) -> crate::config::CategoryWeights {
-        crate::config::CategoryWeights {
-            R: self.r as f64,
-            HR: self.hr as f64,
-            RBI: self.rbi as f64,
-            BB: self.bb as f64,
-            SB: self.sb as f64,
-            AVG: self.avg as f64,
-            K: self.k as f64,
-            W: self.w as f64,
-            SV: self.sv as f64,
-            HD: self.hd as f64,
-            ERA: self.era as f64,
-            WHIP: self.whip as f64,
-        }
+        crate::config::CategoryWeights::from_pairs([
+            ("R", self.r as f64), ("HR", self.hr as f64), ("RBI", self.rbi as f64),
+            ("BB", self.bb as f64), ("SB", self.sb as f64), ("AVG", self.avg as f64),
+            ("K", self.k as f64), ("W", self.w as f64), ("SV", self.sv as f64),
+            ("HD", self.hd as f64), ("ERA", self.era as f64), ("WHIP", self.whip as f64),
+        ])
     }
 
     /// Create from the config-compatible `CategoryWeights`.
     pub fn from_config_weights(w: &crate::config::CategoryWeights) -> Self {
         CategoryWeights {
-            r: w.R as f32,
-            hr: w.HR as f32,
-            rbi: w.RBI as f32,
-            bb: w.BB as f32,
-            sb: w.SB as f32,
-            avg: w.AVG as f32,
-            k: w.K as f32,
-            w: w.W as f32,
-            sv: w.SV as f32,
-            hd: w.HD as f32,
-            era: w.ERA as f32,
-            whip: w.WHIP as f32,
+            r: w.weight("R") as f32,
+            hr: w.weight("HR") as f32,
+            rbi: w.weight("RBI") as f32,
+            bb: w.weight("BB") as f32,
+            sb: w.weight("SB") as f32,
+            avg: w.weight("AVG") as f32,
+            k: w.weight("K") as f32,
+            w: w.weight("W") as f32,
+            sv: w.weight("SV") as f32,
+            hd: w.weight("HD") as f32,
+            era: w.weight("ERA") as f32,
+            whip: w.weight("WHIP") as f32,
         }
     }
 }

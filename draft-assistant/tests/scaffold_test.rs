@@ -131,7 +131,7 @@ fn strategy_config_has_correct_settings() {
     let config = draft_assistant::config::StrategyConfig::default();
 
     assert!((config.hitting_budget_fraction - 0.65).abs() < f64::EPSILON);
-    assert!((config.weights.SV - 0.7).abs() < f64::EPSILON);
+    assert!((config.weights.get("SV").unwrap() - 0.7).abs() < f64::EPSILON);
     assert_eq!(config.llm.model, "claude-sonnet-4-6");
     assert_eq!(
         config.llm.provider,
