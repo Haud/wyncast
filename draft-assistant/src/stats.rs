@@ -59,6 +59,8 @@ pub struct StatDefinition {
 pub enum StatsError {
     #[error("unknown stat category: {abbrev}")]
     UnknownStat { abbrev: String },
+    #[error("duplicate stat category: {abbrev}")]
+    DuplicateStat { abbrev: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -83,6 +85,11 @@ impl StatRegistry {
         let mut pitching_indices = Vec::new();
 
         for abbrev in &config.batting_categories.categories {
+            if index.contains_key(abbrev.as_str()) {
+                return Err(StatsError::DuplicateStat {
+                    abbrev: abbrev.clone(),
+                });
+            }
             let def = lookup_stat_definition(abbrev, PlayerType::Hitter).ok_or_else(|| {
                 StatsError::UnknownStat {
                     abbrev: abbrev.clone(),
@@ -95,6 +102,11 @@ impl StatRegistry {
         }
 
         for abbrev in &config.pitching_categories.categories {
+            if index.contains_key(abbrev.as_str()) {
+                return Err(StatsError::DuplicateStat {
+                    abbrev: abbrev.clone(),
+                });
+            }
             let def = lookup_stat_definition(abbrev, PlayerType::Pitcher).ok_or_else(|| {
                 StatsError::UnknownStat {
                     abbrev: abbrev.clone(),
@@ -204,7 +216,7 @@ impl CategoryValues {
     }
 
     pub fn weighted_sum(&self, weights: &CategoryValues) -> f64 {
-        assert_eq!(
+        debug_assert_eq!(
             self.values.len(),
             weights.values.len(),
             "CategoryValues length mismatch: {} vs {}",
@@ -265,6 +277,7 @@ pub fn rate_stat_contribution(
     divisor: f64,
     direction: SortDirection,
 ) -> f64 {
+    debug_assert!(divisor != 0.0, "rate_stat_contribution: divisor must not be zero");
     let diff = match direction {
         SortDirection::HigherIsBetter => player_rate - league_avg,
         SortDirection::LowerIsBetter => league_avg - player_rate,
@@ -555,6 +568,20 @@ mod tests {
         config.pitching_categories.categories = vec![];
         let result = StatRegistry::from_league_config(&config);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn duplicate_category_returns_error() {
+        let mut config = LeagueConfig::default();
+        config.batting_categories.categories.push("R".to_string());
+        let result = StatRegistry::from_league_config(&config);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("duplicate"),
+            "error should mention duplicate: {}",
+            err
+        );
     }
 
     // ---- CategoryValues tests ----
