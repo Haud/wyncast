@@ -10,6 +10,7 @@ pub mod draft;
 pub mod llm;
 pub mod onboarding;
 pub mod protocol;
+pub mod stats;
 pub mod tui;
 pub mod valuation;
 pub mod ws_server;
