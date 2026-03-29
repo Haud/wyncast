@@ -8,6 +8,7 @@ use crate::draft::pick::Position;
 use crate::draft::roster::Roster;
 use crate::valuation::auction::InflationTracker;
 use crate::valuation::scarcity::{ScarcityEntry, ScarcityUrgency, scarcity_for_position};
+use crate::stats::StatRegistry;
 use crate::valuation::zscore::{CategoryZScores, PlayerValuation};
 
 // ---------------------------------------------------------------------------
@@ -154,6 +155,7 @@ pub fn compute_instant_analysis(
     scarcity: &[ScarcityEntry],
     inflation: &InflationTracker,
     category_needs: &CategoryNeeds,
+    registry: &StatRegistry,
 ) -> InstantAnalysis {
     let adjusted_value = inflation.adjust(player.dollar_value);
     let vor = player.vor;
@@ -183,7 +185,7 @@ pub fn compute_instant_analysis(
         .unwrap_or(ScarcityUrgency::Low);
 
     // Compute category impact: z-score * category need for each category.
-    let category_impact = compute_category_impact(player, category_needs);
+    let category_impact = compute_category_impact(player, category_needs, registry);
 
     // Bid range calculation.
     let bid_floor = (adjusted_value * 0.70).round().max(1.0) as u32;
@@ -294,42 +296,50 @@ fn is_top_n_at_position(
 fn compute_category_impact(
     player: &PlayerValuation,
     needs: &CategoryNeeds,
+    registry: &StatRegistry,
 ) -> Vec<(String, f64)> {
-    let mut impacts: Vec<(String, f64)> = match &player.category_zscores {
-        CategoryZScores::Hitter(h) => vec![
-            ("R".into(), h.r * needs.r),
-            ("HR".into(), h.hr * needs.hr),
-            ("RBI".into(), h.rbi * needs.rbi),
-            ("BB".into(), h.bb * needs.bb),
-            ("SB".into(), h.sb * needs.sb),
-            ("AVG".into(), h.avg * needs.avg),
-        ],
-        CategoryZScores::Pitcher(p) => vec![
-            ("K".into(), p.k * needs.k),
-            ("W".into(), p.w * needs.w),
-            ("SV".into(), p.sv * needs.sv),
-            ("HD".into(), p.hd * needs.hd),
-            ("ERA".into(), p.era * needs.era),
-            ("WHIP".into(), p.whip * needs.whip),
-        ],
-        CategoryZScores::TwoWay(tw) => {
-            let h = &tw.hitting;
-            let p = &tw.pitching;
-            vec![
-                ("R".into(), h.r * needs.r),
-                ("HR".into(), h.hr * needs.hr),
-                ("RBI".into(), h.rbi * needs.rbi),
-                ("BB".into(), h.bb * needs.bb),
-                ("SB".into(), h.sb * needs.sb),
-                ("AVG".into(), h.avg * needs.avg),
-                ("K".into(), p.k * needs.k),
-                ("W".into(), p.w * needs.w),
-                ("SV".into(), p.sv * needs.sv),
-                ("HD".into(), p.hd * needs.hd),
-                ("ERA".into(), p.era * needs.era),
-                ("WHIP".into(), p.whip * needs.whip),
-            ]
+    // Bridge: map abbreviation to CategoryNeeds named field.
+    // TODO(WI-8): Replace when CategoryNeeds uses CategoryValues.
+    let need_for = |abbrev: &str| -> f64 {
+        match abbrev {
+            "R" => needs.r, "HR" => needs.hr, "RBI" => needs.rbi,
+            "BB" => needs.bb, "SB" => needs.sb, "AVG" => needs.avg,
+            "K" => needs.k, "W" => needs.w, "SV" => needs.sv,
+            "HD" => needs.hd, "ERA" => needs.era, "WHIP" => needs.whip,
+            _ => 0.0,
         }
+    };
+
+    let zscores = player.category_zscores.zscores();
+    let relevant_indices: &[usize] = match &player.category_zscores {
+        CategoryZScores::Hitter { .. } => registry.batting_indices(),
+        CategoryZScores::Pitcher { .. } => registry.pitching_indices(),
+        CategoryZScores::TwoWay { .. } => {
+            // All indices — use all_stats length
+            // Since there's no "all_indices" method, iterate all stats
+            &[]
+        }
+    };
+
+    let mut impacts: Vec<(String, f64)> = if matches!(&player.category_zscores, CategoryZScores::TwoWay { .. }) {
+        // For two-way, iterate all stats
+        registry.all_stats()
+            .iter()
+            .enumerate()
+            .map(|(idx, stat)| {
+                let z = zscores.get(idx).unwrap_or(0.0);
+                (stat.abbrev.clone(), z * need_for(&stat.abbrev))
+            })
+            .collect()
+    } else {
+        relevant_indices
+            .iter()
+            .map(|&idx| {
+                let stat = &registry.all_stats()[idx];
+                let z = zscores.get(idx).unwrap_or(0.0);
+                (stat.abbrev.clone(), z * need_for(&stat.abbrev))
+            })
+            .collect()
     };
 
     // Sort by absolute impact descending.
@@ -411,12 +421,14 @@ mod tests {
     use super::*;
     use crate::config::*;
     use crate::valuation::auction::InflationTracker;
-    use crate::valuation::projections::PitcherType;
     use crate::valuation::scarcity::compute_scarcity;
-    use crate::valuation::zscore::{
-        HitterZScores, PitcherZScores, PlayerProjectionData,
-    };
+    use crate::stats::{CategoryValues, StatRegistry};
+    use crate::valuation::zscore::PlayerProjectionData;
     use std::collections::HashMap;
+
+    fn test_registry() -> StatRegistry {
+        StatRegistry::from_league_config(&test_league_config()).unwrap()
+    }
 
     fn approx_eq(a: f64, b: f64, epsilon: f64) -> bool {
         (a - b).abs() < epsilon
@@ -469,6 +481,14 @@ mod tests {
     }
 
     fn make_hitter(name: &str, vor: f64, positions: Vec<Position>, dollar: f64) -> PlayerValuation {
+        let registry = test_registry();
+        let mut zscores = CategoryValues::zeros(registry.len());
+        zscores.set(registry.index_of("R").unwrap(), 1.5);
+        zscores.set(registry.index_of("HR").unwrap(), 1.2);
+        zscores.set(registry.index_of("RBI").unwrap(), 0.8);
+        zscores.set(registry.index_of("BB").unwrap(), 2.0);
+        zscores.set(registry.index_of("SB").unwrap(), 0.3);
+        zscores.set(registry.index_of("AVG").unwrap(), 0.5);
         PlayerValuation {
             name: name.into(),
             team: "TST".into(),
@@ -480,9 +500,7 @@ mod tests {
                 pa: 600, ab: 550, h: 150, hr: 25, r: 80, rbi: 85, bb: 50, sb: 10, avg: 0.273,
             },
             total_zscore: vor + 2.0,
-            category_zscores: CategoryZScores::Hitter(HitterZScores {
-                r: 1.5, hr: 1.2, rbi: 0.8, bb: 2.0, sb: 0.3, avg: 0.5, total: vor + 2.0,
-            }),
+            category_zscores: CategoryZScores::hitter(zscores, vor + 2.0),
             vor,
             initial_vor: vor,
             best_position: positions.first().copied(),
@@ -490,35 +508,9 @@ mod tests {
         }
     }
 
-    fn make_pitcher(name: &str, vor: f64, pt: PitcherType, dollar: f64) -> PlayerValuation {
-        let pos = match pt {
-            PitcherType::SP => Position::StartingPitcher,
-            PitcherType::RP => Position::ReliefPitcher,
-        };
-        PlayerValuation {
-            name: name.into(),
-            team: "TST".into(),
-            positions: vec![pos],
-            is_pitcher: true,
-            is_two_way: false,
-            pitcher_type: Some(pt),
-            projection: PlayerProjectionData::Pitcher {
-                ip: 180.0, k: 200, w: 14, sv: 0, hd: 0, era: 3.20, whip: 1.10, g: 30, gs: 30,
-            },
-            total_zscore: vor + 1.0,
-            category_zscores: CategoryZScores::Pitcher(PitcherZScores {
-                k: 1.5, w: 0.8, sv: 0.0, hd: 0.0, era: 1.2, whip: 0.9, total: vor + 1.0,
-            }),
-            vor,
-            initial_vor: vor,
-            best_position: Some(pos),
-            dollar_value: dollar,
-        }
-    }
 
     #[test]
     fn strong_target_fills_critical_position() {
-        let league = test_league_config();
         let roster = Roster::new(&test_roster_config()); // Empty roster
 
         // Only 2 catchers available -> Critical scarcity
@@ -538,6 +530,7 @@ mod tests {
             &scarcity,
             &inflation,
             &needs,
+            &test_registry(),
         );
 
         assert_eq!(analysis.verdict, InstantVerdict::StrongTarget);
@@ -547,7 +540,6 @@ mod tests {
 
     #[test]
     fn pass_when_no_need() {
-        let league = test_league_config();
         let mut roster = Roster::new(&test_roster_config());
         // Fill the catcher slot
         roster.add_player("Existing C", "C", 10, None);
@@ -569,6 +561,7 @@ mod tests {
             &scarcity,
             &inflation,
             &needs,
+            &test_registry(),
         );
 
         assert_eq!(analysis.verdict, InstantVerdict::Pass);
@@ -576,7 +569,6 @@ mod tests {
 
     #[test]
     fn bid_floor_and_ceiling_known_values() {
-        let league = test_league_config();
         let roster = Roster::new(&test_roster_config());
 
         // Player worth $30. With neutral inflation (1.0):
@@ -600,6 +592,7 @@ mod tests {
             &scarcity,
             &inflation,
             &needs,
+            &test_registry(),
         );
 
         assert_eq!(analysis.bid_floor, 21);
@@ -608,7 +601,6 @@ mod tests {
 
     #[test]
     fn bid_range_with_inflation() {
-        let league = test_league_config();
         let roster = Roster::new(&test_roster_config());
 
         // Player worth $30. With inflation rate 1.1 (deflation):
@@ -637,6 +629,7 @@ mod tests {
             &scarcity,
             &inflation,
             &needs,
+            &test_registry(),
         );
 
         // adjusted = (30.0 - 1.0) * 1.1 + 1.0 = 32.9
@@ -667,7 +660,7 @@ mod tests {
             whip: 0.0,
         };
 
-        let impact = compute_category_impact(&player, &needs);
+        let impact = compute_category_impact(&player, &needs, &test_registry());
         assert_eq!(impact.len(), 3);
 
         // BB has highest impact: z=2.0 * need=1.0 = 2.0
@@ -697,7 +690,6 @@ mod tests {
 
     #[test]
     fn conditional_target_when_fills_slot_low_scarcity() {
-        let league = test_league_config();
         let roster = Roster::new(&test_roster_config()); // Empty roster
 
         // 10 first basemen -> Low urgency, but roster slot is empty
@@ -723,6 +715,7 @@ mod tests {
             &scarcity,
             &inflation,
             &needs,
+            &test_registry(),
         );
 
         // Should be ConditionalTarget (fills slot but Low scarcity and not top 3)
@@ -731,7 +724,6 @@ mod tests {
 
     #[test]
     fn strong_target_when_top3_and_fills_slot() {
-        let league = test_league_config();
         let roster = Roster::new(&test_roster_config()); // Empty roster
 
         // 10 first basemen -> Low urgency, but player is top 3
@@ -757,6 +749,7 @@ mod tests {
             &scarcity,
             &inflation,
             &needs,
+            &test_registry(),
         );
 
         assert_eq!(analysis.verdict, InstantVerdict::StrongTarget);

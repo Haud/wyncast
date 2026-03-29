@@ -327,8 +327,9 @@ pub fn apply_vor(players: &mut Vec<PlayerValuation>, roster_config: &HashMap<Str
 mod tests {
     use super::*;
     use crate::valuation::projections::PitcherType;
+    use crate::stats::CategoryValues;
     use crate::valuation::zscore::{
-        CategoryZScores, HitterZScores, PitcherZScores, PlayerProjectionData,
+        CategoryZScores, PlayerProjectionData,
     };
 
     // ---- Test helpers ----
@@ -356,27 +357,11 @@ mod tests {
     }
 
     fn default_hitter_zscores(total: f64) -> CategoryZScores {
-        CategoryZScores::Hitter(HitterZScores {
-            r: 0.0,
-            hr: 0.0,
-            rbi: 0.0,
-            bb: 0.0,
-            sb: 0.0,
-            avg: 0.0,
-            total,
-        })
+        CategoryZScores::hitter(CategoryValues::zeros(12), total)
     }
 
     fn default_pitcher_zscores(total: f64) -> CategoryZScores {
-        CategoryZScores::Pitcher(PitcherZScores {
-            k: 0.0,
-            w: 0.0,
-            sv: 0.0,
-            hd: 0.0,
-            era: 0.0,
-            whip: 0.0,
-            total,
-        })
+        CategoryZScores::pitcher(CategoryValues::zeros(12), total)
     }
 
     fn make_hitter_valuation(

@@ -122,14 +122,12 @@ pub fn compute_auction_values(
 pub fn player_dollar_value(player: &PlayerValuation, auction: &AuctionValues) -> f64 {
     let dollars_per_vor = if player.is_two_way {
         // Blend the hitting and pitching rates based on z-score contribution.
-        let (hitting_total, pitching_total) = match &player.category_zscores {
-            crate::valuation::zscore::CategoryZScores::TwoWay(tw) => {
-                // Weight by positive z-score contribution only. Negative sides
-                // should not pull the blended rate toward that pool.
-                (tw.hitting.total.max(0.0), tw.pitching.total.max(0.0))
-            }
-            _ => (1.0, 0.0), // Fallback: treat as pure hitter
-        };
+        let (hitting_total, pitching_total) = (
+            // Weight by positive z-score contribution only. Negative sides
+            // should not pull the blended rate toward that pool.
+            player.category_zscores.batting_total().max(0.0),
+            player.category_zscores.pitching_total().max(0.0),
+        );
         let sum = hitting_total + pitching_total;
         if sum > 1e-9 {
             let hitting_weight = hitting_total / sum;
@@ -283,8 +281,9 @@ mod tests {
     use crate::config::*;
     use crate::draft::pick::Position;
     use crate::valuation::projections::PitcherType;
+    use crate::stats::CategoryValues;
     use crate::valuation::zscore::{
-        CategoryZScores, HitterZScores, PitcherZScores, PlayerProjectionData,
+        CategoryZScores, PlayerProjectionData,
     };
     use std::collections::HashMap;
 
@@ -353,27 +352,11 @@ mod tests {
     }
 
     fn default_hitter_zscores(total: f64) -> CategoryZScores {
-        CategoryZScores::Hitter(HitterZScores {
-            r: 0.0,
-            hr: 0.0,
-            rbi: 0.0,
-            bb: 0.0,
-            sb: 0.0,
-            avg: 0.0,
-            total,
-        })
+        CategoryZScores::hitter(CategoryValues::zeros(12), total)
     }
 
     fn default_pitcher_zscores(total: f64) -> CategoryZScores {
-        CategoryZScores::Pitcher(PitcherZScores {
-            k: 0.0,
-            w: 0.0,
-            sv: 0.0,
-            hd: 0.0,
-            era: 0.0,
-            whip: 0.0,
-            total,
-        })
+        CategoryZScores::pitcher(CategoryValues::zeros(12), total)
     }
 
     fn make_hitter(name: &str, vor: f64) -> PlayerValuation {

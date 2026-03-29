@@ -245,8 +245,9 @@ pub fn scarcity_for_position(
 mod tests {
     use super::*;
     use crate::valuation::projections::PitcherType;
+    use crate::stats::CategoryValues;
     use crate::valuation::zscore::{
-        CategoryZScores, HitterZScores, PitcherZScores, PlayerProjectionData,
+        CategoryZScores, PlayerProjectionData,
     };
 
     fn approx_eq(a: f64, b: f64, epsilon: f64) -> bool {
@@ -284,9 +285,7 @@ mod tests {
                 pa: 600, ab: 550, h: 150, hr: 25, r: 80, rbi: 85, bb: 50, sb: 10, avg: 0.273,
             },
             total_zscore: vor + 2.0,
-            category_zscores: CategoryZScores::Hitter(HitterZScores {
-                r: 0.5, hr: 0.3, rbi: 0.4, bb: 0.6, sb: 0.2, avg: 0.1, total: vor + 2.0,
-            }),
+            category_zscores: CategoryZScores::hitter(CategoryValues::zeros(12), vor + 2.0),
             vor,
             initial_vor: vor,
             best_position: best_pos,
@@ -310,9 +309,7 @@ mod tests {
                 ip: 180.0, k: 200, w: 14, sv: 0, hd: 0, era: 3.20, whip: 1.10, g: 30, gs: 30,
             },
             total_zscore: vor + 1.0,
-            category_zscores: CategoryZScores::Pitcher(PitcherZScores {
-                k: 0.5, w: 0.3, sv: 0.0, hd: 0.0, era: 0.4, whip: 0.3, total: vor + 1.0,
-            }),
+            category_zscores: CategoryZScores::pitcher(CategoryValues::zeros(12), vor + 1.0),
             vor,
             initial_vor: vor,
             best_position: Some(pos),
