@@ -35,8 +35,8 @@ use crate::protocol::{
     AppMode, AppSnapshot, ConnectionStatus, LlmEvent, NominationInfo,
     TabId, TeamSnapshot, UiUpdate, UserCommand,
 };
-use crate::stats::StatRegistry;
-use crate::valuation::analysis::{compute_instant_analysis, CategoryNeeds, InstantAnalysis};
+use crate::stats::{CategoryValues, StatRegistry};
+use crate::valuation::analysis::{compute_instant_analysis, InstantAnalysis};
 use crate::valuation::auction::InflationTracker;
 use crate::valuation::projections::AllProjections;
 use crate::valuation::scarcity::{compute_scarcity, ScarcityEntry};
@@ -109,7 +109,8 @@ pub struct AppState {
     /// browser tab is closed without a clean WebSocket close frame.
     pub last_ws_message_time: Option<Instant>,
     pub active_tab: TabId,
-    pub category_needs: CategoryNeeds,
+    pub category_needs: CategoryValues,
+    pub stat_registry: StatRegistry,
     /// LLM client for streaming Claude API calls. Wrapped in Arc for
     /// sharing with spawned tasks.
     pub llm_client: Arc<LlmClient>,
@@ -168,6 +169,9 @@ impl AppState {
         };
         let inflation = InflationTracker::new();
         let onboarding_progress = onboarding_manager.load_progress();
+        let stat_registry = StatRegistry::from_league_config(&config.league)
+            .expect("league config must produce a valid stat registry");
+        let category_needs = CategoryValues::uniform(stat_registry.len(), 0.5);
 
         AppState {
             app_mode,
@@ -188,7 +192,8 @@ impl AppState {
             connection_status: ConnectionStatus::Disconnected,
             last_ws_message_time: None,
             active_tab: TabId::Analysis,
-            category_needs: CategoryNeeds::default(),
+            category_needs,
+            stat_registry,
             llm_client: Arc::new(llm_client),
             llm_tx,
             ws_outbound_tx,
@@ -494,7 +499,6 @@ impl AppState {
             .iter()
             .find(|p| p.name == nomination.player_name);
 
-        let registry = StatRegistry::from_league_config(&self.config.league).expect("valid league config");
         let analysis = player.map(|p| {
             compute_instant_analysis(
                 p,
@@ -503,7 +507,7 @@ impl AppState {
                 &self.scarcity,
                 &self.inflation,
                 &self.category_needs,
-                &registry,
+                &self.stat_registry,
             )
         });
 
@@ -660,7 +664,6 @@ impl AppState {
             engine_verdict,
         };
 
-        let registry = StatRegistry::from_league_config(&self.config.league).expect("valid league config");
         let system = prompt::system_prompt(&self.config.league, self.roster_config.as_ref(), self.config.strategy.strategy_overview.as_deref());
         let user_content = prompt::build_nomination_analysis_prompt(
             &player,
@@ -672,7 +675,7 @@ impl AppState {
             &self.draft_state,
             &self.inflation,
             &budget,
-            &registry,
+            &self.stat_registry,
         );
 
         let max_tokens = self.config.strategy.llm.analysis_max_tokens;
@@ -749,6 +752,7 @@ impl AppState {
             &self.draft_state,
             &self.inflation,
             &budget,
+            &self.stat_registry,
         );
 
         let max_tokens = self.config.strategy.llm.planning_max_tokens;

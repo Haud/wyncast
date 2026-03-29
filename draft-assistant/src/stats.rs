@@ -187,6 +187,12 @@ impl CategoryValues {
         }
     }
 
+    pub fn uniform(n: usize, value: f64) -> Self {
+        Self {
+            values: vec![value; n],
+        }
+    }
+
     pub fn from_vec(values: Vec<f64>) -> Self {
         Self { values }
     }
