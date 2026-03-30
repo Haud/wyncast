@@ -339,7 +339,8 @@ pub fn format_positions(positions: &[Position]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::valuation::zscore::{CategoryZScores, HitterZScores, PlayerProjectionData};
+    use crate::stats::CategoryValues;
+    use crate::valuation::zscore::{CategoryZScores, PlayerProjectionData};
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -371,15 +372,7 @@ mod tests {
                 avg: 0.273,
             },
             total_zscore: 3.5,
-            category_zscores: CategoryZScores::Hitter(HitterZScores {
-                r: 0.5,
-                hr: 0.3,
-                rbi: 0.4,
-                bb: 0.6,
-                sb: 0.2,
-                avg: 0.1,
-                total: 3.5,
-            }),
+            category_zscores: CategoryZScores::hitter(CategoryValues::zeros(12), 3.5),
             vor: 5.0,
             initial_vor: 0.0,
             best_position: None,

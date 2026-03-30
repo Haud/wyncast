@@ -35,6 +35,7 @@ use crate::protocol::{
     AppMode, AppSnapshot, ConnectionStatus, LlmEvent, NominationInfo,
     TabId, TeamSnapshot, UiUpdate, UserCommand,
 };
+use crate::stats::StatRegistry;
 use crate::valuation::analysis::{compute_instant_analysis, CategoryNeeds, InstantAnalysis};
 use crate::valuation::auction::InflationTracker;
 use crate::valuation::projections::AllProjections;
@@ -493,6 +494,7 @@ impl AppState {
             .iter()
             .find(|p| p.name == nomination.player_name);
 
+        let registry = StatRegistry::from_league_config(&self.config.league).expect("valid league config");
         let analysis = player.map(|p| {
             compute_instant_analysis(
                 p,
@@ -501,6 +503,7 @@ impl AppState {
                 &self.scarcity,
                 &self.inflation,
                 &self.category_needs,
+                &registry,
             )
         });
 
@@ -657,6 +660,7 @@ impl AppState {
             engine_verdict,
         };
 
+        let registry = StatRegistry::from_league_config(&self.config.league).expect("valid league config");
         let system = prompt::system_prompt(&self.config.league, self.roster_config.as_ref(), self.config.strategy.strategy_overview.as_deref());
         let user_content = prompt::build_nomination_analysis_prompt(
             &player,
@@ -668,6 +672,7 @@ impl AppState {
             &self.draft_state,
             &self.inflation,
             &budget,
+            &registry,
         );
 
         let max_tokens = self.config.strategy.llm.analysis_max_tokens;
@@ -987,10 +992,9 @@ mod tests {
     use crate::draft::pick::{DraftPick, Position};
     use crate::draft::state::{ActiveNomination, DraftState};
     use crate::protocol::{LlmEvent, OnboardingAction, OnboardingUpdate, UserCommand};
-    use crate::valuation::auction::InflationTracker;
     use crate::valuation::projections::{AllProjections, PitcherType};
     use crate::valuation::zscore::{
-        CategoryZScores, HitterZScores, PitcherZScores, PlayerProjectionData, PlayerValuation,
+        CategoryZScores, PlayerProjectionData, PlayerValuation,
     };
 
     // -----------------------------------------------------------------------
@@ -1143,15 +1147,7 @@ mod tests {
                 avg,
             },
             total_zscore: 0.0,
-            category_zscores: CategoryZScores::Hitter(HitterZScores {
-                r: 0.0,
-                hr: 0.0,
-                rbi: 0.0,
-                bb: 0.0,
-                sb: 0.0,
-                avg: 0.0,
-                total: 0.0,
-            }),
+            category_zscores: CategoryZScores::zeros_hitter(12),
             vor: 0.0,
             initial_vor: 0.0,
             best_position: None,
@@ -1197,15 +1193,7 @@ mod tests {
                 },
             },
             total_zscore: 0.0,
-            category_zscores: CategoryZScores::Pitcher(PitcherZScores {
-                k: 0.0,
-                w: 0.0,
-                sv: 0.0,
-                hd: 0.0,
-                era: 0.0,
-                whip: 0.0,
-                total: 0.0,
-            }),
+            category_zscores: CategoryZScores::zeros_pitcher(12),
             vor: 0.0,
             initial_vor: 0.0,
             best_position: None,
@@ -1796,7 +1784,7 @@ mod tests {
         let (ws_tx, ws_rx) = mpsc::channel(16);
         let (llm_tx, llm_rx) = mpsc::channel(16);
         let (cmd_tx, cmd_rx) = mpsc::channel(16);
-        let (ui_tx, mut ui_rx) = mpsc::channel(64);
+        let (ui_tx, _ui_rx) = mpsc::channel(64);
 
         // Spawn the event loop
         let handle = tokio::spawn(run(ws_rx, llm_rx, cmd_rx, ui_tx, state));

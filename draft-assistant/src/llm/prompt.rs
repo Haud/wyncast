@@ -10,6 +10,7 @@ use crate::draft::pick::Position;
 use crate::draft::roster::Roster;
 use crate::draft::state::DraftState;
 use crate::protocol::NominationInfo;
+use crate::stats::StatRegistry;
 use crate::valuation::analysis::CategoryNeeds;
 use crate::valuation::auction::InflationTracker;
 use crate::valuation::scarcity::ScarcityEntry;
@@ -175,6 +176,7 @@ pub fn build_nomination_analysis_prompt(
     draft_state: &DraftState,
     inflation: &InflationTracker,
     budget: &BudgetContext,
+    registry: &StatRegistry,
 ) -> String {
     let adjusted_value = inflation.adjust(player.dollar_value);
     let positions_str = player
@@ -203,7 +205,7 @@ pub fn build_nomination_analysis_prompt(
 
     // Section 2: PLAYER PROFILE
     prompt.push_str("## PLAYER PROFILE\n");
-    prompt.push_str(&format_player_profile(player, available_players));
+    prompt.push_str(&format_player_profile(player, available_players, registry));
     prompt.push('\n');
 
     // Section 3: MY ROSTER
@@ -431,160 +433,56 @@ pub fn build_nomination_planning_prompt(
 fn format_player_profile(
     player: &PlayerValuation,
     available_players: &[PlayerValuation],
+    registry: &StatRegistry,
 ) -> String {
+    let z = |abbrev: &str| -> f64 {
+        player.category_zscores.get_by_abbrev(registry, abbrev).unwrap_or(0.0)
+    };
+
     let mut s = String::new();
-    match (&player.projection, &player.category_zscores) {
-        (
-            PlayerProjectionData::Hitter {
-                pa,
-                r,
-                hr,
-                rbi,
-                bb,
-                sb,
-                avg,
-                ..
-            },
-            CategoryZScores::Hitter(z),
-        ) => {
+    match &player.projection {
+        PlayerProjectionData::Hitter { pa, r, hr, rbi, bb, sb, avg, .. } => {
             s.push_str(&format!("  PA: {}\n", pa));
             s.push_str("  Cat   Proj  Z-Score  Rank\n");
-            let ranks = compute_hitter_ranks(player, available_players);
-            s.push_str(&format!("  R     {:>4}  {:>+6.2}   #{}\n", r, z.r, ranks.0));
-            s.push_str(&format!(
-                "  HR    {:>4}  {:>+6.2}   #{}\n",
-                hr, z.hr, ranks.1
-            ));
-            s.push_str(&format!(
-                "  RBI   {:>4}  {:>+6.2}   #{}\n",
-                rbi, z.rbi, ranks.2
-            ));
-            s.push_str(&format!(
-                "  BB    {:>4}  {:>+6.2}   #{}\n",
-                bb, z.bb, ranks.3
-            ));
-            s.push_str(&format!(
-                "  SB    {:>4}  {:>+6.2}   #{}\n",
-                sb, z.sb, ranks.4
-            ));
-            s.push_str(&format!(
-                "  AVG   {:.3}  {:>+6.2}   #{}\n",
-                avg, z.avg, ranks.5
-            ));
+            let ranks = compute_hitter_ranks(player, available_players, registry);
+            s.push_str(&format!("  R     {:>4}  {:>+6.2}   #{}\n", r, z("R"), ranks.0));
+            s.push_str(&format!("  HR    {:>4}  {:>+6.2}   #{}\n", hr, z("HR"), ranks.1));
+            s.push_str(&format!("  RBI   {:>4}  {:>+6.2}   #{}\n", rbi, z("RBI"), ranks.2));
+            s.push_str(&format!("  BB    {:>4}  {:>+6.2}   #{}\n", bb, z("BB"), ranks.3));
+            s.push_str(&format!("  SB    {:>4}  {:>+6.2}   #{}\n", sb, z("SB"), ranks.4));
+            s.push_str(&format!("  AVG   {:.3}  {:>+6.2}   #{}\n", avg, z("AVG"), ranks.5));
         }
-        (
-            PlayerProjectionData::Pitcher {
-                ip,
-                k,
-                w,
-                sv,
-                hd,
-                era,
-                whip,
-                ..
-            },
-            CategoryZScores::Pitcher(z),
-        ) => {
+        PlayerProjectionData::Pitcher { ip, k, w, sv, hd, era, whip, .. } => {
             s.push_str(&format!("  IP: {:.0}\n", ip));
             s.push_str("  Cat   Proj  Z-Score  Rank\n");
-            let ranks = compute_pitcher_ranks(player, available_players);
-            s.push_str(&format!("  K     {:>4}  {:>+6.2}   #{}\n", k, z.k, ranks.0));
-            s.push_str(&format!("  W     {:>4}  {:>+6.2}   #{}\n", w, z.w, ranks.1));
-            s.push_str(&format!(
-                "  SV    {:>4}  {:>+6.2}   #{}\n",
-                sv, z.sv, ranks.2
-            ));
-            s.push_str(&format!(
-                "  HD    {:>4}  {:>+6.2}   #{}\n",
-                hd, z.hd, ranks.3
-            ));
-            s.push_str(&format!(
-                "  ERA   {:.2}  {:>+6.2}   #{}\n",
-                era, z.era, ranks.4
-            ));
-            s.push_str(&format!(
-                "  WHIP  {:.2}  {:>+6.2}   #{}\n",
-                whip, z.whip, ranks.5
-            ));
+            let ranks = compute_pitcher_ranks(player, available_players, registry);
+            s.push_str(&format!("  K     {:>4}  {:>+6.2}   #{}\n", k, z("K"), ranks.0));
+            s.push_str(&format!("  W     {:>4}  {:>+6.2}   #{}\n", w, z("W"), ranks.1));
+            s.push_str(&format!("  SV    {:>4}  {:>+6.2}   #{}\n", sv, z("SV"), ranks.2));
+            s.push_str(&format!("  HD    {:>4}  {:>+6.2}   #{}\n", hd, z("HD"), ranks.3));
+            s.push_str(&format!("  ERA   {:.2}  {:>+6.2}   #{}\n", era, z("ERA"), ranks.4));
+            s.push_str(&format!("  WHIP  {:.2}  {:>+6.2}   #{}\n", whip, z("WHIP"), ranks.5));
         }
-        (
-            PlayerProjectionData::TwoWay {
-                pa,
-                r,
-                hr,
-                rbi,
-                bb,
-                sb,
-                avg,
-                ip,
-                k,
-                w,
-                sv,
-                hd,
-                era,
-                whip,
-                ..
-            },
-            CategoryZScores::TwoWay(tw),
-        ) => {
-            let h_ranks = compute_hitter_ranks(player, available_players);
-            let p_ranks = compute_pitcher_ranks(player, available_players);
+        PlayerProjectionData::TwoWay { pa, r, hr, rbi, bb, sb, avg, ip, k, w, sv, hd, era, whip, .. } => {
+            let h_ranks = compute_hitter_ranks(player, available_players, registry);
+            let p_ranks = compute_pitcher_ranks(player, available_players, registry);
             s.push_str("  TWO-WAY PLAYER\n");
             s.push_str(&format!("  --- Hitting (PA: {}) ---\n", pa));
             s.push_str("  Cat   Proj  Z-Score  Rank\n");
-            s.push_str(&format!(
-                "  R     {:>4}  {:>+6.2}   #{}\n",
-                r, tw.hitting.r, h_ranks.0
-            ));
-            s.push_str(&format!(
-                "  HR    {:>4}  {:>+6.2}   #{}\n",
-                hr, tw.hitting.hr, h_ranks.1
-            ));
-            s.push_str(&format!(
-                "  RBI   {:>4}  {:>+6.2}   #{}\n",
-                rbi, tw.hitting.rbi, h_ranks.2
-            ));
-            s.push_str(&format!(
-                "  BB    {:>4}  {:>+6.2}   #{}\n",
-                bb, tw.hitting.bb, h_ranks.3
-            ));
-            s.push_str(&format!(
-                "  SB    {:>4}  {:>+6.2}   #{}\n",
-                sb, tw.hitting.sb, h_ranks.4
-            ));
-            s.push_str(&format!(
-                "  AVG   {:.3}  {:>+6.2}   #{}\n",
-                avg, tw.hitting.avg, h_ranks.5
-            ));
+            s.push_str(&format!("  R     {:>4}  {:>+6.2}   #{}\n", r, z("R"), h_ranks.0));
+            s.push_str(&format!("  HR    {:>4}  {:>+6.2}   #{}\n", hr, z("HR"), h_ranks.1));
+            s.push_str(&format!("  RBI   {:>4}  {:>+6.2}   #{}\n", rbi, z("RBI"), h_ranks.2));
+            s.push_str(&format!("  BB    {:>4}  {:>+6.2}   #{}\n", bb, z("BB"), h_ranks.3));
+            s.push_str(&format!("  SB    {:>4}  {:>+6.2}   #{}\n", sb, z("SB"), h_ranks.4));
+            s.push_str(&format!("  AVG   {:.3}  {:>+6.2}   #{}\n", avg, z("AVG"), h_ranks.5));
             s.push_str(&format!("  --- Pitching (IP: {:.0}) ---\n", ip));
             s.push_str("  Cat   Proj  Z-Score  Rank\n");
-            s.push_str(&format!(
-                "  K     {:>4}  {:>+6.2}   #{}\n",
-                k, tw.pitching.k, p_ranks.0
-            ));
-            s.push_str(&format!(
-                "  W     {:>4}  {:>+6.2}   #{}\n",
-                w, tw.pitching.w, p_ranks.1
-            ));
-            s.push_str(&format!(
-                "  SV    {:>4}  {:>+6.2}   #{}\n",
-                sv, tw.pitching.sv, p_ranks.2
-            ));
-            s.push_str(&format!(
-                "  HD    {:>4}  {:>+6.2}   #{}\n",
-                hd, tw.pitching.hd, p_ranks.3
-            ));
-            s.push_str(&format!(
-                "  ERA   {:.2}  {:>+6.2}   #{}\n",
-                era, tw.pitching.era, p_ranks.4
-            ));
-            s.push_str(&format!(
-                "  WHIP  {:.2}  {:>+6.2}   #{}\n",
-                whip, tw.pitching.whip, p_ranks.5
-            ));
-        }
-        _ => {
-            s.push_str("  (projection/zscore type mismatch)\n");
+            s.push_str(&format!("  K     {:>4}  {:>+6.2}   #{}\n", k, z("K"), p_ranks.0));
+            s.push_str(&format!("  W     {:>4}  {:>+6.2}   #{}\n", w, z("W"), p_ranks.1));
+            s.push_str(&format!("  SV    {:>4}  {:>+6.2}   #{}\n", sv, z("SV"), p_ranks.2));
+            s.push_str(&format!("  HD    {:>4}  {:>+6.2}   #{}\n", hd, z("HD"), p_ranks.3));
+            s.push_str(&format!("  ERA   {:.2}  {:>+6.2}   #{}\n", era, z("ERA"), p_ranks.4));
+            s.push_str(&format!("  WHIP  {:.2}  {:>+6.2}   #{}\n", whip, z("WHIP"), p_ranks.5));
         }
     }
     s
@@ -595,78 +493,32 @@ fn format_player_profile(
 fn compute_hitter_ranks(
     player: &PlayerValuation,
     available: &[PlayerValuation],
+    registry: &StatRegistry,
 ) -> (usize, usize, usize, usize, usize, usize) {
+    let abbrevs = ["R", "HR", "RBI", "BB", "SB", "AVG"];
+
+    let my_vals: Vec<f64> = abbrevs
+        .iter()
+        .map(|a| player.category_zscores.get_by_abbrev(registry, a).unwrap_or(0.0))
+        .collect();
+
     let hitter_z: Vec<&CategoryZScores> = available
         .iter()
         .filter(|p| !p.is_pitcher)
         .map(|p| &p.category_zscores)
         .collect();
 
-    let pz = match &player.category_zscores {
-        CategoryZScores::Hitter(h) => *h,
-        CategoryZScores::TwoWay(tw) => tw.hitting,
-        _ => return (0, 0, 0, 0, 0, 0),
-    };
-
-    let rank = |val: f64, extract: fn(&CategoryZScores) -> Option<f64>| -> usize {
+    let rank = |idx: usize| -> usize {
+        let abbrev = abbrevs[idx];
+        let my_val = my_vals[idx];
         let better = hitter_z
             .iter()
-            .filter(|z| extract(z).map(|v| v > val).unwrap_or(false))
+            .filter(|z| z.get_by_abbrev(registry, abbrev).map(|v| v > my_val).unwrap_or(false))
             .count();
         better + 1
     };
 
-    let r_extract = |z: &CategoryZScores| -> Option<f64> {
-        match z {
-            CategoryZScores::Hitter(h) => Some(h.r),
-            CategoryZScores::TwoWay(tw) => Some(tw.hitting.r),
-            _ => None,
-        }
-    };
-    let hr_extract = |z: &CategoryZScores| -> Option<f64> {
-        match z {
-            CategoryZScores::Hitter(h) => Some(h.hr),
-            CategoryZScores::TwoWay(tw) => Some(tw.hitting.hr),
-            _ => None,
-        }
-    };
-    let rbi_extract = |z: &CategoryZScores| -> Option<f64> {
-        match z {
-            CategoryZScores::Hitter(h) => Some(h.rbi),
-            CategoryZScores::TwoWay(tw) => Some(tw.hitting.rbi),
-            _ => None,
-        }
-    };
-    let bb_extract = |z: &CategoryZScores| -> Option<f64> {
-        match z {
-            CategoryZScores::Hitter(h) => Some(h.bb),
-            CategoryZScores::TwoWay(tw) => Some(tw.hitting.bb),
-            _ => None,
-        }
-    };
-    let sb_extract = |z: &CategoryZScores| -> Option<f64> {
-        match z {
-            CategoryZScores::Hitter(h) => Some(h.sb),
-            CategoryZScores::TwoWay(tw) => Some(tw.hitting.sb),
-            _ => None,
-        }
-    };
-    let avg_extract = |z: &CategoryZScores| -> Option<f64> {
-        match z {
-            CategoryZScores::Hitter(h) => Some(h.avg),
-            CategoryZScores::TwoWay(tw) => Some(tw.hitting.avg),
-            _ => None,
-        }
-    };
-
-    (
-        rank(pz.r, r_extract),
-        rank(pz.hr, hr_extract),
-        rank(pz.rbi, rbi_extract),
-        rank(pz.bb, bb_extract),
-        rank(pz.sb, sb_extract),
-        rank(pz.avg, avg_extract),
-    )
+    (rank(0), rank(1), rank(2), rank(3), rank(4), rank(5))
 }
 
 /// Compute per-category ranks for a pitcher among available players.
@@ -674,78 +526,32 @@ fn compute_hitter_ranks(
 fn compute_pitcher_ranks(
     player: &PlayerValuation,
     available: &[PlayerValuation],
+    registry: &StatRegistry,
 ) -> (usize, usize, usize, usize, usize, usize) {
+    let abbrevs = ["K", "W", "SV", "HD", "ERA", "WHIP"];
+
+    let my_vals: Vec<f64> = abbrevs
+        .iter()
+        .map(|a| player.category_zscores.get_by_abbrev(registry, a).unwrap_or(0.0))
+        .collect();
+
     let pitcher_z: Vec<&CategoryZScores> = available
         .iter()
         .filter(|p| p.is_pitcher || p.is_two_way)
         .map(|p| &p.category_zscores)
         .collect();
 
-    let pz = match &player.category_zscores {
-        CategoryZScores::Pitcher(p) => *p,
-        CategoryZScores::TwoWay(tw) => tw.pitching,
-        _ => return (0, 0, 0, 0, 0, 0),
-    };
-
-    let rank = |val: f64, extract: fn(&CategoryZScores) -> Option<f64>| -> usize {
+    let rank = |idx: usize| -> usize {
+        let abbrev = abbrevs[idx];
+        let my_val = my_vals[idx];
         let better = pitcher_z
             .iter()
-            .filter(|z| extract(z).map(|v| v > val).unwrap_or(false))
+            .filter(|z| z.get_by_abbrev(registry, abbrev).map(|v| v > my_val).unwrap_or(false))
             .count();
         better + 1
     };
 
-    let k_extract = |z: &CategoryZScores| -> Option<f64> {
-        match z {
-            CategoryZScores::Pitcher(p) => Some(p.k),
-            CategoryZScores::TwoWay(tw) => Some(tw.pitching.k),
-            _ => None,
-        }
-    };
-    let w_extract = |z: &CategoryZScores| -> Option<f64> {
-        match z {
-            CategoryZScores::Pitcher(p) => Some(p.w),
-            CategoryZScores::TwoWay(tw) => Some(tw.pitching.w),
-            _ => None,
-        }
-    };
-    let sv_extract = |z: &CategoryZScores| -> Option<f64> {
-        match z {
-            CategoryZScores::Pitcher(p) => Some(p.sv),
-            CategoryZScores::TwoWay(tw) => Some(tw.pitching.sv),
-            _ => None,
-        }
-    };
-    let hd_extract = |z: &CategoryZScores| -> Option<f64> {
-        match z {
-            CategoryZScores::Pitcher(p) => Some(p.hd),
-            CategoryZScores::TwoWay(tw) => Some(tw.pitching.hd),
-            _ => None,
-        }
-    };
-    let era_extract = |z: &CategoryZScores| -> Option<f64> {
-        match z {
-            CategoryZScores::Pitcher(p) => Some(p.era),
-            CategoryZScores::TwoWay(tw) => Some(tw.pitching.era),
-            _ => None,
-        }
-    };
-    let whip_extract = |z: &CategoryZScores| -> Option<f64> {
-        match z {
-            CategoryZScores::Pitcher(p) => Some(p.whip),
-            CategoryZScores::TwoWay(tw) => Some(tw.pitching.whip),
-            _ => None,
-        }
-    };
-
-    (
-        rank(pz.k, k_extract),
-        rank(pz.w, w_extract),
-        rank(pz.sv, sv_extract),
-        rank(pz.hd, hd_extract),
-        rank(pz.era, era_extract),
-        rank(pz.whip, whip_extract),
-    )
+    (rank(0), rank(1), rank(2), rank(3), rank(4), rank(5))
 }
 
 /// Find market comps: recently drafted players at the same position with
@@ -1030,11 +836,16 @@ mod tests {
     use crate::valuation::analysis::CategoryNeeds;
     use crate::valuation::auction::InflationTracker;
     use crate::valuation::projections::PitcherType;
-    use crate::valuation::scarcity::{compute_scarcity, ScarcityEntry, ScarcityUrgency};
+    use crate::valuation::scarcity::compute_scarcity;
+    use crate::stats::{CategoryValues, StatRegistry};
     use crate::valuation::zscore::{
-        CategoryZScores, HitterZScores, PitcherZScores, PlayerProjectionData, PlayerValuation,
+        CategoryZScores, PlayerProjectionData, PlayerValuation,
     };
     use std::collections::HashMap;
+
+    fn test_registry() -> StatRegistry {
+        StatRegistry::from_league_config(&test_league_config()).expect("valid test config")
+    }
 
     // ---- Test helpers ----
 
@@ -1125,6 +936,14 @@ mod tests {
     }
 
     fn make_hitter(name: &str, vor: f64, positions: Vec<Position>, dollar: f64) -> PlayerValuation {
+        let registry = test_registry();
+        let mut zv = CategoryValues::zeros(registry.len());
+        zv.set(registry.index_of("R").unwrap(), 1.5);
+        zv.set(registry.index_of("HR").unwrap(), 1.2);
+        zv.set(registry.index_of("RBI").unwrap(), 0.8);
+        zv.set(registry.index_of("BB").unwrap(), 2.0);
+        zv.set(registry.index_of("SB").unwrap(), 0.3);
+        zv.set(registry.index_of("AVG").unwrap(), 0.5);
         PlayerValuation {
             name: name.into(),
             team: "TST".into(),
@@ -1144,15 +963,7 @@ mod tests {
                 avg: 0.273,
             },
             total_zscore: vor + 2.0,
-            category_zscores: CategoryZScores::Hitter(HitterZScores {
-                r: 1.5,
-                hr: 1.2,
-                rbi: 0.8,
-                bb: 2.0,
-                sb: 0.3,
-                avg: 0.5,
-                total: vor + 2.0,
-            }),
+            category_zscores: CategoryZScores::hitter(zv, vor + 2.0),
             vor,
             initial_vor: 0.0,
             best_position: positions.first().copied(),
@@ -1165,6 +976,12 @@ mod tests {
             PitcherType::SP => Position::StartingPitcher,
             PitcherType::RP => Position::ReliefPitcher,
         };
+        let registry = test_registry();
+        let mut zv = CategoryValues::zeros(registry.len());
+        zv.set(registry.index_of("K").unwrap(), 1.5);
+        zv.set(registry.index_of("W").unwrap(), 0.8);
+        zv.set(registry.index_of("ERA").unwrap(), 1.2);
+        zv.set(registry.index_of("WHIP").unwrap(), 0.9);
         PlayerValuation {
             name: name.into(),
             team: "TST".into(),
@@ -1184,15 +1001,7 @@ mod tests {
                 gs: 30,
             },
             total_zscore: vor + 1.0,
-            category_zscores: CategoryZScores::Pitcher(PitcherZScores {
-                k: 1.5,
-                w: 0.8,
-                sv: 0.0,
-                hd: 0.0,
-                era: 1.2,
-                whip: 0.9,
-                total: vor + 1.0,
-            }),
+            category_zscores: CategoryZScores::pitcher(zv, vor + 1.0),
             vor,
             initial_vor: 0.0,
             best_position: Some(pos),
@@ -1302,7 +1111,6 @@ mod tests {
         };
         let roster = Roster::new(&test_roster_config());
         let needs = CategoryNeeds::uniform(0.5);
-        let league = test_league_config();
         let available = vec![
             player.clone(),
             make_hitter("Similar CF", 8.0, vec![Position::CenterField], 38.0),
@@ -1321,6 +1129,7 @@ mod tests {
             &draft_state,
             &inflation,
             &test_budget_context(),
+            &test_registry(),
         );
 
         assert!(
@@ -1366,7 +1175,6 @@ mod tests {
         };
         let roster = Roster::new(&test_roster_config());
         let needs = CategoryNeeds::uniform(0.5);
-        let league = test_league_config();
         let available = vec![player.clone()];
         let scarcity = compute_scarcity(&available, &test_roster_config());
         let draft_state = create_test_draft_state();
@@ -1382,6 +1190,7 @@ mod tests {
             &draft_state,
             &inflation,
             &test_budget_context(),
+            &test_registry(),
         );
 
         assert!(prompt.contains("$30"), "should contain dollar value");
@@ -1395,7 +1204,6 @@ mod tests {
     fn nomination_planning_prompt_contains_sections() {
         let roster = Roster::new(&test_roster_config());
         let needs = CategoryNeeds::uniform(0.5);
-        let league = test_league_config();
         let available = vec![
             make_hitter("H1", 10.0, vec![Position::FirstBase], 40.0),
             make_hitter("H2", 8.0, vec![Position::SecondBase], 35.0),
@@ -1449,7 +1257,6 @@ mod tests {
     fn planning_prompt_shows_opponent_budgets() {
         let roster = Roster::new(&test_roster_config());
         let needs = CategoryNeeds::uniform(0.5);
-        let league = test_league_config();
         let available = vec![make_hitter("H1", 10.0, vec![Position::FirstBase], 40.0)];
         let scarcity = compute_scarcity(&available, &test_roster_config());
         let mut draft_state = create_test_draft_state();
@@ -1767,7 +1574,7 @@ mod tests {
         let player = make_hitter("Test Hitter", 5.0, vec![Position::FirstBase], 20.0);
         let available = vec![player.clone()];
 
-        let profile = format_player_profile(&player, &available);
+        let profile = format_player_profile(&player, &available, &test_registry());
 
         assert!(profile.contains("PA: 600"), "should show PA");
         assert!(profile.contains("R"), "should show R category");
@@ -1783,7 +1590,7 @@ mod tests {
         let player = make_pitcher("Test Pitcher", 5.0, PitcherType::SP, 20.0);
         let available = vec![player.clone()];
 
-        let profile = format_player_profile(&player, &available);
+        let profile = format_player_profile(&player, &available, &test_registry());
 
         assert!(profile.contains("IP: 180"), "should show IP");
         assert!(profile.contains("K"), "should show K category");
@@ -1808,7 +1615,6 @@ mod tests {
         };
         let roster = Roster::new(&test_roster_config());
         let needs = CategoryNeeds::uniform(0.5);
-        let league = test_league_config();
         let available = vec![player.clone()];
         let scarcity = compute_scarcity(&available, &test_roster_config());
         let draft_state = create_test_draft_state();
@@ -1825,6 +1631,7 @@ mod tests {
             &draft_state,
             &inflation,
             &budget,
+            &test_registry(),
         );
 
         assert!(prompt.contains("## BUDGET CONSTRAINTS"), "should have budget constraints section");

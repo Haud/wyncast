@@ -12,9 +12,9 @@ use std::collections::HashMap;
 use crate::config::{Config, LeagueConfig, StrategyConfig};
 use crate::draft::state::DraftState;
 use projections::AllProjections;
+use crate::stats::{CategoryValues, StatRegistry};
 use zscore::{
-    CategoryZScores, HitterZScores, PitcherZScores, TwoWayZScores,
-    PlayerProjectionData, PlayerValuation,
+    CategoryZScores, PlayerProjectionData, PlayerValuation,
     avg_contribution, compute_pool_stats, compute_zscore, era_contribution,
     whip_contribution,
 };
@@ -85,6 +85,8 @@ pub fn recalculate_all(
         return;
     }
 
+    let registry = StatRegistry::from_league_config(league)
+        .expect("StatRegistry must be valid for configured categories");
     let weights = &strategy.weights;
 
     // Helper: extract hitting stats from a projection (Hitter or TwoWay).
@@ -217,16 +219,15 @@ pub fn recalculate_all(
                     + sbz * weights.SB
                     + avgz * weights.AVG;
 
-                available_players[i].category_zscores =
-                    CategoryZScores::Hitter(HitterZScores {
-                        r: rz,
-                        hr: hrz,
-                        rbi: rbiz,
-                        bb: bbz,
-                        sb: sbz,
-                        avg: avgz,
-                        total,
-                    });
+                let mut zscores = CategoryValues::zeros(registry.len());
+                zscores.set(registry.index_of("R").unwrap(), rz);
+                zscores.set(registry.index_of("HR").unwrap(), hrz);
+                zscores.set(registry.index_of("RBI").unwrap(), rbiz);
+                zscores.set(registry.index_of("BB").unwrap(), bbz);
+                zscores.set(registry.index_of("SB").unwrap(), sbz);
+                zscores.set(registry.index_of("AVG").unwrap(), avgz);
+
+                available_players[i].category_zscores = CategoryZScores::hitter(zscores, total);
                 available_players[i].total_zscore = total;
             }
         }
@@ -333,16 +334,15 @@ pub fn recalculate_all(
                     + eraz * weights.ERA
                     + whipz * weights.WHIP;
 
-                available_players[i].category_zscores =
-                    CategoryZScores::Pitcher(PitcherZScores {
-                        k: kz,
-                        w: wz,
-                        sv: svz,
-                        hd: hdz,
-                        era: eraz,
-                        whip: whipz,
-                        total,
-                    });
+                let mut zscores = CategoryValues::zeros(registry.len());
+                zscores.set(registry.index_of("K").unwrap(), kz);
+                zscores.set(registry.index_of("W").unwrap(), wz);
+                zscores.set(registry.index_of("SV").unwrap(), svz);
+                zscores.set(registry.index_of("HD").unwrap(), hdz);
+                zscores.set(registry.index_of("ERA").unwrap(), eraz);
+                zscores.set(registry.index_of("WHIP").unwrap(), whipz);
+
+                available_players[i].category_zscores = CategoryZScores::pitcher(zscores, total);
                 available_players[i].total_zscore = total;
             }
         }
@@ -369,16 +369,12 @@ pub fn recalculate_all(
                     avg_contribution(ab, avg, *league_avg_avg),
                     avg_stats,
                 );
-                let hitting_total = rz * weights.R
+                let batting_total = rz * weights.R
                     + hrz * weights.HR
                     + rbiz * weights.RBI
                     + bbz * weights.BB
                     + sbz * weights.SB
                     + avgz * weights.AVG;
-                let hitting_zscores = HitterZScores {
-                    r: rz, hr: hrz, rbi: rbiz, bb: bbz, sb: sbz, avg: avgz,
-                    total: hitting_total,
-                };
 
                 // Pitching z-scores
                 let kz = compute_zscore(k as f64, k_stats);
@@ -399,18 +395,24 @@ pub fn recalculate_all(
                     + hdz * weights.HD
                     + eraz * weights.ERA
                     + whipz * weights.WHIP;
-                let pitching_zscores = PitcherZScores {
-                    k: kz, w: wz, sv: svz, hd: hdz, era: eraz, whip: whipz,
-                    total: pitching_total,
-                };
 
-                let combined_total = hitting_total + pitching_total;
+                let mut two_way_zscores = CategoryValues::zeros(registry.len());
+                two_way_zscores.set(registry.index_of("R").unwrap(), rz);
+                two_way_zscores.set(registry.index_of("HR").unwrap(), hrz);
+                two_way_zscores.set(registry.index_of("RBI").unwrap(), rbiz);
+                two_way_zscores.set(registry.index_of("BB").unwrap(), bbz);
+                two_way_zscores.set(registry.index_of("SB").unwrap(), sbz);
+                two_way_zscores.set(registry.index_of("AVG").unwrap(), avgz);
+                two_way_zscores.set(registry.index_of("K").unwrap(), kz);
+                two_way_zscores.set(registry.index_of("W").unwrap(), wz);
+                two_way_zscores.set(registry.index_of("SV").unwrap(), svz);
+                two_way_zscores.set(registry.index_of("HD").unwrap(), hdz);
+                two_way_zscores.set(registry.index_of("ERA").unwrap(), eraz);
+                two_way_zscores.set(registry.index_of("WHIP").unwrap(), whipz);
+
+                let combined_total = batting_total + pitching_total;
                 available_players[i].category_zscores =
-                    CategoryZScores::TwoWay(TwoWayZScores {
-                        hitting: hitting_zscores,
-                        pitching: pitching_zscores,
-                        total: combined_total,
-                    });
+                    CategoryZScores::two_way(two_way_zscores, batting_total, pitching_total);
                 available_players[i].total_zscore = combined_total;
             }
         }
@@ -528,9 +530,7 @@ mod tests {
                 avg,
             },
             total_zscore: 0.0,
-            category_zscores: CategoryZScores::Hitter(HitterZScores {
-                r: 0.0, hr: 0.0, rbi: 0.0, bb: 0.0, sb: 0.0, avg: 0.0, total: 0.0,
-            }),
+            category_zscores: CategoryZScores::zeros_hitter(12),
             vor: 0.0,
             initial_vor: 0.0,
             best_position: None,
@@ -567,9 +567,7 @@ mod tests {
                 gs: if pitcher_type == PitcherType::SP { 30 } else { 0 },
             },
             total_zscore: 0.0,
-            category_zscores: CategoryZScores::Pitcher(PitcherZScores {
-                k: 0.0, w: 0.0, sv: 0.0, hd: 0.0, era: 0.0, whip: 0.0, total: 0.0,
-            }),
+            category_zscores: CategoryZScores::zeros_pitcher(12),
             vor: 0.0,
             initial_vor: 0.0,
             best_position: None,
@@ -755,15 +753,7 @@ mod tests {
                 gs: if pitcher_type == crate::valuation::projections::PitcherType::SP { 30 } else { 0 },
             },
             total_zscore: 0.0,
-            category_zscores: CategoryZScores::TwoWay(TwoWayZScores {
-                hitting: HitterZScores {
-                    r: 0.0, hr: 0.0, rbi: 0.0, bb: 0.0, sb: 0.0, avg: 0.0, total: 0.0,
-                },
-                pitching: PitcherZScores {
-                    k: 0.0, w: 0.0, sv: 0.0, hd: 0.0, era: 0.0, whip: 0.0, total: 0.0,
-                },
-                total: 0.0,
-            }),
+            category_zscores: CategoryZScores::two_way(CategoryValues::zeros(12), 0.0, 0.0),
             vor: 0.0,
             initial_vor: 0.0,
             best_position: None,
@@ -811,9 +801,9 @@ mod tests {
 
         // Two-way player should have TwoWay z-scores after recalculation.
         match &ohtani.category_zscores {
-            CategoryZScores::TwoWay(tw) => {
-                assert!(tw.hitting.total.is_finite());
-                assert!(tw.pitching.total.is_finite());
+            CategoryZScores::TwoWay { batting_total, pitching_total, .. } => {
+                assert!(batting_total.is_finite());
+                assert!(pitching_total.is_finite());
             }
             other => panic!("Expected TwoWay z-scores after recalculate, got {:?}", other),
         }
