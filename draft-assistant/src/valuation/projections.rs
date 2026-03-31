@@ -5,6 +5,7 @@
 
 use crate::config::{Config, DataPaths};
 use crate::protocol::EspnPlayerProjection;
+use crate::stats::ProjectionData;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::Path;
@@ -44,6 +45,22 @@ pub struct HitterProjection {
     pub espn_position: String,
 }
 
+impl From<&HitterProjection> for ProjectionData {
+    fn from(proj: &HitterProjection) -> Self {
+        let mut data = ProjectionData::new();
+        data.insert("pa", f64::from(proj.pa));
+        data.insert("ab", f64::from(proj.ab));
+        data.insert("h", f64::from(proj.h));
+        data.insert("hr", f64::from(proj.hr));
+        data.insert("r", f64::from(proj.r));
+        data.insert("rbi", f64::from(proj.rbi));
+        data.insert("bb", f64::from(proj.bb));
+        data.insert("sb", f64::from(proj.sb));
+        data.insert("avg", proj.avg);
+        data
+    }
+}
+
 /// Projected season stats for a pitcher.
 #[derive(Debug, Clone)]
 pub struct PitcherProjection {
@@ -59,6 +76,25 @@ pub struct PitcherProjection {
     pub whip: f64,
     pub g: u32,
     pub gs: u32,
+}
+
+impl From<&PitcherProjection> for ProjectionData {
+    fn from(proj: &PitcherProjection) -> Self {
+        let mut data = ProjectionData::new();
+        data.insert("ip", proj.ip);
+        data.insert("k", f64::from(proj.k));
+        data.insert("w", f64::from(proj.w));
+        data.insert("sv", f64::from(proj.sv));
+        data.insert("hd", f64::from(proj.hd));
+        data.insert("era", proj.era);
+        data.insert("whip", proj.whip);
+        data.insert("g", f64::from(proj.g));
+        data.insert("gs", f64::from(proj.gs));
+        if proj.ip > 0.0 {
+            data.insert("k9", f64::from(proj.k) * 9.0 / proj.ip);
+        }
+        data
+    }
 }
 
 /// All projection data loaded and ready for the valuation engine.
@@ -1081,6 +1117,97 @@ Bobby Witt Jr.,KC, SS ,652,590,171,27,96,87,49,32,0.289";
         assert_eq!(result.hitters.len(), 0);
         assert_eq!(result.pitchers.len(), 1);
         assert_eq!(result.pitchers[0].pitcher_type, PitcherType::SP);
+    }
+
+    // -- ProjectionData From impls --
+
+    #[test]
+    fn from_hitter_projection_populates_all_keys() {
+        let proj = HitterProjection {
+            name: "Test Hitter".into(),
+            team: "NYY".into(),
+            pa: 700,
+            ab: 600,
+            h: 180,
+            hr: 50,
+            r: 120,
+            rbi: 130,
+            bb: 90,
+            sb: 5,
+            avg: 0.300,
+            espn_position: "SS".into(),
+        };
+        let pd = ProjectionData::from(&proj);
+        assert_eq!(pd.get("pa"), Some(700.0));
+        assert_eq!(pd.get("ab"), Some(600.0));
+        assert_eq!(pd.get("h"), Some(180.0));
+        assert_eq!(pd.get("hr"), Some(50.0));
+        assert_eq!(pd.get("r"), Some(120.0));
+        assert_eq!(pd.get("rbi"), Some(130.0));
+        assert_eq!(pd.get("bb"), Some(90.0));
+        assert_eq!(pd.get("sb"), Some(5.0));
+        assert_eq!(pd.get("avg"), Some(0.300));
+        // Non-numeric fields are excluded
+        assert_eq!(pd.get("name"), None);
+        assert_eq!(pd.get("team"), None);
+        assert_eq!(pd.get("espn_position"), None);
+        // Missing key returns 0.0 via get_or_zero
+        assert_eq!(pd.get_or_zero("nonexistent"), 0.0);
+    }
+
+    #[test]
+    fn from_pitcher_projection_populates_all_keys_with_k9() {
+        let proj = PitcherProjection {
+            name: "Test Pitcher".into(),
+            team: "LAD".into(),
+            pitcher_type: PitcherType::SP,
+            ip: 200.0,
+            k: 250,
+            w: 16,
+            sv: 0,
+            hd: 0,
+            era: 2.80,
+            whip: 1.05,
+            g: 32,
+            gs: 32,
+        };
+        let pd = ProjectionData::from(&proj);
+        assert_eq!(pd.get("ip"), Some(200.0));
+        assert_eq!(pd.get("k"), Some(250.0));
+        assert_eq!(pd.get("w"), Some(16.0));
+        assert_eq!(pd.get("sv"), Some(0.0));
+        assert_eq!(pd.get("hd"), Some(0.0));
+        assert_eq!(pd.get("era"), Some(2.80));
+        assert_eq!(pd.get("whip"), Some(1.05));
+        assert_eq!(pd.get("g"), Some(32.0));
+        assert_eq!(pd.get("gs"), Some(32.0));
+        // Derived k9 = 250 * 9 / 200 = 11.25
+        let k9 = pd.get("k9").expect("k9 should be present");
+        assert!((k9 - 11.25).abs() < 1e-10);
+        // Non-numeric fields excluded
+        assert_eq!(pd.get("name"), None);
+        assert_eq!(pd.get("pitcher_type"), None);
+    }
+
+    #[test]
+    fn from_pitcher_projection_zero_ip_omits_k9() {
+        let proj = PitcherProjection {
+            name: "Zero IP".into(),
+            team: "BOS".into(),
+            pitcher_type: PitcherType::RP,
+            ip: 0.0,
+            k: 0,
+            w: 0,
+            sv: 0,
+            hd: 0,
+            era: 0.0,
+            whip: 0.0,
+            g: 0,
+            gs: 0,
+        };
+        let pd = ProjectionData::from(&proj);
+        assert_eq!(pd.get("k9"), None);
+        assert_eq!(pd.get_or_zero("k9"), 0.0);
     }
 
 }

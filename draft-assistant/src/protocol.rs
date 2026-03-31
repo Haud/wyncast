@@ -7,6 +7,7 @@ use crate::draft::roster::RosterSlot;
 use crate::llm::provider::LlmProvider;
 use crate::onboarding::OnboardingStep;
 use crate::valuation::scarcity::ScarcityEntry;
+use crate::stats::ProjectionData;
 use crate::valuation::zscore::PlayerValuation;
 
 // ---------------------------------------------------------------------------
@@ -213,6 +214,41 @@ pub struct EspnPitchingProjection {
     pub whip: f64,
     pub g: u32,
     pub gs: u32,
+}
+
+impl From<&EspnBattingProjection> for ProjectionData {
+    fn from(proj: &EspnBattingProjection) -> Self {
+        let mut data = ProjectionData::new();
+        data.insert("pa", f64::from(proj.pa));
+        data.insert("ab", f64::from(proj.ab));
+        data.insert("h", f64::from(proj.h));
+        data.insert("hr", f64::from(proj.hr));
+        data.insert("r", f64::from(proj.r));
+        data.insert("rbi", f64::from(proj.rbi));
+        data.insert("bb", f64::from(proj.bb));
+        data.insert("sb", f64::from(proj.sb));
+        data.insert("avg", proj.avg);
+        data
+    }
+}
+
+impl From<&EspnPitchingProjection> for ProjectionData {
+    fn from(proj: &EspnPitchingProjection) -> Self {
+        let mut data = ProjectionData::new();
+        data.insert("ip", proj.ip);
+        data.insert("k", f64::from(proj.k));
+        data.insert("w", f64::from(proj.w));
+        data.insert("sv", f64::from(proj.sv));
+        data.insert("hd", f64::from(proj.hd));
+        data.insert("era", proj.era);
+        data.insert("whip", proj.whip);
+        data.insert("g", f64::from(proj.g));
+        data.insert("gs", f64::from(proj.gs));
+        if proj.ip > 0.0 {
+            data.insert("k9", f64::from(proj.k) * 9.0 / proj.ip);
+        }
+        data
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1405,5 +1441,80 @@ mod tests {
             llm_configured: false,
         };
         assert_eq!(snap.app_mode, AppMode::Onboarding(OnboardingStep::StrategySetup));
+    }
+
+    // -- ProjectionData From impls --
+
+    #[test]
+    fn from_espn_batting_projection_populates_all_keys() {
+        let proj = EspnBattingProjection {
+            pa: 600,
+            ab: 530,
+            h: 150,
+            hr: 30,
+            r: 90,
+            rbi: 85,
+            bb: 60,
+            sb: 10,
+            avg: 0.283,
+        };
+        let pd = ProjectionData::from(&proj);
+        assert_eq!(pd.get("pa"), Some(600.0));
+        assert_eq!(pd.get("ab"), Some(530.0));
+        assert_eq!(pd.get("h"), Some(150.0));
+        assert_eq!(pd.get("hr"), Some(30.0));
+        assert_eq!(pd.get("r"), Some(90.0));
+        assert_eq!(pd.get("rbi"), Some(85.0));
+        assert_eq!(pd.get("bb"), Some(60.0));
+        assert_eq!(pd.get("sb"), Some(10.0));
+        assert_eq!(pd.get("avg"), Some(0.283));
+        // Pitching keys not present
+        assert_eq!(pd.get_or_zero("ip"), 0.0);
+    }
+
+    #[test]
+    fn from_espn_pitching_projection_populates_all_keys_with_k9() {
+        let proj = EspnPitchingProjection {
+            ip: 180.0,
+            k: 200,
+            w: 14,
+            sv: 0,
+            hd: 0,
+            era: 3.20,
+            whip: 1.10,
+            g: 30,
+            gs: 30,
+        };
+        let pd = ProjectionData::from(&proj);
+        assert_eq!(pd.get("ip"), Some(180.0));
+        assert_eq!(pd.get("k"), Some(200.0));
+        assert_eq!(pd.get("w"), Some(14.0));
+        assert_eq!(pd.get("sv"), Some(0.0));
+        assert_eq!(pd.get("hd"), Some(0.0));
+        assert_eq!(pd.get("era"), Some(3.20));
+        assert_eq!(pd.get("whip"), Some(1.10));
+        assert_eq!(pd.get("g"), Some(30.0));
+        assert_eq!(pd.get("gs"), Some(30.0));
+        // k9 = 200 * 9 / 180 = 10.0
+        let k9 = pd.get("k9").expect("k9 should be present");
+        assert!((k9 - 10.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn from_espn_pitching_projection_zero_ip_omits_k9() {
+        let proj = EspnPitchingProjection {
+            ip: 0.0,
+            k: 0,
+            w: 0,
+            sv: 0,
+            hd: 0,
+            era: 0.0,
+            whip: 0.0,
+            g: 0,
+            gs: 0,
+        };
+        let pd = ProjectionData::from(&proj);
+        assert_eq!(pd.get("k9"), None);
+        assert_eq!(pd.get_or_zero("k9"), 0.0);
     }
 }
