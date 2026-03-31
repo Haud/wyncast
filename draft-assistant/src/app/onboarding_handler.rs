@@ -900,16 +900,15 @@ pub(super) fn parse_strategy_json(
         .map(|v| v.min(100) as u8)
         .unwrap_or(65);
 
-    let mut weights = CategoryWeights::default();
-
+    let mut config_weights = crate::config::CategoryWeights::default();
     if let Some(cw) = parsed.get("category_weights").and_then(|v| v.as_object()) {
-        for (idx, name) in crate::tui::onboarding::strategy_setup::CATEGORIES.iter().enumerate() {
-            if let Some(val) = cw.get(*name).and_then(|v| v.as_f64()) {
-                let clamped = val.max(0.0).min(5.0) as f32;
-                weights.set(idx, clamped);
+        for (name, v) in cw {
+            if let Some(val) = v.as_f64() {
+                config_weights.0.insert(name.clone(), val.max(0.0).min(5.0));
             }
         }
     }
+    let weights = CategoryWeights::from_config_weights(&config_weights);
 
     let overview = parsed
         .get("strategy_overview")
