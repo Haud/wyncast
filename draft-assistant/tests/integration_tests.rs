@@ -16,7 +16,6 @@ use draft_assistant::llm::client::LlmClient;
 use draft_assistant::llm::prompt::BudgetContext;
 use draft_assistant::protocol::*;
 use draft_assistant::valuation::projections::{AllProjections, PitcherType};
-use draft_assistant::stats::StatRegistry;
 use draft_assistant::valuation::zscore::PlayerValuation;
 use draft_assistant::ws_server::WsEvent;
 
@@ -704,7 +703,6 @@ fn nomination_analysis_prompt_contains_required_sections() {
         engine_verdict: "STRONG TARGET".to_string(),
     };
 
-    let registry = StatRegistry::from_league_config(&state.config.league).expect("valid config");
     let prompt = draft_assistant::llm::prompt::build_nomination_analysis_prompt(
         &player,
         &nomination,
@@ -715,7 +713,7 @@ fn nomination_analysis_prompt_contains_required_sections() {
         &state.draft_state,
         &state.inflation,
         &budget,
-        &registry,
+        &state.stat_registry,
     );
 
     // Verify required sections are present
@@ -779,6 +777,7 @@ fn nomination_planning_prompt_contains_required_sections() {
         &state.draft_state,
         &state.inflation,
         &budget,
+        &state.stat_registry,
     );
 
     // Verify required sections are present
@@ -1561,7 +1560,6 @@ fn end_to_end_pipeline() {
             engine_verdict: "STRONG TARGET".to_string(),
         };
 
-        let registry = StatRegistry::from_league_config(&state.config.league).expect("valid config");
         let prompt = draft_assistant::llm::prompt::build_nomination_analysis_prompt(
             player,
             &nomination,
@@ -1572,7 +1570,7 @@ fn end_to_end_pipeline() {
             &state.draft_state,
             &state.inflation,
             &budget,
-            &registry,
+            &state.stat_registry,
         );
 
         assert!(!prompt.is_empty(), "Prompt should not be empty");

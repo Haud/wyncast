@@ -10,8 +10,7 @@ use crate::draft::pick::Position;
 use crate::draft::roster::Roster;
 use crate::draft::state::DraftState;
 use crate::protocol::NominationInfo;
-use crate::stats::StatRegistry;
-use crate::valuation::analysis::CategoryNeeds;
+use crate::stats::{CategoryValues, StatRegistry};
 use crate::valuation::auction::InflationTracker;
 use crate::valuation::scarcity::ScarcityEntry;
 use crate::valuation::zscore::{CategoryZScores, PlayerProjectionData, PlayerValuation};
@@ -170,7 +169,7 @@ pub fn build_nomination_analysis_prompt(
     player: &PlayerValuation,
     nomination: &NominationInfo,
     my_roster: &Roster,
-    category_needs: &CategoryNeeds,
+    category_needs: &CategoryValues,
     scarcity: &[ScarcityEntry],
     available_players: &[PlayerValuation],
     draft_state: &DraftState,
@@ -221,7 +220,7 @@ pub fn build_nomination_analysis_prompt(
 
     // Section 4: CATEGORY NEEDS
     prompt.push_str("## CATEGORY NEEDS\n");
-    prompt.push_str(&format_category_needs(category_needs));
+    prompt.push_str(&format_category_needs(category_needs, registry));
     prompt.push('\n');
 
     // Section 5: POSITIONAL SCARCITY
@@ -306,12 +305,13 @@ pub fn build_nomination_analysis_prompt(
 /// opponent budget snapshots, top available targets, and sell candidates.
 pub fn build_nomination_planning_prompt(
     my_roster: &Roster,
-    category_needs: &CategoryNeeds,
+    category_needs: &CategoryValues,
     scarcity: &[ScarcityEntry],
     available_players: &[PlayerValuation],
     draft_state: &DraftState,
     inflation: &InflationTracker,
     budget: &BudgetContext,
+    registry: &StatRegistry,
 ) -> String {
     let my_team_id = draft_state
         .my_team()
@@ -339,7 +339,7 @@ pub fn build_nomination_planning_prompt(
 
     // Section 3: CATEGORY STRENGTHS
     prompt.push_str("## CATEGORY STRENGTHS (need level, higher = more need)\n");
-    prompt.push_str(&format_category_needs(category_needs));
+    prompt.push_str(&format_category_needs(category_needs, registry));
     prompt.push('\n');
 
     // Section 4: POSITIONAL SCARCITY
@@ -781,18 +781,22 @@ pub fn format_roster_for_prompt(roster: &Roster) -> String {
 }
 
 /// Format category needs as a compact table.
-pub fn format_category_needs(needs: &CategoryNeeds) -> String {
+pub fn format_category_needs(needs: &CategoryValues, registry: &StatRegistry) -> String {
     let mut s = String::new();
     s.push_str("  Hitting:  ");
-    s.push_str(&format!(
-        "R={:.2} HR={:.2} RBI={:.2} BB={:.2} SB={:.2} AVG={:.2}\n",
-        needs.r, needs.hr, needs.rbi, needs.bb, needs.sb, needs.avg,
-    ));
+    for &idx in registry.batting_indices() {
+        let stat = &registry.all_stats()[idx];
+        let val = needs.get(idx).unwrap_or(0.0);
+        s.push_str(&format!("{}={:.2} ", stat.abbrev, val));
+    }
+    s.push('\n');
     s.push_str("  Pitching: ");
-    s.push_str(&format!(
-        "K={:.2} W={:.2} SV={:.2} HD={:.2} ERA={:.2} WHIP={:.2}\n",
-        needs.k, needs.w, needs.sv, needs.hd, needs.era, needs.whip,
-    ));
+    for &idx in registry.pitching_indices() {
+        let stat = &registry.all_stats()[idx];
+        let val = needs.get(idx).unwrap_or(0.0);
+        s.push_str(&format!("{}={:.2} ", stat.abbrev, val));
+    }
+    s.push('\n');
     s
 }
 
@@ -833,7 +837,6 @@ mod tests {
     use crate::draft::roster::Roster;
     use crate::draft::state::DraftState;
     use crate::protocol::NominationInfo;
-    use crate::valuation::analysis::CategoryNeeds;
     use crate::valuation::auction::InflationTracker;
     use crate::valuation::projections::PitcherType;
     use crate::valuation::scarcity::compute_scarcity;
@@ -1099,6 +1102,7 @@ mod tests {
 
     #[test]
     fn nomination_analysis_prompt_contains_sections() {
+        let registry = test_registry();
         let player = make_hitter("Mike Trout", 10.0, vec![Position::CenterField], 45.0);
         let nomination = NominationInfo {
             player_name: "Mike Trout".into(),
@@ -1110,7 +1114,7 @@ mod tests {
             eligible_slots: vec![],
         };
         let roster = Roster::new(&test_roster_config());
-        let needs = CategoryNeeds::uniform(0.5);
+        let needs = CategoryValues::uniform(registry.len(), 0.5);
         let available = vec![
             player.clone(),
             make_hitter("Similar CF", 8.0, vec![Position::CenterField], 38.0),
@@ -1129,7 +1133,7 @@ mod tests {
             &draft_state,
             &inflation,
             &test_budget_context(),
-            &test_registry(),
+            &registry,
         );
 
         assert!(
@@ -1163,6 +1167,7 @@ mod tests {
 
     #[test]
     fn nomination_analysis_prompt_includes_values() {
+        let registry = test_registry();
         let player = make_hitter("Test Player", 8.0, vec![Position::FirstBase], 30.0);
         let nomination = NominationInfo {
             player_name: "Test Player".into(),
@@ -1174,7 +1179,7 @@ mod tests {
             eligible_slots: vec![],
         };
         let roster = Roster::new(&test_roster_config());
-        let needs = CategoryNeeds::uniform(0.5);
+        let needs = CategoryValues::uniform(registry.len(), 0.5);
         let available = vec![player.clone()];
         let scarcity = compute_scarcity(&available, &test_roster_config());
         let draft_state = create_test_draft_state();
@@ -1190,7 +1195,7 @@ mod tests {
             &draft_state,
             &inflation,
             &test_budget_context(),
-            &test_registry(),
+            &registry,
         );
 
         assert!(prompt.contains("$30"), "should contain dollar value");
@@ -1202,8 +1207,9 @@ mod tests {
 
     #[test]
     fn nomination_planning_prompt_contains_sections() {
+        let registry = test_registry();
         let roster = Roster::new(&test_roster_config());
-        let needs = CategoryNeeds::uniform(0.5);
+        let needs = CategoryValues::uniform(registry.len(), 0.5);
         let available = vec![
             make_hitter("H1", 10.0, vec![Position::FirstBase], 40.0),
             make_hitter("H2", 8.0, vec![Position::SecondBase], 35.0),
@@ -1221,6 +1227,7 @@ mod tests {
             &draft_state,
             &inflation,
             &test_budget_context(),
+            &registry,
         );
 
         assert!(
@@ -1255,8 +1262,9 @@ mod tests {
 
     #[test]
     fn planning_prompt_shows_opponent_budgets() {
+        let registry = test_registry();
         let roster = Roster::new(&test_roster_config());
-        let needs = CategoryNeeds::uniform(0.5);
+        let needs = CategoryValues::uniform(registry.len(), 0.5);
         let available = vec![make_hitter("H1", 10.0, vec![Position::FirstBase], 40.0)];
         let scarcity = compute_scarcity(&available, &test_roster_config());
         let mut draft_state = create_test_draft_state();
@@ -1284,6 +1292,7 @@ mod tests {
             &draft_state,
             &inflation,
             &test_budget_context(),
+            &registry,
         );
 
         assert!(prompt.contains("Team 2"), "should list opponent teams");
@@ -1541,22 +1550,13 @@ mod tests {
 
     #[test]
     fn format_category_needs_includes_all_categories() {
-        let needs = CategoryNeeds {
-            r: 0.8,
-            hr: 0.5,
-            rbi: 0.3,
-            bb: 1.0,
-            sb: 0.2,
-            avg: 0.4,
-            k: 0.6,
-            w: 0.7,
-            sv: 0.1,
-            hd: 0.9,
-            era: 0.5,
-            whip: 0.6,
-        };
+        let registry = test_registry();
+        // Registry order: R, HR, RBI, BB, SB, AVG, K, W, SV, HD, ERA, WHIP
+        let needs = CategoryValues::from_vec(vec![
+            0.8, 0.5, 0.3, 1.0, 0.2, 0.4, 0.6, 0.7, 0.1, 0.9, 0.5, 0.6,
+        ]);
 
-        let formatted = format_category_needs(&needs);
+        let formatted = format_category_needs(&needs, &registry);
 
         assert!(formatted.contains("R=0.80"), "should contain R value");
         assert!(formatted.contains("HR=0.50"), "should contain HR value");
@@ -1603,6 +1603,7 @@ mod tests {
 
     #[test]
     fn nomination_analysis_prompt_contains_budget_constraints() {
+        let registry = test_registry();
         let player = make_hitter("Test Player", 8.0, vec![Position::FirstBase], 30.0);
         let nomination = NominationInfo {
             player_name: "Test Player".into(),
@@ -1614,7 +1615,7 @@ mod tests {
             eligible_slots: vec![],
         };
         let roster = Roster::new(&test_roster_config());
-        let needs = CategoryNeeds::uniform(0.5);
+        let needs = CategoryValues::uniform(registry.len(), 0.5);
         let available = vec![player.clone()];
         let scarcity = compute_scarcity(&available, &test_roster_config());
         let draft_state = create_test_draft_state();
@@ -1631,7 +1632,7 @@ mod tests {
             &draft_state,
             &inflation,
             &budget,
-            &test_registry(),
+            &registry,
         );
 
         assert!(prompt.contains("## BUDGET CONSTRAINTS"), "should have budget constraints section");

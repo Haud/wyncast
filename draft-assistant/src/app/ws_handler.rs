@@ -12,7 +12,7 @@ use crate::protocol::{
     DraftBoardData, ExtensionMessage, NominationInfo, PickHistoryEntry, TeamIdMapping, UiUpdate,
 };
 use crate::valuation;
-use crate::valuation::analysis::CategoryNeeds;
+use crate::stats::CategoryValues;
 use crate::valuation::auction::InflationTracker;
 use crate::valuation::scarcity::compute_scarcity;
 
@@ -153,7 +153,7 @@ pub(super) async fn handle_full_state_sync(
     }
     state.scarcity = compute_scarcity(&state.available_players, &roster);
     state.inflation = InflationTracker::new();
-    state.category_needs = CategoryNeeds::default();
+    state.category_needs = CategoryValues::uniform(state.stat_registry.len(), 0.5);
 
     // --- Grid-based state building (when draft board + pick history available) ---
     //
@@ -357,7 +357,7 @@ pub(super) async fn handle_state_update(
                 state.analysis_request_id = None;
                 state.plan_request_id = None;
                 state.analysis_player = None;
-                state.category_needs = CategoryNeeds::default();
+                state.category_needs = CategoryValues::uniform(state.stat_registry.len(), 0.5);
                 state.grid_picks_persisted = false;
             }
             None => {

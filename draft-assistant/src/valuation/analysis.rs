@@ -6,61 +6,10 @@
 
 use crate::draft::pick::Position;
 use crate::draft::roster::Roster;
+use crate::stats::{CategoryValues, StatRegistry};
 use crate::valuation::auction::InflationTracker;
 use crate::valuation::scarcity::{ScarcityEntry, ScarcityUrgency, scarcity_for_position};
-use crate::stats::StatRegistry;
-use crate::valuation::zscore::{CategoryZScores, PlayerValuation};
-
-// ---------------------------------------------------------------------------
-// Category needs
-// ---------------------------------------------------------------------------
-
-/// How much the user's team needs improvement in each scoring category.
-///
-/// Higher values = greater need. Typically computed by comparing the team's
-/// current category strength against league averages or target thresholds.
-/// Values should be normalized to roughly 0.0-1.0 range.
-#[derive(Debug, Clone)]
-pub struct CategoryNeeds {
-    pub r: f64,
-    pub hr: f64,
-    pub rbi: f64,
-    pub bb: f64,
-    pub sb: f64,
-    pub avg: f64,
-    pub k: f64,
-    pub w: f64,
-    pub sv: f64,
-    pub hd: f64,
-    pub era: f64,
-    pub whip: f64,
-}
-
-impl CategoryNeeds {
-    /// Create category needs with all values set to the same level.
-    pub fn uniform(value: f64) -> Self {
-        CategoryNeeds {
-            r: value,
-            hr: value,
-            rbi: value,
-            bb: value,
-            sb: value,
-            avg: value,
-            k: value,
-            w: value,
-            sv: value,
-            hd: value,
-            era: value,
-            whip: value,
-        }
-    }
-}
-
-impl Default for CategoryNeeds {
-    fn default() -> Self {
-        Self::uniform(0.5)
-    }
-}
+use crate::valuation::zscore::PlayerValuation;
 
 // ---------------------------------------------------------------------------
 // Instant verdict
@@ -148,13 +97,14 @@ pub struct InstantAnalysis {
 /// - `scarcity` - Pre-computed scarcity entries.
 /// - `inflation` - Current inflation tracker state.
 /// - `category_needs` - The user's per-category need levels.
+/// - `registry` - Stat registry for category metadata.
 pub fn compute_instant_analysis(
     player: &PlayerValuation,
     my_roster: &Roster,
     available_players: &[PlayerValuation],
     scarcity: &[ScarcityEntry],
     inflation: &InflationTracker,
-    category_needs: &CategoryNeeds,
+    category_needs: &CategoryValues,
     registry: &StatRegistry,
 ) -> InstantAnalysis {
     let adjusted_value = inflation.adjust(player.dollar_value);
@@ -295,54 +245,27 @@ fn is_top_n_at_position(
 /// Return the top 3 by absolute impact.
 fn compute_category_impact(
     player: &PlayerValuation,
-    needs: &CategoryNeeds,
+    needs: &CategoryValues,
     registry: &StatRegistry,
 ) -> Vec<(String, f64)> {
-    // Bridge: map abbreviation to CategoryNeeds named field.
-    // TODO(WI-8): Replace when CategoryNeeds uses CategoryValues.
-    let need_for = |abbrev: &str| -> f64 {
-        match abbrev {
-            "R" => needs.r, "HR" => needs.hr, "RBI" => needs.rbi,
-            "BB" => needs.bb, "SB" => needs.sb, "AVG" => needs.avg,
-            "K" => needs.k, "W" => needs.w, "SV" => needs.sv,
-            "HD" => needs.hd, "ERA" => needs.era, "WHIP" => needs.whip,
-            _ => 0.0,
-        }
-    };
-
     let zscores = player.category_zscores.zscores();
-    let relevant_indices: &[usize] = match &player.category_zscores {
-        CategoryZScores::Hitter { .. } => registry.batting_indices(),
-        CategoryZScores::Pitcher { .. } => registry.pitching_indices(),
-        CategoryZScores::TwoWay { .. } => {
-            // All indices — use all_stats length
-            // Since there's no "all_indices" method, iterate all stats
-            &[]
-        }
-    };
+    let mut impacts: Vec<(String, f64)> = registry
+        .all_stats()
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, stat)| {
+            let z = zscores.get(idx).unwrap_or(0.0);
+            let need = needs.get(idx).unwrap_or(0.0);
+            let impact = z * need;
+            if impact.abs() > 1e-12 {
+                Some((stat.abbrev.clone(), impact))
+            } else {
+                None
+            }
+        })
+        .collect();
 
-    let mut impacts: Vec<(String, f64)> = if matches!(&player.category_zscores, CategoryZScores::TwoWay { .. }) {
-        // For two-way, iterate all stats
-        registry.all_stats()
-            .iter()
-            .enumerate()
-            .map(|(idx, stat)| {
-                let z = zscores.get(idx).unwrap_or(0.0);
-                (stat.abbrev.clone(), z * need_for(&stat.abbrev))
-            })
-            .collect()
-    } else {
-        relevant_indices
-            .iter()
-            .map(|&idx| {
-                let stat = &registry.all_stats()[idx];
-                let z = zscores.get(idx).unwrap_or(0.0);
-                (stat.abbrev.clone(), z * need_for(&stat.abbrev))
-            })
-            .collect()
-    };
 
-    // Sort by absolute impact descending.
     impacts.sort_by(|a, b| {
         b.1.abs()
             .partial_cmp(&a.1.abs())
@@ -420,18 +343,18 @@ fn find_similar_players(
 mod tests {
     use super::*;
     use crate::config::*;
+    use crate::stats::{CategoryValues, StatRegistry};
     use crate::valuation::auction::InflationTracker;
     use crate::valuation::scarcity::compute_scarcity;
-    use crate::stats::{CategoryValues, StatRegistry};
-    use crate::valuation::zscore::PlayerProjectionData;
+    use crate::valuation::zscore::{CategoryZScores, PlayerProjectionData};
     use std::collections::HashMap;
-
-    fn test_registry() -> StatRegistry {
-        StatRegistry::from_league_config(&test_league_config()).unwrap()
-    }
 
     fn approx_eq(a: f64, b: f64, epsilon: f64) -> bool {
         (a - b).abs() < epsilon
+    }
+
+    fn test_registry() -> StatRegistry {
+        StatRegistry::from_league_config(&test_league_config()).unwrap()
     }
 
     fn test_league_config() -> LeagueConfig {
@@ -511,6 +434,7 @@ mod tests {
 
     #[test]
     fn strong_target_fills_critical_position() {
+        let registry = test_registry();
         let roster = Roster::new(&test_roster_config()); // Empty roster
 
         // Only 2 catchers available -> Critical scarcity
@@ -521,7 +445,7 @@ mod tests {
 
         let scarcity = compute_scarcity(&available, &test_roster_config());
         let inflation = InflationTracker::new();
-        let needs = CategoryNeeds::uniform(0.5);
+        let needs = CategoryValues::uniform(registry.len(), 0.5);
 
         let analysis = compute_instant_analysis(
             &available[0],
@@ -530,7 +454,7 @@ mod tests {
             &scarcity,
             &inflation,
             &needs,
-            &test_registry(),
+            &registry,
         );
 
         assert_eq!(analysis.verdict, InstantVerdict::StrongTarget);
@@ -540,6 +464,7 @@ mod tests {
 
     #[test]
     fn pass_when_no_need() {
+        let registry = test_registry();
         let mut roster = Roster::new(&test_roster_config());
         // Fill the catcher slot
         roster.add_player("Existing C", "C", 10, None);
@@ -552,7 +477,7 @@ mod tests {
 
         let scarcity = compute_scarcity(&available, &test_roster_config());
         let inflation = InflationTracker::new();
-        let needs = CategoryNeeds::uniform(0.5);
+        let needs = CategoryValues::uniform(registry.len(), 0.5);
 
         let analysis = compute_instant_analysis(
             &player,
@@ -561,7 +486,7 @@ mod tests {
             &scarcity,
             &inflation,
             &needs,
-            &test_registry(),
+            &registry,
         );
 
         assert_eq!(analysis.verdict, InstantVerdict::Pass);
@@ -569,6 +494,7 @@ mod tests {
 
     #[test]
     fn bid_floor_and_ceiling_known_values() {
+        let registry = test_registry();
         let roster = Roster::new(&test_roster_config());
 
         // Player worth $30. With neutral inflation (1.0):
@@ -583,7 +509,7 @@ mod tests {
 
         let scarcity = compute_scarcity(&available, &test_roster_config());
         let inflation = InflationTracker::new(); // rate = 1.0
-        let needs = CategoryNeeds::uniform(0.5);
+        let needs = CategoryValues::uniform(registry.len(), 0.5);
 
         let analysis = compute_instant_analysis(
             &available[0],
@@ -592,7 +518,7 @@ mod tests {
             &scarcity,
             &inflation,
             &needs,
-            &test_registry(),
+            &registry,
         );
 
         assert_eq!(analysis.bid_floor, 21);
@@ -601,6 +527,7 @@ mod tests {
 
     #[test]
     fn bid_range_with_inflation() {
+        let registry = test_registry();
         let roster = Roster::new(&test_roster_config());
 
         // Player worth $30. With inflation rate 1.1 (deflation):
@@ -620,7 +547,7 @@ mod tests {
         let scarcity = compute_scarcity(&available, &test_roster_config());
         let mut inflation = InflationTracker::new();
         inflation.inflation_rate = 1.1;
-        let needs = CategoryNeeds::uniform(0.5);
+        let needs = CategoryValues::uniform(registry.len(), 0.5);
 
         let analysis = compute_instant_analysis(
             &available[0],
@@ -629,7 +556,7 @@ mod tests {
             &scarcity,
             &inflation,
             &needs,
-            &test_registry(),
+            &registry,
         );
 
         // adjusted = (30.0 - 1.0) * 1.1 + 1.0 = 32.9
@@ -644,23 +571,14 @@ mod tests {
 
     #[test]
     fn category_impact_returns_top_3() {
+        let registry = test_registry();
         let player = make_hitter("Test", 5.0, vec![Position::FirstBase], 20.0);
-        let needs = CategoryNeeds {
-            r: 0.8,
-            hr: 0.5,
-            rbi: 0.3,
-            bb: 1.0,
-            sb: 0.1,
-            avg: 0.4,
-            k: 0.0,
-            w: 0.0,
-            sv: 0.0,
-            hd: 0.0,
-            era: 0.0,
-            whip: 0.0,
-        };
+        // Registry order: R, HR, RBI, BB, SB, AVG, K, W, SV, HD, ERA, WHIP
+        let needs = CategoryValues::from_vec(vec![
+            0.8, 0.5, 0.3, 1.0, 0.1, 0.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ]);
 
-        let impact = compute_category_impact(&player, &needs, &test_registry());
+        let impact = compute_category_impact(&player, &needs, &registry);
         assert_eq!(impact.len(), 3);
 
         // BB has highest impact: z=2.0 * need=1.0 = 2.0
@@ -690,6 +608,7 @@ mod tests {
 
     #[test]
     fn conditional_target_when_fills_slot_low_scarcity() {
+        let registry = test_registry();
         let roster = Roster::new(&test_roster_config()); // Empty roster
 
         // 10 first basemen -> Low urgency, but roster slot is empty
@@ -705,7 +624,7 @@ mod tests {
 
         let scarcity = compute_scarcity(&available, &test_roster_config());
         let inflation = InflationTracker::new();
-        let needs = CategoryNeeds::uniform(0.5);
+        let needs = CategoryValues::uniform(registry.len(), 0.5);
 
         // Analyze the 5th best (not top 3, but fills empty slot)
         let analysis = compute_instant_analysis(
@@ -715,7 +634,7 @@ mod tests {
             &scarcity,
             &inflation,
             &needs,
-            &test_registry(),
+            &registry,
         );
 
         // Should be ConditionalTarget (fills slot but Low scarcity and not top 3)
@@ -724,6 +643,7 @@ mod tests {
 
     #[test]
     fn strong_target_when_top3_and_fills_slot() {
+        let registry = test_registry();
         let roster = Roster::new(&test_roster_config()); // Empty roster
 
         // 10 first basemen -> Low urgency, but player is top 3
@@ -739,7 +659,7 @@ mod tests {
 
         let scarcity = compute_scarcity(&available, &test_roster_config());
         let inflation = InflationTracker::new();
-        let needs = CategoryNeeds::uniform(0.5);
+        let needs = CategoryValues::uniform(registry.len(), 0.5);
 
         // Analyze the 2nd best (top 3 + fills empty slot = StrongTarget)
         let analysis = compute_instant_analysis(
@@ -749,7 +669,7 @@ mod tests {
             &scarcity,
             &inflation,
             &needs,
-            &test_registry(),
+            &registry,
         );
 
         assert_eq!(analysis.verdict, InstantVerdict::StrongTarget);
