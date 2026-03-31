@@ -3805,10 +3805,7 @@ mod tests {
         let mut state = create_test_app_state();
         state.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
 
-        let weights = CategoryWeights {
-            r: 1.0, hr: 1.1, rbi: 1.0, bb: 1.3, sb: 1.0, avg: 1.0,
-            k: 1.0, w: 1.0, sv: 0.3, hd: 1.2, era: 1.0, whip: 1.0,
-        };
+        let weights = CategoryWeights::from_values(&[1.0, 1.1, 1.0, 1.3, 1.0, 1.0, 1.0, 1.0, 0.3, 1.2, 1.0, 1.0]);
 
         let (ui_tx, mut ui_rx) = mpsc::channel(16);
 
@@ -3866,53 +3863,59 @@ mod tests {
 
     #[test]
     fn parse_strategy_json_valid() {
+        let cats = crate::tui::onboarding::strategy_setup::default_categories();
         let json = r#"{"hitting_budget_pct": 70, "category_weights": {"R": 1.0, "HR": 1.1, "RBI": 1.0, "BB": 1.3, "SB": 0.8, "AVG": 1.0, "K": 1.0, "W": 1.0, "SV": 0.3, "HD": 1.2, "ERA": 1.0, "WHIP": 1.0}, "strategy_overview": "Test overview"}"#;
-        let (pct, weights, overview) = onboarding_handler::parse_strategy_json(json).unwrap();
+        let (pct, weights, overview) = onboarding_handler::parse_strategy_json(json, &cats).unwrap();
         assert_eq!(pct, 70);
-        assert!((weights.bb - 1.3).abs() < f32::EPSILON);
-        assert!((weights.sv - 0.3).abs() < f32::EPSILON);
-        assert!((weights.hd - 1.2).abs() < f32::EPSILON);
+        assert!((weights.get_by_name("BB").unwrap() - 1.3).abs() < f32::EPSILON);
+        assert!((weights.get_by_name("SV").unwrap() - 0.3).abs() < f32::EPSILON);
+        assert!((weights.get_by_name("HD").unwrap() - 1.2).abs() < f32::EPSILON);
         assert_eq!(overview, "Test overview");
     }
 
     #[test]
     fn parse_strategy_json_with_markdown_fences() {
+        let cats = crate::tui::onboarding::strategy_setup::default_categories();
         let json = "```json\n{\"hitting_budget_pct\": 65, \"category_weights\": {\"R\": 1.0, \"HR\": 1.0, \"RBI\": 1.0, \"BB\": 1.0, \"SB\": 1.0, \"AVG\": 1.0, \"K\": 1.0, \"W\": 1.0, \"SV\": 0.7, \"HD\": 1.0, \"ERA\": 1.0, \"WHIP\": 1.0}}\n```";
-        let (pct, weights, overview) = onboarding_handler::parse_strategy_json(json).unwrap();
+        let (pct, weights, overview) = onboarding_handler::parse_strategy_json(json, &cats).unwrap();
         assert_eq!(pct, 65);
-        assert!((weights.sv - 0.7).abs() < f32::EPSILON);
+        assert!((weights.get_by_name("SV").unwrap() - 0.7).abs() < f32::EPSILON);
         assert_eq!(overview, ""); // no overview in this JSON
     }
 
     #[test]
     fn parse_strategy_json_clamps_values() {
+        let cats = crate::tui::onboarding::strategy_setup::default_categories();
         let json = r#"{"hitting_budget_pct": 200, "category_weights": {"SV": -1.0, "BB": 7.0}}"#;
-        let (pct, weights, _overview) = onboarding_handler::parse_strategy_json(json).unwrap();
+        let (pct, weights, _overview) = onboarding_handler::parse_strategy_json(json, &cats).unwrap();
         assert_eq!(pct, 100); // clamped to 100
-        assert!((weights.sv - 0.0).abs() < f32::EPSILON); // clamped to 0.0
-        assert!((weights.bb - 5.0).abs() < f32::EPSILON); // clamped to 5.0
+        assert!((weights.get_by_name("SV").unwrap() - 0.0).abs() < f32::EPSILON); // clamped to 0.0
+        assert!((weights.get_by_name("BB").unwrap() - 5.0).abs() < f32::EPSILON); // clamped to 5.0
     }
 
     #[test]
     fn parse_strategy_json_missing_fields_uses_defaults() {
+        let cats = crate::tui::onboarding::strategy_setup::default_categories();
         let json = r#"{"category_weights": {"BB": 1.3}}"#;
-        let (pct, weights, overview) = onboarding_handler::parse_strategy_json(json).unwrap();
+        let (pct, weights, overview) = onboarding_handler::parse_strategy_json(json, &cats).unwrap();
         assert_eq!(pct, 65); // default
-        assert!((weights.bb - 1.3).abs() < f32::EPSILON);
-        assert!((weights.r - 1.0).abs() < f32::EPSILON); // default
+        assert!((weights.get_by_name("BB").unwrap() - 1.3).abs() < f32::EPSILON);
+        assert!((weights.get_by_name("R").unwrap() - 1.0).abs() < f32::EPSILON); // default
         assert_eq!(overview, ""); // default
     }
 
     #[test]
     fn parse_strategy_json_no_json_object() {
-        let result = onboarding_handler::parse_strategy_json("no json here");
+        let cats = crate::tui::onboarding::strategy_setup::default_categories();
+        let result = onboarding_handler::parse_strategy_json("no json here", &cats);
         assert!(result.is_err());
     }
 
     #[test]
     fn parse_strategy_json_with_surrounding_text() {
+        let cats = crate::tui::onboarding::strategy_setup::default_categories();
         let text = "Here is the configuration:\n{\"hitting_budget_pct\": 60, \"category_weights\": {}}\nEnjoy!";
-        let (pct, _, _) = onboarding_handler::parse_strategy_json(text).unwrap();
+        let (pct, _, _) = onboarding_handler::parse_strategy_json(text, &cats).unwrap();
         assert_eq!(pct, 60);
     }
 
@@ -3993,10 +3996,7 @@ mod tests {
         let mut state = create_test_app_state();
         state.app_mode = AppMode::Settings(SettingsSection::StrategyConfig);
 
-        let weights = CategoryWeights {
-            r: 1.0, hr: 1.1, rbi: 1.0, bb: 1.3, sb: 1.0, avg: 1.0,
-            k: 1.0, w: 1.0, sv: 0.3, hd: 1.2, era: 1.0, whip: 1.0,
-        };
+        let weights = CategoryWeights::from_values(&[1.0, 1.1, 1.0, 1.3, 1.0, 1.0, 1.0, 1.0, 0.3, 1.2, 1.0, 1.0]);
 
         let (ui_tx, mut ui_rx) = mpsc::channel(16);
 

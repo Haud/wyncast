@@ -183,9 +183,8 @@ impl<F: FileSystem> OnboardingManager<F> {
             .entry("category_weights")
             .or_insert_with(|| toml::Value::Table(toml::Table::new()));
         if let toml::Value::Table(ref mut t) = cw_table {
-            let config_w = weights.to_config_weights();
-            for (name, val) in config_w.iter() {
-                t.insert(name.to_string(), toml::Value::Float(val));
+            for (cat, val) in weights.to_pairs() {
+                t.insert(cat.to_string(), toml::Value::Float(val));
             }
         }
 
@@ -790,20 +789,7 @@ mod tests {
         use crate::tui::onboarding::strategy_setup::CategoryWeights;
 
         let manager = fake_manager(FakeFileSystem::new());
-        let weights = CategoryWeights {
-            r: 1.0,
-            hr: 1.1,
-            rbi: 1.0,
-            bb: 1.3,
-            sb: 1.0,
-            avg: 1.0,
-            k: 1.0,
-            w: 1.0,
-            sv: 0.3,
-            hd: 1.2,
-            era: 1.0,
-            whip: 1.0,
-        };
+        let weights = CategoryWeights::from_values(&[1.0, 1.1, 1.0, 1.3, 1.0, 1.0, 1.0, 1.0, 0.3, 1.2, 1.0, 1.0]);
 
         manager.save_strategy(70, &weights).unwrap();
 

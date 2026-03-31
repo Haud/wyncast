@@ -163,6 +163,7 @@ pub(super) async fn handle_user_command(
                 let pct = (state.config.strategy.hitting_budget_fraction * 100.0).round() as u8;
                 let weights = crate::tui::onboarding::strategy_setup::CategoryWeights::from_config_weights(
                     &state.config.strategy.weights,
+                    crate::tui::onboarding::strategy_setup::categories_from_league(&state.config.league),
                 );
                 let overview = state.config.strategy.strategy_overview.clone().unwrap_or_default();
                 let _ = ui_tx
