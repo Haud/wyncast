@@ -895,10 +895,7 @@ mod tests {
         app.strategy_setup.generating = true;
         app.strategy_setup.generation_error = Some("old error".to_string());
 
-        let weights = CategoryWeights {
-            r: 1.0, hr: 1.1, rbi: 1.0, bb: 1.3, sb: 1.0, avg: 1.0,
-            k: 1.0, w: 1.0, sv: 0.3, hd: 1.2, era: 1.0, whip: 1.0,
-        };
+        let weights = CategoryWeights::from_values(&[1.0, 1.1, 1.0, 1.3, 1.0, 1.0, 1.0, 1.0, 0.3, 1.2, 1.0, 1.0]);
 
         app.apply_update(UiUpdate::OnboardingUpdate(OnboardingUpdate::StrategyLlmComplete {
             hitting_budget_pct: 70,
@@ -909,8 +906,8 @@ mod tests {
         assert!(!app.strategy_setup.generating);
         assert!(app.strategy_setup.generation_error.is_none());
         assert_eq!(app.strategy_setup.hitting_budget_pct, 70);
-        assert!((app.strategy_setup.category_weights.bb - 1.3).abs() < f32::EPSILON);
-        assert!((app.strategy_setup.category_weights.sv - 0.3).abs() < f32::EPSILON);
+        assert!((app.strategy_setup.category_weights.get_by_name("BB").unwrap() - 1.3).abs() < f32::EPSILON);
+        assert!((app.strategy_setup.category_weights.get_by_name("SV").unwrap() - 0.3).abs() < f32::EPSILON);
         assert!(!app.strategy_setup.input_editing);
     }
 

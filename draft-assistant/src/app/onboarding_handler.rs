@@ -372,6 +372,8 @@ pub(super) async fn handle_onboarding_action(
                         description
                     );
 
+                    let categories = crate::tui::onboarding::strategy_setup::categories_from_league(&state.config.league);
+
                     // Spawn LLM streaming task
                     let handle = tokio::spawn(async move {
                         let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel::<crate::protocol::LlmEvent>(100);
@@ -418,7 +420,7 @@ pub(super) async fn handle_onboarding_action(
                         }
 
                         // Parse JSON from the response
-                        match parse_strategy_json(&full_text) {
+                        match parse_strategy_json(&full_text, &categories) {
                             Ok((pct, weights, overview)) => {
                                 let _ = tx
                                     .send(UiUpdate::OnboardingUpdate(
@@ -495,7 +497,10 @@ pub(super) async fn handle_settings_action(
             // Persist LLM settings to strategy.toml
             if let Err(e) = state.onboarding_manager.save_strategy_full(
                 (state.config.strategy.hitting_budget_fraction * 100.0) as u8,
-                &crate::tui::onboarding::strategy_setup::CategoryWeights::from_config_weights(&state.config.strategy.weights),
+                &crate::tui::onboarding::strategy_setup::CategoryWeights::from_config_weights(
+                    &state.config.strategy.weights,
+                    crate::tui::onboarding::strategy_setup::categories_from_league(&state.config.league),
+                ),
                 Some(&state.config.strategy.llm.provider),
                 Some(&state.config.strategy.llm.model),
                 state.config.strategy.strategy_overview.as_deref(),
@@ -860,6 +865,7 @@ pub(super) async fn test_api_connection(
 /// text/markdown fences) and parses it.
 pub(super) fn parse_strategy_json(
     text: &str,
+    categories: &[String],
 ) -> Result<(u8, crate::tui::onboarding::strategy_setup::CategoryWeights, String), String> {
     use crate::tui::onboarding::strategy_setup::CategoryWeights;
 
@@ -900,15 +906,16 @@ pub(super) fn parse_strategy_json(
         .map(|v| v.min(100) as u8)
         .unwrap_or(65);
 
-    let mut config_weights = crate::config::CategoryWeights::default();
+    let mut weights = CategoryWeights::new(categories.to_vec());
+
     if let Some(cw) = parsed.get("category_weights").and_then(|v| v.as_object()) {
-        for (name, v) in cw {
-            if let Some(val) = v.as_f64() {
-                config_weights.0.insert(name.clone(), val.max(0.0).min(5.0));
+        for (idx, name) in categories.iter().enumerate() {
+            if let Some(val) = cw.get(name.as_str()).and_then(|v| v.as_f64()) {
+                let clamped = val.max(0.0).min(5.0) as f32;
+                weights.set(idx, clamped);
             }
         }
     }
-    let weights = CategoryWeights::from_config_weights(&config_weights);
 
     let overview = parsed
         .get("strategy_overview")

@@ -34,14 +34,27 @@ use crate::tui::subscription::keybinding::{
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Category display names and field labels in display order.
+/// Default category list matching the league's configured category order.
 ///
-/// The order is: hitting categories first (R, HR, RBI, BB, SB, AVG),
-/// then pitching categories (K, W, SV, HD, ERA, WHIP). This matches
-/// the league's configured category order.
-pub const CATEGORIES: &[&str] = &[
-    "R", "HR", "RBI", "BB", "SB", "AVG", "K", "W", "SV", "HD", "ERA", "WHIP",
-];
+/// Hitting categories first (R, HR, RBI, BB, SB, AVG),
+/// then pitching categories (K, W, SV, HD, ERA, WHIP).
+pub fn default_categories() -> Vec<String> {
+    ["R", "HR", "RBI", "BB", "SB", "AVG", "K", "W", "SV", "HD", "ERA", "WHIP"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Build a category list from a league config (batting + pitching categories).
+pub fn categories_from_league(league: &crate::config::LeagueConfig) -> Vec<String> {
+    league
+        .batting_categories
+        .categories
+        .iter()
+        .chain(league.pitching_categories.categories.iter())
+        .cloned()
+        .collect()
+}
 
 /// Number of columns in the category weight grid.
 pub const WEIGHT_COLS: usize = 3;
@@ -113,103 +126,98 @@ impl ReviewSection {
 /// `CATEGORIES` const array ordering.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CategoryWeights {
-    pub r: f32,
-    pub hr: f32,
-    pub rbi: f32,
-    pub bb: f32,
-    pub sb: f32,
-    pub avg: f32,
-    pub k: f32,
-    pub w: f32,
-    pub sv: f32,
-    pub hd: f32,
-    pub era: f32,
-    pub whip: f32,
+    categories: Vec<String>,
+    weights: Vec<f32>,
 }
 
 impl Default for CategoryWeights {
     fn default() -> Self {
-        CategoryWeights {
-            r: 1.0,
-            hr: 1.0,
-            rbi: 1.0,
-            bb: 1.0,
-            sb: 1.0,
-            avg: 1.0,
-            k: 1.0,
-            w: 1.0,
-            sv: 0.7,
-            hd: 1.0,
-            era: 1.0,
-            whip: 1.0,
-        }
+        Self::new(default_categories())
     }
 }
 
 impl CategoryWeights {
-    /// Get the weight value at the given index (follows CATEGORIES order).
+    /// Create a new `CategoryWeights` with the given category names.
+    /// All weights default to 1.0, except "SV" which defaults to 0.7.
+    pub fn new(categories: Vec<String>) -> Self {
+        let weights = categories
+            .iter()
+            .map(|cat| if cat == "SV" { 0.7 } else { 1.0 })
+            .collect();
+        CategoryWeights { categories, weights }
+    }
+
+    /// The category name list.
+    pub fn categories(&self) -> &[String] {
+        &self.categories
+    }
+
+    /// Number of categories.
+    pub fn len(&self) -> usize {
+        self.categories.len()
+    }
+
+    /// Get the weight value at the given index.
     pub fn get(&self, idx: usize) -> f32 {
-        match idx {
-            0 => self.r,
-            1 => self.hr,
-            2 => self.rbi,
-            3 => self.bb,
-            4 => self.sb,
-            5 => self.avg,
-            6 => self.k,
-            7 => self.w,
-            8 => self.sv,
-            9 => self.hd,
-            10 => self.era,
-            11 => self.whip,
-            _ => 1.0,
+        self.weights.get(idx).copied().unwrap_or(1.0)
+    }
+
+    /// Set the weight value at the given index. No-op for out-of-bounds.
+    pub fn set(&mut self, idx: usize, val: f32) {
+        if let Some(w) = self.weights.get_mut(idx) {
+            *w = val;
         }
     }
 
-    /// Set the weight value at the given index (follows CATEGORIES order).
-    pub fn set(&mut self, idx: usize, val: f32) {
-        match idx {
-            0 => self.r = val,
-            1 => self.hr = val,
-            2 => self.rbi = val,
-            3 => self.bb = val,
-            4 => self.sb = val,
-            5 => self.avg = val,
-            6 => self.k = val,
-            7 => self.w = val,
-            8 => self.sv = val,
-            9 => self.hd = val,
-            10 => self.era = val,
-            11 => self.whip = val,
-            _ => {}
-        }
+    /// Look up a weight by category name.
+    pub fn get_by_name(&self, name: &str) -> Option<f32> {
+        self.categories
+            .iter()
+            .position(|c| c == name)
+            .map(|idx| self.weights[idx])
+    }
+
+    /// Return (category_name, weight_as_f64) pairs for serialization.
+    pub fn to_pairs(&self) -> Vec<(&str, f64)> {
+        self.categories
+            .iter()
+            .zip(self.weights.iter())
+            .map(|(cat, &w)| (cat.as_str(), w as f64))
+            .collect()
     }
 
     /// Convert to the config-compatible `CategoryWeights` (HashMap-based).
     pub fn to_config_weights(&self) -> crate::config::CategoryWeights {
-        crate::config::CategoryWeights::from_pairs([
-            ("R", self.r as f64), ("HR", self.hr as f64), ("RBI", self.rbi as f64),
-            ("BB", self.bb as f64), ("SB", self.sb as f64), ("AVG", self.avg as f64),
-            ("K", self.k as f64), ("W", self.w as f64), ("SV", self.sv as f64),
-            ("HD", self.hd as f64), ("ERA", self.era as f64), ("WHIP", self.whip as f64),
-        ])
+        crate::config::CategoryWeights::from_pairs(
+            self.categories.iter().zip(self.weights.iter())
+                .map(|(cat, &val)| (cat.clone(), val as f64))
+        )
     }
 
-    /// Create from the config-compatible `CategoryWeights`.
-    pub fn from_config_weights(w: &crate::config::CategoryWeights) -> Self {
+    /// Create from the config-compatible `CategoryWeights` with a given category list.
+    pub fn from_config_weights(
+        w: &crate::config::CategoryWeights,
+        categories: Vec<String>,
+    ) -> Self {
+        let weights = categories
+            .iter()
+            .map(|cat| w.weight(cat) as f32)
+            .collect();
+        CategoryWeights { categories, weights }
+    }
+
+    /// Test helper: create from a slice of values using default categories.
+    #[cfg(test)]
+    pub fn from_values(values: &[f32]) -> Self {
+        let categories = default_categories();
+        assert_eq!(
+            categories.len(),
+            values.len(),
+            "values length must match default categories count"
+        );
         CategoryWeights {
-            r: w.weight("R") as f32,
-            hr: w.weight("HR") as f32,
-            rbi: w.weight("RBI") as f32,
-            bb: w.weight("BB") as f32,
-            sb: w.weight("SB") as f32,
-            avg: w.weight("AVG") as f32,
-            k: w.weight("K") as f32,
-            w: w.weight("W") as f32,
-            sv: w.weight("SV") as f32,
-            hd: w.weight("HD") as f32,
-            era: w.weight("ERA") as f32,
-            whip: w.weight("WHIP") as f32,
+            categories,
+            weights: values.to_vec(),
         }
     }
 }
@@ -309,7 +317,7 @@ impl StrategySetupState {
     /// Move the selected weight index down (wraps).
     pub fn weight_down(&mut self) {
         let new_idx = self.selected_weight_idx + WEIGHT_COLS;
-        if new_idx < CATEGORIES.len() {
+        if new_idx < self.category_weights.len() {
             self.selected_weight_idx = new_idx;
         }
     }
@@ -323,7 +331,7 @@ impl StrategySetupState {
 
     /// Move the selected weight index right.
     pub fn weight_right(&mut self) {
-        if self.selected_weight_idx + 1 < CATEGORIES.len() {
+        if self.selected_weight_idx + 1 < self.category_weights.len() {
             self.selected_weight_idx += 1;
         }
     }
@@ -360,7 +368,7 @@ impl StrategySetupState {
         // Category weight field
         if let Ok(val) = self.field_input.value().parse::<f32>() {
             if val >= 0.0 && val <= 5.0 {
-                if let Some(idx) = CATEGORIES.iter().position(|&c| c == field) {
+                if let Some(idx) = self.category_weights.categories().iter().position(|c| c == &field) {
                     self.category_weights.set(idx, val);
                     self.editing_field = None;
                     self.field_input.clear();
@@ -941,10 +949,10 @@ impl StrategySetupState {
                     }
                     ReviewSection::CategoryWeights => {
                         let idx = self.selected_weight_idx;
-                        if idx < CATEGORIES.len() {
-                            let cat_name = CATEGORIES[idx];
+                        if idx < self.category_weights.len() {
+                            let cat_name = self.category_weights.categories()[idx].clone();
                             let current = format!("{:.1}", self.category_weights.get(idx));
-                            self.start_editing(cat_name, &current);
+                            self.start_editing(&cat_name, &current);
                         }
                     }
                 }
@@ -1293,6 +1301,7 @@ fn render_review_step(frame: &mut Frame, area: Rect, state: &StrategySetupState)
 
     // Keybind hints are shown exclusively in the app-level bottom help bar
     // (see compute_settings_keybinds / compute_onboarding_keybinds in tui/mod.rs).
+    let num_weight_rows = (state.category_weights.len() + WEIGHT_COLS - 1) / WEIGHT_COLS;
     let sections = Layout::vertical([
         Constraint::Length(1),  // top padding
         Constraint::Length(1),  // "Strategy Overview:" label
@@ -1301,7 +1310,7 @@ fn render_review_step(frame: &mut Frame, area: Rect, state: &StrategySetupState)
         Constraint::Length(1),  // budget field
         Constraint::Length(1),  // spacer
         Constraint::Length(1),  // "Category Weights:" label
-        Constraint::Length(4),  // weight grid (4 rows of 3)
+        Constraint::Length(num_weight_rows as u16),  // weight grid
     ])
     .split(inner);
 
@@ -1583,10 +1592,11 @@ fn render_budget_field(frame: &mut Frame, area: Rect, state: &StrategySetupState
     frame.render_widget(Paragraph::new(line), area);
 }
 
-/// Render the 4x3 category weight grid.
+/// Render the category weight grid.
 fn render_weight_grid(frame: &mut Frame, area: Rect, state: &StrategySetupState) {
     let weights_active = state.review_section == ReviewSection::CategoryWeights;
-    let num_rows = (CATEGORIES.len() + WEIGHT_COLS - 1) / WEIGHT_COLS;
+    let cat_count = state.category_weights.len();
+    let num_rows = (cat_count + WEIGHT_COLS - 1) / WEIGHT_COLS;
 
     for row in 0..num_rows {
         if row as u16 >= area.height {
@@ -1603,14 +1613,14 @@ fn render_weight_grid(frame: &mut Frame, area: Rect, state: &StrategySetupState)
 
         for col in 0..WEIGHT_COLS {
             let idx = row * WEIGHT_COLS + col;
-            if idx >= CATEGORIES.len() {
+            if idx >= cat_count {
                 break;
             }
 
-            let cat_name = CATEGORIES[idx];
+            let cat_name = &state.category_weights.categories()[idx];
             let is_selected = weights_active && idx == state.selected_weight_idx;
             let is_editing =
-                is_selected && state.editing_field.as_deref() == Some(cat_name);
+                is_selected && state.editing_field.as_deref() == Some(cat_name.as_str());
 
             let name_style = if is_selected {
                 Style::default()
@@ -1672,9 +1682,9 @@ mod tests {
     #[test]
     fn default_weights() {
         let w = CategoryWeights::default();
-        assert!((w.r - 1.0).abs() < f32::EPSILON);
-        assert!((w.sv - 0.7).abs() < f32::EPSILON);
-        assert!((w.hd - 1.0).abs() < f32::EPSILON);
+        assert!((w.get_by_name("R").unwrap() - 1.0).abs() < f32::EPSILON);
+        assert!((w.get_by_name("SV").unwrap() - 0.7).abs() < f32::EPSILON);
+        assert!((w.get_by_name("HD").unwrap() - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -1682,11 +1692,11 @@ mod tests {
         let mut w = CategoryWeights::default();
         w.set(3, 1.3); // BB
         assert!((w.get(3) - 1.3).abs() < f32::EPSILON);
-        assert_eq!(w.bb, 1.3);
+        assert!((w.get_by_name("BB").unwrap() - 1.3).abs() < f32::EPSILON);
 
         w.set(8, 0.3); // SV
         assert!((w.get(8) - 0.3).abs() < f32::EPSILON);
-        assert_eq!(w.sv, 0.3);
+        assert!((w.get_by_name("SV").unwrap() - 0.3).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -1700,27 +1710,14 @@ mod tests {
         let mut w = CategoryWeights::default();
         w.set(99, 5.0);
         // No crash, values unchanged
-        assert!((w.r - 1.0).abs() < f32::EPSILON);
+        assert!((w.get_by_name("R").unwrap() - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]
     fn to_from_config_roundtrip() {
-        let w = CategoryWeights {
-            r: 1.0,
-            hr: 1.1,
-            rbi: 0.9,
-            bb: 1.3,
-            sb: 1.0,
-            avg: 1.0,
-            k: 1.0,
-            w: 1.0,
-            sv: 0.3,
-            hd: 1.2,
-            era: 1.0,
-            whip: 1.0,
-        };
+        let w = CategoryWeights::from_values(&[1.0, 1.1, 0.9, 1.3, 1.0, 1.0, 1.0, 1.0, 0.3, 1.2, 1.0, 1.0]);
         let config_w = w.to_config_weights();
-        let back = CategoryWeights::from_config_weights(&config_w);
+        let back = CategoryWeights::from_config_weights(&config_w, default_categories());
         // Compare within f32 precision (f64->f32 loses some precision)
         for i in 0..12 {
             assert!(
@@ -1832,7 +1829,7 @@ mod tests {
         s.start_editing("BB", "1.0");
         s.field_input.set_value("1.3");
         assert!(s.confirm_edit());
-        assert!((s.category_weights.bb - 1.3).abs() < f32::EPSILON);
+        assert!((s.category_weights.get_by_name("BB").unwrap() - 1.3).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -1841,7 +1838,7 @@ mod tests {
         s.start_editing("SV", "0.7");
         s.field_input.set_value("0.0");
         assert!(s.confirm_edit());
-        assert!((s.category_weights.sv - 0.0).abs() < f32::EPSILON);
+        assert!((s.category_weights.get_by_name("SV").unwrap() - 0.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -1850,7 +1847,7 @@ mod tests {
         s.start_editing("SV", "0.7");
         s.field_input.set_value("-0.1");
         assert!(!s.confirm_edit());
-        assert!((s.category_weights.sv - 0.7).abs() < f32::EPSILON);
+        assert!((s.category_weights.get_by_name("SV").unwrap() - 0.7).abs() < f32::EPSILON);
         // Editing state should be preserved so user can retry
         assert_eq!(s.editing_field.as_deref(), Some("SV"));
     }
@@ -2014,13 +2011,14 @@ mod tests {
         let mut s = StrategySetupState::default();
         s.strategy_overview = "Original".to_string();
         s.hitting_budget_pct = 65;
-        s.category_weights.bb = 1.3;
+        // BB is index 3 in default categories
+        s.category_weights.set(3, 1.3);
         s.snapshot_settings();
 
         // Modify values
         s.strategy_overview = "Modified".to_string();
         s.hitting_budget_pct = 80;
-        s.category_weights.bb = 2.0;
+        s.category_weights.set(3, 2.0);
         s.settings_dirty = true;
         s.overview_editing = true;
 
@@ -2028,7 +2026,7 @@ mod tests {
         s.restore_settings_snapshot();
         assert_eq!(s.strategy_overview, "Original");
         assert_eq!(s.hitting_budget_pct, 65);
-        assert!((s.category_weights.bb - 1.3).abs() < f32::EPSILON);
+        assert!((s.category_weights.get_by_name("BB").unwrap() - 1.3).abs() < f32::EPSILON);
         assert!(!s.settings_dirty);
         assert!(!s.overview_editing);
     }
