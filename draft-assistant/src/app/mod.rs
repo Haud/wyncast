@@ -1044,20 +1044,11 @@ mod tests {
     fn test_strategy_config() -> StrategyConfig {
         StrategyConfig {
             hitting_budget_fraction: 0.65,
-            weights: CategoryWeights {
-                R: 1.0,
-                HR: 1.0,
-                RBI: 1.0,
-                BB: 1.2,
-                SB: 1.0,
-                AVG: 1.0,
-                K: 1.0,
-                W: 1.0,
-                SV: 0.7,
-                HD: 1.3,
-                ERA: 1.0,
-                WHIP: 1.0,
-            },
+            weights: CategoryWeights::from_pairs([
+                ("R", 1.0), ("HR", 1.0), ("RBI", 1.0), ("BB", 1.2),
+                ("SB", 1.0), ("AVG", 1.0), ("K", 1.0), ("W", 1.0),
+                ("SV", 0.7), ("HD", 1.3), ("ERA", 1.0), ("WHIP", 1.0),
+            ]),
             pool: PoolConfig {
                 min_pa: 300,
                 min_ip_sp: 80.0,
@@ -3839,11 +3830,11 @@ mod tests {
             state.config.strategy.hitting_budget_fraction,
         );
         assert!(
-            (state.config.strategy.weights.BB - 1.3).abs() < 0.001,
+            (state.config.strategy.weights.get("BB").unwrap() - 1.3).abs() < 0.001,
             "BB weight should be 1.3",
         );
         assert!(
-            (state.config.strategy.weights.SV - 0.3).abs() < 0.001,
+            (state.config.strategy.weights.get("SV").unwrap() - 0.3).abs() < 0.001,
             "SV weight should be 0.3",
         );
 
@@ -4027,7 +4018,7 @@ mod tests {
             state.config.strategy.hitting_budget_fraction,
         );
         assert!(
-            (state.config.strategy.weights.BB - 1.3).abs() < 0.001,
+            (state.config.strategy.weights.get("BB").unwrap() - 1.3).abs() < 0.001,
             "BB weight should be 1.3",
         );
 

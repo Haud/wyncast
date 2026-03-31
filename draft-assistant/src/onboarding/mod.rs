@@ -184,18 +184,9 @@ impl<F: FileSystem> OnboardingManager<F> {
             .or_insert_with(|| toml::Value::Table(toml::Table::new()));
         if let toml::Value::Table(ref mut t) = cw_table {
             let config_w = weights.to_config_weights();
-            t.insert("R".to_string(), toml::Value::Float(config_w.R));
-            t.insert("HR".to_string(), toml::Value::Float(config_w.HR));
-            t.insert("RBI".to_string(), toml::Value::Float(config_w.RBI));
-            t.insert("BB".to_string(), toml::Value::Float(config_w.BB));
-            t.insert("SB".to_string(), toml::Value::Float(config_w.SB));
-            t.insert("AVG".to_string(), toml::Value::Float(config_w.AVG));
-            t.insert("K".to_string(), toml::Value::Float(config_w.K));
-            t.insert("W".to_string(), toml::Value::Float(config_w.W));
-            t.insert("SV".to_string(), toml::Value::Float(config_w.SV));
-            t.insert("HD".to_string(), toml::Value::Float(config_w.HD));
-            t.insert("ERA".to_string(), toml::Value::Float(config_w.ERA));
-            t.insert("WHIP".to_string(), toml::Value::Float(config_w.WHIP));
+            for (name, val) in config_w.iter() {
+                t.insert(name.to_string(), toml::Value::Float(val));
+            }
         }
 
         // Optionally update [llm] provider and model

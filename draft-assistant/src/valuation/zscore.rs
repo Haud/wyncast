@@ -445,12 +445,12 @@ fn compute_hitter_zscores(
     zscores.set(registry.index_of("SB").unwrap(), sbz);
     zscores.set(registry.index_of("AVG").unwrap(), avgz);
 
-    let total = rz * weights.R
-        + hrz * weights.HR
-        + rbiz * weights.RBI
-        + bbz * weights.BB
-        + sbz * weights.SB
-        + avgz * weights.AVG;
+    let total = rz * weights.weight("R")
+        + hrz * weights.weight("HR")
+        + rbiz * weights.weight("RBI")
+        + bbz * weights.weight("BB")
+        + sbz * weights.weight("SB")
+        + avgz * weights.weight("AVG");
 
     CategoryZScores::hitter(zscores, total)
 }
@@ -485,12 +485,12 @@ fn compute_pitcher_zscores(
     zscores.set(registry.index_of("ERA").unwrap(), eraz);
     zscores.set(registry.index_of("WHIP").unwrap(), whipz);
 
-    let total = kz * weights.K
-        + wz * weights.W
-        + svz * weights.SV
-        + hdz * weights.HD
-        + eraz * weights.ERA
-        + whipz * weights.WHIP;
+    let total = kz * weights.weight("K")
+        + wz * weights.weight("W")
+        + svz * weights.weight("SV")
+        + hdz * weights.weight("HD")
+        + eraz * weights.weight("ERA")
+        + whipz * weights.weight("WHIP");
 
     CategoryZScores::pitcher(zscores, total)
 }
@@ -827,20 +827,11 @@ mod tests {
             },
             strategy: StrategyConfig {
                 hitting_budget_fraction: 0.65,
-                weights: CategoryWeights {
-                    R: 1.0,
-                    HR: 1.0,
-                    RBI: 1.0,
-                    BB: 1.0,
-                    SB: 1.0,
-                    AVG: 1.0,
-                    K: 1.0,
-                    W: 1.0,
-                    SV: 0.7,
-                    HD: 1.0,
-                    ERA: 1.0,
-                    WHIP: 1.0,
-                },
+                weights: CategoryWeights::from_pairs([
+                    ("R", 1.0), ("HR", 1.0), ("RBI", 1.0), ("BB", 1.0),
+                    ("SB", 1.0), ("AVG", 1.0), ("K", 1.0), ("W", 1.0),
+                    ("SV", 0.7), ("HD", 1.0), ("ERA", 1.0), ("WHIP", 1.0),
+                ]),
                 strategy_overview: None,
                 pool: PoolConfig {
                     min_pa: 200,
@@ -1064,15 +1055,15 @@ mod tests {
             gs: 0,
         };
 
-        let weights_equal = CategoryWeights {
-            R: 1.0, HR: 1.0, RBI: 1.0, BB: 1.0, SB: 1.0, AVG: 1.0,
-            K: 1.0, W: 1.0, SV: 1.0, HD: 1.0, ERA: 1.0, WHIP: 1.0,
-        };
+        let weights_equal = CategoryWeights::from_pairs([
+            ("R", 1.0), ("HR", 1.0), ("RBI", 1.0), ("BB", 1.0), ("SB", 1.0), ("AVG", 1.0),
+            ("K", 1.0), ("W", 1.0), ("SV", 1.0), ("HD", 1.0), ("ERA", 1.0), ("WHIP", 1.0),
+        ]);
 
-        let weights_reduced_sv = CategoryWeights {
-            R: 1.0, HR: 1.0, RBI: 1.0, BB: 1.0, SB: 1.0, AVG: 1.0,
-            K: 1.0, W: 1.0, SV: 0.7, HD: 1.0, ERA: 1.0, WHIP: 1.0,
-        };
+        let weights_reduced_sv = CategoryWeights::from_pairs([
+            ("R", 1.0), ("HR", 1.0), ("RBI", 1.0), ("BB", 1.0), ("SB", 1.0), ("AVG", 1.0),
+            ("K", 1.0), ("W", 1.0), ("SV", 0.7), ("HD", 1.0), ("ERA", 1.0), ("WHIP", 1.0),
+        ]);
 
         let zscores_equal = compute_pitcher_zscores(
             &closer, &stats, 4.00, 1.30, &weights_equal, &registry,

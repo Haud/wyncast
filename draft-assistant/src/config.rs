@@ -205,41 +205,42 @@ impl Default for StrategyConfig {
     }
 }
 
-/// Category weight multipliers. The field names use UPPERCASE to match the
-/// TOML keys (R, HR, ...). Serde aliases with `#[serde(rename)]` map them.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[allow(non_snake_case)]
-pub struct CategoryWeights {
-    pub R: f64,
-    pub HR: f64,
-    pub RBI: f64,
-    pub BB: f64,
-    pub SB: f64,
-    pub AVG: f64,
-    pub K: f64,
-    pub W: f64,
-    pub SV: f64,
-    pub HD: f64,
-    pub ERA: f64,
-    pub WHIP: f64,
+/// Category weight multipliers, keyed by stat abbreviation (e.g. "R", "HR", "ERA").
+///
+/// Wraps a `HashMap<String, f64>` so leagues with non-standard categories
+/// (OPS, QS, K/9, etc.) work without code changes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CategoryWeights(pub HashMap<String, f64>);
+
+impl CategoryWeights {
+    /// Look up the weight for a category. Returns `Some(value)` if present.
+    pub fn get(&self, abbrev: &str) -> Option<f64> {
+        self.0.get(abbrev).copied()
+    }
+
+    /// Returns the weight for a category, or 0.0 if missing.
+    pub fn weight(&self, abbrev: &str) -> f64 {
+        self.0.get(abbrev).copied().unwrap_or(0.0)
+    }
+
+    /// Create from an iterator of (name, value) pairs.
+    pub fn from_pairs(pairs: impl IntoIterator<Item = (impl Into<String>, f64)>) -> Self {
+        Self(pairs.into_iter().map(|(k, v)| (k.into(), v)).collect())
+    }
+
+    /// Iterate over all (category, weight) entries.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, f64)> + '_ {
+        self.0.iter().map(|(k, v)| (k.as_str(), *v))
+    }
 }
 
 impl Default for CategoryWeights {
     fn default() -> Self {
-        Self {
-            R: 1.0,
-            HR: 1.0,
-            RBI: 1.0,
-            BB: 1.0,
-            SB: 1.0,
-            AVG: 1.0,
-            K: 1.0,
-            W: 1.0,
-            SV: 0.7,
-            HD: 1.0,
-            ERA: 1.0,
-            WHIP: 1.0,
-        }
+        Self::from_pairs([
+            ("R", 1.0), ("HR", 1.0), ("RBI", 1.0), ("BB", 1.0),
+            ("SB", 1.0), ("AVG", 1.0), ("K", 1.0), ("W", 1.0),
+            ("SV", 0.7), ("HD", 1.0), ("ERA", 1.0), ("WHIP", 1.0),
+        ])
     }
 }
 
@@ -547,25 +548,10 @@ fn validate(config: &Config) -> Result<(), ConfigError> {
     }
 
     // Category weights must all be positive
-    let w = &config.strategy.weights;
-    let weight_fields: &[(&str, f64)] = &[
-        ("weights.R", w.R),
-        ("weights.HR", w.HR),
-        ("weights.RBI", w.RBI),
-        ("weights.BB", w.BB),
-        ("weights.SB", w.SB),
-        ("weights.AVG", w.AVG),
-        ("weights.K", w.K),
-        ("weights.W", w.W),
-        ("weights.SV", w.SV),
-        ("weights.HD", w.HD),
-        ("weights.ERA", w.ERA),
-        ("weights.WHIP", w.WHIP),
-    ];
-    for (name, val) in weight_fields {
-        if *val <= 0.0 {
+    for (name, val) in config.strategy.weights.iter() {
+        if val <= 0.0 {
             return Err(ConfigError::ValidationError {
-                field: name.to_string(),
+                field: format!("weights.{name}"),
                 message: format!("must be > 0, got {val}"),
             });
         }
@@ -657,8 +643,8 @@ mod tests {
 
         // Strategy assertions
         assert!((config.strategy.hitting_budget_fraction - 0.65).abs() < f64::EPSILON);
-        assert!((config.strategy.weights.SV - 0.7).abs() < f64::EPSILON);
-        assert!((config.strategy.weights.R - 1.0).abs() < f64::EPSILON);
+        assert!((config.strategy.weights.get("SV").unwrap() - 0.7).abs() < f64::EPSILON);
+        assert!((config.strategy.weights.get("R").unwrap() - 1.0).abs() < f64::EPSILON);
         assert_eq!(config.strategy.pool.hitter_pool_size, 150);
         assert_eq!(config.strategy.pool.sp_pool_size, 70);
         assert_eq!(config.strategy.pool.rp_pool_size, 80);
@@ -1076,8 +1062,8 @@ gs_per_week = 7
         assert!(config.league.teams.is_empty());
 
         assert!((config.strategy.hitting_budget_fraction - 0.65).abs() < f64::EPSILON);
-        assert!((config.strategy.weights.R - 1.0).abs() < f64::EPSILON);
-        assert!((config.strategy.weights.SV - 0.7).abs() < f64::EPSILON);
+        assert!((config.strategy.weights.get("R").unwrap() - 1.0).abs() < f64::EPSILON);
+        assert!((config.strategy.weights.get("SV").unwrap() - 0.7).abs() < f64::EPSILON);
         assert_eq!(config.strategy.pool.min_pa, 200);
         assert!((config.strategy.pool.min_ip_sp - 50.0).abs() < f64::EPSILON);
         assert_eq!(config.strategy.pool.min_g_rp, 20);
