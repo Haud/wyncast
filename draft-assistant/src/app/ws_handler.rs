@@ -146,7 +146,7 @@ pub(super) async fn handle_full_state_sync(
     // after all snapshot picks are applied.
     if let Some(ref projections) = state.all_projections {
         state.available_players =
-            valuation::compute_initial(projections, &state.config, &roster)
+            valuation::compute_initial(projections, &state.config, &roster, &state.stat_registry)
                 .unwrap_or_default();
     } else {
         state.available_players = Vec::new();
@@ -342,7 +342,7 @@ pub(super) async fn handle_state_update(
                     &roster,
                 );
                 state.available_players = if let Some(ref projections) = state.all_projections {
-                    valuation::compute_initial(projections, &state.config, &roster)
+                    valuation::compute_initial(projections, &state.config, &roster, &state.stat_registry)
                         .unwrap_or_default()
                 } else {
                     Vec::new()

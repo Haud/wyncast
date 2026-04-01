@@ -17,6 +17,7 @@ use draft_assistant::llm::prompt::BudgetContext;
 use draft_assistant::protocol::*;
 use draft_assistant::valuation::projections::{AllProjections, PitcherType};
 use draft_assistant::valuation::zscore::PlayerValuation;
+use draft_assistant::stats::StatRegistry;
 use draft_assistant::ws_server::WsEvent;
 
 use tokio::sync::mpsc;
@@ -142,7 +143,9 @@ fn load_fixture_players(config: &Config) -> Vec<PlayerValuation> {
     .expect("fixture CSVs should load")
     .expect("fixture CSV paths are configured");
 
-    draft_assistant::valuation::compute_initial(&projections, config, &roster_config())
+    let registry = StatRegistry::from_league_config(&config.league)
+        .expect("test registry");
+    draft_assistant::valuation::compute_initial(&projections, config, &roster_config(), &registry)
         .expect("initial valuation should succeed")
 }
 
@@ -168,12 +171,15 @@ fn create_test_app_state_from_fixtures() -> AppState {
 
     // Recalculate with draft state for consistency
     let roster = roster_config();
+    let registry = StatRegistry::from_league_config(&config.league)
+        .expect("test registry");
     draft_assistant::valuation::recalculate_all(
         &mut available,
         &roster,
         &config.league,
         &config.strategy,
         &draft_state,
+        &registry,
     );
 
     let db = Database::open(":memory:").expect("in-memory db");

@@ -37,14 +37,13 @@ pub fn compute_initial(
     projections: &AllProjections,
     config: &Config,
     roster_config: &HashMap<String, usize>,
+    registry: &StatRegistry,
 ) -> anyhow::Result<Vec<PlayerValuation>> {
-    let registry = StatRegistry::from_league_config(&config.league)
-        .expect("StatRegistry must be valid for configured categories");
-    let weight_values = weights_to_category_values(&config.strategy.weights, &registry);
+    let weight_values = weights_to_category_values(&config.strategy.weights, registry);
 
     // Step 1: Z-scores
     let mut players = zscore::compute_initial_zscores(
-        projections, config, &registry, &weight_values,
+        projections, config, registry, &weight_values,
     );
 
     // Step 2: VOR adjustment
@@ -86,14 +85,13 @@ pub fn recalculate_all(
     league: &LeagueConfig,
     strategy: &StrategyConfig,
     _draft_state: &DraftState,
+    registry: &StatRegistry,
 ) {
     if available_players.is_empty() {
         return;
     }
 
-    let registry = StatRegistry::from_league_config(league)
-        .expect("StatRegistry must be valid for configured categories");
-    let weight_values = weights_to_category_values(&strategy.weights, &registry);
+    let weight_values = weights_to_category_values(&strategy.weights, registry);
 
     // ---- 1. Separate into hitter/pitcher/two-way pools ----
     let hitter_indices: Vec<usize> = available_players
@@ -235,6 +233,10 @@ mod tests {
             },
             teams: HashMap::new(),
         }
+    }
+
+    fn test_registry() -> StatRegistry {
+        StatRegistry::from_league_config(&test_league_config()).expect("test registry")
     }
 
     fn test_strategy_config() -> StrategyConfig {
@@ -393,7 +395,7 @@ mod tests {
 
         // Initial calculation.
         let roster = test_roster_config();
-        recalculate_all(&mut players, &roster, &league, &strategy, &draft_state);
+        recalculate_all(&mut players, &roster, &league, &strategy, &draft_state, &test_registry());
 
         // Record values for remaining players.
         let mid_value = players.iter().find(|p| p.name == "H_Mid").unwrap().dollar_value;
@@ -422,7 +424,7 @@ mod tests {
 
         let mut players: Vec<PlayerValuation> = Vec::new();
         let roster = test_roster_config();
-        recalculate_all(&mut players, &roster, &league, &strategy, &draft_state);
+        recalculate_all(&mut players, &roster, &league, &strategy, &draft_state, &test_registry());
         assert!(players.is_empty());
     }
 
@@ -439,7 +441,7 @@ mod tests {
         ];
 
         let roster = test_roster_config();
-        recalculate_all(&mut players, &roster, &league, &strategy, &draft_state);
+        recalculate_all(&mut players, &roster, &league, &strategy, &draft_state, &test_registry());
 
         // All should have valid values.
         for p in &players {
@@ -460,7 +462,7 @@ mod tests {
         ];
 
         let roster = test_roster_config();
-        recalculate_all(&mut players, &roster, &league, &strategy, &draft_state);
+        recalculate_all(&mut players, &roster, &league, &strategy, &draft_state, &test_registry());
 
         for p in &players {
             assert!(p.dollar_value >= 1.0);
@@ -551,7 +553,7 @@ mod tests {
         ];
 
         let roster = test_roster_config();
-        recalculate_all(&mut players, &roster, &league, &strategy, &draft_state);
+        recalculate_all(&mut players, &roster, &league, &strategy, &draft_state, &test_registry());
 
         // The two-way player should have a valid dollar value.
         let ohtani = players.iter().find(|p| p.name == "Ohtani").unwrap();
@@ -623,7 +625,7 @@ mod tests {
         ];
 
         let roster = test_roster_config();
-        recalculate_all(&mut with_two_way, &roster, &league, &strategy, &draft_state);
+        recalculate_all(&mut with_two_way, &roster, &league, &strategy, &draft_state, &test_registry());
 
         let two_way_value = with_two_way.iter().find(|p| p.name == "TwoWay").unwrap().dollar_value;
 
@@ -637,7 +639,7 @@ mod tests {
             make_pitcher("FillerSP2", 160, 11, 0, 0, 170.0, 3.60, 1.15, PitcherType::SP),
         ];
 
-        recalculate_all(&mut without_two_way, &roster, &league, &strategy, &draft_state);
+        recalculate_all(&mut without_two_way, &roster, &league, &strategy, &draft_state, &test_registry());
 
         let split_hitter_value = without_two_way.iter().find(|p| p.name == "SplitH").unwrap().dollar_value;
         let split_pitcher_value = without_two_way.iter().find(|p| p.name == "SplitP").unwrap().dollar_value;
@@ -681,7 +683,7 @@ mod tests {
 
         // Initial calculation with two-way player present.
         let roster = test_roster_config();
-        recalculate_all(&mut players, &roster, &league, &strategy, &draft_state);
+        recalculate_all(&mut players, &roster, &league, &strategy, &draft_state, &test_registry());
 
         // Record values.
         let h1_value = players.iter().find(|p| p.name == "H1").unwrap().dollar_value;
@@ -737,7 +739,7 @@ mod tests {
         ];
 
         let roster = test_roster_config();
-        recalculate_all(&mut players, &roster, &league, &strategy, &draft_state);
+        recalculate_all(&mut players, &roster, &league, &strategy, &draft_state, &test_registry());
 
         // Snapshot values from registry-driven generic computation.
         // Note: hitter z-scores differ slightly from the pre-refactor manual code
@@ -783,7 +785,7 @@ mod tests {
         ];
 
         let roster = test_roster_config();
-        recalculate_all(&mut players, &roster, &league, &strategy, &draft_state);
+        recalculate_all(&mut players, &roster, &league, &strategy, &draft_state, &test_registry());
 
         let ohtani = find_player(&players, "Ohtani");
         assert_close(ohtani.total_zscore, 9.661721255392411, "Ohtani zscore");
