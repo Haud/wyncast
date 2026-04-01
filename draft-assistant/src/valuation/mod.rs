@@ -12,11 +12,10 @@ use std::collections::HashMap;
 use crate::config::{Config, LeagueConfig, StrategyConfig};
 use crate::draft::state::DraftState;
 use projections::AllProjections;
-use crate::stats::{CategoryValues, StatRegistry};
+use crate::stats::{self, CategoryValues, StatRegistry, SortDirection};
 use zscore::{
     CategoryZScores, PlayerValuation,
-    avg_contribution, compute_pool_stats, compute_zscore, era_contribution,
-    whip_contribution,
+    compute_pool_stats, compute_zscore, weights_to_category_values,
 };
 
 // ---------------------------------------------------------------------------
@@ -38,8 +37,14 @@ pub fn compute_initial(
     config: &Config,
     roster_config: &HashMap<String, usize>,
 ) -> anyhow::Result<Vec<PlayerValuation>> {
+    let registry = StatRegistry::from_league_config(&config.league)
+        .expect("StatRegistry must be valid for configured categories");
+    let weight_values = weights_to_category_values(&config.strategy.weights, &registry);
+
     // Step 1: Z-scores
-    let mut players = zscore::compute_initial_zscores(projections, config);
+    let mut players = zscore::compute_initial_zscores(
+        projections, config, &registry, &weight_values,
+    );
 
     // Step 2: VOR adjustment
     vor::apply_vor(&mut players, roster_config, config.league.num_teams);
@@ -153,7 +158,7 @@ pub fn recalculate_all(
             .iter()
             .map(|&i| {
                 let proj = &available_players[i].projection;
-                avg_contribution(proj.get("ab") as u32, proj.get("avg"), league_avg_avg)
+                stats::rate_stat_contribution(proj.get("ab"), proj.get("avg"), league_avg_avg, 1.0, SortDirection::HigherIsBetter)
             })
             .collect();
 
@@ -178,7 +183,7 @@ pub fn recalculate_all(
             let bbz = compute_zscore(proj.get("bb"), &bb_stats);
             let sbz = compute_zscore(proj.get("sb"), &sb_stats);
             let avgz = compute_zscore(
-                avg_contribution(proj.get("ab") as u32, proj.get("avg"), league_avg_avg),
+                stats::rate_stat_contribution(proj.get("ab"), proj.get("avg"), league_avg_avg, 1.0, SortDirection::HigherIsBetter),
                 &avg_stats,
             );
 
@@ -254,7 +259,7 @@ pub fn recalculate_all(
             .iter()
             .map(|&i| {
                 let proj = &available_players[i].projection;
-                era_contribution(proj.get("ip"), proj.get("era"), league_avg_era)
+                stats::rate_stat_contribution(proj.get("ip"), proj.get("era"), league_avg_era, 9.0, SortDirection::LowerIsBetter)
             })
             .collect();
 
@@ -262,7 +267,7 @@ pub fn recalculate_all(
             .iter()
             .map(|&i| {
                 let proj = &available_players[i].projection;
-                whip_contribution(proj.get("ip"), proj.get("whip"), league_avg_whip)
+                stats::rate_stat_contribution(proj.get("ip"), proj.get("whip"), league_avg_whip, 1.0, SortDirection::LowerIsBetter)
             })
             .collect();
 
@@ -283,11 +288,11 @@ pub fn recalculate_all(
             let svz = compute_zscore(proj.get("sv"), &sv_stats);
             let hdz = compute_zscore(proj.get("hd"), &hd_stats);
             let eraz = compute_zscore(
-                era_contribution(proj.get("ip"), proj.get("era"), league_avg_era),
+                stats::rate_stat_contribution(proj.get("ip"), proj.get("era"), league_avg_era, 9.0, SortDirection::LowerIsBetter),
                 &era_stats,
             );
             let whipz = compute_zscore(
-                whip_contribution(proj.get("ip"), proj.get("whip"), league_avg_whip),
+                stats::rate_stat_contribution(proj.get("ip"), proj.get("whip"), league_avg_whip, 1.0, SortDirection::LowerIsBetter),
                 &whip_stats,
             );
 
@@ -326,7 +331,7 @@ pub fn recalculate_all(
             let bbz = compute_zscore(proj.get("bb"), bb_stats);
             let sbz = compute_zscore(proj.get("sb"), sb_stats);
             let avgz = compute_zscore(
-                avg_contribution(proj.get("ab") as u32, proj.get("avg"), *league_avg_avg),
+                stats::rate_stat_contribution(proj.get("ab"), proj.get("avg"), *league_avg_avg, 1.0, SortDirection::HigherIsBetter),
                 avg_stats,
             );
             let batting_total = rz * weights.weight("R")
@@ -342,11 +347,11 @@ pub fn recalculate_all(
             let svz = compute_zscore(proj.get("sv"), sv_stats);
             let hdz = compute_zscore(proj.get("hd"), hd_stats);
             let eraz = compute_zscore(
-                era_contribution(proj.get("ip"), proj.get("era"), *league_avg_era),
+                stats::rate_stat_contribution(proj.get("ip"), proj.get("era"), *league_avg_era, 9.0, SortDirection::LowerIsBetter),
                 era_stats,
             );
             let whipz = compute_zscore(
-                whip_contribution(proj.get("ip"), proj.get("whip"), *league_avg_whip),
+                stats::rate_stat_contribution(proj.get("ip"), proj.get("whip"), *league_avg_whip, 1.0, SortDirection::LowerIsBetter),
                 whip_stats,
             );
             let pitching_total = kz * weights.weight("K")

@@ -154,6 +154,14 @@ impl StatRegistry {
         self.pitching_indices.iter().map(|&i| &self.stats[i])
     }
 
+    pub fn batting_stats_indexed(&self) -> impl Iterator<Item = (usize, &StatDefinition)> {
+        self.batting_indices.iter().map(|&i| (i, &self.stats[i]))
+    }
+
+    pub fn pitching_stats_indexed(&self) -> impl Iterator<Item = (usize, &StatDefinition)> {
+        self.pitching_indices.iter().map(|&i| (i, &self.stats[i]))
+    }
+
     pub fn batting_indices(&self) -> &[usize] {
         &self.batting_indices
     }
