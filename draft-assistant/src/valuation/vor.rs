@@ -329,8 +329,9 @@ mod tests {
     use crate::valuation::projections::PitcherType;
     use crate::stats::CategoryValues;
     use crate::valuation::zscore::{
-        CategoryZScores, PlayerProjectionData,
+        CategoryZScores, ProjectionData,
     };
+    use std::collections::HashMap;
 
     // ---- Test helpers ----
 
@@ -376,16 +377,12 @@ mod tests {
             is_pitcher: false,
             is_two_way: false,
             pitcher_type: None,
-            projection: PlayerProjectionData::Hitter {
-                pa: 600,
-                ab: 550,
-                h: 150,
-                hr: 25,
-                r: 80,
-                rbi: 85,
-                bb: 50,
-                sb: 10,
-                avg: 0.273,
+            projection: ProjectionData {
+                values: HashMap::from([
+                    ("pa".into(), 600.0), ("ab".into(), 550.0), ("h".into(), 150.0),
+                    ("hr".into(), 25.0), ("r".into(), 80.0), ("rbi".into(), 85.0),
+                    ("bb".into(), 50.0), ("sb".into(), 10.0), ("avg".into(), 0.273),
+                ]),
             },
             total_zscore,
             category_zscores: default_hitter_zscores(total_zscore),
@@ -412,16 +409,12 @@ mod tests {
             is_pitcher: true,
             is_two_way: false,
             pitcher_type: Some(pitcher_type),
-            projection: PlayerProjectionData::Pitcher {
-                ip: 180.0,
-                k: 200,
-                w: 14,
-                sv: 0,
-                hd: 0,
-                era: 3.20,
-                whip: 1.10,
-                g: 30,
-                gs: 30,
+            projection: ProjectionData {
+                values: HashMap::from([
+                    ("ip".into(), 180.0), ("k".into(), 200.0), ("w".into(), 14.0),
+                    ("sv".into(), 0.0), ("hd".into(), 0.0), ("era".into(), 3.20),
+                    ("whip".into(), 1.10), ("g".into(), 30.0), ("gs".into(), 30.0),
+                ]),
             },
             total_zscore,
             category_zscores: default_pitcher_zscores(total_zscore),

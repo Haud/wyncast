@@ -340,7 +340,8 @@ pub fn format_positions(positions: &[Position]) -> String {
 mod tests {
     use super::*;
     use crate::stats::CategoryValues;
-    use crate::valuation::zscore::{CategoryZScores, PlayerProjectionData};
+    use crate::valuation::zscore::{CategoryZScores, ProjectionData};
+    use std::collections::HashMap;
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -360,16 +361,12 @@ mod tests {
             is_pitcher: false,
             is_two_way: false,
             pitcher_type: None,
-            projection: PlayerProjectionData::Hitter {
-                pa: 600,
-                ab: 550,
-                h: 150,
-                hr: 25,
-                r: 80,
-                rbi: 85,
-                bb: 50,
-                sb: 10,
-                avg: 0.273,
+            projection: ProjectionData {
+                values: HashMap::from([
+                    ("pa".into(), 600.0), ("ab".into(), 550.0), ("h".into(), 150.0),
+                    ("hr".into(), 25.0), ("r".into(), 80.0), ("rbi".into(), 85.0),
+                    ("bb".into(), 50.0), ("sb".into(), 10.0), ("avg".into(), 0.273),
+                ]),
             },
             total_zscore: 3.5,
             category_zscores: CategoryZScores::hitter(CategoryValues::zeros(12), 3.5),

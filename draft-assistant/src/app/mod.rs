@@ -998,7 +998,7 @@ mod tests {
     use crate::protocol::{LlmEvent, OnboardingAction, OnboardingUpdate, UserCommand};
     use crate::valuation::projections::{AllProjections, PitcherType};
     use crate::valuation::zscore::{
-        CategoryZScores, PlayerProjectionData, PlayerValuation,
+        CategoryZScores, PlayerValuation, ProjectionData,
     };
 
     // -----------------------------------------------------------------------
@@ -1130,16 +1130,18 @@ mod tests {
             is_pitcher: false,
             is_two_way: false,
             pitcher_type: None,
-            projection: PlayerProjectionData::Hitter {
-                pa: ab + bb,
-                ab,
-                h: (ab as f64 * avg).round() as u32,
-                hr,
-                r,
-                rbi,
-                bb,
-                sb,
-                avg,
+            projection: ProjectionData {
+                values: HashMap::from([
+                    ("pa".into(), (ab + bb) as f64),
+                    ("ab".into(), ab as f64),
+                    ("h".into(), (ab as f64 * avg).round()),
+                    ("hr".into(), hr as f64),
+                    ("r".into(), r as f64),
+                    ("rbi".into(), rbi as f64),
+                    ("bb".into(), bb as f64),
+                    ("sb".into(), sb as f64),
+                    ("avg".into(), avg),
+                ]),
             },
             total_zscore: 0.0,
             category_zscores: CategoryZScores::zeros_hitter(12),
@@ -1172,20 +1174,18 @@ mod tests {
             is_pitcher: true,
             is_two_way: false,
             pitcher_type: Some(pitcher_type),
-            projection: PlayerProjectionData::Pitcher {
-                ip,
-                k,
-                w,
-                sv,
-                hd,
-                era,
-                whip,
-                g: 30,
-                gs: if pitcher_type == PitcherType::SP {
-                    30
-                } else {
-                    0
-                },
+            projection: ProjectionData {
+                values: HashMap::from([
+                    ("ip".into(), ip),
+                    ("k".into(), k as f64),
+                    ("w".into(), w as f64),
+                    ("sv".into(), sv as f64),
+                    ("hd".into(), hd as f64),
+                    ("era".into(), era),
+                    ("whip".into(), whip),
+                    ("g".into(), 30.0),
+                    ("gs".into(), if pitcher_type == PitcherType::SP { 30.0 } else { 0.0 }),
+                ]),
             },
             total_zscore: 0.0,
             category_zscores: CategoryZScores::zeros_pitcher(12),
