@@ -249,6 +249,16 @@ impl From<&PitcherProjection> for ProjectionData {
     }
 }
 
+impl From<&ProjectionData> for stats::ProjectionData {
+    fn from(proj: &ProjectionData) -> Self {
+        let mut data = stats::ProjectionData::new();
+        for (k, v) in &proj.values {
+            data.insert(k.as_str(), *v);
+        }
+        data
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Player valuation (main output struct)
 // ---------------------------------------------------------------------------
@@ -332,7 +342,7 @@ pub fn filter_rp_pool<'a>(pitchers: &'a [PitcherProjection], pool: &PoolConfig) 
 /// Returns `(pool_stats, league_avgs)` where `pool_stats` is a full-length
 /// `Vec<PoolStats>` indexed by registry position (zeroed at unused indices)
 /// and `league_avgs` maps rate-stat category indices to their league average.
-fn compute_generic_pool_stats(
+pub(crate) fn compute_generic_pool_stats(
     pool: &[stats::ProjectionData],
     category_indices: &[usize],
     registry: &StatRegistry,
@@ -386,7 +396,7 @@ fn compute_generic_pool_stats(
 ///
 /// Writes z-scores into `zscores` at the appropriate registry indices.
 /// Returns the weighted total z-score for these categories.
-fn compute_player_category_zscores(
+pub(crate) fn compute_player_category_zscores(
     projection: &stats::ProjectionData,
     pool_stats: &[PoolStats],
     league_avgs: &HashMap<usize, f64>,
