@@ -13,7 +13,7 @@ use crate::protocol::NominationInfo;
 use crate::stats::{CategoryValues, StatRegistry};
 use crate::valuation::auction::InflationTracker;
 use crate::valuation::scarcity::ScarcityEntry;
-use crate::valuation::zscore::{CategoryZScores, PlayerProjectionData, PlayerValuation};
+use crate::valuation::zscore::{CategoryZScores, PlayerValuation};
 
 // ---------------------------------------------------------------------------
 // Supporting types
@@ -440,50 +440,48 @@ fn format_player_profile(
     };
 
     let mut s = String::new();
-    match &player.projection {
-        PlayerProjectionData::Hitter { pa, r, hr, rbi, bb, sb, avg, .. } => {
-            s.push_str(&format!("  PA: {}\n", pa));
-            s.push_str("  Cat   Proj  Z-Score  Rank\n");
-            let ranks = compute_hitter_ranks(player, available_players, registry);
-            s.push_str(&format!("  R     {:>4}  {:>+6.2}   #{}\n", r, z("R"), ranks.0));
-            s.push_str(&format!("  HR    {:>4}  {:>+6.2}   #{}\n", hr, z("HR"), ranks.1));
-            s.push_str(&format!("  RBI   {:>4}  {:>+6.2}   #{}\n", rbi, z("RBI"), ranks.2));
-            s.push_str(&format!("  BB    {:>4}  {:>+6.2}   #{}\n", bb, z("BB"), ranks.3));
-            s.push_str(&format!("  SB    {:>4}  {:>+6.2}   #{}\n", sb, z("SB"), ranks.4));
-            s.push_str(&format!("  AVG   {:.3}  {:>+6.2}   #{}\n", avg, z("AVG"), ranks.5));
-        }
-        PlayerProjectionData::Pitcher { ip, k, w, sv, hd, era, whip, .. } => {
-            s.push_str(&format!("  IP: {:.0}\n", ip));
-            s.push_str("  Cat   Proj  Z-Score  Rank\n");
-            let ranks = compute_pitcher_ranks(player, available_players, registry);
-            s.push_str(&format!("  K     {:>4}  {:>+6.2}   #{}\n", k, z("K"), ranks.0));
-            s.push_str(&format!("  W     {:>4}  {:>+6.2}   #{}\n", w, z("W"), ranks.1));
-            s.push_str(&format!("  SV    {:>4}  {:>+6.2}   #{}\n", sv, z("SV"), ranks.2));
-            s.push_str(&format!("  HD    {:>4}  {:>+6.2}   #{}\n", hd, z("HD"), ranks.3));
-            s.push_str(&format!("  ERA   {:.2}  {:>+6.2}   #{}\n", era, z("ERA"), ranks.4));
-            s.push_str(&format!("  WHIP  {:.2}  {:>+6.2}   #{}\n", whip, z("WHIP"), ranks.5));
-        }
-        PlayerProjectionData::TwoWay { pa, r, hr, rbi, bb, sb, avg, ip, k, w, sv, hd, era, whip, .. } => {
-            let h_ranks = compute_hitter_ranks(player, available_players, registry);
-            let p_ranks = compute_pitcher_ranks(player, available_players, registry);
-            s.push_str("  TWO-WAY PLAYER\n");
-            s.push_str(&format!("  --- Hitting (PA: {}) ---\n", pa));
-            s.push_str("  Cat   Proj  Z-Score  Rank\n");
-            s.push_str(&format!("  R     {:>4}  {:>+6.2}   #{}\n", r, z("R"), h_ranks.0));
-            s.push_str(&format!("  HR    {:>4}  {:>+6.2}   #{}\n", hr, z("HR"), h_ranks.1));
-            s.push_str(&format!("  RBI   {:>4}  {:>+6.2}   #{}\n", rbi, z("RBI"), h_ranks.2));
-            s.push_str(&format!("  BB    {:>4}  {:>+6.2}   #{}\n", bb, z("BB"), h_ranks.3));
-            s.push_str(&format!("  SB    {:>4}  {:>+6.2}   #{}\n", sb, z("SB"), h_ranks.4));
-            s.push_str(&format!("  AVG   {:.3}  {:>+6.2}   #{}\n", avg, z("AVG"), h_ranks.5));
-            s.push_str(&format!("  --- Pitching (IP: {:.0}) ---\n", ip));
-            s.push_str("  Cat   Proj  Z-Score  Rank\n");
-            s.push_str(&format!("  K     {:>4}  {:>+6.2}   #{}\n", k, z("K"), p_ranks.0));
-            s.push_str(&format!("  W     {:>4}  {:>+6.2}   #{}\n", w, z("W"), p_ranks.1));
-            s.push_str(&format!("  SV    {:>4}  {:>+6.2}   #{}\n", sv, z("SV"), p_ranks.2));
-            s.push_str(&format!("  HD    {:>4}  {:>+6.2}   #{}\n", hd, z("HD"), p_ranks.3));
-            s.push_str(&format!("  ERA   {:.2}  {:>+6.2}   #{}\n", era, z("ERA"), p_ranks.4));
-            s.push_str(&format!("  WHIP  {:.2}  {:>+6.2}   #{}\n", whip, z("WHIP"), p_ranks.5));
-        }
+    let proj = &player.projection;
+
+    if player.is_two_way {
+        let h_ranks = compute_hitter_ranks(player, available_players, registry);
+        let p_ranks = compute_pitcher_ranks(player, available_players, registry);
+        s.push_str("  TWO-WAY PLAYER\n");
+        s.push_str(&format!("  --- Hitting (PA: {}) ---\n", proj.get("pa") as u32));
+        s.push_str("  Cat   Proj  Z-Score  Rank\n");
+        s.push_str(&format!("  R     {:>4}  {:>+6.2}   #{}\n", proj.get("r") as u32, z("R"), h_ranks.0));
+        s.push_str(&format!("  HR    {:>4}  {:>+6.2}   #{}\n", proj.get("hr") as u32, z("HR"), h_ranks.1));
+        s.push_str(&format!("  RBI   {:>4}  {:>+6.2}   #{}\n", proj.get("rbi") as u32, z("RBI"), h_ranks.2));
+        s.push_str(&format!("  BB    {:>4}  {:>+6.2}   #{}\n", proj.get("bb") as u32, z("BB"), h_ranks.3));
+        s.push_str(&format!("  SB    {:>4}  {:>+6.2}   #{}\n", proj.get("sb") as u32, z("SB"), h_ranks.4));
+        s.push_str(&format!("  AVG   {:.3}  {:>+6.2}   #{}\n", proj.get("avg"), z("AVG"), h_ranks.5));
+        s.push_str(&format!("  --- Pitching (IP: {:.0}) ---\n", proj.get("ip")));
+        s.push_str("  Cat   Proj  Z-Score  Rank\n");
+        s.push_str(&format!("  K     {:>4}  {:>+6.2}   #{}\n", proj.get("k") as u32, z("K"), p_ranks.0));
+        s.push_str(&format!("  W     {:>4}  {:>+6.2}   #{}\n", proj.get("w") as u32, z("W"), p_ranks.1));
+        s.push_str(&format!("  SV    {:>4}  {:>+6.2}   #{}\n", proj.get("sv") as u32, z("SV"), p_ranks.2));
+        s.push_str(&format!("  HD    {:>4}  {:>+6.2}   #{}\n", proj.get("hd") as u32, z("HD"), p_ranks.3));
+        s.push_str(&format!("  ERA   {:.2}  {:>+6.2}   #{}\n", proj.get("era"), z("ERA"), p_ranks.4));
+        s.push_str(&format!("  WHIP  {:.2}  {:>+6.2}   #{}\n", proj.get("whip"), z("WHIP"), p_ranks.5));
+    } else if player.is_pitcher {
+        s.push_str(&format!("  IP: {:.0}\n", proj.get("ip")));
+        s.push_str("  Cat   Proj  Z-Score  Rank\n");
+        let ranks = compute_pitcher_ranks(player, available_players, registry);
+        s.push_str(&format!("  K     {:>4}  {:>+6.2}   #{}\n", proj.get("k") as u32, z("K"), ranks.0));
+        s.push_str(&format!("  W     {:>4}  {:>+6.2}   #{}\n", proj.get("w") as u32, z("W"), ranks.1));
+        s.push_str(&format!("  SV    {:>4}  {:>+6.2}   #{}\n", proj.get("sv") as u32, z("SV"), ranks.2));
+        s.push_str(&format!("  HD    {:>4}  {:>+6.2}   #{}\n", proj.get("hd") as u32, z("HD"), ranks.3));
+        s.push_str(&format!("  ERA   {:.2}  {:>+6.2}   #{}\n", proj.get("era"), z("ERA"), ranks.4));
+        s.push_str(&format!("  WHIP  {:.2}  {:>+6.2}   #{}\n", proj.get("whip"), z("WHIP"), ranks.5));
+    } else {
+        s.push_str(&format!("  PA: {}\n", proj.get("pa") as u32));
+        s.push_str("  Cat   Proj  Z-Score  Rank\n");
+        let ranks = compute_hitter_ranks(player, available_players, registry);
+        s.push_str(&format!("  R     {:>4}  {:>+6.2}   #{}\n", proj.get("r") as u32, z("R"), ranks.0));
+        s.push_str(&format!("  HR    {:>4}  {:>+6.2}   #{}\n", proj.get("hr") as u32, z("HR"), ranks.1));
+        s.push_str(&format!("  RBI   {:>4}  {:>+6.2}   #{}\n", proj.get("rbi") as u32, z("RBI"), ranks.2));
+        s.push_str(&format!("  BB    {:>4}  {:>+6.2}   #{}\n", proj.get("bb") as u32, z("BB"), ranks.3));
+        s.push_str(&format!("  SB    {:>4}  {:>+6.2}   #{}\n", proj.get("sb") as u32, z("SB"), ranks.4));
+        s.push_str(&format!("  AVG   {:.3}  {:>+6.2}   #{}\n", proj.get("avg"), z("AVG"), ranks.5));
     }
     s
 }
@@ -842,7 +840,7 @@ mod tests {
     use crate::valuation::scarcity::compute_scarcity;
     use crate::stats::{CategoryValues, StatRegistry};
     use crate::valuation::zscore::{
-        CategoryZScores, PlayerProjectionData, PlayerValuation,
+        CategoryZScores, PlayerValuation, ProjectionData,
     };
     use std::collections::HashMap;
 
@@ -954,16 +952,12 @@ mod tests {
             is_pitcher: false,
             is_two_way: false,
             pitcher_type: None,
-            projection: PlayerProjectionData::Hitter {
-                pa: 600,
-                ab: 550,
-                h: 150,
-                hr: 25,
-                r: 80,
-                rbi: 85,
-                bb: 50,
-                sb: 10,
-                avg: 0.273,
+            projection: ProjectionData {
+                values: HashMap::from([
+                    ("pa".into(), 600.0), ("ab".into(), 550.0), ("h".into(), 150.0),
+                    ("hr".into(), 25.0), ("r".into(), 80.0), ("rbi".into(), 85.0),
+                    ("bb".into(), 50.0), ("sb".into(), 10.0), ("avg".into(), 0.273),
+                ]),
             },
             total_zscore: vor + 2.0,
             category_zscores: CategoryZScores::hitter(zv, vor + 2.0),
@@ -992,16 +986,12 @@ mod tests {
             is_pitcher: true,
             is_two_way: false,
             pitcher_type: Some(pt),
-            projection: PlayerProjectionData::Pitcher {
-                ip: 180.0,
-                k: 200,
-                w: 14,
-                sv: 0,
-                hd: 0,
-                era: 3.20,
-                whip: 1.10,
-                g: 30,
-                gs: 30,
+            projection: ProjectionData {
+                values: HashMap::from([
+                    ("ip".into(), 180.0), ("k".into(), 200.0), ("w".into(), 14.0),
+                    ("sv".into(), 0.0), ("hd".into(), 0.0), ("era".into(), 3.20),
+                    ("whip".into(), 1.10), ("g".into(), 30.0), ("gs".into(), 30.0),
+                ]),
             },
             total_zscore: vor + 1.0,
             category_zscores: CategoryZScores::pitcher(zv, vor + 1.0),

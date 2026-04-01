@@ -1,5 +1,7 @@
 // Z-score calculation with volume-weighted rate stats.
 
+use std::collections::HashMap;
+
 use crate::config::{CategoryWeights, Config, PoolConfig};
 use crate::draft::pick::Position;
 use crate::stats::{CategoryValues, StatRegistry};
@@ -188,57 +190,71 @@ impl CategoryZScores {
 }
 
 // ---------------------------------------------------------------------------
-// Projection data enum (carried through the pipeline)
+// Projection data (carried through the pipeline)
 // ---------------------------------------------------------------------------
 
 /// Raw projection numbers carried forward through the valuation pipeline.
+///
+/// Keys are lowercase field names matching CSV/ESPN columns:
+/// "pa", "ab", "h", "hr", "r", "rbi", "bb", "sb", "avg",
+/// "ip", "k", "w", "sv", "hd", "era", "whip", "g", "gs".
+///
+/// The hitter/pitcher distinction is carried by `PlayerValuation.is_pitcher`
+/// and `PlayerValuation.is_two_way` flags. A two-way player's ProjectionData
+/// contains both hitting and pitching keys merged together.
 #[derive(Debug, Clone)]
-pub enum PlayerProjectionData {
-    Hitter {
-        pa: u32,
-        ab: u32,
-        h: u32,
-        hr: u32,
-        r: u32,
-        rbi: u32,
-        bb: u32,
-        sb: u32,
-        avg: f64,
-    },
-    Pitcher {
-        ip: f64,
-        k: u32,
-        w: u32,
-        sv: u32,
-        hd: u32,
-        era: f64,
-        whip: f64,
-        g: u32,
-        gs: u32,
-    },
-    /// Two-way player with both hitting and pitching projections.
-    TwoWay {
-        // Hitting side
-        pa: u32,
-        ab: u32,
-        h: u32,
-        hr: u32,
-        r: u32,
-        rbi: u32,
-        bb: u32,
-        sb: u32,
-        avg: f64,
-        // Pitching side
-        ip: f64,
-        k: u32,
-        w: u32,
-        sv: u32,
-        hd: u32,
-        era: f64,
-        whip: f64,
-        g: u32,
-        gs: u32,
-    },
+pub struct ProjectionData {
+    pub values: HashMap<String, f64>,
+}
+
+impl ProjectionData {
+    /// Look up a projection value by key, returning 0.0 if not present.
+    pub fn get(&self, key: &str) -> f64 {
+        self.values.get(key).copied().unwrap_or(0.0)
+    }
+
+    /// Merge another ProjectionData into this one (for two-way players).
+    pub fn merge(&mut self, other: &ProjectionData) {
+        for (k, v) in &other.values {
+            self.values.insert(k.clone(), *v);
+        }
+    }
+}
+
+impl From<&HitterProjection> for ProjectionData {
+    fn from(h: &HitterProjection) -> Self {
+        ProjectionData {
+            values: HashMap::from([
+                ("pa".into(), h.pa as f64),
+                ("ab".into(), h.ab as f64),
+                ("h".into(), h.h as f64),
+                ("hr".into(), h.hr as f64),
+                ("r".into(), h.r as f64),
+                ("rbi".into(), h.rbi as f64),
+                ("bb".into(), h.bb as f64),
+                ("sb".into(), h.sb as f64),
+                ("avg".into(), h.avg),
+            ]),
+        }
+    }
+}
+
+impl From<&PitcherProjection> for ProjectionData {
+    fn from(p: &PitcherProjection) -> Self {
+        ProjectionData {
+            values: HashMap::from([
+                ("ip".into(), p.ip),
+                ("k".into(), p.k as f64),
+                ("w".into(), p.w as f64),
+                ("sv".into(), p.sv as f64),
+                ("hd".into(), p.hd as f64),
+                ("era".into(), p.era),
+                ("whip".into(), p.whip),
+                ("g".into(), p.g as f64),
+                ("gs".into(), p.gs as f64),
+            ]),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -260,7 +276,7 @@ pub struct PlayerValuation {
     /// but contribute to pitching categories as well.
     pub is_two_way: bool,
     pub pitcher_type: Option<PitcherType>,
-    pub projection: PlayerProjectionData,
+    pub projection: ProjectionData,
     pub total_zscore: f64,
     pub category_zscores: CategoryZScores,
     pub vor: f64,
@@ -630,25 +646,10 @@ pub fn compute_initial_zscores(
                 is_pitcher: false, // Fills a hitter slot for roster purposes
                 is_two_way: true,
                 pitcher_type: Some(matching_pitcher.pitcher_type),
-                projection: PlayerProjectionData::TwoWay {
-                    pa: hitter.pa,
-                    ab: hitter.ab,
-                    h: hitter.h,
-                    hr: hitter.hr,
-                    r: hitter.r,
-                    rbi: hitter.rbi,
-                    bb: hitter.bb,
-                    sb: hitter.sb,
-                    avg: hitter.avg,
-                    ip: matching_pitcher.ip,
-                    k: matching_pitcher.k,
-                    w: matching_pitcher.w,
-                    sv: matching_pitcher.sv,
-                    hd: matching_pitcher.hd,
-                    era: matching_pitcher.era,
-                    whip: matching_pitcher.whip,
-                    g: matching_pitcher.g,
-                    gs: matching_pitcher.gs,
+                projection: {
+                    let mut proj = ProjectionData::from(hitter);
+                    proj.merge(&ProjectionData::from(matching_pitcher));
+                    proj
                 },
                 total_zscore: combined_total,
                 category_zscores: CategoryZScores::two_way(two_way_zscores, batting_total, pitching_total),
@@ -692,17 +693,7 @@ pub fn compute_initial_zscores(
                 is_pitcher: false,
                 is_two_way: false,
                 pitcher_type: None,
-                projection: PlayerProjectionData::Hitter {
-                    pa: hitter.pa,
-                    ab: hitter.ab,
-                    h: hitter.h,
-                    hr: hitter.hr,
-                    r: hitter.r,
-                    rbi: hitter.rbi,
-                    bb: hitter.bb,
-                    sb: hitter.sb,
-                    avg: hitter.avg,
-                },
+                projection: ProjectionData::from(hitter),
                 total_zscore: zscores.total(),
                 category_zscores: zscores,
                 vor: 0.0,
@@ -738,17 +729,7 @@ pub fn compute_initial_zscores(
             is_pitcher: true,
             is_two_way: false,
             pitcher_type: Some(pitcher.pitcher_type),
-            projection: PlayerProjectionData::Pitcher {
-                ip: pitcher.ip,
-                k: pitcher.k,
-                w: pitcher.w,
-                sv: pitcher.sv,
-                hd: pitcher.hd,
-                era: pitcher.era,
-                whip: pitcher.whip,
-                g: pitcher.g,
-                gs: pitcher.gs,
-            },
+            projection: ProjectionData::from(pitcher),
             total_zscore: zscores.total(),
             category_zscores: zscores,
             vor: 0.0,
@@ -1514,31 +1495,23 @@ mod tests {
         let valuations = compute_initial_zscores(&projections, &config);
 
         let hitter = valuations.iter().find(|v| v.name == "TestHitter").unwrap();
-        match &hitter.projection {
-            PlayerProjectionData::Hitter { pa, ab, hr, r, rbi, bb, sb, avg, .. } => {
-                assert_eq!(*pa, 600);
-                assert_eq!(*ab, 540);
-                assert_eq!(*hr, 30);
-                assert_eq!(*r, 90);
-                assert_eq!(*rbi, 85);
-                assert_eq!(*bb, 55);
-                assert_eq!(*sb, 12);
-                assert!(approx_eq(*avg, 160.0 / 540.0, 1e-10));
-            }
-            _ => panic!("Expected Hitter projection"),
-        }
+        let hp = &hitter.projection;
+        assert_eq!(hp.get("pa") as u32, 600);
+        assert_eq!(hp.get("ab") as u32, 540);
+        assert_eq!(hp.get("hr") as u32, 30);
+        assert_eq!(hp.get("r") as u32, 90);
+        assert_eq!(hp.get("rbi") as u32, 85);
+        assert_eq!(hp.get("bb") as u32, 55);
+        assert_eq!(hp.get("sb") as u32, 12);
+        assert!(approx_eq(hp.get("avg"), 160.0 / 540.0, 1e-10));
 
         let pitcher = valuations.iter().find(|v| v.name == "TestPitcher").unwrap();
-        match &pitcher.projection {
-            PlayerProjectionData::Pitcher { ip, k, w, era, whip, .. } => {
-                assert!(approx_eq(*ip, 180.0, 1e-10));
-                assert_eq!(*k, 190);
-                assert_eq!(*w, 14);
-                assert!(approx_eq(*era, 3.30, 1e-10));
-                assert!(approx_eq(*whip, 1.10, 1e-10));
-            }
-            _ => panic!("Expected Pitcher projection"),
-        }
+        let pp = &pitcher.projection;
+        assert!(approx_eq(pp.get("ip"), 180.0, 1e-10));
+        assert_eq!(pp.get("k") as u32, 190);
+        assert_eq!(pp.get("w") as u32, 14);
+        assert!(approx_eq(pp.get("era"), 3.30, 1e-10));
+        assert!(approx_eq(pp.get("whip"), 1.10, 1e-10));
     }
 
     // ---- Two-way player detection and valuation tests ----
@@ -1589,16 +1562,12 @@ mod tests {
         assert!(!ohtani.is_pitcher, "Two-way player fills a hitter slot (is_pitcher = false)");
         assert_eq!(ohtani.pitcher_type, Some(PitcherType::SP));
 
-        // Should have TwoWay projection data.
-        match &ohtani.projection {
-            PlayerProjectionData::TwoWay { pa, hr, ip, k, .. } => {
-                assert_eq!(*pa, 600);
-                assert_eq!(*hr, 40);
-                assert!(approx_eq(*ip, 160.0, 1e-10));
-                assert_eq!(*k, 200);
-            }
-            other => panic!("Expected TwoWay projection, got {:?}", other),
-        }
+        // Should have merged projection data (both hitting and pitching keys).
+        let op = &ohtani.projection;
+        assert_eq!(op.get("pa") as u32, 600);
+        assert_eq!(op.get("hr") as u32, 40);
+        assert!(approx_eq(op.get("ip"), 160.0, 1e-10));
+        assert_eq!(op.get("k") as u32, 200);
 
         // Should have TwoWay z-scores.
         match &ohtani.category_zscores {

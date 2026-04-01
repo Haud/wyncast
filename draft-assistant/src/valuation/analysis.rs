@@ -346,7 +346,8 @@ mod tests {
     use crate::stats::{CategoryValues, StatRegistry};
     use crate::valuation::auction::InflationTracker;
     use crate::valuation::scarcity::compute_scarcity;
-    use crate::valuation::zscore::{CategoryZScores, PlayerProjectionData};
+    use crate::valuation::projections::PitcherType;
+    use crate::valuation::zscore::{CategoryZScores, ProjectionData};
     use std::collections::HashMap;
 
     fn approx_eq(a: f64, b: f64, epsilon: f64) -> bool {
@@ -419,8 +420,12 @@ mod tests {
             is_pitcher: false,
             is_two_way: false,
             pitcher_type: None,
-            projection: PlayerProjectionData::Hitter {
-                pa: 600, ab: 550, h: 150, hr: 25, r: 80, rbi: 85, bb: 50, sb: 10, avg: 0.273,
+            projection: ProjectionData {
+                values: HashMap::from([
+                    ("pa".into(), 600.0), ("ab".into(), 550.0), ("h".into(), 150.0),
+                    ("hr".into(), 25.0), ("r".into(), 80.0), ("rbi".into(), 85.0),
+                    ("bb".into(), 50.0), ("sb".into(), 10.0), ("avg".into(), 0.273),
+                ]),
             },
             total_zscore: vor + 2.0,
             category_zscores: CategoryZScores::hitter(zscores, vor + 2.0),
@@ -431,6 +436,41 @@ mod tests {
         }
     }
 
+    fn make_pitcher(name: &str, vor: f64, pt: PitcherType, dollar: f64) -> PlayerValuation {
+        let registry = test_registry();
+        let mut zscores = CategoryValues::zeros(registry.len());
+        zscores.set(registry.index_of("K").unwrap(), 1.5);
+        zscores.set(registry.index_of("W").unwrap(), 0.8);
+        zscores.set(registry.index_of("SV").unwrap(), 0.0);
+        zscores.set(registry.index_of("HD").unwrap(), 0.0);
+        zscores.set(registry.index_of("ERA").unwrap(), 1.2);
+        zscores.set(registry.index_of("WHIP").unwrap(), 0.9);
+        let pos = match pt {
+            PitcherType::SP => Position::StartingPitcher,
+            PitcherType::RP => Position::ReliefPitcher,
+        };
+        PlayerValuation {
+            name: name.into(),
+            team: "TST".into(),
+            positions: vec![pos],
+            is_pitcher: true,
+            is_two_way: false,
+            pitcher_type: Some(pt),
+            projection: ProjectionData {
+                values: HashMap::from([
+                    ("ip".into(), 180.0), ("k".into(), 200.0), ("w".into(), 14.0),
+                    ("sv".into(), 0.0), ("hd".into(), 0.0), ("era".into(), 3.20),
+                    ("whip".into(), 1.10), ("g".into(), 30.0), ("gs".into(), 30.0),
+                ]),
+            },
+            total_zscore: vor + 1.0,
+            category_zscores: CategoryZScores::pitcher(zscores, vor + 1.0),
+            vor,
+            initial_vor: vor,
+            best_position: Some(pos),
+            dollar_value: dollar,
+        }
+    }
 
     #[test]
     fn strong_target_fills_critical_position() {
