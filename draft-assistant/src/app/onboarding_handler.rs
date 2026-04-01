@@ -686,6 +686,7 @@ pub(super) async fn handle_settings_action(
                 &state.config.league,
                 &state.config.strategy,
                 &state.draft_state,
+                &state.stat_registry,
             );
             state.scarcity = compute_scarcity(&state.available_players, &roster);
 

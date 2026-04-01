@@ -266,6 +266,7 @@ impl AppState {
             projections,
             &self.config,
             roster,
+            &self.stat_registry,
         )
         .unwrap_or_default();
 
@@ -1302,12 +1303,15 @@ mod tests {
 
         // Run initial valuation so dollar values are set
         let test_roster = AppState::default_roster_config();
+        let registry = StatRegistry::from_league_config(&config.league)
+            .expect("test registry");
         crate::valuation::recalculate_all(
             &mut available,
             &test_roster,
             &config.league,
             &config.strategy,
             &draft_state,
+            &registry,
         );
 
         let db = Database::open(":memory:").expect("in-memory db");
@@ -2979,12 +2983,15 @@ mod tests {
 
         let mut available = test_players();
         let test_roster = AppState::default_roster_config();
+        let registry = StatRegistry::from_league_config(&config.league)
+            .expect("test registry");
         crate::valuation::recalculate_all(
             &mut available,
             &test_roster,
             &config.league,
             &config.strategy,
             &draft_state,
+            &registry,
         );
         let db = Database::open(":memory:").expect("in-memory db");
         let draft_id = Database::generate_draft_id();
