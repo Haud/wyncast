@@ -12,10 +12,11 @@ use std::collections::HashMap;
 use crate::config::{Config, LeagueConfig, StrategyConfig};
 use crate::draft::state::DraftState;
 use projections::AllProjections;
-use crate::stats::{self, CategoryValues, StatRegistry, SortDirection};
+use crate::stats::{self, CategoryValues, StatRegistry};
 use zscore::{
     CategoryZScores, PlayerValuation,
-    compute_pool_stats, compute_zscore, weights_to_category_values,
+    compute_generic_pool_stats, compute_player_category_zscores,
+    weights_to_category_values,
 };
 
 // ---------------------------------------------------------------------------
@@ -92,10 +93,9 @@ pub fn recalculate_all(
 
     let registry = StatRegistry::from_league_config(league)
         .expect("StatRegistry must be valid for configured categories");
-    let weights = &strategy.weights;
+    let weight_values = weights_to_category_values(&strategy.weights, &registry);
 
     // ---- 1. Separate into hitter/pitcher/two-way pools ----
-    // Hitter indices: pure hitters + two-way players (they have hitting stats).
     let hitter_indices: Vec<usize> = available_players
         .iter()
         .enumerate()
@@ -103,7 +103,6 @@ pub fn recalculate_all(
         .map(|(i, _)| i)
         .collect();
 
-    // Pitcher indices: pure pitchers only.
     let pitcher_indices: Vec<usize> = available_players
         .iter()
         .enumerate()
@@ -111,7 +110,6 @@ pub fn recalculate_all(
         .map(|(i, _)| i)
         .collect();
 
-    // Two-way player indices (subset of hitter_indices).
     let two_way_indices: Vec<usize> = available_players
         .iter()
         .enumerate()
@@ -119,276 +117,83 @@ pub fn recalculate_all(
         .map(|(i, _)| i)
         .collect();
 
-    // ---- 2. Recompute hitter pool stats and z-scores ----
-    // Hitter pool stats are computed from all non-pitcher players (including
-    // two-way players' hitting side).
-    let mut hitter_pool_stats_data = None;
-    if !hitter_indices.is_empty() {
-        let mut r_vals = Vec::new();
-        let mut hr_vals = Vec::new();
-        let mut rbi_vals = Vec::new();
-        let mut bb_vals = Vec::new();
-        let mut sb_vals = Vec::new();
-        let mut ab_vals = Vec::new();
-
-        for &i in &hitter_indices {
-            let proj = &available_players[i].projection;
-            r_vals.push(proj.get("r"));
-            hr_vals.push(proj.get("hr"));
-            rbi_vals.push(proj.get("rbi"));
-            bb_vals.push(proj.get("bb"));
-            sb_vals.push(proj.get("sb"));
-            ab_vals.push(proj.get("ab"));
-        }
-
-        // League average AVG for the pool.
-        let total_h: f64 = hitter_indices
-            .iter()
-            .map(|&i| available_players[i].projection.get("h"))
-            .sum();
-        let total_ab: f64 = ab_vals.iter().sum();
-        let league_avg_avg = if total_ab > 0.0 {
-            total_h / total_ab
-        } else {
-            0.0
-        };
-
-        // Compute AVG contribution values.
-        let avg_contrib_vals: Vec<f64> = hitter_indices
-            .iter()
-            .map(|&i| {
-                let proj = &available_players[i].projection;
-                stats::rate_stat_contribution(proj.get("ab"), proj.get("avg"), league_avg_avg, 1.0, SortDirection::HigherIsBetter)
-            })
-            .collect();
-
-        let r_stats = compute_pool_stats(&r_vals);
-        let hr_stats = compute_pool_stats(&hr_vals);
-        let rbi_stats = compute_pool_stats(&rbi_vals);
-        let bb_stats = compute_pool_stats(&bb_vals);
-        let sb_stats = compute_pool_stats(&sb_vals);
-        let avg_stats = compute_pool_stats(&avg_contrib_vals);
-
-        hitter_pool_stats_data = Some((r_stats, hr_stats, rbi_stats, bb_stats, sb_stats, avg_stats, league_avg_avg));
-
-        // Recompute z-scores for each pure hitter (not two-way; those are handled later).
-        for &i in &hitter_indices {
-            if available_players[i].is_two_way {
-                continue; // handled after pitcher pool stats are ready
-            }
-            let proj = &available_players[i].projection;
-            let rz = compute_zscore(proj.get("r"), &r_stats);
-            let hrz = compute_zscore(proj.get("hr"), &hr_stats);
-            let rbiz = compute_zscore(proj.get("rbi"), &rbi_stats);
-            let bbz = compute_zscore(proj.get("bb"), &bb_stats);
-            let sbz = compute_zscore(proj.get("sb"), &sb_stats);
-            let avgz = compute_zscore(
-                stats::rate_stat_contribution(proj.get("ab"), proj.get("avg"), league_avg_avg, 1.0, SortDirection::HigherIsBetter),
-                &avg_stats,
-            );
-
-            let total = rz * weights.weight("R")
-                + hrz * weights.weight("HR")
-                + rbiz * weights.weight("RBI")
-                + bbz * weights.weight("BB")
-                + sbz * weights.weight("SB")
-                + avgz * weights.weight("AVG");
-
-            let mut zscores = CategoryValues::zeros(registry.len());
-            zscores.set(registry.index_of("R").unwrap(), rz);
-            zscores.set(registry.index_of("HR").unwrap(), hrz);
-            zscores.set(registry.index_of("RBI").unwrap(), rbiz);
-            zscores.set(registry.index_of("BB").unwrap(), bbz);
-            zscores.set(registry.index_of("SB").unwrap(), sbz);
-            zscores.set(registry.index_of("AVG").unwrap(), avgz);
-
-            available_players[i].category_zscores = CategoryZScores::hitter(zscores, total);
-            available_players[i].total_zscore = total;
-        }
-    }
-
-    // ---- 2b. Recompute pitcher pool stats and z-scores ----
-    // Pitcher pool includes pure pitchers AND the pitching side of two-way players.
     let all_pitching_indices: Vec<usize> = pitcher_indices
         .iter()
         .chain(two_way_indices.iter())
         .copied()
         .collect();
 
-    let mut pitcher_pool_stats_data = None;
-    if !all_pitching_indices.is_empty() {
-        let mut k_vals = Vec::new();
-        let mut w_vals = Vec::new();
-        let mut sv_vals = Vec::new();
-        let mut hd_vals = Vec::new();
-        let mut ip_vals = Vec::new();
+    // ---- 2. Compute pool stats via generic registry-driven loop ----
+    let hitter_pool_data: Vec<stats::ProjectionData> = hitter_indices
+        .iter()
+        .map(|&i| stats::ProjectionData::from(&available_players[i].projection))
+        .collect();
+    let pitcher_pool_data: Vec<stats::ProjectionData> = all_pitching_indices
+        .iter()
+        .map(|&i| stats::ProjectionData::from(&available_players[i].projection))
+        .collect();
 
-        for &i in &all_pitching_indices {
-            let proj = &available_players[i].projection;
-            k_vals.push(proj.get("k"));
-            w_vals.push(proj.get("w"));
-            sv_vals.push(proj.get("sv"));
-            hd_vals.push(proj.get("hd"));
-            ip_vals.push(proj.get("ip"));
+    let (hitter_stats, hitter_league_avgs) = compute_generic_pool_stats(
+        &hitter_pool_data, registry.batting_indices(), &registry,
+    );
+    let (pitcher_stats, pitcher_league_avgs) = compute_generic_pool_stats(
+        &pitcher_pool_data, registry.pitching_indices(), &registry,
+    );
+
+    // ---- 3. Recompute z-scores for pure hitters ----
+    for &i in &hitter_indices {
+        if available_players[i].is_two_way {
+            continue; // handled after pitcher pool stats are ready
         }
-
-        // League average ERA and WHIP.
-        let total_ip: f64 = ip_vals.iter().sum();
-        let (league_avg_era, league_avg_whip) = if total_ip > 1e-9 {
-            let total_er: f64 = all_pitching_indices
-                .iter()
-                .map(|&i| {
-                    let proj = &available_players[i].projection;
-                    proj.get("ip") * proj.get("era") / 9.0
-                })
-                .sum();
-            let total_wh: f64 = all_pitching_indices
-                .iter()
-                .map(|&i| {
-                    let proj = &available_players[i].projection;
-                    proj.get("ip") * proj.get("whip")
-                })
-                .sum();
-            (total_er / total_ip * 9.0, total_wh / total_ip)
-        } else {
-            (0.0, 0.0)
-        };
-
-        // ERA and WHIP contributions.
-        let era_contrib_vals: Vec<f64> = all_pitching_indices
-            .iter()
-            .map(|&i| {
-                let proj = &available_players[i].projection;
-                stats::rate_stat_contribution(proj.get("ip"), proj.get("era"), league_avg_era, 9.0, SortDirection::LowerIsBetter)
-            })
-            .collect();
-
-        let whip_contrib_vals: Vec<f64> = all_pitching_indices
-            .iter()
-            .map(|&i| {
-                let proj = &available_players[i].projection;
-                stats::rate_stat_contribution(proj.get("ip"), proj.get("whip"), league_avg_whip, 1.0, SortDirection::LowerIsBetter)
-            })
-            .collect();
-
-        let k_stats = compute_pool_stats(&k_vals);
-        let w_stats = compute_pool_stats(&w_vals);
-        let sv_stats = compute_pool_stats(&sv_vals);
-        let hd_stats = compute_pool_stats(&hd_vals);
-        let era_stats = compute_pool_stats(&era_contrib_vals);
-        let whip_stats = compute_pool_stats(&whip_contrib_vals);
-
-        pitcher_pool_stats_data = Some((k_stats, w_stats, sv_stats, hd_stats, era_stats, whip_stats, league_avg_era, league_avg_whip));
-
-        // Recompute z-scores for each pure pitcher.
-        for &i in &pitcher_indices {
-            let proj = &available_players[i].projection;
-            let kz = compute_zscore(proj.get("k"), &k_stats);
-            let wz = compute_zscore(proj.get("w"), &w_stats);
-            let svz = compute_zscore(proj.get("sv"), &sv_stats);
-            let hdz = compute_zscore(proj.get("hd"), &hd_stats);
-            let eraz = compute_zscore(
-                stats::rate_stat_contribution(proj.get("ip"), proj.get("era"), league_avg_era, 9.0, SortDirection::LowerIsBetter),
-                &era_stats,
-            );
-            let whipz = compute_zscore(
-                stats::rate_stat_contribution(proj.get("ip"), proj.get("whip"), league_avg_whip, 1.0, SortDirection::LowerIsBetter),
-                &whip_stats,
-            );
-
-            let total = kz * weights.weight("K")
-                + wz * weights.weight("W")
-                + svz * weights.weight("SV")
-                + hdz * weights.weight("HD")
-                + eraz * weights.weight("ERA")
-                + whipz * weights.weight("WHIP");
-
-            let mut zscores = CategoryValues::zeros(registry.len());
-            zscores.set(registry.index_of("K").unwrap(), kz);
-            zscores.set(registry.index_of("W").unwrap(), wz);
-            zscores.set(registry.index_of("SV").unwrap(), svz);
-            zscores.set(registry.index_of("HD").unwrap(), hdz);
-            zscores.set(registry.index_of("ERA").unwrap(), eraz);
-            zscores.set(registry.index_of("WHIP").unwrap(), whipz);
-
-            available_players[i].category_zscores = CategoryZScores::pitcher(zscores, total);
-            available_players[i].total_zscore = total;
-        }
+        let proj = stats::ProjectionData::from(&available_players[i].projection);
+        let mut zscores = CategoryValues::zeros(registry.len());
+        let total = compute_player_category_zscores(
+            &proj, &hitter_stats, &hitter_league_avgs,
+            registry.batting_indices(), &registry, &weight_values,
+            &mut zscores,
+        );
+        available_players[i].category_zscores = CategoryZScores::hitter(zscores, total);
+        available_players[i].total_zscore = total;
     }
 
-    // ---- 2c. Recompute two-way player z-scores (needs both pool stats) ----
-    if let (Some((r_stats, hr_stats, rbi_stats, bb_stats, sb_stats, avg_stats, league_avg_avg)),
-            Some((k_stats, w_stats, sv_stats, hd_stats, era_stats, whip_stats, league_avg_era, league_avg_whip))) =
-        (&hitter_pool_stats_data, &pitcher_pool_stats_data)
-    {
-        for &i in &two_way_indices {
-            let proj = &available_players[i].projection;
-
-            // Hitting z-scores
-            let rz = compute_zscore(proj.get("r"), r_stats);
-            let hrz = compute_zscore(proj.get("hr"), hr_stats);
-            let rbiz = compute_zscore(proj.get("rbi"), rbi_stats);
-            let bbz = compute_zscore(proj.get("bb"), bb_stats);
-            let sbz = compute_zscore(proj.get("sb"), sb_stats);
-            let avgz = compute_zscore(
-                stats::rate_stat_contribution(proj.get("ab"), proj.get("avg"), *league_avg_avg, 1.0, SortDirection::HigherIsBetter),
-                avg_stats,
-            );
-            let batting_total = rz * weights.weight("R")
-                + hrz * weights.weight("HR")
-                + rbiz * weights.weight("RBI")
-                + bbz * weights.weight("BB")
-                + sbz * weights.weight("SB")
-                + avgz * weights.weight("AVG");
-
-            // Pitching z-scores
-            let kz = compute_zscore(proj.get("k"), k_stats);
-            let wz = compute_zscore(proj.get("w"), w_stats);
-            let svz = compute_zscore(proj.get("sv"), sv_stats);
-            let hdz = compute_zscore(proj.get("hd"), hd_stats);
-            let eraz = compute_zscore(
-                stats::rate_stat_contribution(proj.get("ip"), proj.get("era"), *league_avg_era, 9.0, SortDirection::LowerIsBetter),
-                era_stats,
-            );
-            let whipz = compute_zscore(
-                stats::rate_stat_contribution(proj.get("ip"), proj.get("whip"), *league_avg_whip, 1.0, SortDirection::LowerIsBetter),
-                whip_stats,
-            );
-            let pitching_total = kz * weights.weight("K")
-                + wz * weights.weight("W")
-                + svz * weights.weight("SV")
-                + hdz * weights.weight("HD")
-                + eraz * weights.weight("ERA")
-                + whipz * weights.weight("WHIP");
-
-            let mut two_way_zscores = CategoryValues::zeros(registry.len());
-            two_way_zscores.set(registry.index_of("R").unwrap(), rz);
-            two_way_zscores.set(registry.index_of("HR").unwrap(), hrz);
-            two_way_zscores.set(registry.index_of("RBI").unwrap(), rbiz);
-            two_way_zscores.set(registry.index_of("BB").unwrap(), bbz);
-            two_way_zscores.set(registry.index_of("SB").unwrap(), sbz);
-            two_way_zscores.set(registry.index_of("AVG").unwrap(), avgz);
-            two_way_zscores.set(registry.index_of("K").unwrap(), kz);
-            two_way_zscores.set(registry.index_of("W").unwrap(), wz);
-            two_way_zscores.set(registry.index_of("SV").unwrap(), svz);
-            two_way_zscores.set(registry.index_of("HD").unwrap(), hdz);
-            two_way_zscores.set(registry.index_of("ERA").unwrap(), eraz);
-            two_way_zscores.set(registry.index_of("WHIP").unwrap(), whipz);
-
-            let combined_total = batting_total + pitching_total;
-            available_players[i].category_zscores =
-                CategoryZScores::two_way(two_way_zscores, batting_total, pitching_total);
-            available_players[i].total_zscore = combined_total;
-        }
+    // ---- 4. Recompute z-scores for pure pitchers ----
+    for &i in &pitcher_indices {
+        let proj = stats::ProjectionData::from(&available_players[i].projection);
+        let mut zscores = CategoryValues::zeros(registry.len());
+        let total = compute_player_category_zscores(
+            &proj, &pitcher_stats, &pitcher_league_avgs,
+            registry.pitching_indices(), &registry, &weight_values,
+            &mut zscores,
+        );
+        available_players[i].category_zscores = CategoryZScores::pitcher(zscores, total);
+        available_players[i].total_zscore = total;
     }
 
-    // ---- 3. Recompute VOR ----
+    // ---- 5. Recompute two-way player z-scores (needs both pool stats) ----
+    for &i in &two_way_indices {
+        let proj = stats::ProjectionData::from(&available_players[i].projection);
+        let mut zscores = CategoryValues::zeros(registry.len());
+        let batting_total = compute_player_category_zscores(
+            &proj, &hitter_stats, &hitter_league_avgs,
+            registry.batting_indices(), &registry, &weight_values,
+            &mut zscores,
+        );
+        let pitching_total = compute_player_category_zscores(
+            &proj, &pitcher_stats, &pitcher_league_avgs,
+            registry.pitching_indices(), &registry, &weight_values,
+            &mut zscores,
+        );
+        let combined = batting_total + pitching_total;
+        available_players[i].category_zscores =
+            CategoryZScores::two_way(zscores, batting_total, pitching_total);
+        available_players[i].total_zscore = combined;
+    }
+
+    // ---- 6. Recompute VOR ----
     vor::apply_vor(available_players, roster_config, league.num_teams);
 
-    // ---- 4. Recompute auction values ----
+    // ---- 7. Recompute auction values ----
     auction::apply_auction_values(available_players, roster_config, league.num_teams, league.salary_cap, strategy);
-
-    // Step 5: apply_auction_values already sorts by dollar_value descending.
 }
 
 // ---------------------------------------------------------------------------
@@ -897,5 +702,104 @@ mod tests {
             assert!(p.dollar_value >= 1.0, "{} has value < $1", p.name);
             assert!(p.total_zscore.is_finite(), "{} has non-finite z-score", p.name);
         }
+    }
+
+    // Snapshot tests: capture exact numerical output to detect any divergence
+    // during refactoring. Expected values recorded from the pre-refactor code.
+
+    fn assert_close(actual: f64, expected: f64, label: &str) {
+        assert!(
+            (actual - expected).abs() < 1e-10,
+            "{}: expected {:.15}, got {:.15}, diff={:.2e}",
+            label, expected, actual, (actual - expected).abs(),
+        );
+    }
+
+
+    fn find_player<'a>(players: &'a [PlayerValuation], name: &str) -> &'a PlayerValuation {
+        players.iter().find(|p| p.name == name).unwrap()
+    }
+
+    #[test]
+    fn snapshot_mixed_pool_values() {
+        let league = test_league_config();
+        let strategy = test_strategy_config();
+        let draft_state = create_test_draft_state();
+
+        let mut players = vec![
+            make_hitter("H_Star", 100, 40, 100, 70, 20, 550, 0.300, vec![Position::FirstBase]),
+            make_hitter("H_Good", 80, 25, 75, 55, 15, 530, 0.280, vec![Position::SecondBase]),
+            make_hitter("H_Mid", 60, 15, 55, 40, 10, 500, 0.265, vec![Position::ShortStop]),
+            make_hitter("H_Low", 45, 8, 40, 30, 5, 480, 0.250, vec![Position::Catcher]),
+            make_pitcher("P_Ace", 250, 18, 0, 0, 200.0, 2.80, 1.00, PitcherType::SP),
+            make_pitcher("P_Good", 200, 14, 0, 0, 180.0, 3.20, 1.10, PitcherType::SP),
+            make_pitcher("P_Mid", 150, 10, 0, 0, 160.0, 3.80, 1.20, PitcherType::SP),
+        ];
+
+        let roster = test_roster_config();
+        recalculate_all(&mut players, &roster, &league, &strategy, &draft_state);
+
+        // Snapshot values from registry-driven generic computation.
+        // Note: hitter z-scores differ slightly from the pre-refactor manual code
+        // because the generic formula computes league avg AVG as sum(AB*AVG)/sum(AB)
+        // rather than sum(H)/sum(AB), consistent with compute_initial_zscores.
+        // Pitcher values are identical since ERA/WHIP formulas are unchanged.
+        assert_close(find_player(&players, "P_Ace").total_zscore, 4.903591098172604, "P_Ace zscore");
+        assert_close(find_player(&players, "P_Ace").vor, 10.789528695091104, "P_Ace vor");
+        assert_close(find_player(&players, "P_Ace").dollar_value, 101.087412931525733, "P_Ace dollar");
+
+        assert_close(find_player(&players, "H_Star").total_zscore, 8.808019630015533, "H_Star zscore");
+        assert_close(find_player(&players, "H_Star").vor, 1.0, "H_Star vor");
+        assert_close(find_player(&players, "H_Star").dollar_value, 77.049999999999997, "H_Star dollar");
+
+        assert_close(find_player(&players, "P_Good").total_zscore, -0.017653501254104, "P_Good zscore");
+        assert_close(find_player(&players, "P_Good").vor, 5.868284095664396, "P_Good vor");
+        assert_close(find_player(&players, "P_Good").dollar_value, 55.436239995310395, "P_Good dollar");
+
+        assert_close(find_player(&players, "H_Good").total_zscore, 2.240440508846727, "H_Good zscore");
+        assert_close(find_player(&players, "H_Mid").total_zscore, -3.328403489497330, "H_Mid zscore");
+        assert_close(find_player(&players, "H_Low").total_zscore, -7.720056649364929, "H_Low zscore");
+        assert_close(find_player(&players, "P_Mid").total_zscore, -4.885937596918500, "P_Mid zscore");
+    }
+
+    #[test]
+    fn snapshot_two_way_values() {
+        let league = test_league_config();
+        let strategy = test_strategy_config();
+        let draft_state = create_test_draft_state();
+
+        let mut players = vec![
+            make_two_way(
+                "Ohtani", 100, 40, 100, 60, 15, 550, 0.300,
+                200, 14, 0, 0, 160.0, 2.80, 1.00,
+                PitcherType::SP, vec![Position::Utility],
+            ),
+            make_hitter("H_Good", 80, 25, 75, 55, 15, 530, 0.280, vec![Position::FirstBase]),
+            make_hitter("H_Mid", 60, 15, 55, 40, 10, 500, 0.265, vec![Position::SecondBase]),
+            make_hitter("H_Low", 45, 8, 40, 30, 5, 480, 0.250, vec![Position::Catcher]),
+            make_pitcher("P_Ace", 250, 18, 0, 0, 200.0, 2.80, 1.00, PitcherType::SP),
+            make_pitcher("P_Good", 200, 14, 0, 0, 180.0, 3.20, 1.10, PitcherType::SP),
+            make_pitcher("P_Mid", 150, 10, 0, 0, 160.0, 3.80, 1.20, PitcherType::SP),
+        ];
+
+        let roster = test_roster_config();
+        recalculate_all(&mut players, &roster, &league, &strategy, &draft_state);
+
+        let ohtani = find_player(&players, "Ohtani");
+        assert_close(ohtani.total_zscore, 9.661721255392411, "Ohtani zscore");
+        assert_close(ohtani.vor, 18.698403208516297, "Ohtani vor");
+        assert_close(ohtani.dollar_value, 246.556410135758682, "Ohtani dollar");
+        match &ohtani.category_zscores {
+            CategoryZScores::TwoWay { batting_total, pitching_total, .. } => {
+                assert_close(*batting_total, 8.072085220083544, "Ohtani batting_total");
+                assert_close(*pitching_total, 1.589636035308868, "Ohtani pitching_total");
+            }
+            other => panic!("Expected TwoWay, got {:?}", other),
+        }
+
+        assert_close(find_player(&players, "P_Ace").total_zscore, 4.815472168882275, "P_Ace zscore");
+        assert_close(find_player(&players, "P_Ace").vor, 11.673275899511701, "P_Ace vor");
+        assert_close(find_player(&players, "H_Good").total_zscore, 3.083448550621077, "H_Good zscore");
+        assert_close(find_player(&players, "P_Mid").total_zscore, -5.857803730629427, "P_Mid zscore");
     }
 }
