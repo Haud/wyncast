@@ -998,7 +998,7 @@ mod tests {
     use crate::draft::state::{ActiveNomination, DraftState};
     use crate::protocol::{LlmEvent, OnboardingAction, OnboardingUpdate, UserCommand};
     use crate::test_utils::{
-        self, test_espn_budgets, test_roster_config, test_strategy_config,
+        self, test_espn_budgets, test_registry, test_roster_config, test_strategy_config,
     };
     use crate::valuation::projections::{AllProjections, PitcherType};
     use crate::valuation::zscore::{
@@ -1058,7 +1058,7 @@ mod tests {
                 ]),
             },
             total_zscore: 0.0,
-            category_zscores: CategoryZScores::zeros_hitter(12),
+            category_zscores: CategoryZScores::zeros_hitter(test_registry().len()),
             vor: 0.0,
             initial_vor: 0.0,
             best_position: None,
@@ -1102,7 +1102,7 @@ mod tests {
                 ]),
             },
             total_zscore: 0.0,
-            category_zscores: CategoryZScores::zeros_pitcher(12),
+            category_zscores: CategoryZScores::zeros_pitcher(test_registry().len()),
             vor: 0.0,
             initial_vor: 0.0,
             best_position: None,

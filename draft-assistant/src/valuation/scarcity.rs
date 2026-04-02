@@ -244,7 +244,7 @@ pub fn scarcity_for_position(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{approx_eq, test_roster_config};
+    use crate::test_utils::{approx_eq, test_registry, test_roster_config};
     use crate::valuation::projections::PitcherType;
     use crate::stats::CategoryValues;
     use crate::valuation::zscore::{
@@ -269,7 +269,7 @@ mod tests {
                 ]),
             },
             total_zscore: vor + 2.0,
-            category_zscores: CategoryZScores::hitter(CategoryValues::zeros(12), vor + 2.0),
+            category_zscores: CategoryZScores::hitter(CategoryValues::zeros(test_registry().len()), vor + 2.0),
             vor,
             initial_vor: vor,
             best_position: best_pos,
@@ -297,7 +297,7 @@ mod tests {
                 ]),
             },
             total_zscore: vor + 1.0,
-            category_zscores: CategoryZScores::pitcher(CategoryValues::zeros(12), vor + 1.0),
+            category_zscores: CategoryZScores::pitcher(CategoryValues::zeros(test_registry().len()), vor + 1.0),
             vor,
             initial_vor: vor,
             best_position: Some(pos),
