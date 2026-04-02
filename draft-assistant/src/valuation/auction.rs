@@ -280,6 +280,7 @@ mod tests {
     use super::*;
     use crate::config::*;
     use crate::draft::pick::Position;
+    use crate::test_utils::{approx_eq, test_roster_config, test_strategy_config};
     use crate::valuation::projections::PitcherType;
     use crate::stats::CategoryValues;
     use crate::valuation::zscore::{
@@ -289,58 +290,8 @@ mod tests {
 
     // ---- Test helpers ----
 
-    fn approx_eq(a: f64, b: f64, epsilon: f64) -> bool {
-        (a - b).abs() < epsilon
-    }
-
-    fn test_roster_config() -> HashMap<String, usize> {
-        let mut roster = HashMap::new();
-        roster.insert("C".into(), 1);
-        roster.insert("1B".into(), 1);
-        roster.insert("2B".into(), 1);
-        roster.insert("3B".into(), 1);
-        roster.insert("SS".into(), 1);
-        roster.insert("LF".into(), 1);
-        roster.insert("CF".into(), 1);
-        roster.insert("RF".into(), 1);
-        roster.insert("UTIL".into(), 1);
-        roster.insert("SP".into(), 5);
-        roster.insert("RP".into(), 6);
-        roster.insert("BE".into(), 6);
-        roster.insert("IL".into(), 5);
-        roster
-    }
-
     const TEST_NUM_TEAMS: usize = 10;
     const TEST_SALARY_CAP: u32 = 260;
-
-    fn test_strategy_config() -> StrategyConfig {
-        StrategyConfig {
-            hitting_budget_fraction: 0.65,
-            weights: CategoryWeights::from_pairs([
-                ("R", 1.0), ("HR", 1.0), ("RBI", 1.0), ("BB", 1.2),
-                ("SB", 1.0), ("AVG", 1.0), ("K", 1.0), ("W", 1.0),
-                ("SV", 0.7), ("HD", 1.3), ("ERA", 1.0), ("WHIP", 1.0),
-            ]),
-            pool: PoolConfig {
-                min_pa: 300,
-                min_ip_sp: 80.0,
-                min_g_rp: 30,
-                hitter_pool_size: 150,
-                sp_pool_size: 70,
-                rp_pool_size: 80,
-            },
-            llm: LlmConfig {
-                provider: crate::llm::provider::LlmProvider::Anthropic,
-                model: "test".into(),
-                analysis_max_tokens: 2048,
-                planning_max_tokens: 2048,
-                analysis_trigger: "nomination".into(),
-                prefire_planning: true,
-            },
-            strategy_overview: None,
-        }
-    }
 
     fn default_hitter_zscores(total: f64) -> CategoryZScores {
         CategoryZScores::hitter(CategoryValues::zeros(12), total)

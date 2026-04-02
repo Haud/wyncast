@@ -997,6 +997,9 @@ mod tests {
     use crate::draft::pick::{DraftPick, Position};
     use crate::draft::state::{ActiveNomination, DraftState};
     use crate::protocol::{LlmEvent, OnboardingAction, OnboardingUpdate, UserCommand};
+    use crate::test_utils::{
+        self, test_espn_budgets, test_roster_config, test_strategy_config,
+    };
     use crate::valuation::projections::{AllProjections, PitcherType};
     use crate::valuation::zscore::{
         CategoryZScores, PlayerValuation, ProjectionData,
@@ -1006,68 +1009,11 @@ mod tests {
     // Test helpers
     // -----------------------------------------------------------------------
 
+    /// 2-team league config for app integration tests.
     fn test_league_config() -> LeagueConfig {
-        LeagueConfig {
-            name: "Test League".into(),
-            platform: "espn".into(),
-            num_teams: 2,
-            scoring_type: "h2h_most_categories".into(),
-            salary_cap: 260,
-            batting_categories: CategoriesSection {
-                categories: vec![
-                    "R".into(),
-                    "HR".into(),
-                    "RBI".into(),
-                    "BB".into(),
-                    "SB".into(),
-                    "AVG".into(),
-                ],
-            },
-            pitching_categories: CategoriesSection {
-                categories: vec![
-                    "K".into(),
-                    "W".into(),
-                    "SV".into(),
-                    "HD".into(),
-                    "ERA".into(),
-                    "WHIP".into(),
-                ],
-            },
-            roster_limits: RosterLimits {
-                max_sp: 7,
-                max_rp: 7,
-                gs_per_week: 7,
-            },
-            teams: HashMap::new(),
-        }
-    }
-
-    fn test_strategy_config() -> StrategyConfig {
-        StrategyConfig {
-            hitting_budget_fraction: 0.65,
-            weights: CategoryWeights::from_pairs([
-                ("R", 1.0), ("HR", 1.0), ("RBI", 1.0), ("BB", 1.2),
-                ("SB", 1.0), ("AVG", 1.0), ("K", 1.0), ("W", 1.0),
-                ("SV", 0.7), ("HD", 1.3), ("ERA", 1.0), ("WHIP", 1.0),
-            ]),
-            pool: PoolConfig {
-                min_pa: 300,
-                min_ip_sp: 80.0,
-                min_g_rp: 30,
-                hitter_pool_size: 150,
-                sp_pool_size: 70,
-                rp_pool_size: 80,
-            },
-            llm: LlmConfig {
-                provider: crate::llm::provider::LlmProvider::Anthropic,
-                model: "test".into(),
-                analysis_max_tokens: 2048,
-                planning_max_tokens: 2048,
-                analysis_trigger: "nomination".into(),
-                prefire_planning: true,
-            },
-            strategy_overview: None,
-        }
+        let mut lc = test_utils::test_league_config();
+        lc.num_teams = 2;
+        lc
     }
 
     fn test_config() -> Config {
@@ -1078,39 +1024,6 @@ mod tests {
             ws_port: 9001,
             data_paths: DataPaths::default(),
         }
-    }
-
-    fn test_roster_config() -> HashMap<String, usize> {
-        let mut config = HashMap::new();
-        config.insert("C".into(), 1);
-        config.insert("1B".into(), 1);
-        config.insert("2B".into(), 1);
-        config.insert("3B".into(), 1);
-        config.insert("SS".into(), 1);
-        config.insert("LF".into(), 1);
-        config.insert("CF".into(), 1);
-        config.insert("RF".into(), 1);
-        config.insert("UTIL".into(), 1);
-        config.insert("SP".into(), 5);
-        config.insert("RP".into(), 6);
-        config.insert("BE".into(), 6);
-        config.insert("IL".into(), 5);
-        config
-    }
-
-    fn test_espn_budgets() -> Vec<crate::draft::state::TeamBudgetPayload> {
-        vec![
-            crate::draft::state::TeamBudgetPayload {
-                team_id: "1".into(),
-                team_name: "Team 1".into(),
-                budget: 260,
-            },
-            crate::draft::state::TeamBudgetPayload {
-                team_id: "2".into(),
-                team_name: "Team 2".into(),
-                budget: 260,
-            },
-        ]
     }
 
     fn make_hitter(
@@ -1296,7 +1209,7 @@ mod tests {
         let config = test_config();
         let mut draft_state = DraftState::new(260, &test_roster_config());
         // Register teams from ESPN data and set my team
-        draft_state.reconcile_budgets(&test_espn_budgets());
+        draft_state.reconcile_budgets(&test_espn_budgets(2));
         draft_state.set_my_team_by_id("1");
 
         let mut available = test_players();

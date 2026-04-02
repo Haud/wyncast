@@ -14,3 +14,6 @@ pub mod stats;
 pub mod tui;
 pub mod valuation;
 pub mod ws_server;
+
+#[cfg(test)]
+pub mod test_utils;

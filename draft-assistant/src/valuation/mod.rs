@@ -201,70 +201,23 @@ pub fn recalculate_all(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::*;
     use crate::draft::pick::Position;
-    use crate::draft::state::DraftState;
+    use crate::test_utils::{
+        self, assert_close, find_player, test_registry, test_roster_config,
+        test_strategy_config,
+    };
     use crate::valuation::projections::PitcherType;
     use std::collections::HashMap;
 
+    /// 2-team league config for recalculate_all tests (snapshot values depend on this).
     fn test_league_config() -> LeagueConfig {
-        LeagueConfig {
-            name: "Test League".into(),
-            platform: "espn".into(),
-            num_teams: 2,
-            scoring_type: "h2h_most_categories".into(),
-            salary_cap: 260,
-            batting_categories: CategoriesSection {
-                categories: vec![
-                    "R".into(), "HR".into(), "RBI".into(),
-                    "BB".into(), "SB".into(), "AVG".into(),
-                ],
-            },
-            pitching_categories: CategoriesSection {
-                categories: vec![
-                    "K".into(), "W".into(), "SV".into(),
-                    "HD".into(), "ERA".into(), "WHIP".into(),
-                ],
-            },
-            roster_limits: RosterLimits {
-                max_sp: 7,
-                max_rp: 7,
-                gs_per_week: 7,
-            },
-            teams: HashMap::new(),
-        }
+        let mut lc = test_utils::test_league_config();
+        lc.num_teams = 2;
+        lc
     }
 
-    fn test_registry() -> StatRegistry {
-        StatRegistry::from_league_config(&test_league_config()).expect("test registry")
-    }
-
-    fn test_strategy_config() -> StrategyConfig {
-        StrategyConfig {
-            hitting_budget_fraction: 0.65,
-            weights: CategoryWeights::from_pairs([
-                ("R", 1.0), ("HR", 1.0), ("RBI", 1.0), ("BB", 1.2),
-                ("SB", 1.0), ("AVG", 1.0), ("K", 1.0), ("W", 1.0),
-                ("SV", 0.7), ("HD", 1.3), ("ERA", 1.0), ("WHIP", 1.0),
-            ]),
-            strategy_overview: None,
-            pool: PoolConfig {
-                min_pa: 300,
-                min_ip_sp: 80.0,
-                min_g_rp: 30,
-                hitter_pool_size: 150,
-                sp_pool_size: 70,
-                rp_pool_size: 80,
-            },
-            llm: LlmConfig {
-                provider: crate::llm::provider::LlmProvider::Anthropic,
-                model: "test".into(),
-                analysis_max_tokens: 2048,
-                planning_max_tokens: 2048,
-                analysis_trigger: "nomination".into(),
-                prefire_planning: true,
-            },
-        }
+    fn create_test_draft_state() -> DraftState {
+        test_utils::create_test_draft_state(2)
     }
 
     fn make_hitter(
@@ -339,41 +292,6 @@ mod tests {
             best_position: None,
             dollar_value: 0.0,
         }
-    }
-
-    fn test_espn_budgets() -> Vec<crate::draft::state::TeamBudgetPayload> {
-        (1..=2)
-            .map(|i| crate::draft::state::TeamBudgetPayload {
-                team_id: format!("{}", i),
-                team_name: format!("Team {}", i),
-                budget: 260,
-            })
-            .collect()
-    }
-
-    fn create_test_draft_state() -> DraftState {
-        let mut state = DraftState::new(260, &test_roster_config());
-        state.reconcile_budgets(&test_espn_budgets());
-        state.set_my_team_by_id("1");
-        state
-    }
-
-    fn test_roster_config() -> HashMap<String, usize> {
-        let mut config = HashMap::new();
-        config.insert("C".into(), 1);
-        config.insert("1B".into(), 1);
-        config.insert("2B".into(), 1);
-        config.insert("3B".into(), 1);
-        config.insert("SS".into(), 1);
-        config.insert("LF".into(), 1);
-        config.insert("CF".into(), 1);
-        config.insert("RF".into(), 1);
-        config.insert("UTIL".into(), 1);
-        config.insert("SP".into(), 5);
-        config.insert("RP".into(), 6);
-        config.insert("BE".into(), 6);
-        config.insert("IL".into(), 5);
-        config
     }
 
     #[test]
@@ -708,19 +626,6 @@ mod tests {
 
     // Snapshot tests: capture exact numerical output to detect any divergence
     // during refactoring. Expected values recorded from the pre-refactor code.
-
-    fn assert_close(actual: f64, expected: f64, label: &str) {
-        assert!(
-            (actual - expected).abs() < 1e-10,
-            "{}: expected {:.15}, got {:.15}, diff={:.2e}",
-            label, expected, actual, (actual - expected).abs(),
-        );
-    }
-
-
-    fn find_player<'a>(players: &'a [PlayerValuation], name: &str) -> &'a PlayerValuation {
-        players.iter().find(|p| p.name == name).unwrap()
-    }
 
     #[test]
     fn snapshot_mixed_pool_values() {

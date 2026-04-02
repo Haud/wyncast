@@ -696,6 +696,7 @@ mod tests {
     use super::*;
     use crate::config::*;
     use crate::stats::StatRegistry;
+    use crate::test_utils::approx_eq;
     use crate::valuation::projections::*;
 
     fn test_registry(config: &Config) -> StatRegistry {
@@ -706,12 +707,6 @@ mod tests {
         let registry = StatRegistry::from_league_config(&config.league).unwrap();
         let weights = weights_to_category_values(&config.strategy.weights, &registry);
         (registry, weights)
-    }
-
-    // ---- Helpers ----
-
-    fn approx_eq(a: f64, b: f64, epsilon: f64) -> bool {
-        (a - b).abs() < epsilon
     }
 
     /// Build a minimal Config suitable for testing the z-score engine.
