@@ -998,12 +998,11 @@ mod tests {
     use crate::draft::state::{ActiveNomination, DraftState};
     use crate::protocol::{LlmEvent, OnboardingAction, OnboardingUpdate, UserCommand};
     use crate::test_utils::{
-        self, test_espn_budgets, test_registry, test_roster_config, test_strategy_config,
+        self, make_hitter, make_pitcher, test_espn_budgets, test_registry, test_roster_config,
+        test_strategy_config,
     };
     use crate::valuation::projections::{AllProjections, PitcherType};
-    use crate::valuation::zscore::{
-        CategoryZScores, PlayerValuation, ProjectionData,
-    };
+    use crate::valuation::zscore::PlayerValuation;
 
     // -----------------------------------------------------------------------
     // Test helpers
@@ -1023,90 +1022,6 @@ mod tests {
             credentials: CredentialsConfig::default(),
             ws_port: 9001,
             data_paths: DataPaths::default(),
-        }
-    }
-
-    fn make_hitter(
-        name: &str,
-        r: u32,
-        hr: u32,
-        rbi: u32,
-        bb: u32,
-        sb: u32,
-        ab: u32,
-        avg: f64,
-        positions: Vec<Position>,
-    ) -> PlayerValuation {
-        PlayerValuation {
-            name: name.into(),
-            team: "TST".into(),
-            positions,
-            is_pitcher: false,
-            is_two_way: false,
-            pitcher_type: None,
-            projection: ProjectionData {
-                values: HashMap::from([
-                    ("pa".into(), (ab + bb) as f64),
-                    ("ab".into(), ab as f64),
-                    ("h".into(), (ab as f64 * avg).round()),
-                    ("hr".into(), hr as f64),
-                    ("r".into(), r as f64),
-                    ("rbi".into(), rbi as f64),
-                    ("bb".into(), bb as f64),
-                    ("sb".into(), sb as f64),
-                    ("avg".into(), avg),
-                ]),
-            },
-            total_zscore: 0.0,
-            category_zscores: CategoryZScores::zeros_hitter(test_registry().len()),
-            vor: 0.0,
-            initial_vor: 0.0,
-            best_position: None,
-            dollar_value: 0.0,
-        }
-    }
-
-    fn make_pitcher(
-        name: &str,
-        k: u32,
-        w: u32,
-        sv: u32,
-        hd: u32,
-        ip: f64,
-        era: f64,
-        whip: f64,
-        pitcher_type: PitcherType,
-    ) -> PlayerValuation {
-        let pos = match pitcher_type {
-            PitcherType::SP => Position::StartingPitcher,
-            PitcherType::RP => Position::ReliefPitcher,
-        };
-        PlayerValuation {
-            name: name.into(),
-            team: "TST".into(),
-            positions: vec![pos],
-            is_pitcher: true,
-            is_two_way: false,
-            pitcher_type: Some(pitcher_type),
-            projection: ProjectionData {
-                values: HashMap::from([
-                    ("ip".into(), ip),
-                    ("k".into(), k as f64),
-                    ("w".into(), w as f64),
-                    ("sv".into(), sv as f64),
-                    ("hd".into(), hd as f64),
-                    ("era".into(), era),
-                    ("whip".into(), whip),
-                    ("g".into(), 30.0),
-                    ("gs".into(), if pitcher_type == PitcherType::SP { 30.0 } else { 0.0 }),
-                ]),
-            },
-            total_zscore: 0.0,
-            category_zscores: CategoryZScores::zeros_pitcher(test_registry().len()),
-            vor: 0.0,
-            initial_vor: 0.0,
-            best_position: None,
-            dollar_value: 0.0,
         }
     }
 

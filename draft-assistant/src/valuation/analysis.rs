@@ -343,42 +343,12 @@ fn find_similar_players(
 mod tests {
     use super::*;
     use crate::stats::CategoryValues;
-    use crate::test_utils::{approx_eq, test_registry, test_roster_config};
+    use crate::test_utils::{approx_eq, test_registry, test_roster_config, TestPlayer};
     use crate::valuation::auction::InflationTracker;
     use crate::valuation::scarcity::compute_scarcity;
-    use crate::valuation::zscore::{CategoryZScores, ProjectionData};
-    use std::collections::HashMap;
 
     fn make_hitter(name: &str, vor: f64, positions: Vec<Position>, dollar: f64) -> PlayerValuation {
-        let registry = test_registry();
-        let mut zscores = CategoryValues::zeros(registry.len());
-        zscores.set(registry.index_of("R").unwrap(), 1.5);
-        zscores.set(registry.index_of("HR").unwrap(), 1.2);
-        zscores.set(registry.index_of("RBI").unwrap(), 0.8);
-        zscores.set(registry.index_of("BB").unwrap(), 2.0);
-        zscores.set(registry.index_of("SB").unwrap(), 0.3);
-        zscores.set(registry.index_of("AVG").unwrap(), 0.5);
-        PlayerValuation {
-            name: name.into(),
-            team: "TST".into(),
-            positions: positions.clone(),
-            is_pitcher: false,
-            is_two_way: false,
-            pitcher_type: None,
-            projection: ProjectionData {
-                values: HashMap::from([
-                    ("pa".into(), 600.0), ("ab".into(), 550.0), ("h".into(), 150.0),
-                    ("hr".into(), 25.0), ("r".into(), 80.0), ("rbi".into(), 85.0),
-                    ("bb".into(), 50.0), ("sb".into(), 10.0), ("avg".into(), 0.273),
-                ]),
-            },
-            total_zscore: vor + 2.0,
-            category_zscores: CategoryZScores::hitter(zscores, vor + 2.0),
-            vor,
-            initial_vor: vor,
-            best_position: positions.first().copied(),
-            dollar_value: dollar,
-        }
+        TestPlayer::hitter(name).vor(vor).positions(positions).dollar(dollar).build()
     }
 
     #[test]
@@ -521,7 +491,15 @@ mod tests {
     #[test]
     fn category_impact_returns_top_3() {
         let registry = test_registry();
-        let player = make_hitter("Test", 5.0, vec![Position::FirstBase], 20.0);
+        let player = TestPlayer::hitter("Test")
+            .vor(5.0)
+            .positions(vec![Position::FirstBase])
+            .dollar(20.0)
+            .zscores(&[
+                ("R", 1.5), ("HR", 1.2), ("RBI", 0.8),
+                ("BB", 2.0), ("SB", 0.3), ("AVG", 0.5),
+            ])
+            .build();
         // Registry order: R, HR, RBI, BB, SB, AVG, K, W, SV, HD, ERA, WHIP
         let needs = CategoryValues::from_vec(vec![
             0.8, 0.5, 0.3, 1.0, 0.1, 0.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,

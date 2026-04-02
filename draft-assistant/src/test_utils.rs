@@ -6,9 +6,11 @@
 use std::collections::HashMap;
 
 use crate::config::*;
+use crate::draft::pick::Position;
 use crate::draft::state::{DraftState, TeamBudgetPayload};
 use crate::stats::{CategoryValues, StatRegistry};
-use crate::valuation::zscore::PlayerValuation;
+use crate::valuation::projections::PitcherType;
+use crate::valuation::zscore::{CategoryZScores, PlayerValuation, ProjectionData};
 
 // ---------------------------------------------------------------------------
 // Configuration fixtures
@@ -193,4 +195,265 @@ pub fn assert_close(actual: f64, expected: f64, label: &str) {
 /// Find a player by name in a slice, panicking if not found.
 pub fn find_player<'a>(players: &'a [PlayerValuation], name: &str) -> &'a PlayerValuation {
     players.iter().find(|p| p.name == name).unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// PlayerValuation builders
+// ---------------------------------------------------------------------------
+
+/// Builder for `PlayerValuation` test fixtures.
+///
+/// Defaults for hitters: `positions = [1B]`, `vor = 0.0`,
+/// `total_zscore = vor + 2.0`, `dollar_value = 0.0`, category z-scores = zeros.
+///
+/// Defaults for pitchers: `positions = [SP/RP]`, `vor = 0.0`,
+/// `total_zscore = vor + 1.0`, `dollar_value = 0.0`, category z-scores = zeros.
+///
+/// ```ignore
+/// TestPlayer::hitter("Mike Trout")
+///     .vor(10.0)
+///     .positions(vec![Position::CenterField])
+///     .dollar(45.0)
+///     .build()
+/// ```
+pub struct TestPlayer {
+    name: String,
+    pitcher_type: Option<PitcherType>,
+    positions: Vec<Position>,
+    vor: f64,
+    total_zscore: Option<f64>,
+    dollar_value: f64,
+    zscore_pairs: Vec<(String, f64)>,
+}
+
+impl TestPlayer {
+    /// Start building a hitter fixture. Default position: `FirstBase`.
+    pub fn hitter(name: &str) -> Self {
+        TestPlayer {
+            name: name.into(),
+            pitcher_type: None,
+            positions: vec![Position::FirstBase],
+            vor: 0.0,
+            total_zscore: None,
+            dollar_value: 0.0,
+            zscore_pairs: vec![],
+        }
+    }
+
+    /// Start building a pitcher fixture. Default position derived from `pt`.
+    pub fn pitcher(name: &str, pt: PitcherType) -> Self {
+        let pos = match pt {
+            PitcherType::SP => Position::StartingPitcher,
+            PitcherType::RP => Position::ReliefPitcher,
+        };
+        TestPlayer {
+            name: name.into(),
+            pitcher_type: Some(pt),
+            positions: vec![pos],
+            vor: 0.0,
+            total_zscore: None,
+            dollar_value: 0.0,
+            zscore_pairs: vec![],
+        }
+    }
+
+    /// Set the VOR value. `total_zscore` defaults to `vor + 2.0` (hitters) or `vor + 1.0` (pitchers).
+    pub fn vor(mut self, v: f64) -> Self {
+        self.vor = v;
+        self
+    }
+
+    /// Override `total_zscore` directly (bypasses the `vor + offset` default).
+    pub fn total_zscore(mut self, z: f64) -> Self {
+        self.total_zscore = Some(z);
+        self
+    }
+
+    /// Override the eligible positions list.
+    pub fn positions(mut self, ps: Vec<Position>) -> Self {
+        self.positions = ps;
+        self
+    }
+
+    /// Set the dollar value.
+    pub fn dollar(mut self, d: f64) -> Self {
+        self.dollar_value = d;
+        self
+    }
+
+    /// Set per-category z-score values by abbreviation.
+    /// Unspecified categories remain 0.0.
+    pub fn zscores(mut self, pairs: &[(&str, f64)]) -> Self {
+        self.zscore_pairs = pairs.iter().map(|&(k, v)| (k.to_string(), v)).collect();
+        self
+    }
+
+    /// Build the `PlayerValuation`.
+    pub fn build(self) -> PlayerValuation {
+        let is_pitcher = self.pitcher_type.is_some();
+        let registry = test_registry();
+        let total = self.total_zscore.unwrap_or(if is_pitcher {
+            self.vor + 1.0
+        } else {
+            self.vor + 2.0
+        });
+
+        let mut zv = CategoryValues::zeros(registry.len());
+        for (abbrev, value) in &self.zscore_pairs {
+            if let Some(idx) = registry.index_of(abbrev) {
+                zv.set(idx, *value);
+            }
+        }
+
+        let (projection, category_zscores) = if is_pitcher {
+            let proj = ProjectionData {
+                values: HashMap::from([
+                    ("ip".into(), 180.0),
+                    ("k".into(), 200.0),
+                    ("w".into(), 14.0),
+                    ("sv".into(), 0.0),
+                    ("hd".into(), 0.0),
+                    ("era".into(), 3.20),
+                    ("whip".into(), 1.10),
+                    ("g".into(), 30.0),
+                    ("gs".into(), 30.0),
+                ]),
+            };
+            (proj, CategoryZScores::pitcher(zv, total))
+        } else {
+            let proj = ProjectionData {
+                values: HashMap::from([
+                    ("pa".into(), 600.0),
+                    ("ab".into(), 550.0),
+                    ("h".into(), 150.0),
+                    ("hr".into(), 25.0),
+                    ("r".into(), 80.0),
+                    ("rbi".into(), 85.0),
+                    ("bb".into(), 50.0),
+                    ("sb".into(), 10.0),
+                    ("avg".into(), 0.273),
+                ]),
+            };
+            (proj, CategoryZScores::hitter(zv, total))
+        };
+
+        PlayerValuation {
+            name: self.name,
+            team: "TST".into(),
+            positions: self.positions.clone(),
+            is_pitcher,
+            is_two_way: false,
+            pitcher_type: self.pitcher_type,
+            projection,
+            total_zscore: total,
+            category_zscores,
+            vor: self.vor,
+            initial_vor: self.vor,
+            best_position: self.positions.first().copied(),
+            dollar_value: self.dollar_value,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stat-based PlayerValuation constructors
+// ---------------------------------------------------------------------------
+
+/// Build a hitter `PlayerValuation` from raw projection stats.
+///
+/// All valuation fields (`vor`, `total_zscore`, `dollar_value`) start at 0.0.
+/// Use these when the test will run a pipeline stage that computes those fields.
+pub fn make_hitter(
+    name: &str,
+    r: u32,
+    hr: u32,
+    rbi: u32,
+    bb: u32,
+    sb: u32,
+    ab: u32,
+    avg: f64,
+    positions: Vec<Position>,
+) -> PlayerValuation {
+    PlayerValuation {
+        name: name.into(),
+        team: "TST".into(),
+        positions,
+        is_pitcher: false,
+        is_two_way: false,
+        pitcher_type: None,
+        projection: ProjectionData {
+            values: HashMap::from([
+                ("pa".into(), (ab + bb) as f64),
+                ("ab".into(), ab as f64),
+                ("h".into(), (ab as f64 * avg).round()),
+                ("hr".into(), hr as f64),
+                ("r".into(), r as f64),
+                ("rbi".into(), rbi as f64),
+                ("bb".into(), bb as f64),
+                ("sb".into(), sb as f64),
+                ("avg".into(), avg),
+            ]),
+        },
+        total_zscore: 0.0,
+        category_zscores: CategoryZScores::zeros_hitter(test_registry().len()),
+        vor: 0.0,
+        initial_vor: 0.0,
+        best_position: None,
+        dollar_value: 0.0,
+    }
+}
+
+/// Build a pitcher `PlayerValuation` from raw projection stats.
+///
+/// All valuation fields (`vor`, `total_zscore`, `dollar_value`) start at 0.0.
+/// Use these when the test will run a pipeline stage that computes those fields.
+pub fn make_pitcher(
+    name: &str,
+    k: u32,
+    w: u32,
+    sv: u32,
+    hd: u32,
+    ip: f64,
+    era: f64,
+    whip: f64,
+    pitcher_type: PitcherType,
+) -> PlayerValuation {
+    let pos = match pitcher_type {
+        PitcherType::SP => Position::StartingPitcher,
+        PitcherType::RP => Position::ReliefPitcher,
+    };
+    PlayerValuation {
+        name: name.into(),
+        team: "TST".into(),
+        positions: vec![pos],
+        is_pitcher: true,
+        is_two_way: false,
+        pitcher_type: Some(pitcher_type),
+        projection: ProjectionData {
+            values: HashMap::from([
+                ("ip".into(), ip),
+                ("k".into(), k as f64),
+                ("w".into(), w as f64),
+                ("sv".into(), sv as f64),
+                ("hd".into(), hd as f64),
+                ("era".into(), era),
+                ("whip".into(), whip),
+                ("g".into(), 30.0),
+                (
+                    "gs".into(),
+                    if pitcher_type == PitcherType::SP {
+                        30.0
+                    } else {
+                        0.0
+                    },
+                ),
+            ]),
+        },
+        total_zscore: 0.0,
+        category_zscores: CategoryZScores::zeros_pitcher(test_registry().len()),
+        vor: 0.0,
+        initial_vor: 0.0,
+        best_position: None,
+        dollar_value: 0.0,
+    }
 }
