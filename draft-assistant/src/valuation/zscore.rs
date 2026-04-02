@@ -425,7 +425,17 @@ pub(crate) fn compute_player_category_zscores(
                 )
             }
         };
-        let z = compute_zscore(value, &pool_stats[cat_idx]);
+        let raw_z = compute_zscore(value, &pool_stats[cat_idx]);
+        // For LowerIsBetter counting stats (e.g. GIDP, L, BSV), negate the
+        // z-score so that lower raw values produce higher (better) z-scores.
+        // RateStat already handles direction inside rate_stat_contribution().
+        let z = if def.sort_direction == stats::SortDirection::LowerIsBetter
+            && matches!(def.computation, StatComputation::Counting { .. })
+        {
+            -raw_z
+        } else {
+            raw_z
+        };
         zscores.set(cat_idx, z);
         total += z * weight_values.get(cat_idx).unwrap_or(0.0);
     }
