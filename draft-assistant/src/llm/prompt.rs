@@ -10,7 +10,7 @@ use crate::draft::pick::Position;
 use crate::draft::roster::Roster;
 use crate::draft::state::DraftState;
 use crate::protocol::NominationInfo;
-use crate::stats::{CategoryValues, StatRegistry};
+use crate::stats::{CategoryValues, StatDefinition, StatRegistry};
 use crate::valuation::auction::InflationTracker;
 use crate::valuation::scarcity::ScarcityEntry;
 use crate::valuation::zscore::{CategoryZScores, PlayerValuation};
@@ -429,127 +429,112 @@ pub fn build_nomination_planning_prompt(
 // Helper functions
 // ---------------------------------------------------------------------------
 
+/// Format a single category line for the player profile table.
+fn format_category_line(stat: &StatDefinition, proj: f64, zscore: f64, rank: usize) -> String {
+    if stat.format_precision > 0 {
+        format!(
+            "  {:<4}  {:>5.*}  {:>+6.2}   #{}\n",
+            stat.abbrev, stat.format_precision as usize, proj, zscore, rank
+        )
+    } else {
+        format!(
+            "  {:<4}  {:>4.0}  {:>+6.2}   #{}\n",
+            stat.abbrev, proj, zscore, rank
+        )
+    }
+}
+
 /// Format a player's per-category projections, z-scores, and pool rank.
 fn format_player_profile(
     player: &PlayerValuation,
     available_players: &[PlayerValuation],
     registry: &StatRegistry,
 ) -> String {
-    let z = |abbrev: &str| -> f64 {
-        player.category_zscores.get_by_abbrev(registry, abbrev).unwrap_or(0.0)
-    };
-
     let mut s = String::new();
     let proj = &player.projection;
 
     if player.is_two_way {
-        let h_ranks = compute_hitter_ranks(player, available_players, registry);
-        let p_ranks = compute_pitcher_ranks(player, available_players, registry);
+        let h_ranks = compute_category_ranks(player, available_players, registry, false);
+        let p_ranks = compute_category_ranks(player, available_players, registry, true);
         s.push_str("  TWO-WAY PLAYER\n");
         s.push_str(&format!("  --- Hitting (PA: {}) ---\n", proj.get("pa") as u32));
         s.push_str("  Cat   Proj  Z-Score  Rank\n");
-        s.push_str(&format!("  R     {:>4}  {:>+6.2}   #{}\n", proj.get("r") as u32, z("R"), h_ranks.0));
-        s.push_str(&format!("  HR    {:>4}  {:>+6.2}   #{}\n", proj.get("hr") as u32, z("HR"), h_ranks.1));
-        s.push_str(&format!("  RBI   {:>4}  {:>+6.2}   #{}\n", proj.get("rbi") as u32, z("RBI"), h_ranks.2));
-        s.push_str(&format!("  BB    {:>4}  {:>+6.2}   #{}\n", proj.get("bb") as u32, z("BB"), h_ranks.3));
-        s.push_str(&format!("  SB    {:>4}  {:>+6.2}   #{}\n", proj.get("sb") as u32, z("SB"), h_ranks.4));
-        s.push_str(&format!("  AVG   {:.3}  {:>+6.2}   #{}\n", proj.get("avg"), z("AVG"), h_ranks.5));
+        for (i, stat) in registry.batting_stats().enumerate() {
+            let p = proj.get(&stat.abbrev.to_lowercase());
+            let zs = player.category_zscores.get_by_abbrev(registry, &stat.abbrev).unwrap_or(0.0);
+            s.push_str(&format_category_line(stat, p, zs, h_ranks[i]));
+        }
         s.push_str(&format!("  --- Pitching (IP: {:.0}) ---\n", proj.get("ip")));
         s.push_str("  Cat   Proj  Z-Score  Rank\n");
-        s.push_str(&format!("  K     {:>4}  {:>+6.2}   #{}\n", proj.get("k") as u32, z("K"), p_ranks.0));
-        s.push_str(&format!("  W     {:>4}  {:>+6.2}   #{}\n", proj.get("w") as u32, z("W"), p_ranks.1));
-        s.push_str(&format!("  SV    {:>4}  {:>+6.2}   #{}\n", proj.get("sv") as u32, z("SV"), p_ranks.2));
-        s.push_str(&format!("  HD    {:>4}  {:>+6.2}   #{}\n", proj.get("hd") as u32, z("HD"), p_ranks.3));
-        s.push_str(&format!("  ERA   {:.2}  {:>+6.2}   #{}\n", proj.get("era"), z("ERA"), p_ranks.4));
-        s.push_str(&format!("  WHIP  {:.2}  {:>+6.2}   #{}\n", proj.get("whip"), z("WHIP"), p_ranks.5));
+        for (i, stat) in registry.pitching_stats().enumerate() {
+            let p = proj.get(&stat.abbrev.to_lowercase());
+            let zs = player.category_zscores.get_by_abbrev(registry, &stat.abbrev).unwrap_or(0.0);
+            s.push_str(&format_category_line(stat, p, zs, p_ranks[i]));
+        }
     } else if player.is_pitcher {
         s.push_str(&format!("  IP: {:.0}\n", proj.get("ip")));
         s.push_str("  Cat   Proj  Z-Score  Rank\n");
-        let ranks = compute_pitcher_ranks(player, available_players, registry);
-        s.push_str(&format!("  K     {:>4}  {:>+6.2}   #{}\n", proj.get("k") as u32, z("K"), ranks.0));
-        s.push_str(&format!("  W     {:>4}  {:>+6.2}   #{}\n", proj.get("w") as u32, z("W"), ranks.1));
-        s.push_str(&format!("  SV    {:>4}  {:>+6.2}   #{}\n", proj.get("sv") as u32, z("SV"), ranks.2));
-        s.push_str(&format!("  HD    {:>4}  {:>+6.2}   #{}\n", proj.get("hd") as u32, z("HD"), ranks.3));
-        s.push_str(&format!("  ERA   {:.2}  {:>+6.2}   #{}\n", proj.get("era"), z("ERA"), ranks.4));
-        s.push_str(&format!("  WHIP  {:.2}  {:>+6.2}   #{}\n", proj.get("whip"), z("WHIP"), ranks.5));
+        let ranks = compute_category_ranks(player, available_players, registry, true);
+        for (i, stat) in registry.pitching_stats().enumerate() {
+            let p = proj.get(&stat.abbrev.to_lowercase());
+            let zs = player.category_zscores.get_by_abbrev(registry, &stat.abbrev).unwrap_or(0.0);
+            s.push_str(&format_category_line(stat, p, zs, ranks[i]));
+        }
     } else {
         s.push_str(&format!("  PA: {}\n", proj.get("pa") as u32));
         s.push_str("  Cat   Proj  Z-Score  Rank\n");
-        let ranks = compute_hitter_ranks(player, available_players, registry);
-        s.push_str(&format!("  R     {:>4}  {:>+6.2}   #{}\n", proj.get("r") as u32, z("R"), ranks.0));
-        s.push_str(&format!("  HR    {:>4}  {:>+6.2}   #{}\n", proj.get("hr") as u32, z("HR"), ranks.1));
-        s.push_str(&format!("  RBI   {:>4}  {:>+6.2}   #{}\n", proj.get("rbi") as u32, z("RBI"), ranks.2));
-        s.push_str(&format!("  BB    {:>4}  {:>+6.2}   #{}\n", proj.get("bb") as u32, z("BB"), ranks.3));
-        s.push_str(&format!("  SB    {:>4}  {:>+6.2}   #{}\n", proj.get("sb") as u32, z("SB"), ranks.4));
-        s.push_str(&format!("  AVG   {:.3}  {:>+6.2}   #{}\n", proj.get("avg"), z("AVG"), ranks.5));
+        let ranks = compute_category_ranks(player, available_players, registry, false);
+        for (i, stat) in registry.batting_stats().enumerate() {
+            let p = proj.get(&stat.abbrev.to_lowercase());
+            let zs = player.category_zscores.get_by_abbrev(registry, &stat.abbrev).unwrap_or(0.0);
+            s.push_str(&format_category_line(stat, p, zs, ranks[i]));
+        }
     }
     s
 }
 
-/// Compute per-category ranks for a hitter among available players.
-/// Returns (R_rank, HR_rank, RBI_rank, BB_rank, SB_rank, AVG_rank).
-fn compute_hitter_ranks(
+/// Compute per-category ranks among available players.
+///
+/// Returns a Vec of ranks (1-based) in the same order as the registry's
+/// batting or pitching categories. When `pitching` is true, ranks among
+/// pitchers/two-way; otherwise ranks among hitters.
+fn compute_category_ranks(
     player: &PlayerValuation,
     available: &[PlayerValuation],
     registry: &StatRegistry,
-) -> (usize, usize, usize, usize, usize, usize) {
-    let abbrevs = ["R", "HR", "RBI", "BB", "SB", "AVG"];
+    pitching: bool,
+) -> Vec<usize> {
+    let indices = if pitching {
+        registry.pitching_indices()
+    } else {
+        registry.batting_indices()
+    };
 
-    let my_vals: Vec<f64> = abbrevs
+    let pool: Vec<&CategoryZScores> = available
         .iter()
-        .map(|a| player.category_zscores.get_by_abbrev(registry, a).unwrap_or(0.0))
-        .collect();
-
-    let hitter_z: Vec<&CategoryZScores> = available
-        .iter()
-        .filter(|p| !p.is_pitcher)
+        .filter(|p| if pitching { p.is_pitcher || p.is_two_way } else { !p.is_pitcher })
         .map(|p| &p.category_zscores)
         .collect();
 
-    let rank = |idx: usize| -> usize {
-        let abbrev = abbrevs[idx];
-        let my_val = my_vals[idx];
-        let better = hitter_z
-            .iter()
-            .filter(|z| z.get_by_abbrev(registry, abbrev).map(|v| v > my_val).unwrap_or(false))
-            .count();
-        better + 1
-    };
-
-    (rank(0), rank(1), rank(2), rank(3), rank(4), rank(5))
-}
-
-/// Compute per-category ranks for a pitcher among available players.
-/// Returns (K_rank, W_rank, SV_rank, HD_rank, ERA_rank, WHIP_rank).
-fn compute_pitcher_ranks(
-    player: &PlayerValuation,
-    available: &[PlayerValuation],
-    registry: &StatRegistry,
-) -> (usize, usize, usize, usize, usize, usize) {
-    let abbrevs = ["K", "W", "SV", "HD", "ERA", "WHIP"];
-
-    let my_vals: Vec<f64> = abbrevs
+    indices
         .iter()
-        .map(|a| player.category_zscores.get_by_abbrev(registry, a).unwrap_or(0.0))
-        .collect();
-
-    let pitcher_z: Vec<&CategoryZScores> = available
-        .iter()
-        .filter(|p| p.is_pitcher || p.is_two_way)
-        .map(|p| &p.category_zscores)
-        .collect();
-
-    let rank = |idx: usize| -> usize {
-        let abbrev = abbrevs[idx];
-        let my_val = my_vals[idx];
-        let better = pitcher_z
-            .iter()
-            .filter(|z| z.get_by_abbrev(registry, abbrev).map(|v| v > my_val).unwrap_or(false))
-            .count();
-        better + 1
-    };
-
-    (rank(0), rank(1), rank(2), rank(3), rank(4), rank(5))
+        .map(|&idx| {
+            let abbrev = &registry.all_stats()[idx].abbrev;
+            let val = player
+                .category_zscores
+                .get_by_abbrev(registry, abbrev)
+                .unwrap_or(0.0);
+            let better = pool
+                .iter()
+                .filter(|z| {
+                    z.get_by_abbrev(registry, abbrev)
+                        .map(|v| v > val)
+                        .unwrap_or(false)
+                })
+                .count();
+            better + 1
+        })
+        .collect()
 }
 
 /// Find market comps: recently drafted players at the same position with
