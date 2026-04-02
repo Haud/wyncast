@@ -244,34 +244,13 @@ pub fn scarcity_for_position(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::{approx_eq, test_roster_config};
     use crate::valuation::projections::PitcherType;
     use crate::stats::CategoryValues;
     use crate::valuation::zscore::{
         CategoryZScores, ProjectionData,
     };
     use std::collections::HashMap;
-
-    fn approx_eq(a: f64, b: f64, epsilon: f64) -> bool {
-        (a - b).abs() < epsilon
-    }
-
-    fn test_roster_config() -> HashMap<String, usize> {
-        let mut roster = HashMap::new();
-        roster.insert("C".into(), 1);
-        roster.insert("1B".into(), 1);
-        roster.insert("2B".into(), 1);
-        roster.insert("3B".into(), 1);
-        roster.insert("SS".into(), 1);
-        roster.insert("LF".into(), 1);
-        roster.insert("CF".into(), 1);
-        roster.insert("RF".into(), 1);
-        roster.insert("UTIL".into(), 1);
-        roster.insert("SP".into(), 5);
-        roster.insert("RP".into(), 6);
-        roster.insert("BE".into(), 6);
-        roster.insert("IL".into(), 5);
-        roster
-    }
 
     fn make_hitter(name: &str, vor: f64, positions: Vec<Position>) -> PlayerValuation {
         let best_pos = positions.first().copied();

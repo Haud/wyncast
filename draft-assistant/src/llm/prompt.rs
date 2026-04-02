@@ -829,97 +829,24 @@ fn find_top_targets<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::*;
     use crate::draft::pick::DraftPick;
     use crate::draft::pick::Position;
     use crate::draft::roster::Roster;
-    use crate::draft::state::DraftState;
     use crate::protocol::NominationInfo;
+    use crate::test_utils::{
+        create_test_draft_state, test_league_config, test_registry, test_roster_config,
+    };
     use crate::valuation::auction::InflationTracker;
     use crate::valuation::projections::PitcherType;
     use crate::valuation::scarcity::compute_scarcity;
-    use crate::stats::{CategoryValues, StatRegistry};
+    use crate::stats::CategoryValues;
     use crate::valuation::zscore::{
         CategoryZScores, PlayerValuation, ProjectionData,
     };
     use std::collections::HashMap;
 
-    fn test_registry() -> StatRegistry {
-        StatRegistry::from_league_config(&test_league_config()).expect("valid test config")
-    }
-
-    // ---- Test helpers ----
-
-    fn test_roster_config() -> HashMap<String, usize> {
-        let mut config = HashMap::new();
-        config.insert("C".into(), 1);
-        config.insert("1B".into(), 1);
-        config.insert("2B".into(), 1);
-        config.insert("3B".into(), 1);
-        config.insert("SS".into(), 1);
-        config.insert("LF".into(), 1);
-        config.insert("CF".into(), 1);
-        config.insert("RF".into(), 1);
-        config.insert("UTIL".into(), 1);
-        config.insert("SP".into(), 5);
-        config.insert("RP".into(), 6);
-        config.insert("BE".into(), 6);
-        config.insert("IL".into(), 5);
-        config
-    }
-
-    fn test_league_config() -> LeagueConfig {
-        LeagueConfig {
-            name: "Test League".into(),
-            platform: "espn".into(),
-            num_teams: 10,
-            scoring_type: "h2h_most_categories".into(),
-            salary_cap: 260,
-            batting_categories: CategoriesSection {
-                categories: vec![
-                    "R".into(),
-                    "HR".into(),
-                    "RBI".into(),
-                    "BB".into(),
-                    "SB".into(),
-                    "AVG".into(),
-                ],
-            },
-            pitching_categories: CategoriesSection {
-                categories: vec![
-                    "K".into(),
-                    "W".into(),
-                    "SV".into(),
-                    "HD".into(),
-                    "ERA".into(),
-                    "WHIP".into(),
-                ],
-            },
-            roster_limits: RosterLimits {
-                max_sp: 7,
-                max_rp: 7,
-                gs_per_week: 7,
-            },
-            teams: HashMap::new(),
-        }
-    }
-
-    fn test_espn_budgets() -> Vec<crate::draft::state::TeamBudgetPayload> {
-        (1..=10)
-            .map(|i| crate::draft::state::TeamBudgetPayload {
-                team_id: format!("{}", i),
-                team_name: format!("Team {}", i),
-                budget: 260,
-            })
-            .collect()
-    }
-
-    /// Helper: create a DraftState with teams pre-registered from ESPN data.
-    fn create_test_draft_state() -> DraftState {
-        let mut state = DraftState::new(260, &test_roster_config());
-        state.reconcile_budgets(&test_espn_budgets());
-        state.set_my_team_by_id("1");
-        state
+    fn create_test_draft_state_10() -> DraftState {
+        create_test_draft_state(10)
     }
 
     fn test_budget_context() -> BudgetContext {
@@ -1110,7 +1037,7 @@ mod tests {
             make_hitter("Similar CF", 8.0, vec![Position::CenterField], 38.0),
         ];
         let scarcity = compute_scarcity(&available, &test_roster_config());
-        let draft_state = create_test_draft_state();
+        let draft_state = create_test_draft_state_10();
         let inflation = InflationTracker::new();
 
         let prompt = build_nomination_analysis_prompt(
@@ -1172,7 +1099,7 @@ mod tests {
         let needs = CategoryValues::uniform(registry.len(), 0.5);
         let available = vec![player.clone()];
         let scarcity = compute_scarcity(&available, &test_roster_config());
-        let draft_state = create_test_draft_state();
+        let draft_state = create_test_draft_state_10();
         let inflation = InflationTracker::new();
 
         let prompt = build_nomination_analysis_prompt(
@@ -1206,7 +1133,7 @@ mod tests {
             make_pitcher("P1", 7.0, PitcherType::SP, 30.0),
         ];
         let scarcity = compute_scarcity(&available, &test_roster_config());
-        let draft_state = create_test_draft_state();
+        let draft_state = create_test_draft_state_10();
         let inflation = InflationTracker::new();
 
         let prompt = build_nomination_planning_prompt(
@@ -1257,7 +1184,7 @@ mod tests {
         let needs = CategoryValues::uniform(registry.len(), 0.5);
         let available = vec![make_hitter("H1", 10.0, vec![Position::FirstBase], 40.0)];
         let scarcity = compute_scarcity(&available, &test_roster_config());
-        let mut draft_state = create_test_draft_state();
+        let mut draft_state = create_test_draft_state_10();
 
         // Record a pick so Team 2 has spent money
         draft_state.record_pick(DraftPick {
@@ -1300,7 +1227,7 @@ mod tests {
 
     #[test]
     fn find_market_comps_empty_draft() {
-        let draft_state = create_test_draft_state();
+        let draft_state = create_test_draft_state_10();
         let player = make_hitter("Test", 5.0, vec![Position::FirstBase], 20.0);
         let available = vec![player.clone()];
 
@@ -1310,7 +1237,7 @@ mod tests {
 
     #[test]
     fn find_market_comps_with_picks() {
-        let mut draft_state = create_test_draft_state();
+        let mut draft_state = create_test_draft_state_10();
 
         // Draft a first baseman for $25
         draft_state.record_pick(DraftPick {
@@ -1350,7 +1277,7 @@ mod tests {
 
     #[test]
     fn find_market_comps_limits_to_5() {
-        let mut draft_state = create_test_draft_state();
+        let mut draft_state = create_test_draft_state_10();
 
         for i in 0..10 {
             draft_state.record_pick(DraftPick {
@@ -1452,7 +1379,7 @@ mod tests {
             make_hitter("Cheap CF", 2.0, vec![Position::CenterField], 5.0),
         ];
 
-        let draft_state = create_test_draft_state();
+        let draft_state = create_test_draft_state_10();
 
         let candidates = find_nominate_to_sell_candidates(&available, &roster, &draft_state, 5);
 
@@ -1472,7 +1399,7 @@ mod tests {
 
         let available = vec![make_hitter("Cheap C", 0.5, vec![Position::Catcher], 3.0)];
 
-        let draft_state = create_test_draft_state();
+        let draft_state = create_test_draft_state_10();
 
         let candidates = find_nominate_to_sell_candidates(&available, &roster, &draft_state, 5);
         assert!(
@@ -1492,7 +1419,7 @@ mod tests {
             40.0,
         )];
 
-        let draft_state = create_test_draft_state();
+        let draft_state = create_test_draft_state_10();
 
         let candidates = find_nominate_to_sell_candidates(&available, &roster, &draft_state, 5);
         assert!(
@@ -1608,7 +1535,7 @@ mod tests {
         let needs = CategoryValues::uniform(registry.len(), 0.5);
         let available = vec![player.clone()];
         let scarcity = compute_scarcity(&available, &test_roster_config());
-        let draft_state = create_test_draft_state();
+        let draft_state = create_test_draft_state_10();
         let inflation = InflationTracker::new();
         let budget = test_budget_context();
 

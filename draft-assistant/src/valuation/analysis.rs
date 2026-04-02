@@ -342,67 +342,12 @@ fn find_similar_players(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::*;
-    use crate::stats::{CategoryValues, StatRegistry};
+    use crate::stats::CategoryValues;
+    use crate::test_utils::{approx_eq, test_registry, test_roster_config};
     use crate::valuation::auction::InflationTracker;
     use crate::valuation::scarcity::compute_scarcity;
-    use crate::valuation::projections::PitcherType;
     use crate::valuation::zscore::{CategoryZScores, ProjectionData};
     use std::collections::HashMap;
-
-    fn approx_eq(a: f64, b: f64, epsilon: f64) -> bool {
-        (a - b).abs() < epsilon
-    }
-
-    fn test_registry() -> StatRegistry {
-        StatRegistry::from_league_config(&test_league_config()).unwrap()
-    }
-
-    fn test_league_config() -> LeagueConfig {
-        LeagueConfig {
-            name: "Test League".into(),
-            platform: "espn".into(),
-            num_teams: 10,
-            scoring_type: "h2h_most_categories".into(),
-            salary_cap: 260,
-            batting_categories: CategoriesSection {
-                categories: vec![
-                    "R".into(), "HR".into(), "RBI".into(),
-                    "BB".into(), "SB".into(), "AVG".into(),
-                ],
-            },
-            pitching_categories: CategoriesSection {
-                categories: vec![
-                    "K".into(), "W".into(), "SV".into(),
-                    "HD".into(), "ERA".into(), "WHIP".into(),
-                ],
-            },
-            roster_limits: RosterLimits {
-                max_sp: 7,
-                max_rp: 7,
-                gs_per_week: 7,
-            },
-            teams: HashMap::new(),
-        }
-    }
-
-    fn test_roster_config() -> HashMap<String, usize> {
-        let mut config = HashMap::new();
-        config.insert("C".into(), 1);
-        config.insert("1B".into(), 1);
-        config.insert("2B".into(), 1);
-        config.insert("3B".into(), 1);
-        config.insert("SS".into(), 1);
-        config.insert("LF".into(), 1);
-        config.insert("CF".into(), 1);
-        config.insert("RF".into(), 1);
-        config.insert("UTIL".into(), 1);
-        config.insert("SP".into(), 5);
-        config.insert("RP".into(), 6);
-        config.insert("BE".into(), 6);
-        config.insert("IL".into(), 5);
-        config
-    }
 
     fn make_hitter(name: &str, vor: f64, positions: Vec<Position>, dollar: f64) -> PlayerValuation {
         let registry = test_registry();
@@ -432,42 +377,6 @@ mod tests {
             vor,
             initial_vor: vor,
             best_position: positions.first().copied(),
-            dollar_value: dollar,
-        }
-    }
-
-    fn make_pitcher(name: &str, vor: f64, pt: PitcherType, dollar: f64) -> PlayerValuation {
-        let registry = test_registry();
-        let mut zscores = CategoryValues::zeros(registry.len());
-        zscores.set(registry.index_of("K").unwrap(), 1.5);
-        zscores.set(registry.index_of("W").unwrap(), 0.8);
-        zscores.set(registry.index_of("SV").unwrap(), 0.0);
-        zscores.set(registry.index_of("HD").unwrap(), 0.0);
-        zscores.set(registry.index_of("ERA").unwrap(), 1.2);
-        zscores.set(registry.index_of("WHIP").unwrap(), 0.9);
-        let pos = match pt {
-            PitcherType::SP => Position::StartingPitcher,
-            PitcherType::RP => Position::ReliefPitcher,
-        };
-        PlayerValuation {
-            name: name.into(),
-            team: "TST".into(),
-            positions: vec![pos],
-            is_pitcher: true,
-            is_two_way: false,
-            pitcher_type: Some(pt),
-            projection: ProjectionData {
-                values: HashMap::from([
-                    ("ip".into(), 180.0), ("k".into(), 200.0), ("w".into(), 14.0),
-                    ("sv".into(), 0.0), ("hd".into(), 0.0), ("era".into(), 3.20),
-                    ("whip".into(), 1.10), ("g".into(), 30.0), ("gs".into(), 30.0),
-                ]),
-            },
-            total_zscore: vor + 1.0,
-            category_zscores: CategoryZScores::pitcher(zscores, vor + 1.0),
-            vor,
-            initial_vor: vor,
-            best_position: Some(pos),
             dollar_value: dollar,
         }
     }
