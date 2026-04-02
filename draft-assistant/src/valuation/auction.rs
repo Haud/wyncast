@@ -280,77 +280,20 @@ mod tests {
     use super::*;
     use crate::config::*;
     use crate::draft::pick::Position;
-    use crate::test_utils::{approx_eq, test_registry, test_roster_config, test_strategy_config};
+    use crate::test_utils::{approx_eq, test_registry, test_roster_config, test_strategy_config, TestPlayer};
     use crate::valuation::projections::PitcherType;
-    use crate::stats::CategoryValues;
-    use crate::valuation::zscore::{
-        CategoryZScores, ProjectionData,
-    };
-    use std::collections::HashMap;
 
     // ---- Test helpers ----
 
     const TEST_NUM_TEAMS: usize = 10;
     const TEST_SALARY_CAP: u32 = 260;
 
-    fn default_hitter_zscores(total: f64) -> CategoryZScores {
-        CategoryZScores::hitter(CategoryValues::zeros(test_registry().len()), total)
-    }
-
-    fn default_pitcher_zscores(total: f64) -> CategoryZScores {
-        CategoryZScores::pitcher(CategoryValues::zeros(test_registry().len()), total)
-    }
-
     fn make_hitter(name: &str, vor: f64) -> PlayerValuation {
-        PlayerValuation {
-            name: name.into(),
-            team: "TST".into(),
-            positions: vec![Position::FirstBase],
-            is_pitcher: false,
-            is_two_way: false,
-            pitcher_type: None,
-            projection: ProjectionData {
-                values: HashMap::from([
-                    ("pa".into(), 600.0), ("ab".into(), 550.0), ("h".into(), 150.0),
-                    ("hr".into(), 25.0), ("r".into(), 80.0), ("rbi".into(), 85.0),
-                    ("bb".into(), 50.0), ("sb".into(), 10.0), ("avg".into(), 0.273),
-                ]),
-            },
-            total_zscore: vor + 2.0, // arbitrary; VOR is what matters here
-            category_zscores: default_hitter_zscores(vor + 2.0),
-            vor,
-            initial_vor: 0.0,
-            best_position: Some(Position::FirstBase),
-            dollar_value: 0.0,
-        }
+        TestPlayer::hitter(name).vor(vor).build()
     }
 
     fn make_pitcher(name: &str, vor: f64, pitcher_type: PitcherType) -> PlayerValuation {
-        let pos = match pitcher_type {
-            PitcherType::SP => Position::StartingPitcher,
-            PitcherType::RP => Position::ReliefPitcher,
-        };
-        PlayerValuation {
-            name: name.into(),
-            team: "TST".into(),
-            positions: vec![pos],
-            is_pitcher: true,
-            is_two_way: false,
-            pitcher_type: Some(pitcher_type),
-            projection: ProjectionData {
-                values: HashMap::from([
-                    ("ip".into(), 180.0), ("k".into(), 200.0), ("w".into(), 14.0),
-                    ("sv".into(), 0.0), ("hd".into(), 0.0), ("era".into(), 3.20),
-                    ("whip".into(), 1.10), ("g".into(), 30.0), ("gs".into(), 30.0),
-                ]),
-            },
-            total_zscore: vor + 1.0,
-            category_zscores: default_pitcher_zscores(vor + 1.0),
-            vor,
-            initial_vor: 0.0,
-            best_position: Some(pos),
-            dollar_value: 0.0,
-        }
+        TestPlayer::pitcher(name, pitcher_type).vor(vor).build()
     }
 
     // ---- Tests ----
