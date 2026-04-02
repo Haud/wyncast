@@ -1545,4 +1545,95 @@ mod tests {
         assert!(prompt.contains("Bid ceiling: $39"), "should contain bid ceiling");
         assert!(prompt.contains("Pick 1 of 260"), "should contain draft progress");
     }
+
+    // ---- format_category_line precision tests ----
+
+    fn counting_stat_def(abbrev: &str) -> StatDefinition {
+        use crate::stats::{PlayerType, SortDirection, StatComputation};
+        StatDefinition {
+            abbrev: abbrev.into(),
+            display_name: abbrev.into(),
+            espn_stat_id: None,
+            player_type: PlayerType::Hitter,
+            sort_direction: SortDirection::HigherIsBetter,
+            format_precision: 0,
+            close_threshold: 1.0,
+            computation: StatComputation::Counting {
+                projection_key: abbrev.to_lowercase(),
+            },
+        }
+    }
+
+    fn rate_stat_def(abbrev: &str, precision: u8) -> StatDefinition {
+        use crate::stats::{PlayerType, SortDirection, StatComputation};
+        StatDefinition {
+            abbrev: abbrev.into(),
+            display_name: abbrev.into(),
+            espn_stat_id: None,
+            player_type: PlayerType::Hitter,
+            sort_direction: SortDirection::HigherIsBetter,
+            format_precision: precision,
+            close_threshold: 0.005,
+            computation: StatComputation::RateStat {
+                volume_key: "ab".into(),
+                rate_key: abbrev.to_lowercase(),
+                divisor: 1.0,
+            },
+        }
+    }
+
+    #[test]
+    fn format_category_line_counting_stat_no_decimals() {
+        let stat = counting_stat_def("HR");
+        let line = format_category_line(&stat, 25.0, 1.5, 3);
+        // Counting stat (format_precision=0): value formatted as integer, no decimal point
+        assert!(line.contains("  25"), "should show integer value");
+        assert!(!line.contains("25."), "should not show decimal for counting stat");
+        assert!(line.contains("HR"), "should show stat abbreviation");
+        assert!(line.contains("#3"), "should show rank");
+    }
+
+    #[test]
+    fn format_category_line_rate_stat_three_decimals() {
+        let stat = rate_stat_def("AVG", 3);
+        let line = format_category_line(&stat, 0.290, 0.8, 12);
+        // Rate stat with format_precision=3: value formatted to 3 decimal places
+        assert!(line.contains("0.290"), "should show 3 decimal places for AVG");
+        assert!(line.contains("AVG"), "should show stat abbreviation");
+        assert!(line.contains("#12"), "should show rank");
+    }
+
+    #[test]
+    fn format_category_line_rate_stat_two_decimals() {
+        let stat = rate_stat_def("ERA", 2);
+        let line = format_category_line(&stat, 3.50, -0.5, 7);
+        // Rate stat with format_precision=2: value formatted to 2 decimal places
+        assert!(line.contains("3.50"), "should show 2 decimal places for ERA");
+        assert!(line.contains("ERA"), "should show stat abbreviation");
+        assert!(line.contains("#7"), "should show rank");
+    }
+
+    #[test]
+    fn player_profile_hitter_avg_formatted_as_rate() {
+        let player = make_hitter("Test Hitter", 5.0, vec![Position::FirstBase], 20.0);
+        let available = vec![player.clone()];
+        let profile = format_player_profile(&player, &available, &test_registry());
+        // AVG has format_precision=3 in the registry; projected value is 0.273
+        assert!(
+            profile.contains("0.273"),
+            "AVG should be formatted to 3 decimal places, got:\n{profile}"
+        );
+    }
+
+    #[test]
+    fn player_profile_pitcher_era_formatted_as_rate() {
+        let player = make_pitcher("Test Pitcher", 5.0, PitcherType::SP, 20.0);
+        let available = vec![player.clone()];
+        let profile = format_player_profile(&player, &available, &test_registry());
+        // ERA has format_precision=2 in the registry; projected value is 3.20
+        assert!(
+            profile.contains("3.20"),
+            "ERA should be formatted to 2 decimal places, got:\n{profile}"
+        );
+    }
 }
