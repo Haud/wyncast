@@ -462,6 +462,197 @@ pub fn lookup_stat_definition(abbrev: &str, player_type: PlayerType) -> Option<S
                 divisor: 1.0,
             },
         },
+        // Batting — additional counting stats
+        ("TB", PlayerType::Hitter) => StatDefinition {
+            abbrev: "TB".into(),
+            display_name: "Total Bases".into(),
+            espn_stat_id: None,
+            player_type: PlayerType::Hitter,
+            sort_direction: SortDirection::HigherIsBetter,
+            format_precision: 0,
+            close_threshold: 3.0,
+            computation: StatComputation::Counting {
+                projection_key: "tb".into(),
+            },
+        },
+        ("XBH", PlayerType::Hitter) => StatDefinition {
+            abbrev: "XBH".into(),
+            display_name: "Extra Base Hits".into(),
+            espn_stat_id: None,
+            player_type: PlayerType::Hitter,
+            sort_direction: SortDirection::HigherIsBetter,
+            format_precision: 0,
+            close_threshold: 1.0,
+            computation: StatComputation::Counting {
+                projection_key: "xbh".into(),
+            },
+        },
+        ("HBP", PlayerType::Hitter) => StatDefinition {
+            abbrev: "HBP".into(),
+            display_name: "Hit By Pitch".into(),
+            espn_stat_id: None,
+            player_type: PlayerType::Hitter,
+            sort_direction: SortDirection::HigherIsBetter,
+            format_precision: 0,
+            close_threshold: 1.0,
+            computation: StatComputation::Counting {
+                projection_key: "hbp".into(),
+            },
+        },
+        // Batting — counting, lower-is-better
+        ("GIDP", PlayerType::Hitter) => StatDefinition {
+            abbrev: "GIDP".into(),
+            display_name: "Grounded Into Double Play".into(),
+            espn_stat_id: None,
+            player_type: PlayerType::Hitter,
+            sort_direction: SortDirection::LowerIsBetter,
+            format_precision: 0,
+            close_threshold: 1.0,
+            computation: StatComputation::Counting {
+                projection_key: "gidp".into(),
+            },
+        },
+        // Batting — additional rate stats
+        ("OBP", PlayerType::Hitter) => StatDefinition {
+            abbrev: "OBP".into(),
+            display_name: "On-base Percentage".into(),
+            espn_stat_id: Some(99),
+            player_type: PlayerType::Hitter,
+            sort_direction: SortDirection::HigherIsBetter,
+            format_precision: 3,
+            close_threshold: 0.005,
+            computation: StatComputation::RateStat {
+                volume_key: "pa".into(),
+                rate_key: "obp".into(),
+                divisor: 1.0,
+            },
+        },
+        ("SLG", PlayerType::Hitter) => StatDefinition {
+            abbrev: "SLG".into(),
+            display_name: "Slugging Percentage".into(),
+            espn_stat_id: Some(102),
+            player_type: PlayerType::Hitter,
+            sort_direction: SortDirection::HigherIsBetter,
+            format_precision: 3,
+            close_threshold: 0.010,
+            computation: StatComputation::RateStat {
+                volume_key: "ab".into(),
+                rate_key: "slg".into(),
+                divisor: 1.0,
+            },
+        },
+        // Batting — derived counting (computed during projection loading)
+        ("OPS", PlayerType::Hitter) => StatDefinition {
+            abbrev: "OPS".into(),
+            display_name: "On-base Plus Slugging".into(),
+            espn_stat_id: None,
+            player_type: PlayerType::Hitter,
+            sort_direction: SortDirection::HigherIsBetter,
+            format_precision: 3,
+            close_threshold: 0.010,
+            computation: StatComputation::Counting {
+                projection_key: "ops".into(),
+            },
+        },
+        // Pitching — additional counting stats
+        ("QS", PlayerType::Pitcher) => StatDefinition {
+            abbrev: "QS".into(),
+            display_name: "Quality Starts".into(),
+            espn_stat_id: None,
+            player_type: PlayerType::Pitcher,
+            sort_direction: SortDirection::HigherIsBetter,
+            format_precision: 0,
+            close_threshold: 1.0,
+            computation: StatComputation::Counting {
+                projection_key: "qs".into(),
+            },
+        },
+        ("CG", PlayerType::Pitcher) => StatDefinition {
+            abbrev: "CG".into(),
+            display_name: "Complete Games".into(),
+            espn_stat_id: None,
+            player_type: PlayerType::Pitcher,
+            sort_direction: SortDirection::HigherIsBetter,
+            format_precision: 0,
+            close_threshold: 1.0,
+            computation: StatComputation::Counting {
+                projection_key: "cg".into(),
+            },
+        },
+        ("SHO", PlayerType::Pitcher) => StatDefinition {
+            abbrev: "SHO".into(),
+            display_name: "Shutouts".into(),
+            espn_stat_id: None,
+            player_type: PlayerType::Pitcher,
+            sort_direction: SortDirection::HigherIsBetter,
+            format_precision: 0,
+            close_threshold: 1.0,
+            computation: StatComputation::Counting {
+                projection_key: "sho".into(),
+            },
+        },
+        // Pitching — counting, lower-is-better
+        ("L", PlayerType::Pitcher) => StatDefinition {
+            abbrev: "L".into(),
+            display_name: "Losses".into(),
+            espn_stat_id: None,
+            player_type: PlayerType::Pitcher,
+            sort_direction: SortDirection::LowerIsBetter,
+            format_precision: 0,
+            close_threshold: 1.0,
+            computation: StatComputation::Counting {
+                projection_key: "l".into(),
+            },
+        },
+        ("BSV", PlayerType::Pitcher) => StatDefinition {
+            abbrev: "BSV".into(),
+            display_name: "Blown Saves".into(),
+            espn_stat_id: None,
+            player_type: PlayerType::Pitcher,
+            sort_direction: SortDirection::LowerIsBetter,
+            format_precision: 0,
+            close_threshold: 1.0,
+            computation: StatComputation::Counting {
+                projection_key: "bsv".into(),
+            },
+        },
+        // Pitching — derived counting (computed during projection loading)
+        ("K/9", PlayerType::Pitcher) => StatDefinition {
+            abbrev: "K/9".into(),
+            display_name: "Strikeouts per 9 IP".into(),
+            espn_stat_id: None,
+            player_type: PlayerType::Pitcher,
+            sort_direction: SortDirection::HigherIsBetter,
+            format_precision: 2,
+            close_threshold: 0.25,
+            computation: StatComputation::Counting {
+                projection_key: "k9".into(),
+            },
+        },
+        ("K/BB", PlayerType::Pitcher) => StatDefinition {
+            abbrev: "K/BB".into(),
+            display_name: "Strikeout to Walk Ratio".into(),
+            espn_stat_id: None,
+            player_type: PlayerType::Pitcher,
+            sort_direction: SortDirection::HigherIsBetter,
+            format_precision: 2,
+            close_threshold: 0.25,
+            computation: StatComputation::Counting {
+                projection_key: "kbb".into(),
+            },
+        },
+        ("NSV", PlayerType::Pitcher) => StatDefinition {
+            abbrev: "NSV".into(),
+            display_name: "Net Saves".into(),
+            espn_stat_id: None,
+            player_type: PlayerType::Pitcher,
+            sort_direction: SortDirection::HigherIsBetter,
+            format_precision: 0,
+            close_threshold: 1.0,
+            computation: StatComputation::Counting {
+                projection_key: "nsv".into(),
+            },
+        },
         _ => return None,
     };
     Some(def)
@@ -743,5 +934,156 @@ mod tests {
         assert!(lookup_stat_definition("ERA", PlayerType::Hitter).is_none());
         // R is a hitting stat, not a pitching stat
         assert!(lookup_stat_definition("R", PlayerType::Pitcher).is_none());
+    }
+
+    // ---- Expanded knowledge base tests (WI-14) ----
+
+    #[test]
+    fn lookup_all_new_hitting_stats() {
+        let hitting = [
+            ("TB", SortDirection::HigherIsBetter, 0),
+            ("XBH", SortDirection::HigherIsBetter, 0),
+            ("HBP", SortDirection::HigherIsBetter, 0),
+            ("GIDP", SortDirection::LowerIsBetter, 0),
+            ("OBP", SortDirection::HigherIsBetter, 3),
+            ("SLG", SortDirection::HigherIsBetter, 3),
+            ("OPS", SortDirection::HigherIsBetter, 3),
+        ];
+        for (abbrev, direction, precision) in hitting {
+            let def = lookup_stat_definition(abbrev, PlayerType::Hitter)
+                .unwrap_or_else(|| panic!("expected to find hitting stat '{abbrev}'"));
+            assert_eq!(def.player_type, PlayerType::Hitter, "{abbrev}");
+            assert_eq!(def.sort_direction, direction, "{abbrev} direction");
+            assert_eq!(def.format_precision, precision, "{abbrev} precision");
+        }
+    }
+
+    #[test]
+    fn lookup_all_new_pitching_stats() {
+        let pitching = [
+            ("QS", SortDirection::HigherIsBetter, 0),
+            ("CG", SortDirection::HigherIsBetter, 0),
+            ("SHO", SortDirection::HigherIsBetter, 0),
+            ("L", SortDirection::LowerIsBetter, 0),
+            ("BSV", SortDirection::LowerIsBetter, 0),
+            ("K/9", SortDirection::HigherIsBetter, 2),
+            ("K/BB", SortDirection::HigherIsBetter, 2),
+            ("NSV", SortDirection::HigherIsBetter, 0),
+        ];
+        for (abbrev, direction, precision) in pitching {
+            let def = lookup_stat_definition(abbrev, PlayerType::Pitcher)
+                .unwrap_or_else(|| panic!("expected to find pitching stat '{abbrev}'"));
+            assert_eq!(def.player_type, PlayerType::Pitcher, "{abbrev}");
+            assert_eq!(def.sort_direction, direction, "{abbrev} direction");
+            assert_eq!(def.format_precision, precision, "{abbrev} precision");
+        }
+    }
+
+    #[test]
+    fn new_stats_wrong_player_type_returns_none() {
+        // Hitting stats should not resolve as pitching
+        for abbrev in ["TB", "XBH", "HBP", "GIDP", "OBP", "SLG", "OPS"] {
+            assert!(
+                lookup_stat_definition(abbrev, PlayerType::Pitcher).is_none(),
+                "{abbrev} should not resolve as Pitcher"
+            );
+        }
+        // Pitching stats should not resolve as hitting
+        for abbrev in ["QS", "CG", "SHO", "L", "BSV", "K/9", "K/BB", "NSV"] {
+            assert!(
+                lookup_stat_definition(abbrev, PlayerType::Hitter).is_none(),
+                "{abbrev} should not resolve as Hitter"
+            );
+        }
+    }
+
+    #[test]
+    fn registry_with_nonstandard_categories() {
+        use crate::config::CategoriesSection;
+
+        let config = LeagueConfig {
+            batting_categories: CategoriesSection {
+                categories: vec![
+                    "OBP".to_string(),
+                    "SLG".to_string(),
+                    "OPS".to_string(),
+                    "HR".to_string(),
+                ],
+            },
+            pitching_categories: CategoriesSection {
+                categories: vec![
+                    "QS".to_string(),
+                    "K/9".to_string(),
+                    "ERA".to_string(),
+                ],
+            },
+            ..LeagueConfig::default()
+        };
+        let reg = StatRegistry::from_league_config(&config).unwrap();
+        assert_eq!(reg.len(), 7);
+        assert_eq!(reg.batting_count(), 4);
+        assert_eq!(reg.pitching_count(), 3);
+        assert!(reg.get("OPS").is_some());
+        assert!(reg.get("K/9").is_some());
+        assert_eq!(reg.index_of("QS"), Some(4));
+    }
+
+    #[test]
+    fn all_27_known_stats_resolve() {
+        let hitting = ["R", "HR", "RBI", "BB", "SB", "AVG", "TB", "XBH", "HBP", "GIDP", "OBP", "SLG", "OPS"];
+        let pitching = ["K", "W", "SV", "HD", "ERA", "WHIP", "QS", "CG", "SHO", "L", "BSV", "K/9", "K/BB", "NSV"];
+
+        for abbrev in hitting {
+            assert!(
+                lookup_stat_definition(abbrev, PlayerType::Hitter).is_some(),
+                "hitting stat '{abbrev}' should resolve"
+            );
+        }
+        for abbrev in pitching {
+            assert!(
+                lookup_stat_definition(abbrev, PlayerType::Pitcher).is_some(),
+                "pitching stat '{abbrev}' should resolve"
+            );
+        }
+        // Total: 13 hitting + 14 pitching = 27 known stats
+        assert_eq!(hitting.len() + pitching.len(), 27);
+    }
+
+    #[test]
+    fn obp_and_slg_are_rate_stats() {
+        let obp = lookup_stat_definition("OBP", PlayerType::Hitter).unwrap();
+        assert!(matches!(
+            obp.computation,
+            StatComputation::RateStat { ref volume_key, ref rate_key, divisor }
+                if volume_key == "pa" && rate_key == "obp" && (divisor - 1.0).abs() < 1e-10
+        ));
+
+        let slg = lookup_stat_definition("SLG", PlayerType::Hitter).unwrap();
+        assert!(matches!(
+            slg.computation,
+            StatComputation::RateStat { ref volume_key, ref rate_key, divisor }
+                if volume_key == "ab" && rate_key == "slg" && (divisor - 1.0).abs() < 1e-10
+        ));
+    }
+
+    #[test]
+    fn espn_stat_ids_for_new_stats() {
+        // OBP and SLG have known ESPN IDs; others are None
+        assert_eq!(
+            lookup_stat_definition("OBP", PlayerType::Hitter).unwrap().espn_stat_id,
+            Some(99)
+        );
+        assert_eq!(
+            lookup_stat_definition("SLG", PlayerType::Hitter).unwrap().espn_stat_id,
+            Some(102)
+        );
+        assert_eq!(
+            lookup_stat_definition("OPS", PlayerType::Hitter).unwrap().espn_stat_id,
+            None
+        );
+        assert_eq!(
+            lookup_stat_definition("K/9", PlayerType::Pitcher).unwrap().espn_stat_id,
+            None
+        );
     }
 }
