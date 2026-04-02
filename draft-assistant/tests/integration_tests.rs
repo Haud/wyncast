@@ -3664,3 +3664,140 @@ async fn planning_error_surfaced_to_tui() {
     cmd_tx.send(UserCommand::Quit).await.unwrap();
     let _ = handle.await;
 }
+
+// ===========================================================================
+// Tests: Alternative league configurations
+// ===========================================================================
+
+/// Build a Config with non-default categories: OPS replacing BB/SB/AVG for
+/// batting; QS + K/9 replacing SV + HD for pitching.
+fn alt_league_config() -> Config {
+    let mut config = inline_config();
+    config.league.batting_categories = CategoriesSection {
+        categories: vec!["R".into(), "HR".into(), "RBI".into(), "OPS".into()],
+    };
+    config.league.pitching_categories = CategoriesSection {
+        categories: vec![
+            "K".into(),
+            "W".into(),
+            "QS".into(),
+            "K/9".into(),
+            "ERA".into(),
+            "WHIP".into(),
+        ],
+    };
+    config.strategy.weights = CategoryWeights::from_pairs([
+        ("R", 1.0),
+        ("HR", 1.0),
+        ("RBI", 1.0),
+        ("OPS", 1.0),
+        ("K", 1.0),
+        ("W", 1.0),
+        ("QS", 1.0),
+        ("K/9", 1.0),
+        ("ERA", 1.0),
+        ("WHIP", 1.0),
+    ]);
+    config
+}
+
+/// Verify that a non-default category set (OPS replacing BB/SB/AVG; QS + K/9
+/// replacing SV + HD) flows through the full valuation pipeline without error
+/// and produces meaningful valuations.
+///
+/// - Categories with projection data (R, HR, RBI, K, W, K/9, ERA, WHIP)
+///   produce non-zero z-scores and auction values.
+/// - Categories without projection data (OPS, QS) produce z-scores of 0.0
+///   without panicking — pool stdev is zero, so the pipeline degrades
+///   gracefully.
+#[test]
+fn alt_league_config_full_pipeline() {
+    let config = alt_league_config();
+
+    // Registry builds successfully from all known non-default categories.
+    let registry = StatRegistry::from_league_config(&config.league)
+        .expect("alt-league registry should build without error");
+
+    assert_eq!(registry.batting_count(), 4, "expected 4 batting categories");
+    assert_eq!(registry.pitching_count(), 6, "expected 6 pitching categories");
+    assert_eq!(registry.len(), 10, "expected 10 total categories");
+
+    assert!(registry.get("OPS").is_some(), "OPS should be in registry");
+    assert!(registry.get("K/9").is_some(), "K/9 should be in registry");
+    assert!(registry.get("QS").is_some(), "QS should be in registry");
+
+    // Default categories excluded from this config must not appear.
+    assert!(registry.get("SV").is_none(), "SV should not be in registry");
+    assert!(registry.get("HD").is_none(), "HD should not be in registry");
+    assert!(registry.get("AVG").is_none(), "AVG should not be in registry");
+
+    // Full pipeline must not panic and must return Ok.
+    let projections = draft_assistant::valuation::projections::load_all_from_paths(
+        &config.data_paths,
+    )
+    .expect("fixture CSVs should load")
+    .expect("fixture CSV paths are configured");
+
+    let players = draft_assistant::valuation::compute_initial(
+        &projections,
+        &config,
+        &roster_config(),
+        &registry,
+    )
+    .expect("alt-league pipeline should succeed");
+
+    assert!(!players.is_empty(), "pipeline should produce players");
+
+    // At least some players must have positive dollar values.
+    let positive_count = players.iter().filter(|p| p.dollar_value > 0.0).count();
+    assert!(
+        positive_count > 0,
+        "expected some positive auction dollar values"
+    );
+
+    // K/9 is stored as "k9" in ProjectionData (k * 9.0 / ip), so pitchers
+    // with IP > 0 will have non-zero K/9 z-scores.
+    let has_nonzero_k9 = players.iter().filter(|p| p.is_pitcher).any(|p| {
+        p.category_zscores
+            .get_by_abbrev(&registry, "K/9")
+            .map(|z| z.abs() > 1e-9)
+            .unwrap_or(false)
+    });
+    assert!(
+        has_nonzero_k9,
+        "some pitchers should have non-zero K/9 z-scores"
+    );
+
+    // OPS has no projection data in HitterProjection::From ("ops" key absent),
+    // so get_or_zero() returns 0.0 for everyone → pool stdev = 0 → z-score = 0.
+    for player in players.iter().filter(|p| !p.is_pitcher) {
+        let ops_z = player
+            .category_zscores
+            .get_by_abbrev(&registry, "OPS")
+            .expect("OPS is in registry so index lookup must succeed");
+        assert_eq!(
+            ops_z, 0.0,
+            "OPS z-score for '{}' should be 0.0 (no projection data)",
+            player.name
+        );
+    }
+}
+
+/// Verify that requesting an unknown stat category returns a descriptive error
+/// that names the offending abbreviation.
+#[test]
+fn unknown_category_gives_descriptive_error() {
+    let mut config = inline_config();
+    config.league.batting_categories = CategoriesSection {
+        categories: vec!["R".into(), "HR".into(), "UNICORN".into()],
+    };
+
+    let result = StatRegistry::from_league_config(&config.league);
+
+    assert!(result.is_err(), "unknown category should return Err");
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("UNICORN"),
+        "error message should name the unknown category; got: {msg}"
+    );
+}
