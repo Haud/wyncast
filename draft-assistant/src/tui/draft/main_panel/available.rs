@@ -340,6 +340,7 @@ pub fn format_positions(positions: &[Position]) -> String {
 mod tests {
     use super::*;
     use crate::stats::CategoryValues;
+    use crate::test_utils::test_registry;
     use crate::valuation::zscore::{CategoryZScores, ProjectionData};
     use std::collections::HashMap;
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
@@ -369,7 +370,7 @@ mod tests {
                 ]),
             },
             total_zscore: 3.5,
-            category_zscores: CategoryZScores::hitter(CategoryValues::zeros(12), 3.5),
+            category_zscores: CategoryZScores::hitter(CategoryValues::zeros(test_registry().len()), 3.5),
             vor: 5.0,
             initial_vor: 0.0,
             best_position: None,

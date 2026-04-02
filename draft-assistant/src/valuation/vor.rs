@@ -326,7 +326,7 @@ pub fn apply_vor(players: &mut Vec<PlayerValuation>, roster_config: &HashMap<Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{approx_eq, test_roster_config};
+    use crate::test_utils::{approx_eq, test_registry, test_roster_config};
     use crate::valuation::projections::PitcherType;
     use crate::stats::CategoryValues;
     use crate::valuation::zscore::{
@@ -335,11 +335,11 @@ mod tests {
     use std::collections::HashMap;
 
     fn default_hitter_zscores(total: f64) -> CategoryZScores {
-        CategoryZScores::hitter(CategoryValues::zeros(12), total)
+        CategoryZScores::hitter(CategoryValues::zeros(test_registry().len()), total)
     }
 
     fn default_pitcher_zscores(total: f64) -> CategoryZScores {
-        CategoryZScores::pitcher(CategoryValues::zeros(12), total)
+        CategoryZScores::pitcher(CategoryValues::zeros(test_registry().len()), total)
     }
 
     fn make_hitter_valuation(

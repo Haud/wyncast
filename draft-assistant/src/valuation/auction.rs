@@ -280,7 +280,7 @@ mod tests {
     use super::*;
     use crate::config::*;
     use crate::draft::pick::Position;
-    use crate::test_utils::{approx_eq, test_roster_config, test_strategy_config};
+    use crate::test_utils::{approx_eq, test_registry, test_roster_config, test_strategy_config};
     use crate::valuation::projections::PitcherType;
     use crate::stats::CategoryValues;
     use crate::valuation::zscore::{
@@ -294,11 +294,11 @@ mod tests {
     const TEST_SALARY_CAP: u32 = 260;
 
     fn default_hitter_zscores(total: f64) -> CategoryZScores {
-        CategoryZScores::hitter(CategoryValues::zeros(12), total)
+        CategoryZScores::hitter(CategoryValues::zeros(test_registry().len()), total)
     }
 
     fn default_pitcher_zscores(total: f64) -> CategoryZScores {
-        CategoryZScores::pitcher(CategoryValues::zeros(12), total)
+        CategoryZScores::pitcher(CategoryValues::zeros(test_registry().len()), total)
     }
 
     fn make_hitter(name: &str, vor: f64) -> PlayerValuation {
