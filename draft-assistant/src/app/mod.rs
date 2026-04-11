@@ -142,6 +142,8 @@ pub struct AppState {
     /// Roster configuration inferred from ESPN or set from defaults.
     /// `None` until roster is inferred from the ESPN draft board.
     pub roster_config: Option<std::collections::HashMap<String, usize>>,
+    /// Latest matchup snapshot received from the extension.
+    pub matchup_snapshot: Option<crate::matchup::MatchupSnapshot>,
 }
 
 impl AppState {
@@ -203,6 +205,7 @@ impl AppState {
             connection_test_generation: Arc::new(AtomicU64::new(0)),
             grid_picks_persisted: false,
             roster_config,
+            matchup_snapshot: None,
         }
     }
 
