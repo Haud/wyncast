@@ -1496,6 +1496,7 @@ mod tests {
             sort_direction: SortDirection::HigherIsBetter,
             format_precision: 0,
             close_threshold: 1.0,
+            matchup_close_threshold: 3.0,
             computation: StatComputation::Counting {
                 projection_key: abbrev.to_lowercase(),
             },
@@ -1512,6 +1513,7 @@ mod tests {
             sort_direction: SortDirection::HigherIsBetter,
             format_precision: precision,
             close_threshold: 0.005,
+            matchup_close_threshold: 0.020,
             computation: StatComputation::RateStat {
                 volume_key: "ab".into(),
                 rate_key: abbrev.to_lowercase(),
