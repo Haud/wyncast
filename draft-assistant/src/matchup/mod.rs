@@ -33,14 +33,21 @@ impl fmt::Display for TeamRecord {
     }
 }
 
+/// Whether we are winning, losing, or tied in a scoring category.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum CategoryState {
+    Winning,
+    Losing,
+    Tied,
+}
+
 /// A single scoring category with both teams' values.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CategoryScore {
     pub stat_abbrev: String,
     pub my_value: f64,
     pub opp_value: f64,
-    /// `Some(true)` = I'm winning, `Some(false)` = opponent winning, `None` = tied.
-    pub i_am_winning: Option<bool>,
+    pub state: CategoryState,
 }
 
 /// One day of the scoring period with player-level breakdowns.
@@ -66,8 +73,6 @@ pub struct DailyPlayerRow {
     pub game_status: Option<String>,
     /// Per-stat values; `None` entries mean no game / not applicable.
     pub stats: Vec<Option<f64>>,
-    pub is_bench: bool,
-    pub is_il: bool,
 }
 
 /// Aggregated totals for one section (batting or pitching) on a single day.
@@ -154,13 +159,13 @@ mod tests {
                     stat_abbrev: "R".to_string(),
                     my_value: 5.0,
                     opp_value: 3.0,
-                    i_am_winning: Some(true),
+                    state: CategoryState::Winning,
                 },
                 CategoryScore {
                     stat_abbrev: "ERA".to_string(),
                     my_value: 3.45,
                     opp_value: 4.12,
-                    i_am_winning: Some(true),
+                    state: CategoryState::Winning,
                 },
             ],
             selected_day: 1,
@@ -175,8 +180,6 @@ mod tests {
                     opponent: Some("@BOS".to_string()),
                     game_status: None,
                     stats: vec![Some(4.0), Some(1.0), Some(0.0)],
-                    is_bench: false,
-                    is_il: false,
                 }],
                 pitching_rows: vec![],
                 batting_totals: Some(DailyTotals {
