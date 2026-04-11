@@ -73,6 +73,10 @@ pub(super) async fn handle_ws_message(
         ExtensionMessage::PlayerProjections { timestamp: _, payload } => {
             handle_player_projections(state, payload, ui_tx).await;
         }
+        ExtensionMessage::MatchupState { .. } => {
+            // Matchup state processing will be implemented in a later task.
+            tracing::debug!("Received matchup state update (not yet handled)");
+        }
     }
 }
 
