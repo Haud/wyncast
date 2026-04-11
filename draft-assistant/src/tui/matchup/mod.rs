@@ -193,6 +193,16 @@ impl MatchupScreen {
 
         // Main panel
         let main_focused = self.focused_panel == Some(MatchupFocusPanel::MainPanel);
+        let my_name = self
+            .matchup_info
+            .as_ref()
+            .map(|i| i.my_team_name.as_str())
+            .unwrap_or("My Roster");
+        let opp_name = self
+            .matchup_info
+            .as_ref()
+            .map(|i| i.opp_team_name.as_str())
+            .unwrap_or("Opponent Roster");
         self.main_panel.view(
             frame,
             layout.main_panel,
@@ -204,6 +214,8 @@ impl MatchupScreen {
             self.acquisitions_used,
             self.acquisitions_limit,
             None, // StatRegistry not available at screen level yet
+            my_name,
+            opp_name,
             main_focused,
         );
 

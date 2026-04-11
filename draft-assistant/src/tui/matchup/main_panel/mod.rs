@@ -2,22 +2,20 @@
 
 pub mod analytics;
 pub mod daily_stats;
+pub mod roster_view;
 
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
 use crate::matchup::{CategoryScore, ScoringDay};
 use crate::stats::StatRegistry;
 use crate::tui::action::Action;
-use crate::tui::scroll::{ScrollDirection, ScrollState};
 use crate::tui::subscription::Subscription;
 use crate::tui::subscription::keybinding::KeybindManager;
 
 pub use analytics::{MatchupAnalyticsPanel, MatchupAnalyticsPanelMessage};
 pub use daily_stats::{DailyStatsPanel, DailyStatsPanelMessage};
+pub use roster_view::{RosterViewPanel, RosterViewPanelMessage};
 
 // ---------------------------------------------------------------------------
 // MatchupTab
@@ -30,55 +28,6 @@ pub enum MatchupTab {
     Analytics,
     MyRoster,
     OppRoster,
-}
-
-/// Roster view panel (stub — reused for both My Roster and Opp Roster tabs).
-pub struct RosterViewPanel {
-    scroll: ScrollState,
-}
-
-/// Message type for the roster view panel.
-#[derive(Debug, Clone)]
-pub enum RosterViewPanelMessage {
-    Scroll(ScrollDirection),
-}
-
-impl RosterViewPanel {
-    pub fn new() -> Self {
-        Self {
-            scroll: ScrollState::new(),
-        }
-    }
-
-    pub fn update(&mut self, msg: RosterViewPanelMessage) -> Option<Action> {
-        match msg {
-            RosterViewPanelMessage::Scroll(dir) => {
-                self.scroll.scroll(dir, 20);
-                None
-            }
-        }
-    }
-
-    pub fn scroll_offset(&self) -> usize {
-        self.scroll.offset()
-    }
-
-    pub fn view(&self, frame: &mut Frame, area: Rect, title: &str, _focused: bool) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(format!(" {title} "))
-            .border_style(Style::default().fg(Color::DarkGray));
-        let text = Paragraph::new(Line::from("Roster view coming soon..."))
-            .style(Style::default().fg(Color::DarkGray))
-            .block(block);
-        frame.render_widget(text, area);
-    }
-}
-
-impl Default for RosterViewPanel {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -149,6 +98,8 @@ impl MatchupMainPanel {
         acquisitions_used: u8,
         acquisitions_limit: u8,
         registry: Option<&StatRegistry>,
+        my_team_name: &str,
+        opp_team_name: &str,
         focused: bool,
     ) {
         let current_day = scoring_period_days.get(selected_day);
@@ -174,11 +125,12 @@ impl MatchupMainPanel {
                 focused,
             ),
             MatchupTab::MyRoster => {
-                self.my_roster_panel.view(frame, area, "My Roster", focused);
+                self.my_roster_panel
+                    .view(frame, area, my_team_name, scoring_period_days, focused);
             }
             MatchupTab::OppRoster => {
                 self.opp_roster_panel
-                    .view(frame, area, "Opponent Roster", focused);
+                    .view(frame, area, opp_team_name, scoring_period_days, focused);
             }
         }
     }
@@ -197,6 +149,7 @@ impl Default for MatchupMainPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::scroll::ScrollDirection;
 
     #[test]
     fn new_starts_on_daily_stats_tab() {
@@ -247,7 +200,7 @@ mod tests {
         let panel = MatchupMainPanel::new();
         terminal
             .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &[], 0, 0, 7, 0, 5, None, false)
+                panel.view(frame, frame.area(), &[], &[], 0, 0, 7, 0, 5, None, "My Team", "Opp Team", false)
             })
             .unwrap();
     }
@@ -261,7 +214,7 @@ mod tests {
         let days = vec![day];
         terminal
             .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &days, 0, 0, 7, 0, 5, None, false)
+                panel.view(frame, frame.area(), &[], &days, 0, 0, 7, 0, 5, None, "My Team", "Opp Team", false)
             })
             .unwrap();
     }
@@ -274,7 +227,7 @@ mod tests {
         panel.active_tab = MatchupTab::Analytics;
         terminal
             .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &[], 0, 0, 7, 0, 5, None, false)
+                panel.view(frame, frame.area(), &[], &[], 0, 0, 7, 0, 5, None, "My Team", "Opp Team", false)
             })
             .unwrap();
     }
@@ -287,7 +240,7 @@ mod tests {
         panel.active_tab = MatchupTab::MyRoster;
         terminal
             .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &[], 0, 0, 7, 0, 5, None, false)
+                panel.view(frame, frame.area(), &[], &[], 0, 0, 7, 0, 5, None, "My Team", "Opp Team", false)
             })
             .unwrap();
     }
@@ -300,7 +253,7 @@ mod tests {
         panel.active_tab = MatchupTab::OppRoster;
         terminal
             .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &[], 0, 0, 7, 0, 5, None, false)
+                panel.view(frame, frame.area(), &[], &[], 0, 0, 7, 0, 5, None, "My Team", "Opp Team", false)
             })
             .unwrap();
     }
