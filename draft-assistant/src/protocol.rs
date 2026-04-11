@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::draft::pick::DraftPick;
 use crate::draft::roster::RosterSlot;
 use crate::llm::provider::LlmProvider;
+use crate::matchup::MatchupSnapshot;
 use crate::onboarding::OnboardingStep;
 use crate::valuation::scarcity::ScarcityEntry;
 use crate::stats::ProjectionData;
@@ -52,6 +53,13 @@ pub enum ExtensionMessage {
     PlayerProjections {
         timestamp: u64,
         payload: EspnProjectionsPayload,
+    },
+
+    /// Matchup state snapshot from the ESPN matchup page.
+    #[serde(rename = "MATCHUP_STATE")]
+    MatchupState {
+        timestamp: u64,
+        payload: MatchupStatePayload,
     },
 }
 
@@ -157,6 +165,70 @@ pub struct TeamBudgetData {
 #[serde(rename_all = "camelCase")]
 pub struct HeartbeatPayload {
     pub timestamp: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Matchup state payload (from ESPN matchup page)
+// ---------------------------------------------------------------------------
+
+/// Matchup state scraped from the ESPN matchup page by the extension.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MatchupStatePayload {
+    pub matchup_period: u8,
+    pub start_date: String,
+    pub end_date: String,
+    pub selected_day: String,
+    pub my_team: MatchupTeamPayload,
+    pub opp_team: MatchupTeamPayload,
+    pub categories: Vec<MatchupCategoryPayload>,
+    pub batting: MatchupSectionPayload,
+    pub pitching: MatchupSectionPayload,
+}
+
+/// A team's info within the matchup WebSocket message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MatchupTeamPayload {
+    pub name: String,
+    /// Season record as "W-L-T" string (e.g. "0-0-0").
+    pub record: String,
+    /// Category score within this matchup as "W-L-T" string (e.g. "2-3-7").
+    pub matchup_score: String,
+}
+
+/// A single category's values from the matchup WebSocket message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MatchupCategoryPayload {
+    pub stat_id: u16,
+    pub abbrev: String,
+    pub my_value: f64,
+    pub opp_value: f64,
+    pub lower_is_better: bool,
+}
+
+/// Batting or pitching section of the matchup WebSocket message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MatchupSectionPayload {
+    pub headers: Vec<String>,
+    pub players: Vec<MatchupPlayerPayload>,
+    #[serde(default)]
+    pub totals: Option<Vec<Option<f64>>>,
+}
+
+/// A single player row in the matchup batting/pitching section.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MatchupPlayerPayload {
+    pub slot: String,
+    pub name: String,
+    pub team: String,
+    pub positions: Vec<String>,
+    pub opponent: Option<String>,
+    pub status: Option<String>,
+    pub stats: Vec<Option<f64>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -363,6 +435,8 @@ pub enum AppMode {
     Onboarding(OnboardingStep),
     /// Main draft dashboard (the default operational mode).
     Draft,
+    /// Weekly head-to-head matchup view.
+    Matchup,
     /// Settings screen (accessible from draft mode).
     Settings(SettingsSection),
 }
@@ -566,6 +640,8 @@ pub enum UiUpdate {
     OnboardingUpdate(OnboardingUpdate),
     /// The app mode has changed (e.g. onboarding -> draft).
     ModeChanged(AppMode),
+    /// Full matchup state snapshot for the matchup screen.
+    MatchupSnapshot(Box<MatchupSnapshot>),
 }
 
 /// WebSocket connection status.
@@ -1516,5 +1592,132 @@ mod tests {
         let pd = ProjectionData::from(&proj);
         assert_eq!(pd.get("k9"), None);
         assert_eq!(pd.get_or_zero("k9"), 0.0);
+    }
+
+    // -- MatchupState deserialization --
+
+    #[test]
+    fn deserialize_matchup_state_payload() {
+        let json = r#"{
+            "type": "MATCHUP_STATE",
+            "timestamp": 1711500000,
+            "payload": {
+                "matchupPeriod": 1,
+                "startDate": "2026-03-25",
+                "endDate": "2026-04-05",
+                "selectedDay": "2026-03-26",
+                "myTeam": {
+                    "name": "Bob Dole Experience",
+                    "record": "0-0-0",
+                    "matchupScore": "2-3-7"
+                },
+                "oppTeam": {
+                    "name": "Certified! Smokified!",
+                    "record": "0-0-0",
+                    "matchupScore": "3-2-7"
+                },
+                "categories": [
+                    { "statId": 20, "abbrev": "R", "myValue": 5.0, "oppValue": 3.0, "lowerIsBetter": false },
+                    { "statId": 5, "abbrev": "HR", "myValue": 2.0, "oppValue": 4.0, "lowerIsBetter": false },
+                    { "statId": 47, "abbrev": "ERA", "myValue": 3.45, "oppValue": 4.12, "lowerIsBetter": true }
+                ],
+                "batting": {
+                    "headers": ["AB", "H", "R", "HR", "RBI", "BB", "SB", "AVG"],
+                    "players": [
+                        {
+                            "slot": "C",
+                            "name": "Ben Rice",
+                            "team": "NYY",
+                            "positions": ["1B", "C", "DH"],
+                            "opponent": "@BOS",
+                            "status": null,
+                            "stats": [4.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.250]
+                        }
+                    ],
+                    "totals": [29.0, 8.0, 5.0, 2.0, 6.0, 5.0, 1.0, 0.276]
+                },
+                "pitching": {
+                    "headers": ["IP", "H", "ER", "BB", "K", "W", "SV", "HD"],
+                    "players": [],
+                    "totals": null
+                }
+            }
+        }"#;
+
+        let msg: ExtensionMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ExtensionMessage::MatchupState { timestamp, payload } => {
+                assert_eq!(timestamp, 1711500000);
+                assert_eq!(payload.matchup_period, 1);
+                assert_eq!(payload.start_date, "2026-03-25");
+                assert_eq!(payload.end_date, "2026-04-05");
+                assert_eq!(payload.selected_day, "2026-03-26");
+                assert_eq!(payload.my_team.name, "Bob Dole Experience");
+                assert_eq!(payload.my_team.record, "0-0-0");
+                assert_eq!(payload.my_team.matchup_score, "2-3-7");
+                assert_eq!(payload.opp_team.name, "Certified! Smokified!");
+                assert_eq!(payload.opp_team.matchup_score, "3-2-7");
+                assert_eq!(payload.categories.len(), 3);
+                assert_eq!(payload.categories[0].stat_id, 20);
+                assert_eq!(payload.categories[0].abbrev, "R");
+                assert_eq!(payload.categories[0].my_value, 5.0);
+                assert_eq!(payload.categories[0].opp_value, 3.0);
+                assert!(!payload.categories[0].lower_is_better);
+                assert!(payload.categories[2].lower_is_better);
+                assert_eq!(payload.batting.headers.len(), 8);
+                assert_eq!(payload.batting.players.len(), 1);
+                assert_eq!(payload.batting.players[0].name, "Ben Rice");
+                assert_eq!(payload.batting.players[0].positions, vec!["1B", "C", "DH"]);
+                assert_eq!(payload.batting.players[0].opponent, Some("@BOS".to_string()));
+                assert_eq!(payload.batting.players[0].status, None);
+                assert_eq!(payload.batting.totals.as_ref().unwrap().len(), 8);
+                assert_eq!(payload.pitching.players.len(), 0);
+                assert!(payload.pitching.totals.is_none());
+            }
+            other => panic!("Expected MatchupState, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn round_trip_matchup_state() {
+        let msg = ExtensionMessage::MatchupState {
+            timestamp: 1711500000,
+            payload: MatchupStatePayload {
+                matchup_period: 2,
+                start_date: "2026-04-06".to_string(),
+                end_date: "2026-04-12".to_string(),
+                selected_day: "2026-04-07".to_string(),
+                my_team: MatchupTeamPayload {
+                    name: "Team A".to_string(),
+                    record: "1-0-0".to_string(),
+                    matchup_score: "7-5-0".to_string(),
+                },
+                opp_team: MatchupTeamPayload {
+                    name: "Team B".to_string(),
+                    record: "0-1-0".to_string(),
+                    matchup_score: "5-7-0".to_string(),
+                },
+                categories: vec![MatchupCategoryPayload {
+                    stat_id: 20,
+                    abbrev: "R".to_string(),
+                    my_value: 10.0,
+                    opp_value: 8.0,
+                    lower_is_better: false,
+                }],
+                batting: MatchupSectionPayload {
+                    headers: vec!["AB".to_string(), "H".to_string()],
+                    players: vec![],
+                    totals: None,
+                },
+                pitching: MatchupSectionPayload {
+                    headers: vec!["IP".to_string(), "K".to_string()],
+                    players: vec![],
+                    totals: None,
+                },
+            },
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: ExtensionMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(msg, parsed);
     }
 }

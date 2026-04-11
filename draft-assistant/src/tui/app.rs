@@ -219,6 +219,9 @@ impl App {
                 }
                 self.app_mode = mode;
             }
+            UiUpdate::MatchupSnapshot(_snapshot) => {
+                // Matchup screen rendering will be implemented in a later task.
+            }
         }
     }
 
@@ -293,7 +296,7 @@ impl App {
             AppMode::Settings(_section) => {
                 settings::render(frame, self);
             }
-            AppMode::Draft => {
+            AppMode::Draft | AppMode::Matchup => {
                 if self.draft_screen.connection_status == ConnectionStatus::Disconnected {
                     super::home::render(frame, self);
                 } else {
@@ -405,7 +408,7 @@ impl App {
         .build();
 
         let mode_sub = match &self.app_mode {
-            AppMode::Draft => {
+            AppMode::Draft | AppMode::Matchup => {
                 if self.draft_screen.connection_status == ConnectionStatus::Disconnected {
                     super::home::subscription(kb).map(AppMessage::Home)
                 } else {
