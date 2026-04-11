@@ -159,6 +159,7 @@ class TestFirefoxExtensionRoot(BuildTestCase):
         self.assertTrue((EXTENSION_DIR / "browser-polyfill.js").exists())
         self.assertTrue((EXTENSION_DIR / "background-core.js").exists())
         self.assertTrue((EXTENSION_DIR / "content_scripts" / "espn.js").exists())
+        self.assertTrue((EXTENSION_DIR / "content_scripts" / "espn-matchup.js").exists())
 
     def test_manifest_is_mv2(self):
         manifest = json.loads((EXTENSION_DIR / "manifest.json").read_text())
@@ -183,6 +184,7 @@ class TestAssembleFirefoxDist(BuildTestCase):
         self.assertTrue((dist / "browser-polyfill.js").exists())
         self.assertTrue((dist / "background-core.js").exists())
         self.assertTrue((dist / "content_scripts" / "espn.js").exists())
+        self.assertTrue((dist / "content_scripts" / "espn-matchup.js").exists())
 
     def test_copies_firefox_specific_files(self):
         dist = build.assemble_firefox_dist()
@@ -221,6 +223,7 @@ class TestAssembleChromeDist(BuildTestCase):
         self.assertTrue((dist / "browser-polyfill.js").exists())
         self.assertTrue((dist / "background-core.js").exists())
         self.assertTrue((dist / "content_scripts" / "espn.js").exists())
+        self.assertTrue((dist / "content_scripts" / "espn-matchup.js").exists())
 
     def test_copies_chrome_specific_files(self):
         dist = build.assemble_chrome_dist()
@@ -271,6 +274,13 @@ class TestBothBrowsers(BuildTestCase):
         self.assertEqual(
             (EXTENSION_DIR / "content_scripts" / "espn.js").read_text(),
             (cr_dist / "content_scripts" / "espn.js").read_text(),
+        )
+
+    def test_chrome_dist_shares_matchup_script_with_root(self):
+        cr_dist = build.assemble_chrome_dist()
+        self.assertEqual(
+            (EXTENSION_DIR / "content_scripts" / "espn-matchup.js").read_text(),
+            (cr_dist / "content_scripts" / "espn-matchup.js").read_text(),
         )
 
     def test_both_targets_have_same_version(self):

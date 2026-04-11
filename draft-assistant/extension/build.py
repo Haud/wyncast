@@ -31,6 +31,7 @@ SHARED_FILES = [
     ("browser-polyfill.js", "browser-polyfill.js"),
     ("background-core.js", "background-core.js"),
     ("content_scripts/espn.js", "content_scripts/espn.js"),
+    ("content_scripts/espn-matchup.js", "content_scripts/espn-matchup.js"),
 ]
 
 # Firefox files live at extension root (no separate directory needed).
