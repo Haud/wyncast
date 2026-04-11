@@ -15,6 +15,7 @@ const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 const ESPN_DRAFT_HOSTNAME = 'fantasy.espn.com';
 const ESPN_DRAFT_PATH_PREFIX = '/baseball/draft';
+const ESPN_BOXSCORE_PATH_PREFIX = '/baseball/boxscore';
 
 const LOG_PREFIX = '[WyndhamDraftSync:BG]';
 
@@ -31,6 +32,28 @@ function isEspnDraftUrl(urlStr) {
   } catch (e) {
     return false;
   }
+}
+
+/**
+ * Check if a URL is an ESPN fantasy baseball matchup/boxscore page.
+ */
+function isEspnBoxscoreUrl(urlStr) {
+  if (!urlStr) return false;
+  try {
+    const parsed = new URL(urlStr);
+    return parsed.hostname === ESPN_DRAFT_HOSTNAME &&
+           parsed.pathname.startsWith(ESPN_BOXSCORE_PATH_PREFIX);
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * Check if a URL is any ESPN fantasy baseball page we handle
+ * (draft or matchup/boxscore).
+ */
+function isEspnFantasyUrl(urlStr) {
+  return isEspnDraftUrl(urlStr) || isEspnBoxscoreUrl(urlStr);
 }
 
 // ---------------------------------------------------------------------------
@@ -310,7 +333,7 @@ function initBackgroundCore(config) {
     // Track content script tabs and connect lazily on first message
     if (tabId !== null) {
       const tabUrl = sender.tab ? sender.tab.url : '';
-      if (!isEspnDraftUrl(tabUrl)) {
+      if (!isEspnFantasyUrl(tabUrl)) {
         return;
       }
       const wasEmpty = activeContentScriptTabs.size === 0;
@@ -355,9 +378,9 @@ function initBackgroundCore(config) {
       return;
     }
     if (changeInfo.status === 'loading' && changeInfo.url &&
-        !isEspnDraftUrl(changeInfo.url)) {
+        !isEspnFantasyUrl(changeInfo.url)) {
       activeContentScriptTabs.delete(tabId);
-      log('Tab', tabId, 'navigated away from draft; active tabs:', activeContentScriptTabs.size);
+      log('Tab', tabId, 'navigated away from ESPN fantasy; active tabs:', activeContentScriptTabs.size);
       if (activeContentScriptTabs.size === 0) {
         disconnect();
       }
