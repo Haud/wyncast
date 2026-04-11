@@ -1,117 +1,18 @@
 // Matchup sidebar: category tracker and limits panels.
 
+pub mod category_tracker;
+pub mod limits;
+
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
+use crate::matchup::CategoryScore;
 use crate::tui::action::Action;
-use crate::tui::scroll::{ScrollDirection, ScrollState};
 use crate::tui::subscription::Subscription;
 use crate::tui::subscription::keybinding::KeybindManager;
 
-// ---------------------------------------------------------------------------
-// Stub panels
-// ---------------------------------------------------------------------------
-
-/// Category tracker panel (stub — will be implemented in a later task).
-pub struct CategoryTrackerPanel {
-    scroll: ScrollState,
-}
-
-/// Message type for the category tracker panel.
-#[derive(Debug, Clone)]
-pub enum CategoryTrackerPanelMessage {
-    Scroll(ScrollDirection),
-}
-
-impl CategoryTrackerPanel {
-    pub fn new() -> Self {
-        Self {
-            scroll: ScrollState::new(),
-        }
-    }
-
-    pub fn update(&mut self, msg: CategoryTrackerPanelMessage) -> Option<Action> {
-        match msg {
-            CategoryTrackerPanelMessage::Scroll(dir) => {
-                self.scroll.scroll(dir, 10);
-                None
-            }
-        }
-    }
-
-    pub fn scroll_offset(&self) -> usize {
-        self.scroll.offset()
-    }
-
-    pub fn view(&self, frame: &mut Frame, area: Rect, _focused: bool) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Category Tracker ")
-            .border_style(Style::default().fg(Color::DarkGray));
-        let text = Paragraph::new(Line::from("Category tracker coming soon..."))
-            .style(Style::default().fg(Color::DarkGray))
-            .block(block);
-        frame.render_widget(text, area);
-    }
-}
-
-impl Default for CategoryTrackerPanel {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Limits panel (stub — will be implemented in a later task).
-pub struct LimitsPanel {
-    scroll: ScrollState,
-}
-
-/// Message type for the limits panel.
-#[derive(Debug, Clone)]
-pub enum LimitsPanelMessage {
-    Scroll(ScrollDirection),
-}
-
-impl LimitsPanel {
-    pub fn new() -> Self {
-        Self {
-            scroll: ScrollState::new(),
-        }
-    }
-
-    pub fn update(&mut self, msg: LimitsPanelMessage) -> Option<Action> {
-        match msg {
-            LimitsPanelMessage::Scroll(dir) => {
-                self.scroll.scroll(dir, 10);
-                None
-            }
-        }
-    }
-
-    pub fn scroll_offset(&self) -> usize {
-        self.scroll.offset()
-    }
-
-    pub fn view(&self, frame: &mut Frame, area: Rect, _focused: bool) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Limits & Resources ")
-            .border_style(Style::default().fg(Color::DarkGray));
-        let text = Paragraph::new(Line::from("Limits info coming soon..."))
-            .style(Style::default().fg(Color::DarkGray))
-            .block(block);
-        frame.render_widget(text, area);
-    }
-}
-
-impl Default for LimitsPanel {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub use category_tracker::{CategoryTrackerPanel, CategoryTrackerPanelMessage};
+pub use limits::{LimitsData, LimitsPanel, LimitsPanelMessage};
 
 // ---------------------------------------------------------------------------
 // MatchupSidebar
@@ -149,17 +50,21 @@ impl MatchupSidebar {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn view(
         &self,
         frame: &mut Frame,
         category_area: Rect,
         limits_area: Rect,
+        category_scores: &[CategoryScore],
+        limits_data: &LimitsData,
         category_focused: bool,
         limits_focused: bool,
     ) {
         self.category_tracker
-            .view(frame, category_area, category_focused);
-        self.limits_panel.view(frame, limits_area, limits_focused);
+            .view(frame, category_area, category_scores, category_focused);
+        self.limits_panel
+            .view(frame, limits_area, limits_data, limits_focused);
     }
 }
 
@@ -176,6 +81,7 @@ impl Default for MatchupSidebar {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::scroll::ScrollDirection;
 
     #[test]
     fn category_tracker_scroll_delegates() {
