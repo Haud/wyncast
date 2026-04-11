@@ -1,15 +1,21 @@
 // Matchup main panel: tab container for daily stats, analytics, and roster views.
 
+pub mod analytics;
+
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
+use crate::matchup::{CategoryScore, ScoringDay};
+use crate::stats::StatRegistry;
 use crate::tui::action::Action;
 use crate::tui::scroll::{ScrollDirection, ScrollState};
 use crate::tui::subscription::Subscription;
 use crate::tui::subscription::keybinding::KeybindManager;
+
+pub use analytics::{MatchupAnalyticsPanel, MatchupAnalyticsPanelMessage};
 
 // ---------------------------------------------------------------------------
 // MatchupTab
@@ -77,54 +83,6 @@ impl Default for DailyStatsPanel {
     }
 }
 
-/// Analytics panel (stub — will be implemented in a later task).
-pub struct MatchupAnalyticsPanel {
-    scroll: ScrollState,
-}
-
-/// Message type for the analytics panel.
-#[derive(Debug, Clone)]
-pub enum MatchupAnalyticsPanelMessage {
-    Scroll(ScrollDirection),
-}
-
-impl MatchupAnalyticsPanel {
-    pub fn new() -> Self {
-        Self {
-            scroll: ScrollState::new(),
-        }
-    }
-
-    pub fn update(&mut self, msg: MatchupAnalyticsPanelMessage) -> Option<Action> {
-        match msg {
-            MatchupAnalyticsPanelMessage::Scroll(dir) => {
-                self.scroll.scroll(dir, 20);
-                None
-            }
-        }
-    }
-
-    pub fn scroll_offset(&self) -> usize {
-        self.scroll.offset()
-    }
-
-    pub fn view(&self, frame: &mut Frame, area: Rect, _focused: bool) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Analytics ")
-            .border_style(Style::default().fg(Color::DarkGray));
-        let text = Paragraph::new(Line::from("Matchup analytics coming soon..."))
-            .style(Style::default().fg(Color::DarkGray))
-            .block(block);
-        frame.render_widget(text, area);
-    }
-}
-
-impl Default for MatchupAnalyticsPanel {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 /// Roster view panel (stub — reused for both My Roster and Opp Roster tabs).
 pub struct RosterViewPanel {
@@ -226,15 +184,46 @@ impl MatchupMainPanel {
         }
     }
 
-    pub fn view(&self, frame: &mut Frame, area: Rect, focused: bool) {
+    /// Render the active tab's content.
+    ///
+    /// Analytics-specific data is passed through for the analytics panel.
+    /// When the analytics tab is not active, these parameters are unused.
+    #[allow(clippy::too_many_arguments)]
+    pub fn view(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        category_scores: &[CategoryScore],
+        scoring_period_days: &[ScoringDay],
+        selected_day: usize,
+        games_started: u8,
+        gs_limit: u8,
+        acquisitions_used: u8,
+        acquisitions_limit: u8,
+        registry: Option<&StatRegistry>,
+        focused: bool,
+    ) {
         match self.active_tab {
             MatchupTab::DailyStats => self.daily_panel.view(frame, area, focused),
-            MatchupTab::Analytics => self.analytics_panel.view(frame, area, focused),
+            MatchupTab::Analytics => self.analytics_panel.view(
+                frame,
+                area,
+                category_scores,
+                scoring_period_days,
+                selected_day,
+                games_started,
+                gs_limit,
+                acquisitions_used,
+                acquisitions_limit,
+                registry,
+                focused,
+            ),
             MatchupTab::MyRoster => {
                 self.my_roster_panel.view(frame, area, "My Roster", focused);
             }
             MatchupTab::OppRoster => {
-                self.opp_roster_panel.view(frame, area, "Opponent Roster", focused);
+                self.opp_roster_panel
+                    .view(frame, area, "Opponent Roster", focused);
             }
         }
     }
@@ -302,7 +291,9 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let panel = MatchupMainPanel::new();
         terminal
-            .draw(|frame| panel.view(frame, frame.area(), false))
+            .draw(|frame| {
+                panel.view(frame, frame.area(), &[], &[], 0, 0, 7, 0, 5, None, false)
+            })
             .unwrap();
     }
 
@@ -313,7 +304,9 @@ mod tests {
         let mut panel = MatchupMainPanel::new();
         panel.active_tab = MatchupTab::Analytics;
         terminal
-            .draw(|frame| panel.view(frame, frame.area(), false))
+            .draw(|frame| {
+                panel.view(frame, frame.area(), &[], &[], 0, 0, 7, 0, 5, None, false)
+            })
             .unwrap();
     }
 
@@ -324,7 +317,9 @@ mod tests {
         let mut panel = MatchupMainPanel::new();
         panel.active_tab = MatchupTab::MyRoster;
         terminal
-            .draw(|frame| panel.view(frame, frame.area(), false))
+            .draw(|frame| {
+                panel.view(frame, frame.area(), &[], &[], 0, 0, 7, 0, 5, None, false)
+            })
             .unwrap();
     }
 
@@ -335,7 +330,9 @@ mod tests {
         let mut panel = MatchupMainPanel::new();
         panel.active_tab = MatchupTab::OppRoster;
         terminal
-            .draw(|frame| panel.view(frame, frame.area(), false))
+            .draw(|frame| {
+                panel.view(frame, frame.area(), &[], &[], 0, 0, 7, 0, 5, None, false)
+            })
             .unwrap();
     }
 }

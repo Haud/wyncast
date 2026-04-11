@@ -210,8 +210,19 @@ impl MatchupScreen {
 
         // Main panel
         let main_focused = self.focused_panel == Some(MatchupFocusPanel::MainPanel);
-        self.main_panel
-            .view(frame, layout.main_panel, main_focused);
+        self.main_panel.view(
+            frame,
+            layout.main_panel,
+            &self.category_scores,
+            &self.scoring_period_days,
+            self.selected_day,
+            self.games_started,
+            self.gs_limit,
+            self.acquisitions_used,
+            self.acquisitions_limit,
+            None, // StatRegistry not available at screen level yet
+            main_focused,
+        );
 
         // Sidebar (only if wide enough)
         if let Some(sidebar_rect) = layout.sidebar {
