@@ -48,6 +48,7 @@ pub struct StatDefinition {
     pub sort_direction: SortDirection,
     pub format_precision: u8,
     pub close_threshold: f64,
+    pub matchup_close_threshold: f64,
     pub computation: StatComputation,
 }
 
@@ -317,6 +318,7 @@ pub fn lookup_stat_definition(abbrev: &str, player_type: PlayerType) -> Option<S
             sort_direction: SortDirection::HigherIsBetter,
             format_precision: 0,
             close_threshold: 2.0,
+            matchup_close_threshold: 5.0,
             computation: StatComputation::Counting {
                 projection_key: "r".into(),
             },
@@ -329,6 +331,7 @@ pub fn lookup_stat_definition(abbrev: &str, player_type: PlayerType) -> Option<S
             sort_direction: SortDirection::HigherIsBetter,
             format_precision: 0,
             close_threshold: 1.0,
+            matchup_close_threshold: 3.0,
             computation: StatComputation::Counting {
                 projection_key: "hr".into(),
             },
@@ -341,6 +344,7 @@ pub fn lookup_stat_definition(abbrev: &str, player_type: PlayerType) -> Option<S
             sort_direction: SortDirection::HigherIsBetter,
             format_precision: 0,
             close_threshold: 2.0,
+            matchup_close_threshold: 5.0,
             computation: StatComputation::Counting {
                 projection_key: "rbi".into(),
             },
@@ -353,6 +357,7 @@ pub fn lookup_stat_definition(abbrev: &str, player_type: PlayerType) -> Option<S
             sort_direction: SortDirection::HigherIsBetter,
             format_precision: 0,
             close_threshold: 2.0,
+            matchup_close_threshold: 5.0,
             computation: StatComputation::Counting {
                 projection_key: "bb".into(),
             },
@@ -365,6 +370,7 @@ pub fn lookup_stat_definition(abbrev: &str, player_type: PlayerType) -> Option<S
             sort_direction: SortDirection::HigherIsBetter,
             format_precision: 0,
             close_threshold: 1.0,
+            matchup_close_threshold: 3.0,
             computation: StatComputation::Counting {
                 projection_key: "sb".into(),
             },
@@ -378,6 +384,7 @@ pub fn lookup_stat_definition(abbrev: &str, player_type: PlayerType) -> Option<S
             sort_direction: SortDirection::HigherIsBetter,
             format_precision: 3,
             close_threshold: 0.005,
+            matchup_close_threshold: 0.020,
             computation: StatComputation::RateStat {
                 volume_key: "ab".into(),
                 rate_key: "avg".into(),
@@ -393,6 +400,7 @@ pub fn lookup_stat_definition(abbrev: &str, player_type: PlayerType) -> Option<S
             sort_direction: SortDirection::HigherIsBetter,
             format_precision: 0,
             close_threshold: 3.0,
+            matchup_close_threshold: 10.0,
             computation: StatComputation::Counting {
                 projection_key: "k".into(),
             },
@@ -405,6 +413,7 @@ pub fn lookup_stat_definition(abbrev: &str, player_type: PlayerType) -> Option<S
             sort_direction: SortDirection::HigherIsBetter,
             format_precision: 0,
             close_threshold: 1.0,
+            matchup_close_threshold: 2.0,
             computation: StatComputation::Counting {
                 projection_key: "w".into(),
             },
@@ -417,6 +426,7 @@ pub fn lookup_stat_definition(abbrev: &str, player_type: PlayerType) -> Option<S
             sort_direction: SortDirection::HigherIsBetter,
             format_precision: 0,
             close_threshold: 1.0,
+            matchup_close_threshold: 2.0,
             computation: StatComputation::Counting {
                 projection_key: "sv".into(),
             },
@@ -429,6 +439,7 @@ pub fn lookup_stat_definition(abbrev: &str, player_type: PlayerType) -> Option<S
             sort_direction: SortDirection::HigherIsBetter,
             format_precision: 0,
             close_threshold: 1.0,
+            matchup_close_threshold: 2.0,
             computation: StatComputation::Counting {
                 projection_key: "hd".into(),
             },
@@ -442,6 +453,7 @@ pub fn lookup_stat_definition(abbrev: &str, player_type: PlayerType) -> Option<S
             sort_direction: SortDirection::LowerIsBetter,
             format_precision: 2,
             close_threshold: 0.10,
+            matchup_close_threshold: 1.00,
             computation: StatComputation::RateStat {
                 volume_key: "ip".into(),
                 rate_key: "era".into(),
@@ -456,6 +468,7 @@ pub fn lookup_stat_definition(abbrev: &str, player_type: PlayerType) -> Option<S
             sort_direction: SortDirection::LowerIsBetter,
             format_precision: 2,
             close_threshold: 0.05,
+            matchup_close_threshold: 0.20,
             computation: StatComputation::RateStat {
                 volume_key: "ip".into(),
                 rate_key: "whip".into(),
@@ -471,6 +484,7 @@ pub fn lookup_stat_definition(abbrev: &str, player_type: PlayerType) -> Option<S
             sort_direction: SortDirection::HigherIsBetter,
             format_precision: 0,
             close_threshold: 3.0,
+            matchup_close_threshold: 3.0,
             computation: StatComputation::Counting {
                 projection_key: "tb".into(),
             },
@@ -483,6 +497,7 @@ pub fn lookup_stat_definition(abbrev: &str, player_type: PlayerType) -> Option<S
             sort_direction: SortDirection::HigherIsBetter,
             format_precision: 0,
             close_threshold: 1.0,
+            matchup_close_threshold: 3.0,
             computation: StatComputation::Counting {
                 projection_key: "xbh".into(),
             },
@@ -495,6 +510,7 @@ pub fn lookup_stat_definition(abbrev: &str, player_type: PlayerType) -> Option<S
             sort_direction: SortDirection::HigherIsBetter,
             format_precision: 0,
             close_threshold: 1.0,
+            matchup_close_threshold: 3.0,
             computation: StatComputation::Counting {
                 projection_key: "hbp".into(),
             },
@@ -508,6 +524,7 @@ pub fn lookup_stat_definition(abbrev: &str, player_type: PlayerType) -> Option<S
             sort_direction: SortDirection::LowerIsBetter,
             format_precision: 0,
             close_threshold: 1.0,
+            matchup_close_threshold: 3.0,
             computation: StatComputation::Counting {
                 projection_key: "gidp".into(),
             },
@@ -521,6 +538,7 @@ pub fn lookup_stat_definition(abbrev: &str, player_type: PlayerType) -> Option<S
             sort_direction: SortDirection::HigherIsBetter,
             format_precision: 3,
             close_threshold: 0.005,
+            matchup_close_threshold: 0.020,
             computation: StatComputation::RateStat {
                 volume_key: "pa".into(),
                 rate_key: "obp".into(),
@@ -535,6 +553,7 @@ pub fn lookup_stat_definition(abbrev: &str, player_type: PlayerType) -> Option<S
             sort_direction: SortDirection::HigherIsBetter,
             format_precision: 3,
             close_threshold: 0.010,
+            matchup_close_threshold: 0.040,
             computation: StatComputation::RateStat {
                 volume_key: "ab".into(),
                 rate_key: "slg".into(),
@@ -550,6 +569,7 @@ pub fn lookup_stat_definition(abbrev: &str, player_type: PlayerType) -> Option<S
             sort_direction: SortDirection::HigherIsBetter,
             format_precision: 3,
             close_threshold: 0.010,
+            matchup_close_threshold: 0.040,
             computation: StatComputation::Counting {
                 projection_key: "ops".into(),
             },
@@ -563,6 +583,7 @@ pub fn lookup_stat_definition(abbrev: &str, player_type: PlayerType) -> Option<S
             sort_direction: SortDirection::HigherIsBetter,
             format_precision: 0,
             close_threshold: 1.0,
+            matchup_close_threshold: 3.0,
             computation: StatComputation::Counting {
                 projection_key: "qs".into(),
             },
@@ -575,6 +596,7 @@ pub fn lookup_stat_definition(abbrev: &str, player_type: PlayerType) -> Option<S
             sort_direction: SortDirection::HigherIsBetter,
             format_precision: 0,
             close_threshold: 1.0,
+            matchup_close_threshold: 3.0,
             computation: StatComputation::Counting {
                 projection_key: "cg".into(),
             },
@@ -587,6 +609,7 @@ pub fn lookup_stat_definition(abbrev: &str, player_type: PlayerType) -> Option<S
             sort_direction: SortDirection::HigherIsBetter,
             format_precision: 0,
             close_threshold: 1.0,
+            matchup_close_threshold: 3.0,
             computation: StatComputation::Counting {
                 projection_key: "sho".into(),
             },
@@ -600,6 +623,7 @@ pub fn lookup_stat_definition(abbrev: &str, player_type: PlayerType) -> Option<S
             sort_direction: SortDirection::LowerIsBetter,
             format_precision: 0,
             close_threshold: 1.0,
+            matchup_close_threshold: 3.0,
             computation: StatComputation::Counting {
                 projection_key: "l".into(),
             },
@@ -612,6 +636,7 @@ pub fn lookup_stat_definition(abbrev: &str, player_type: PlayerType) -> Option<S
             sort_direction: SortDirection::LowerIsBetter,
             format_precision: 0,
             close_threshold: 1.0,
+            matchup_close_threshold: 3.0,
             computation: StatComputation::Counting {
                 projection_key: "bsv".into(),
             },
@@ -625,6 +650,7 @@ pub fn lookup_stat_definition(abbrev: &str, player_type: PlayerType) -> Option<S
             sort_direction: SortDirection::HigherIsBetter,
             format_precision: 2,
             close_threshold: 0.25,
+            matchup_close_threshold: 1.00,
             computation: StatComputation::Counting {
                 projection_key: "k9".into(),
             },
@@ -637,6 +663,7 @@ pub fn lookup_stat_definition(abbrev: &str, player_type: PlayerType) -> Option<S
             sort_direction: SortDirection::HigherIsBetter,
             format_precision: 2,
             close_threshold: 0.25,
+            matchup_close_threshold: 1.00,
             computation: StatComputation::Counting {
                 projection_key: "kbb".into(),
             },
@@ -649,6 +676,7 @@ pub fn lookup_stat_definition(abbrev: &str, player_type: PlayerType) -> Option<S
             sort_direction: SortDirection::HigherIsBetter,
             format_precision: 0,
             close_threshold: 1.0,
+            matchup_close_threshold: 3.0,
             computation: StatComputation::Counting {
                 projection_key: "nsv".into(),
             },
@@ -1064,6 +1092,36 @@ mod tests {
             StatComputation::RateStat { ref volume_key, ref rate_key, divisor }
                 if volume_key == "ab" && rate_key == "slg" && (divisor - 1.0).abs() < 1e-10
         ));
+    }
+
+    #[test]
+    fn matchup_close_thresholds_are_set() {
+        let reg = default_registry();
+        for stat in reg.all_stats() {
+            assert!(
+                stat.matchup_close_threshold > stat.close_threshold,
+                "{}: matchup_close_threshold ({}) should be > close_threshold ({})",
+                stat.abbrev,
+                stat.matchup_close_threshold,
+                stat.close_threshold,
+            );
+        }
+    }
+
+    #[test]
+    fn matchup_close_threshold_for_rate_stats() {
+        let era = lookup_stat_definition("ERA", PlayerType::Pitcher).unwrap();
+        assert!(
+            (era.matchup_close_threshold - 1.00).abs() < 1e-10,
+            "ERA matchup_close_threshold should be 1.00, got {}",
+            era.matchup_close_threshold,
+        );
+        let whip = lookup_stat_definition("WHIP", PlayerType::Pitcher).unwrap();
+        assert!(
+            (whip.matchup_close_threshold - 0.20).abs() < 1e-10,
+            "WHIP matchup_close_threshold should be 0.20, got {}",
+            whip.matchup_close_threshold,
+        );
     }
 
     #[test]
