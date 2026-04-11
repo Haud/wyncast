@@ -43,6 +43,8 @@ pub struct App {
     pub strategy_setup: StrategySetupState,
     pub settings_tab: SettingsSection,
     pub confirm_exit_settings: ConfirmDialog,
+    /// Latest matchup snapshot from the backend.
+    pub matchup_snapshot: Option<crate::matchup::MatchupSnapshot>,
     /// Stable ID for the global Ctrl+C subscription (never changes).
     sub_id_global: SubscriptionId,
     /// Stable ID for the 500ms timer subscription (never changes).
@@ -62,6 +64,7 @@ impl App {
             strategy_setup: StrategySetupState::default(),
             settings_tab: SettingsSection::LlmConfig,
             confirm_exit_settings: ConfirmDialog::unsaved_changes(),
+            matchup_snapshot: None,
             sub_id_global: SubscriptionId::unique(),
             sub_id_tick: SubscriptionId::unique(),
             tick_count: 0,
@@ -219,8 +222,8 @@ impl App {
                 }
                 self.app_mode = mode;
             }
-            UiUpdate::MatchupSnapshot(_snapshot) => {
-                // Matchup screen rendering will be implemented in a later task.
+            UiUpdate::MatchupSnapshot(snapshot) => {
+                self.matchup_snapshot = Some(*snapshot);
             }
         }
     }
