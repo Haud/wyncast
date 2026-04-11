@@ -11,6 +11,7 @@ pub mod draft;
 pub mod home;
 pub mod layout;
 pub mod llm_stream;
+pub mod matchup;
 pub mod onboarding;
 pub mod scroll;
 pub mod settings;

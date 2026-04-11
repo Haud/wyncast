@@ -26,6 +26,7 @@ use super::draft::sidebar::plan::PlanPanelMessage;
 use super::draft::{DraftScreen, DraftScreenMessage};
 use super::home::HomeMessage;
 use super::llm_stream::LlmStreamMessage;
+use super::matchup::{MatchupScreen, MatchupScreenMessage};
 use super::onboarding::{self, OnboardingMessage};
 use super::settings::{self, SettingsMessage};
 use super::{BudgetStatus, LlmSetupState, StrategySetupState, TeamSummary};
@@ -38,6 +39,7 @@ use crate::tui::subscription::keybinding::KeybindHint;
 pub struct App {
     pub app_mode: AppMode,
     pub draft_screen: DraftScreen,
+    pub matchup_screen: MatchupScreen,
     pub active_keybinds: Vec<KeybindHint>,
     pub llm_setup: LlmSetupState,
     pub strategy_setup: StrategySetupState,
@@ -59,6 +61,7 @@ impl App {
         App {
             app_mode: initial_mode,
             draft_screen: DraftScreen::new(),
+            matchup_screen: MatchupScreen::new(),
             active_keybinds: Vec::new(),
             llm_setup: LlmSetupState::default(),
             strategy_setup: StrategySetupState::default(),
@@ -200,6 +203,10 @@ impl App {
                     }
                 }
             }
+            UiUpdate::MatchupSnapshot(snapshot) => {
+                self.matchup_screen.apply_snapshot(&snapshot);
+                self.matchup_snapshot = Some(*snapshot);
+            }
             UiUpdate::ModeChanged(mode) => {
                 self.confirm_exit_settings.open = false;
                 if let AppMode::Settings(section) = &mode {
@@ -221,9 +228,6 @@ impl App {
                     self.llm_setup.in_settings_mode = false;
                 }
                 self.app_mode = mode;
-            }
-            UiUpdate::MatchupSnapshot(snapshot) => {
-                self.matchup_snapshot = Some(*snapshot);
             }
         }
     }
@@ -299,12 +303,15 @@ impl App {
             AppMode::Settings(_section) => {
                 settings::render(frame, self);
             }
-            AppMode::Draft | AppMode::Matchup => {
+            AppMode::Draft => {
                 if self.draft_screen.connection_status == ConnectionStatus::Disconnected {
                     super::home::render(frame, self);
                 } else {
                     self.draft_screen.view(frame, &self.active_keybinds);
                 }
+            }
+            AppMode::Matchup => {
+                self.matchup_screen.view(frame, &self.active_keybinds);
             }
         }
     }
@@ -327,6 +334,8 @@ pub enum AppMessage {
     Quit,
     /// Delegate a message to the draft screen.
     Draft(DraftScreenMessage),
+    /// Delegate a message to the matchup screen.
+    Matchup(MatchupScreenMessage),
     /// Delegate a message to the home screen (draft mode, disconnected).
     Home(HomeMessage),
     /// Delegate a message to the settings screen.
@@ -349,6 +358,7 @@ impl App {
         match msg {
             AppMessage::Quit => Some(Action::Quit),
             AppMessage::Draft(m) => self.draft_screen.update(m),
+            AppMessage::Matchup(m) => self.matchup_screen.update(m),
             AppMessage::Home(m) => match m {
                 HomeMessage::OpenSettings => Some(Action::Command(UserCommand::OpenSettings)),
                 HomeMessage::Quit => Some(Action::Quit),
@@ -411,7 +421,7 @@ impl App {
         .build();
 
         let mode_sub = match &self.app_mode {
-            AppMode::Draft | AppMode::Matchup => {
+            AppMode::Draft => {
                 if self.draft_screen.connection_status == ConnectionStatus::Disconnected {
                     super::home::subscription(kb).map(AppMessage::Home)
                 } else {
@@ -419,6 +429,11 @@ impl App {
                         .subscription(kb)
                         .map(AppMessage::Draft)
                 }
+            }
+            AppMode::Matchup => {
+                self.matchup_screen
+                    .subscription(kb)
+                    .map(AppMessage::Matchup)
             }
             AppMode::Settings(_) => settings::subscription(
                 self.settings_tab,
