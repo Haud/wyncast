@@ -21,30 +21,22 @@ use crate::tui::widgets::focused_border_style;
 const PAGE_SIZE: usize = 20;
 
 // ---------------------------------------------------------------------------
-// Batting stat indices within DailyPlayerRow.stats
+// Dynamic stat header lookup
 // ---------------------------------------------------------------------------
-// The extension scrapes batting tables with columns: AB, H, R, HR, RBI, BB, SB, AVG
-const BAT_AB: usize = 0;
-const BAT_H: usize = 1;
-const BAT_R: usize = 2;
-const BAT_HR: usize = 3;
-const BAT_RBI: usize = 4;
-const BAT_BB: usize = 5;
-const BAT_SB: usize = 6;
-// BAT_AVG at index 7 is ignored; we recompute from H/AB.
 
-// ---------------------------------------------------------------------------
-// Pitching stat indices within DailyPlayerRow.stats
-// ---------------------------------------------------------------------------
-// The extension scrapes pitching tables with columns: IP, H, ER, BB, K, W, SV, HD
-const PIT_IP: usize = 0;
-const PIT_H: usize = 1;
-const PIT_ER: usize = 2;
-const PIT_BB: usize = 3;
-const PIT_K: usize = 4;
-const PIT_W: usize = 5;
-const PIT_SV: usize = 6;
-const PIT_HD: usize = 7;
+/// Resolves a stat name to its index within a header list sent by the extension.
+/// Returns `None` if the stat is not present in the headers (case-insensitive).
+fn find_header_index(headers: &[String], name: &str) -> Option<usize> {
+    headers
+        .iter()
+        .position(|h| h.eq_ignore_ascii_case(name))
+}
+
+/// Look up a stat value from a player's stats vec using the header-derived index.
+fn stat_by_header(stats: &[Option<f64>], headers: &[String], name: &str) -> Option<f64> {
+    find_header_index(headers, name)
+        .and_then(|idx| stats.get(idx).copied().flatten())
+}
 
 // ---------------------------------------------------------------------------
 // Aggregated player data
@@ -130,14 +122,15 @@ pub struct AggregatedRoster {
 ///
 /// Players are identified by name. The first occurrence sets slot/team/positions.
 /// Counting stats are summed. GP counts days where the player had an opponent
-/// and was not on the bench.
+/// and was not on the bench. Stat indices are resolved dynamically from the
+/// `batting_stat_columns` sent by the extension.
 pub fn aggregate_batters(days: &[ScoringDay]) -> Vec<AggregatedBatter> {
-    // BTreeMap preserves insertion order when iterated (sorted by key).
-    // We use a Vec to track insertion order instead.
     let mut order: Vec<String> = Vec::new();
     let mut map: BTreeMap<String, AggregatedBatter> = BTreeMap::new();
 
     for day in days {
+        let headers = &day.batting_stat_columns;
+
         for row in &day.batting_rows {
             let entry = map.entry(row.player_name.clone()).or_insert_with(|| {
                 order.push(row.player_name.clone());
@@ -166,28 +159,29 @@ pub fn aggregate_batters(days: &[ScoringDay]) -> Vec<AggregatedBatter> {
                 entry.gp += 1;
             }
 
-            // Sum counting stats (only if they have values)
-            if let Some(Some(v)) = row.stats.get(BAT_AB) {
+            // Sum counting stats using header-driven indices
+            if let Some(v) = stat_by_header(&row.stats, headers, "AB") {
                 entry.ab += v;
             }
-            if let Some(Some(v)) = row.stats.get(BAT_H) {
+            if let Some(v) = stat_by_header(&row.stats, headers, "H") {
                 entry.h += v;
             }
-            if let Some(Some(v)) = row.stats.get(BAT_R) {
+            if let Some(v) = stat_by_header(&row.stats, headers, "R") {
                 entry.r += v;
             }
-            if let Some(Some(v)) = row.stats.get(BAT_HR) {
+            if let Some(v) = stat_by_header(&row.stats, headers, "HR") {
                 entry.hr += v;
             }
-            if let Some(Some(v)) = row.stats.get(BAT_RBI) {
+            if let Some(v) = stat_by_header(&row.stats, headers, "RBI") {
                 entry.rbi += v;
             }
-            if let Some(Some(v)) = row.stats.get(BAT_BB) {
+            if let Some(v) = stat_by_header(&row.stats, headers, "BB") {
                 entry.bb += v;
             }
-            if let Some(Some(v)) = row.stats.get(BAT_SB) {
+            if let Some(v) = stat_by_header(&row.stats, headers, "SB") {
                 entry.sb += v;
             }
+            // AVG is ignored; we recompute from H/AB.
         }
     }
 
@@ -201,11 +195,15 @@ pub fn aggregate_batters(days: &[ScoringDay]) -> Vec<AggregatedBatter> {
 /// Aggregate pitching stats across all scoring days.
 ///
 /// GS counts days where the pitcher's slot was "SP" and they had a game.
+/// Stat indices are resolved dynamically from the `pitching_stat_columns`
+/// sent by the extension.
 pub fn aggregate_pitchers(days: &[ScoringDay]) -> Vec<AggregatedPitcher> {
     let mut order: Vec<String> = Vec::new();
     let mut map: BTreeMap<String, AggregatedPitcher> = BTreeMap::new();
 
     for day in days {
+        let headers = &day.pitching_stat_columns;
+
         for row in &day.pitching_rows {
             let entry = map.entry(row.player_name.clone()).or_insert_with(|| {
                 order.push(row.player_name.clone());
@@ -236,29 +234,29 @@ pub fn aggregate_pitchers(days: &[ScoringDay]) -> Vec<AggregatedPitcher> {
                 entry.gs += 1;
             }
 
-            // Sum counting stats
-            if let Some(Some(v)) = row.stats.get(PIT_IP) {
+            // Sum counting stats using header-driven indices
+            if let Some(v) = stat_by_header(&row.stats, headers, "IP") {
                 entry.ip += v;
             }
-            if let Some(Some(v)) = row.stats.get(PIT_H) {
+            if let Some(v) = stat_by_header(&row.stats, headers, "H") {
                 entry.h += v;
             }
-            if let Some(Some(v)) = row.stats.get(PIT_ER) {
+            if let Some(v) = stat_by_header(&row.stats, headers, "ER") {
                 entry.er += v;
             }
-            if let Some(Some(v)) = row.stats.get(PIT_BB) {
+            if let Some(v) = stat_by_header(&row.stats, headers, "BB") {
                 entry.bb += v;
             }
-            if let Some(Some(v)) = row.stats.get(PIT_K) {
+            if let Some(v) = stat_by_header(&row.stats, headers, "K") {
                 entry.k += v;
             }
-            if let Some(Some(v)) = row.stats.get(PIT_W) {
+            if let Some(v) = stat_by_header(&row.stats, headers, "W") {
                 entry.w += v;
             }
-            if let Some(Some(v)) = row.stats.get(PIT_SV) {
+            if let Some(v) = stat_by_header(&row.stats, headers, "SV") {
                 entry.sv += v;
             }
-            if let Some(Some(v)) = row.stats.get(PIT_HD) {
+            if let Some(v) = stat_by_header(&row.stats, headers, "HD") {
                 entry.hd += v;
             }
         }
@@ -704,6 +702,20 @@ mod tests {
         }
     }
 
+    fn batting_headers() -> Vec<String> {
+        ["AB", "H", "R", "HR", "RBI", "BB", "SB", "AVG"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    fn pitching_headers() -> Vec<String> {
+        ["IP", "H", "ER", "BB", "K", "W", "SV", "HD"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
     fn make_day(
         label: &str,
         batting: Vec<DailyPlayerRow>,
@@ -712,6 +724,8 @@ mod tests {
         ScoringDay {
             date: "2026-03-26".to_string(),
             label: label.to_string(),
+            batting_stat_columns: batting_headers(),
+            pitching_stat_columns: pitching_headers(),
             batting_rows: batting,
             pitching_rows: pitching,
             batting_totals: None,
