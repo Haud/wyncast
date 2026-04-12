@@ -13,47 +13,25 @@ const WS_URL = 'ws://localhost:9001';
 const HEARTBEAT_INTERVAL_MS = 5000;
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
-const ESPN_DRAFT_HOSTNAME = 'fantasy.espn.com';
-const ESPN_DRAFT_PATH_PREFIX = '/baseball/draft';
-const ESPN_BOXSCORE_PATH_PREFIX = '/baseball/boxscore';
+const ESPN_HOSTNAME = 'fantasy.espn.com';
+const ESPN_BASEBALL_PATH_PREFIX = '/baseball/';
 
 const LOG_PREFIX = '[WyndhamDraftSync:BG]';
 
 /**
- * Check if a URL is an ESPN fantasy baseball draft page.
- * Uses proper URL parsing to prevent substring spoofing.
+ * Check if a URL is an ESPN fantasy baseball page that we handle.
+ * Matches any fantasy.espn.com/baseball/* path — content scripts
+ * control which pages actually inject, so this is intentionally broad.
  */
-function isEspnDraftUrl(urlStr) {
+function isEspnAppUrl(urlStr) {
   if (!urlStr) return false;
   try {
     const parsed = new URL(urlStr);
-    return parsed.hostname === ESPN_DRAFT_HOSTNAME &&
-           parsed.pathname.startsWith(ESPN_DRAFT_PATH_PREFIX);
+    return parsed.hostname === ESPN_HOSTNAME &&
+           parsed.pathname.startsWith(ESPN_BASEBALL_PATH_PREFIX);
   } catch (e) {
     return false;
   }
-}
-
-/**
- * Check if a URL is an ESPN fantasy baseball matchup/boxscore page.
- */
-function isEspnBoxscoreUrl(urlStr) {
-  if (!urlStr) return false;
-  try {
-    const parsed = new URL(urlStr);
-    return parsed.hostname === ESPN_DRAFT_HOSTNAME &&
-           parsed.pathname.startsWith(ESPN_BOXSCORE_PATH_PREFIX);
-  } catch (e) {
-    return false;
-  }
-}
-
-/**
- * Check if a URL is any ESPN fantasy baseball page we handle
- * (draft or matchup/boxscore).
- */
-function isEspnFantasyUrl(urlStr) {
-  return isEspnDraftUrl(urlStr) || isEspnBoxscoreUrl(urlStr);
 }
 
 // ---------------------------------------------------------------------------
@@ -65,8 +43,54 @@ let heartbeatTimer = null;
 let reconnectTimer = null;
 let reconnectDelay = RECONNECT_BASE_MS;
 let isConnected = false;
-const activeContentScriptTabs = new Set();
 let intentionalDisconnect = false;
+
+// ---------------------------------------------------------------------------
+// Active tab tracking
+// ---------------------------------------------------------------------------
+// Only messages from the "primary" tab are relayed over the WebSocket.
+// When multiple ESPN tabs are open (e.g. draft + matchup), the most recently
+// active tab wins. Closing the primary tab falls back to the next most recent.
+
+/** @type {Set<number>} All tab IDs that have sent a content-script message. */
+const knownTabs = new Set();
+
+/** @type {number|null} The tab whose messages are currently relayed. */
+let primaryTabId = null;
+
+/**
+ * Make `tabId` the primary active tab. If the primary tab changes, log it.
+ * Returns true if the tab is (now) the primary tab, false if it was already.
+ */
+function setPrimaryTab(tabId) {
+  if (primaryTabId === tabId) return false;
+  const prev = primaryTabId;
+  primaryTabId = tabId;
+  log('Primary tab changed:', prev, '->', tabId);
+  return true;
+}
+
+/**
+ * Remove a tab from tracking. If it was the primary tab, fall back to
+ * another known tab (if any). Returns true if any tabs remain tracked.
+ */
+function removeTab(tabId) {
+  knownTabs.delete(tabId);
+  if (primaryTabId === tabId) {
+    // Fall back to the most recently added remaining tab (Set iteration
+    // order is insertion order; pick the last element).
+    primaryTabId = null;
+    for (const id of knownTabs) {
+      primaryTabId = id;
+    }
+    if (primaryTabId !== null) {
+      log('Primary tab closed; falling back to tab', primaryTabId);
+    } else {
+      log('Primary tab closed; no remaining ESPN tabs');
+    }
+  }
+  return knownTabs.size > 0;
+}
 
 // ---------------------------------------------------------------------------
 // Logging
@@ -157,7 +181,7 @@ function stopHeartbeat() {
  * Schedule a reconnection attempt with exponential backoff.
  */
 function scheduleReconnect(config) {
-  if (activeContentScriptTabs.size === 0) {
+  if (knownTabs.size === 0) {
     log('No active content script tabs; skipping reconnect');
     return;
   }
@@ -178,20 +202,18 @@ function scheduleReconnect(config) {
 }
 
 /**
- * Request a FULL_STATE_SYNC from the active ESPN draft tab content script.
+ * Request a FULL_STATE_SYNC from the primary active tab's content script.
  */
 function requestFullStateSyncFromContentScript(config) {
-  if (activeContentScriptTabs.size === 0) {
-    log('No active content script tabs for FULL_STATE_SYNC request');
+  if (primaryTabId === null) {
+    log('No primary tab for FULL_STATE_SYNC request');
     return;
   }
-  activeContentScriptTabs.forEach((tabId) => {
-    config.sendToContentScript(tabId, {
-      source: 'wyndham-draft-sync-bg',
-      type: 'REQUEST_FULL_STATE_SYNC',
-    }).catch((err) => {
-      log('Could not reach content script on tab', tabId, ':', err.message || err);
-    });
+  config.sendToContentScript(primaryTabId, {
+    source: 'wyndham-draft-sync-bg',
+    type: 'REQUEST_FULL_STATE_SYNC',
+  }).catch((err) => {
+    log('Could not reach content script on tab', primaryTabId, ':', err.message || err);
   });
 }
 
@@ -328,21 +350,40 @@ function initBackgroundCore(config) {
     }
 
     const tabId = sender.tab ? sender.tab.id : null;
-    log('Relaying', message.type, 'from tab', tabId);
 
     // Track content script tabs and connect lazily on first message
     if (tabId !== null) {
       const tabUrl = sender.tab ? sender.tab.url : '';
-      if (!isEspnFantasyUrl(tabUrl)) {
+      if (!isEspnAppUrl(tabUrl)) {
         return;
       }
-      const wasEmpty = activeContentScriptTabs.size === 0;
-      activeContentScriptTabs.add(tabId);
+      const isNew = !knownTabs.has(tabId);
+      const wasEmpty = knownTabs.size === 0;
+      knownTabs.add(tabId);
+
+      // A newly seen tab becomes primary. This means opening a matchup
+      // page while on draft (or vice versa) naturally switches the active
+      // source. Subsequent messages from an already-known tab do NOT
+      // re-claim primary status, preventing ping-pong between tabs.
+      if (isNew) {
+        setPrimaryTab(tabId);
+      }
+
       if (wasEmpty) {
         log('First active content script tab detected; connecting');
         connect(config);
       }
     }
+
+    // Only relay messages from the primary tab. Non-primary tabs are
+    // tracked but their messages are silently dropped.
+    if (tabId !== primaryTabId) {
+      log('Dropping', message.type, 'from non-primary tab', tabId,
+        '(primary is', primaryTabId + ')');
+      return;
+    }
+
+    log('Relaying', message.type, 'from tab', tabId);
 
     // Build a protocol-compliant message with ONLY the fields that
     // protocol.rs ExtensionMessage expects.
@@ -364,24 +405,24 @@ function initBackgroundCore(config) {
 
   // --- Tab lifecycle tracking ---
   config.onTabRemoved((tabId) => {
-    if (activeContentScriptTabs.has(tabId)) {
-      activeContentScriptTabs.delete(tabId);
-      log('Tab', tabId, 'closed; active tabs:', activeContentScriptTabs.size);
-      if (activeContentScriptTabs.size === 0) {
+    if (knownTabs.has(tabId)) {
+      const hasRemaining = removeTab(tabId);
+      log('Tab', tabId, 'closed; active tabs:', knownTabs.size);
+      if (!hasRemaining) {
         disconnect();
       }
     }
   });
 
   config.onTabUpdated((tabId, changeInfo) => {
-    if (!activeContentScriptTabs.has(tabId)) {
+    if (!knownTabs.has(tabId)) {
       return;
     }
     if (changeInfo.status === 'loading' && changeInfo.url &&
-        !isEspnFantasyUrl(changeInfo.url)) {
-      activeContentScriptTabs.delete(tabId);
-      log('Tab', tabId, 'navigated away from ESPN fantasy; active tabs:', activeContentScriptTabs.size);
-      if (activeContentScriptTabs.size === 0) {
+        !isEspnAppUrl(changeInfo.url)) {
+      const hasRemaining = removeTab(tabId);
+      log('Tab', tabId, 'navigated away from ESPN; active tabs:', knownTabs.size);
+      if (!hasRemaining) {
         disconnect();
       }
     }

@@ -103,6 +103,15 @@ pub(super) async fn handle_full_state_sync(
     ext_payload: crate::protocol::StateUpdatePayload,
     ui_tx: &mpsc::Sender<UiUpdate>,
 ) {
+    // Switch back to Draft mode if we were in Matchup mode. This mirrors the
+    // guard in handle_state_update — FULL_STATE_SYNC is a draft message, so
+    // receiving one means the active tab is a draft page.
+    if state.app_mode == AppMode::Matchup {
+        info!("FULL_STATE_SYNC received while in Matchup mode, switching back to Draft");
+        state.app_mode = AppMode::Draft;
+        let _ = ui_tx.send(UiUpdate::ModeChanged(AppMode::Draft)).await;
+    }
+
     info!(
         "Received FULL_STATE_SYNC with {} picks — resetting draft state",
         ext_payload.picks.len()
@@ -1570,5 +1579,37 @@ mod tests {
 
         // No more messages
         assert!(ui_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn full_state_sync_switches_from_matchup_to_draft() {
+        let (ui_tx, mut ui_rx) = mpsc::channel(32);
+        let mut state = create_test_app_state(crate::protocol::AppMode::Matchup);
+
+        let ext_payload = crate::protocol::StateUpdatePayload {
+            picks: vec![],
+            current_nomination: None,
+            my_team_id: None,
+            teams: vec![],
+            pick_count: None,
+            total_picks: None,
+            draft_id: None,
+            source: None,
+            draft_board: None,
+            pick_history: None,
+            team_id_mapping: None,
+        };
+
+        handle_full_state_sync(&mut state, ext_payload, &ui_tx).await;
+
+        assert_eq!(state.app_mode, crate::protocol::AppMode::Draft);
+
+        // First message should be ModeChanged(Draft)
+        let msg = ui_rx.recv().await.unwrap();
+        assert!(
+            matches!(msg, UiUpdate::ModeChanged(crate::protocol::AppMode::Draft)),
+            "expected ModeChanged(Draft), got {:?}",
+            msg
+        );
     }
 }

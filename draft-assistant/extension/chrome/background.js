@@ -162,11 +162,11 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     }).catch(() => {
       // Offscreen document may not exist yet — safe to ignore
     });
-    // If navigated away from draft, remove from known set
+    // If navigated away from ESPN fantasy baseball, remove from known set
     try {
       const parsed = new URL(changeInfo.url);
       if (parsed.hostname !== 'fantasy.espn.com' ||
-          !parsed.pathname.startsWith('/baseball/draft')) {
+          !parsed.pathname.startsWith('/baseball/')) {
         knownDraftTabs.delete(tabId);
       }
     } catch (e) {
