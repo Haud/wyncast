@@ -35,7 +35,8 @@ use main_panel::{
     MatchupMainPanelMessage, MatchupTab, RosterViewPanelMessage,
 };
 use sidebar::{
-    CategoryTrackerPanelMessage, LimitsPanelMessage, MatchupSidebar, MatchupSidebarMessage,
+    CategoryTrackerPanelMessage, LimitsData, LimitsPanelMessage, MatchupSidebar,
+    MatchupSidebarMessage,
 };
 
 // ---------------------------------------------------------------------------
@@ -211,10 +212,27 @@ impl MatchupScreen {
             let sb_layout = build_sidebar_layout(sidebar_rect);
             let cat_focused = self.focused_panel == Some(MatchupFocusPanel::CategoryTracker);
             let limits_focused = self.focused_panel == Some(MatchupFocusPanel::Limits);
+
+            let total_days = self.scoring_period_days.len();
+            let days_remaining = total_days.saturating_sub(self.selected_day + 1);
+            let (games_today, total_active) = self.compute_games_today();
+
+            let limits_data = LimitsData {
+                gs_used: self.games_started,
+                gs_limit: self.gs_limit,
+                acq_used: self.acquisitions_used,
+                acq_limit: self.acquisitions_limit,
+                days_remaining,
+                games_today,
+                total_active,
+            };
+
             self.sidebar.view(
                 frame,
                 sb_layout.category_tracker,
                 sb_layout.limits,
+                &self.category_scores,
+                &limits_data,
                 cat_focused,
                 limits_focused,
             );
@@ -222,6 +240,25 @@ impl MatchupScreen {
 
         // Help bar
         crate::tui::render_keybind_hints(frame, layout.help_bar, keybinds);
+    }
+
+    // -- Sidebar helpers --
+
+    /// Count games today: (players with a game, total active roster spots).
+    ///
+    /// Looks at the currently selected day's batting + pitching rows and counts
+    /// how many have an opponent scheduled (i.e., opponent is Some).
+    fn compute_games_today(&self) -> (usize, usize) {
+        let day = self.scoring_period_days.get(self.selected_day);
+        match day {
+            Some(day) => {
+                let all_rows = day.batting_rows.iter().chain(day.pitching_rows.iter());
+                let total = day.batting_rows.len() + day.pitching_rows.len();
+                let with_game = all_rows.filter(|r| r.opponent.is_some()).count();
+                (with_game, total)
+            }
+            None => (0, 0),
+        }
     }
 
     // -- Scroll dispatch --
