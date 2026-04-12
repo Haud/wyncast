@@ -1,0 +1,1034 @@
+// Matchup analytics panel: computed matchup insights rendered in a scrollable view.
+//
+// Sections:
+// 1. Category Outlook — winning/losing/tied buckets
+// 2. Close Categories — swingable categories within threshold
+// 3. Pace Projections — linear projection of counting stats, component-based for rates
+// 4. GS Tracker — games started count vs limit
+// 5. Acquisitions — acquisition count vs limit
+
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::Frame;
+
+use crate::matchup::{CategoryScore, CategoryState, DailyPlayerRow, ScoringDay};
+use crate::stats::{SortDirection, StatComputation, StatDefinition, StatRegistry};
+use crate::tui::action::Action;
+use crate::tui::scroll::{ScrollDirection, ScrollState};
+
+// ---------------------------------------------------------------------------
+// Messages
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub enum MatchupAnalyticsPanelMessage {
+    Scroll(ScrollDirection),
+}
+
+// ---------------------------------------------------------------------------
+// MatchupAnalyticsPanel
+// ---------------------------------------------------------------------------
+
+pub struct MatchupAnalyticsPanel {
+    scroll: ScrollState,
+}
+
+impl MatchupAnalyticsPanel {
+    pub fn new() -> Self {
+        Self {
+            scroll: ScrollState::new(),
+        }
+    }
+
+    pub fn update(&mut self, msg: MatchupAnalyticsPanelMessage) -> Option<Action> {
+        match msg {
+            MatchupAnalyticsPanelMessage::Scroll(dir) => {
+                self.scroll.scroll(dir, 20);
+                None
+            }
+        }
+    }
+
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll.offset()
+    }
+
+    /// Render the analytics panel with all matchup data.
+    #[allow(clippy::too_many_arguments)]
+    pub fn view(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        category_scores: &[CategoryScore],
+        scoring_period_days: &[ScoringDay],
+        selected_day: usize,
+        games_started: u8,
+        gs_limit: u8,
+        acquisitions_used: u8,
+        acquisitions_limit: u8,
+        registry: Option<&StatRegistry>,
+        _focused: bool,
+    ) {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Analytics ")
+            .border_style(Style::default().fg(Color::DarkGray));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        if inner.height < 2 || inner.width < 10 {
+            return;
+        }
+
+        let total_days = scoring_period_days.len();
+        let days_elapsed = if total_days > 0 {
+            (selected_day + 1).min(total_days)
+        } else {
+            0
+        };
+
+        let mut lines: Vec<Line<'static>> = Vec::new();
+
+        // Section 1: Category Outlook
+        build_category_outlook(
+            &mut lines,
+            category_scores,
+            days_elapsed,
+            total_days,
+            registry,
+        );
+
+        // Section 2: Close Categories
+        build_close_categories(&mut lines, category_scores, registry);
+
+        // Section 3: Pace Projections
+        build_pace_projections(
+            &mut lines,
+            category_scores,
+            days_elapsed,
+            total_days,
+            registry,
+        );
+
+        // Section 4: GS Tracker
+        build_gs_tracker(
+            &mut lines,
+            scoring_period_days,
+            selected_day,
+            games_started,
+            gs_limit,
+        );
+
+        // Section 5: Acquisitions
+        build_acquisitions(&mut lines, acquisitions_used, acquisitions_limit);
+
+        let content_height = lines.len();
+        let viewport_height = inner.height as usize;
+        let offset = self.scroll.clamped_offset(content_height, viewport_height);
+
+        let visible: Vec<Line<'static>> = lines
+            .into_iter()
+            .skip(offset)
+            .take(viewport_height)
+            .collect();
+
+        let paragraph = Paragraph::new(visible).wrap(Wrap { trim: false });
+        frame.render_widget(paragraph, inner);
+    }
+}
+
+impl Default for MatchupAnalyticsPanel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Section builders
+// ---------------------------------------------------------------------------
+
+fn section_header(lines: &mut Vec<Line<'static>>, title: &str) {
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![Span::styled(
+        format!("── {title} ──────────────────────────────────────────"),
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    )]));
+    lines.push(Line::from(""));
+}
+
+fn build_category_outlook(
+    lines: &mut Vec<Line<'static>>,
+    scores: &[CategoryScore],
+    days_elapsed: usize,
+    total_days: usize,
+    registry: Option<&StatRegistry>,
+) {
+    section_header(
+        lines,
+        &format!(
+            "CATEGORY OUTLOOK (Day {} of {})",
+            days_elapsed, total_days
+        ),
+    );
+
+    if scores.is_empty() {
+        lines.push(Line::from("  No category data available."));
+        return;
+    }
+
+    let winning: Vec<&CategoryScore> = scores
+        .iter()
+        .filter(|c| c.state == CategoryState::Winning)
+        .collect();
+    let losing: Vec<&CategoryScore> = scores
+        .iter()
+        .filter(|c| c.state == CategoryState::Losing)
+        .collect();
+    let tied: Vec<&CategoryScore> = scores
+        .iter()
+        .filter(|c| c.state == CategoryState::Tied)
+        .collect();
+
+    // Header row
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  WINNING ({})            ", winning.len()),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("LOSING ({})            ", losing.len()),
+            Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("TIED ({})", tied.len()),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+
+    let max_rows = winning.len().max(losing.len()).max(tied.len());
+    for i in 0..max_rows {
+        let mut spans = Vec::new();
+
+        // Winning column
+        if let Some(cat) = winning.get(i) {
+            let diff = format_diff(cat, registry);
+            spans.push(Span::styled(
+                format!("  {:<6}{:<18}", cat.stat_abbrev, diff),
+                Style::default().fg(Color::Green),
+            ));
+        } else {
+            spans.push(Span::raw("                        "));
+        }
+
+        // Losing column
+        if let Some(cat) = losing.get(i) {
+            let diff = format_diff(cat, registry);
+            spans.push(Span::styled(
+                format!("{:<6}{:<16}", cat.stat_abbrev, diff),
+                Style::default().fg(Color::Red),
+            ));
+        } else {
+            spans.push(Span::raw("                      "));
+        }
+
+        // Tied column
+        if let Some(cat) = tied.get(i) {
+            let diff = format_diff(cat, registry);
+            spans.push(Span::styled(
+                format!("{:<6}{}", cat.stat_abbrev, diff),
+                Style::default().fg(Color::Yellow),
+            ));
+        }
+
+        lines.push(Line::from(spans));
+    }
+}
+
+fn build_close_categories(
+    lines: &mut Vec<Line<'static>>,
+    scores: &[CategoryScore],
+    registry: Option<&StatRegistry>,
+) {
+    section_header(lines, "CLOSE CATEGORIES (swingable)");
+
+    let close: Vec<&CategoryScore> = scores
+        .iter()
+        .filter(|c| is_close_category(c, registry))
+        .collect();
+
+    if close.is_empty() {
+        lines.push(Line::from("  No close categories."));
+        return;
+    }
+
+    // Header
+    lines.push(Line::from(Span::styled(
+        "  Category  Mine    Theirs  Diff     Status",
+        Style::default().add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(Span::styled(
+        "  ────────  ──────  ──────  ───────  ──────────────────────────",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    for cat in &close {
+        let stat_def = registry.and_then(|r| r.get(&cat.stat_abbrev));
+        let precision = stat_def.map_or(0, |d| d.format_precision as usize);
+        let is_counting = stat_def
+            .map(|d| matches!(d.computation, StatComputation::Counting { .. }))
+            .unwrap_or(true);
+        let lower_is_better = stat_def
+            .map(|d| d.sort_direction == SortDirection::LowerIsBetter)
+            .unwrap_or(false);
+
+        let my_display = format_value(cat.my_value, precision);
+        let opp_display = format_value(cat.opp_value, precision);
+
+        let raw_diff = cat.my_value - cat.opp_value;
+        let effective_diff = if lower_is_better { -raw_diff } else { raw_diff };
+        let diff_display = format_signed_value(raw_diff, precision);
+
+        let status = build_close_status(cat, is_counting, effective_diff);
+
+        let color = match cat.state {
+            CategoryState::Winning => Color::Green,
+            CategoryState::Losing => Color::Red,
+            CategoryState::Tied => Color::Yellow,
+        };
+
+        lines.push(Line::from(vec![
+            Span::raw(format!("  {:<10}", cat.stat_abbrev)),
+            Span::raw(format!("{:<8}", my_display)),
+            Span::raw(format!("{:<8}", opp_display)),
+            Span::styled(format!("{:<9}", diff_display), Style::default().fg(color)),
+            Span::styled(status, Style::default().fg(color)),
+        ]));
+    }
+}
+
+fn build_pace_projections(
+    lines: &mut Vec<Line<'static>>,
+    scores: &[CategoryScore],
+    days_elapsed: usize,
+    total_days: usize,
+    registry: Option<&StatRegistry>,
+) {
+    section_header(lines, "PACE PROJECTIONS");
+
+    if days_elapsed == 0 || total_days == 0 {
+        lines.push(Line::from("  No games played yet."));
+        return;
+    }
+
+    if scores.is_empty() {
+        lines.push(Line::from("  No category data available."));
+        return;
+    }
+
+    lines.push(Line::from(Span::styled(
+        format!(
+            "  Based on {} day(s) played, projecting over {}-day period:",
+            days_elapsed, total_days
+        ),
+        Style::default().fg(Color::DarkGray),
+    )));
+    lines.push(Line::from(""));
+
+    // Header
+    lines.push(Line::from(Span::styled(
+        "  Category  Current  Projected  Opp Proj  Proj Result",
+        Style::default().add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(Span::styled(
+        "  ────────  ───────  ─────────  ────────  ───────────────",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    for cat in scores {
+        let stat_def = registry.and_then(|r| r.get(&cat.stat_abbrev));
+        let precision = stat_def.map_or(0, |d| d.format_precision as usize);
+        let lower_is_better = stat_def
+            .map(|d| d.sort_direction == SortDirection::LowerIsBetter)
+            .unwrap_or(false);
+
+        let my_proj = project_stat(cat.my_value, days_elapsed, total_days, stat_def);
+        let opp_proj = project_stat(cat.opp_value, days_elapsed, total_days, stat_def);
+
+        let proj_diff = if lower_is_better {
+            opp_proj - my_proj
+        } else {
+            my_proj - opp_proj
+        };
+
+        let (result_label, result_color) = if proj_diff > 0.001 {
+            ("WIN", Color::Green)
+        } else if proj_diff < -0.001 {
+            ("LOSS", Color::Red)
+        } else {
+            ("TIE", Color::Yellow)
+        };
+
+        let raw_proj_diff = my_proj - opp_proj;
+        let diff_str = format_signed_value(raw_proj_diff, precision);
+        let result_str = format!("{result_label} ({diff_str})");
+
+        lines.push(Line::from(vec![
+            Span::raw(format!("  {:<10}", cat.stat_abbrev)),
+            Span::raw(format!(
+                "{:<9}",
+                format_value(cat.my_value, precision)
+            )),
+            Span::raw(format!("{:<11}", format_value(my_proj, precision))),
+            Span::raw(format!("{:<10}", format_value(opp_proj, precision))),
+            Span::styled(result_str, Style::default().fg(result_color)),
+        ]));
+    }
+}
+
+fn build_gs_tracker(
+    lines: &mut Vec<Line<'static>>,
+    scoring_period_days: &[ScoringDay],
+    selected_day: usize,
+    games_started: u8,
+    gs_limit: u8,
+) {
+    section_header(lines, "GAMES STARTED TRACKER");
+
+    let gs_color = if games_started >= gs_limit {
+        Color::Red
+    } else if gs_limit - games_started <= 2 {
+        Color::Yellow
+    } else {
+        Color::Green
+    };
+
+    lines.push(Line::from(vec![
+        Span::raw("  Used: "),
+        Span::styled(
+            format!("{games_started}"),
+            Style::default().fg(gs_color),
+        ),
+        Span::raw(format!(" / {gs_limit} GS limit")),
+    ]));
+
+    let remaining_gs = gs_limit.saturating_sub(games_started);
+    lines.push(Line::from(format!("  Remaining: {remaining_gs}")));
+
+    // Show remaining SP starts from future days
+    let future_starts = collect_future_sp_starts(scoring_period_days, selected_day);
+    if !future_starts.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  Remaining SP starts:",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        for (day_label, starts) in &future_starts {
+            let names = starts.join(", ");
+            lines.push(Line::from(format!("    {day_label}: {names}")));
+        }
+    }
+
+    if remaining_gs <= 2 && remaining_gs > 0 {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!("  WARNING: Only {remaining_gs} GS remaining - manage carefully"),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )));
+    }
+    if remaining_gs == 0 {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  WARNING: GS limit reached!",
+            Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+        )));
+    }
+}
+
+fn build_acquisitions(
+    lines: &mut Vec<Line<'static>>,
+    acquisitions_used: u8,
+    acquisitions_limit: u8,
+) {
+    section_header(lines, "ACQUISITIONS");
+
+    let remaining = acquisitions_limit.saturating_sub(acquisitions_used);
+    let color = if remaining == 0 {
+        Color::Red
+    } else if remaining <= 1 {
+        Color::Yellow
+    } else {
+        Color::Green
+    };
+
+    lines.push(Line::from(vec![
+        Span::raw("  Used: "),
+        Span::styled(
+            format!("{acquisitions_used}"),
+            Style::default().fg(color),
+        ),
+        Span::raw(format!(" / {acquisitions_limit} per matchup")),
+    ]));
+    lines.push(Line::from(format!("  Remaining: {remaining}")));
+}
+
+// ---------------------------------------------------------------------------
+// Computation helpers
+// ---------------------------------------------------------------------------
+
+/// Format a differential value for a category, accounting for stat precision.
+fn format_diff(cat: &CategoryScore, registry: Option<&StatRegistry>) -> String {
+    let stat_def = registry.and_then(|r| r.get(&cat.stat_abbrev));
+    let lower_is_better = stat_def
+        .map(|d| d.sort_direction == SortDirection::LowerIsBetter)
+        .unwrap_or(false);
+    let precision = stat_def.map_or(0, |d| d.format_precision as usize);
+
+    let raw_diff = cat.my_value - cat.opp_value;
+
+    if lower_is_better && precision > 0 {
+        // For rate stats where lower is better, show raw diff with annotation
+        format_signed_value(raw_diff, precision)
+    } else {
+        format_signed_value(raw_diff, precision)
+    }
+}
+
+/// Check if a category is "close" (swingable) using registry thresholds.
+pub fn is_close_category(cat: &CategoryScore, registry: Option<&StatRegistry>) -> bool {
+    let diff = (cat.my_value - cat.opp_value).abs();
+
+    if let Some(reg) = registry {
+        if let Some(stat_def) = reg.get(&cat.stat_abbrev) {
+            return diff <= stat_def.matchup_close_threshold;
+        }
+    }
+
+    // Fallback thresholds if no registry
+    match cat.stat_abbrev.as_str() {
+        "R" | "RBI" | "BB" => diff <= 5.0,
+        "HR" | "SB" | "W" | "SV" | "HD" => diff <= 3.0,
+        "K" => diff <= 10.0,
+        "AVG" => diff <= 0.020,
+        "ERA" => diff <= 1.00,
+        "WHIP" => diff <= 0.20,
+        _ => false,
+    }
+}
+
+/// Project a stat value linearly over the full matchup period.
+///
+/// For counting stats: `(current / days_elapsed) * total_days`
+/// For rate stats: project the current value directly (rate stats don't scale linearly
+/// without component data, so we preserve the current rate as the projection).
+pub fn project_stat(
+    current: f64,
+    days_elapsed: usize,
+    total_days: usize,
+    stat_def: Option<&StatDefinition>,
+) -> f64 {
+    if days_elapsed == 0 {
+        return 0.0;
+    }
+
+    match stat_def.map(|d| &d.computation) {
+        Some(StatComputation::RateStat { .. }) => {
+            // Rate stats: preserve current rate as projection.
+            // True component-based projection requires volume data we don't have
+            // at this level (H, AB, ER, IP, etc.). The current rate is the best
+            // estimate we can give from category scores alone.
+            current
+        }
+        _ => {
+            // Counting stats: linear projection
+            project_counting_stat(current, days_elapsed, total_days)
+        }
+    }
+}
+
+/// Linear projection of a counting stat over the full period.
+pub fn project_counting_stat(current: f64, days_elapsed: usize, total_days: usize) -> f64 {
+    if days_elapsed == 0 {
+        return 0.0;
+    }
+    (current / days_elapsed as f64) * total_days as f64
+}
+
+/// Count games started from ScoringDay data.
+///
+/// A game start is a pitching row where slot = "SP", opponent is present,
+/// and the player is not on the bench.
+pub fn count_games_started(days: &[ScoringDay]) -> u8 {
+    days.iter()
+        .flat_map(|d| &d.pitching_rows)
+        .filter(|row| is_sp_start(row))
+        .count() as u8
+}
+
+fn is_sp_start(row: &DailyPlayerRow) -> bool {
+    row.slot == "SP" && row.opponent.is_some()
+}
+
+/// Collect future SP starts from days after selected_day.
+fn collect_future_sp_starts(
+    days: &[ScoringDay],
+    selected_day: usize,
+) -> Vec<(String, Vec<String>)> {
+    let mut results = Vec::new();
+    for day in days.iter().skip(selected_day + 1) {
+        let sp_names: Vec<String> = day
+            .pitching_rows
+            .iter()
+            .filter(|row| row.slot == "SP" && row.opponent.is_some())
+            .map(|row| {
+                let opp = row.opponent.as_deref().unwrap_or("???");
+                format!("{} ({})", row.player_name, opp)
+            })
+            .collect();
+        if !sp_names.is_empty() {
+            results.push((day.label.clone(), sp_names));
+        }
+    }
+    results
+}
+
+/// Build a close-category status string.
+fn build_close_status(cat: &CategoryScore, is_counting: bool, effective_diff: f64) -> String {
+    match cat.state {
+        CategoryState::Winning => "WINNING - lead is narrow".to_string(),
+        CategoryState::Tied => {
+            if is_counting {
+                "TIED - 1 to lead".to_string()
+            } else {
+                "TIED".to_string()
+            }
+        }
+        CategoryState::Losing => {
+            if is_counting {
+                let to_tie = effective_diff.abs().ceil() as i64;
+                let to_lead = to_tie + 1;
+                format!(
+                    "LOSING - {} {} to tie, {} to lead",
+                    to_tie, cat.stat_abbrev, to_lead
+                )
+            } else {
+                "LOSING - gap is closeable".to_string()
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Formatting helpers
+// ---------------------------------------------------------------------------
+
+fn format_value(value: f64, precision: usize) -> String {
+    if precision == 0 {
+        format!("{}", value as i64)
+    } else {
+        format!("{:.prec$}", value, prec = precision)
+    }
+}
+
+fn format_signed_value(value: f64, precision: usize) -> String {
+    if precision == 0 {
+        let v = value as i64;
+        if v >= 0 {
+            format!("+{v}")
+        } else {
+            format!("{v}")
+        }
+    } else if value >= 0.0 {
+        format!("+{:.prec$}", value, prec = precision)
+    } else {
+        format!("{:.prec$}", value, prec = precision)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::LeagueConfig;
+    use crate::tui::scroll::ScrollDirection;
+
+    fn test_registry() -> StatRegistry {
+        StatRegistry::from_league_config(&LeagueConfig::default()).unwrap()
+    }
+
+    fn make_cat(abbrev: &str, my: f64, opp: f64, state: CategoryState) -> CategoryScore {
+        CategoryScore {
+            stat_abbrev: abbrev.to_string(),
+            my_value: my,
+            opp_value: opp,
+            state,
+        }
+    }
+
+    // -- Category grouping tests --
+
+    #[test]
+    fn category_outlook_groups_correctly() {
+        let scores = vec![
+            make_cat("R", 5.0, 3.0, CategoryState::Winning),
+            make_cat("HR", 2.0, 3.0, CategoryState::Losing),
+            make_cat("SB", 1.0, 1.0, CategoryState::Tied),
+            make_cat("RBI", 4.0, 2.0, CategoryState::Winning),
+        ];
+
+        let winning: Vec<_> = scores
+            .iter()
+            .filter(|c| c.state == CategoryState::Winning)
+            .collect();
+        let losing: Vec<_> = scores
+            .iter()
+            .filter(|c| c.state == CategoryState::Losing)
+            .collect();
+        let tied: Vec<_> = scores
+            .iter()
+            .filter(|c| c.state == CategoryState::Tied)
+            .collect();
+
+        assert_eq!(winning.len(), 2);
+        assert_eq!(losing.len(), 1);
+        assert_eq!(tied.len(), 1);
+        assert_eq!(winning[0].stat_abbrev, "R");
+        assert_eq!(winning[1].stat_abbrev, "RBI");
+        assert_eq!(losing[0].stat_abbrev, "HR");
+        assert_eq!(tied[0].stat_abbrev, "SB");
+    }
+
+    // -- Close category detection tests --
+
+    #[test]
+    fn close_category_respects_threshold_counting() {
+        let reg = test_registry();
+
+        // HR threshold is 3.0 for matchup
+        let close = make_cat("HR", 2.0, 4.0, CategoryState::Losing); // diff=2
+        assert!(is_close_category(&close, Some(&reg)));
+
+        let not_close = make_cat("HR", 2.0, 10.0, CategoryState::Losing); // diff=8
+        assert!(!is_close_category(&not_close, Some(&reg)));
+    }
+
+    #[test]
+    fn close_category_respects_threshold_rate() {
+        let reg = test_registry();
+
+        // ERA matchup_close_threshold = 1.00
+        let close = make_cat("ERA", 3.50, 4.00, CategoryState::Winning); // diff=0.50
+        assert!(is_close_category(&close, Some(&reg)));
+
+        let not_close = make_cat("ERA", 2.00, 5.50, CategoryState::Winning); // diff=3.50
+        assert!(!is_close_category(&not_close, Some(&reg)));
+    }
+
+    #[test]
+    fn close_category_whip_threshold() {
+        let reg = test_registry();
+
+        // WHIP matchup_close_threshold = 0.20
+        let close = make_cat("WHIP", 1.10, 1.25, CategoryState::Winning); // diff=0.15
+        assert!(is_close_category(&close, Some(&reg)));
+
+        let not_close = make_cat("WHIP", 1.00, 1.50, CategoryState::Winning); // diff=0.50
+        assert!(!is_close_category(&not_close, Some(&reg)));
+    }
+
+    #[test]
+    fn close_category_avg_threshold() {
+        let reg = test_registry();
+
+        // AVG matchup_close_threshold = 0.020
+        let close = make_cat("AVG", 0.280, 0.295, CategoryState::Losing); // diff=0.015
+        assert!(is_close_category(&close, Some(&reg)));
+
+        let not_close = make_cat("AVG", 0.250, 0.310, CategoryState::Losing); // diff=0.060
+        assert!(!is_close_category(&not_close, Some(&reg)));
+    }
+
+    #[test]
+    fn close_category_fallback_without_registry() {
+        // Without registry, uses hardcoded fallback
+        let close = make_cat("HR", 2.0, 4.0, CategoryState::Losing); // diff=2, threshold=3
+        assert!(is_close_category(&close, None));
+
+        let not_close = make_cat("HR", 2.0, 10.0, CategoryState::Losing);
+        assert!(!is_close_category(&not_close, None));
+    }
+
+    // -- Pace projection tests --
+
+    #[test]
+    fn pace_projection_counting_stat() {
+        // 5 runs in 2 days, projecting over 12 days => 30
+        let result = project_counting_stat(5.0, 2, 12);
+        assert!((result - 30.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn pace_projection_counting_stat_zero_elapsed() {
+        let result = project_counting_stat(5.0, 0, 12);
+        assert!((result - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn pace_projection_counting_stat_one_day() {
+        // 3 HR in 1 day over 7-day period => 21
+        let result = project_counting_stat(3.0, 1, 7);
+        assert!((result - 21.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn pace_projection_rate_stat_preserves_current() {
+        let reg = test_registry();
+        let era_def = reg.get("ERA").unwrap();
+
+        // ERA of 3.50 should stay as 3.50 projection (no component data)
+        let result = project_stat(3.50, 2, 12, Some(era_def));
+        assert!((result - 3.50).abs() < 1e-10);
+    }
+
+    #[test]
+    fn pace_projection_avg_preserves_current() {
+        let reg = test_registry();
+        let avg_def = reg.get("AVG").unwrap();
+
+        let result = project_stat(0.275, 3, 12, Some(avg_def));
+        assert!((result - 0.275).abs() < 1e-10);
+    }
+
+    #[test]
+    fn project_stat_counting_with_definition() {
+        let reg = test_registry();
+        let hr_def = reg.get("HR").unwrap();
+
+        // 2 HR in 2 days over 10 days => 10
+        let result = project_stat(2.0, 2, 10, Some(hr_def));
+        assert!((result - 10.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn project_stat_zero_days_elapsed() {
+        let result = project_stat(5.0, 0, 12, None);
+        assert!((result - 0.0).abs() < 1e-10);
+    }
+
+    // -- GS counting tests --
+
+    #[test]
+    fn count_gs_from_scoring_days() {
+        let days = vec![
+            ScoringDay {
+                date: "2026-03-26".to_string(),
+                label: "March 26".to_string(),
+                batting_rows: vec![],
+                pitching_rows: vec![
+                    make_pitcher_row("SP", "Valdez", Some("@TEX")),
+                    make_pitcher_row("SP", "Glasnow", Some("SD")),
+                    make_pitcher_row("RP", "Weaver", Some("@BOS")),
+                ],
+                batting_totals: None,
+                pitching_totals: None,
+            },
+            ScoringDay {
+                date: "2026-03-27".to_string(),
+                label: "March 27".to_string(),
+                batting_rows: vec![],
+                pitching_rows: vec![
+                    make_pitcher_row("SP", "Cole", Some("@TOR")),
+                    make_pitcher_row("SP", "Woo", None), // no game
+                ],
+                batting_totals: None,
+                pitching_totals: None,
+            },
+        ];
+
+        assert_eq!(count_games_started(&days), 3);
+    }
+
+    #[test]
+    fn count_gs_no_starts() {
+        let days = vec![ScoringDay {
+            date: "2026-03-26".to_string(),
+            label: "March 26".to_string(),
+            batting_rows: vec![],
+            pitching_rows: vec![
+                make_pitcher_row("RP", "Weaver", Some("@BOS")),
+                make_pitcher_row("RP", "Suarez", Some("@LAD")),
+            ],
+            batting_totals: None,
+            pitching_totals: None,
+        }];
+
+        assert_eq!(count_games_started(&days), 0);
+    }
+
+    #[test]
+    fn count_gs_sp_with_no_opponent_excluded() {
+        let days = vec![ScoringDay {
+            date: "2026-03-26".to_string(),
+            label: "March 26".to_string(),
+            batting_rows: vec![],
+            pitching_rows: vec![
+                make_pitcher_row("SP", "Valdez", None), // day off
+            ],
+            batting_totals: None,
+            pitching_totals: None,
+        }];
+
+        assert_eq!(count_games_started(&days), 0);
+    }
+
+    #[test]
+    fn count_gs_empty_days() {
+        assert_eq!(count_games_started(&[]), 0);
+    }
+
+    // -- Scroll tests --
+
+    #[test]
+    fn scroll_down_increments_offset() {
+        let mut panel = MatchupAnalyticsPanel::new();
+        panel.update(MatchupAnalyticsPanelMessage::Scroll(ScrollDirection::Down));
+        assert_eq!(panel.scroll_offset(), 1);
+    }
+
+    #[test]
+    fn scroll_returns_none() {
+        let mut panel = MatchupAnalyticsPanel::new();
+        let result = panel.update(MatchupAnalyticsPanelMessage::Scroll(ScrollDirection::Down));
+        assert_eq!(result, None);
+    }
+
+    // -- View smoke tests --
+
+    #[test]
+    fn view_does_not_panic_empty_data() {
+        let backend = ratatui::backend::TestBackend::new(80, 30);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let panel = MatchupAnalyticsPanel::new();
+        terminal
+            .draw(|frame| {
+                panel.view(frame, frame.area(), &[], &[], 0, 0, 7, 0, 5, None, false)
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn view_does_not_panic_with_data() {
+        let backend = ratatui::backend::TestBackend::new(100, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let panel = MatchupAnalyticsPanel::new();
+        let reg = test_registry();
+        let scores = vec![
+            make_cat("R", 5.0, 3.0, CategoryState::Winning),
+            make_cat("HR", 2.0, 3.0, CategoryState::Losing),
+            make_cat("ERA", 3.50, 4.20, CategoryState::Winning),
+        ];
+        let days = vec![make_scoring_day("March 26"), make_scoring_day("March 27")];
+        terminal
+            .draw(|frame| {
+                panel.view(
+                    frame,
+                    frame.area(),
+                    &scores,
+                    &days,
+                    0,
+                    3,
+                    7,
+                    1,
+                    5,
+                    Some(&reg),
+                    false,
+                )
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn view_does_not_panic_tiny_area() {
+        let backend = ratatui::backend::TestBackend::new(5, 3);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let panel = MatchupAnalyticsPanel::new();
+        terminal
+            .draw(|frame| {
+                panel.view(frame, frame.area(), &[], &[], 0, 0, 7, 0, 5, None, false)
+            })
+            .unwrap();
+    }
+
+    // -- Format helpers --
+
+    #[test]
+    fn format_value_counting() {
+        assert_eq!(format_value(5.0, 0), "5");
+        assert_eq!(format_value(42.0, 0), "42");
+    }
+
+    #[test]
+    fn format_value_rate() {
+        assert_eq!(format_value(0.275, 3), "0.275");
+        assert_eq!(format_value(3.50, 2), "3.50");
+    }
+
+    #[test]
+    fn format_signed_value_positive() {
+        assert_eq!(format_signed_value(2.0, 0), "+2");
+        assert_eq!(format_signed_value(0.015, 3), "+0.015");
+    }
+
+    #[test]
+    fn format_signed_value_negative() {
+        assert_eq!(format_signed_value(-1.0, 0), "-1");
+        assert_eq!(format_signed_value(-0.70, 2), "-0.70");
+    }
+
+    #[test]
+    fn format_signed_value_zero() {
+        assert_eq!(format_signed_value(0.0, 0), "+0");
+        assert_eq!(format_signed_value(0.0, 3), "+0.000");
+    }
+
+    // -- Test helpers --
+
+    fn make_pitcher_row(slot: &str, name: &str, opponent: Option<&str>) -> DailyPlayerRow {
+        DailyPlayerRow {
+            slot: slot.to_string(),
+            player_name: name.to_string(),
+            team: "TST".to_string(),
+            positions: vec!["SP".to_string()],
+            opponent: opponent.map(|s| s.to_string()),
+            game_status: None,
+            stats: vec![],
+        }
+    }
+
+    fn make_scoring_day(label: &str) -> ScoringDay {
+        ScoringDay {
+            date: "2026-03-26".to_string(),
+            label: label.to_string(),
+            batting_rows: vec![],
+            pitching_rows: vec![],
+            batting_totals: None,
+            pitching_totals: None,
+        }
+    }
+}
