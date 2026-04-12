@@ -18,40 +18,50 @@ use crate::tui::scroll::{ScrollDirection, ScrollState};
 // Column definitions
 // ---------------------------------------------------------------------------
 
-/// Column header label and display width.
-struct ColDef {
-    label: &'static str,
+/// Fixed info columns (SLOT, Player, Team, Opp) that appear in every table.
+const INFO_WIDTHS: &[(& str, usize)] = &[
+    ("SLOT", 5),
+    ("Player", 16),
+    ("Team", 4),
+    ("Opp", 5),
+];
+
+/// A dynamically-derived stat column built from the headers the extension sends.
+struct StatCol {
+    label: String,
     width: usize,
+    precision: u8,
 }
 
-const INFO_COLS: &[ColDef] = &[
-    ColDef { label: "SLOT", width: 5 },
-    ColDef { label: "Player", width: 16 },
-    ColDef { label: "Team", width: 4 },
-    ColDef { label: "Opp", width: 5 },
-];
+/// Derive display precision from a stat abbreviation.
+/// Rate stats (AVG, OBP, SLG, OPS) get 3 decimals; ERA/WHIP/K9/BB9 get 2;
+/// IP gets 1; everything else is an integer (0).
+fn precision_for_stat(abbrev: &str) -> u8 {
+    match abbrev {
+        "AVG" | "OBP" | "SLG" | "OPS" => 3,
+        "ERA" | "WHIP" | "K/9" | "BB/9" | "K/BB" => 2,
+        "IP" => 1,
+        _ => 0,
+    }
+}
 
-const BATTING_STAT_COLS: &[ColDef] = &[
-    ColDef { label: "AB", width: 4 },
-    ColDef { label: "H", width: 4 },
-    ColDef { label: "R", width: 4 },
-    ColDef { label: "HR", width: 4 },
-    ColDef { label: "RBI", width: 4 },
-    ColDef { label: "BB", width: 4 },
-    ColDef { label: "SB", width: 4 },
-    ColDef { label: "AVG", width: 5 },
-];
-
-const PITCHING_STAT_COLS: &[ColDef] = &[
-    ColDef { label: "IP", width: 5 },
-    ColDef { label: "H", width: 4 },
-    ColDef { label: "ER", width: 4 },
-    ColDef { label: "BB", width: 4 },
-    ColDef { label: "K", width: 4 },
-    ColDef { label: "W", width: 4 },
-    ColDef { label: "SV", width: 4 },
-    ColDef { label: "HD", width: 4 },
-];
+/// Build `StatCol` entries from the header strings provided by the extension.
+fn stat_cols_from_headers(headers: &[String]) -> Vec<StatCol> {
+    headers
+        .iter()
+        .map(|h| {
+            let precision = precision_for_stat(h);
+            // Width: enough for the label + typical formatted values
+            let min_val_width = if precision == 0 { 3 } else { precision as usize + 2 };
+            let width = (h.len() + 1).max(min_val_width + 1).max(4);
+            StatCol {
+                label: h.clone(),
+                width,
+                precision,
+            }
+        })
+        .collect()
+}
 
 // ---------------------------------------------------------------------------
 // DailyStatsPanel
@@ -140,14 +150,16 @@ impl Default for DailyStatsPanel {
 fn build_all_lines(day: &ScoringDay, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
 
+    let batting_cols = stat_cols_from_headers(&day.batting_stat_columns);
+    let pitching_cols = stat_cols_from_headers(&day.pitching_stat_columns);
+
     // -- Batting section --
     build_section(
         &mut lines,
         &format!("{} Batting", day.label),
         &day.batting_rows,
         day.batting_totals.as_ref(),
-        BATTING_STAT_COLS,
-        true,
+        &batting_cols,
         width,
     );
 
@@ -160,8 +172,7 @@ fn build_all_lines(day: &ScoringDay, width: usize) -> Vec<Line<'static>> {
         &format!("{} Pitching", day.label),
         &day.pitching_rows,
         day.pitching_totals.as_ref(),
-        PITCHING_STAT_COLS,
-        false,
+        &pitching_cols,
         width,
     );
 
@@ -174,8 +185,7 @@ fn build_section(
     title: &str,
     rows: &[DailyPlayerRow],
     totals: Option<&DailyTotals>,
-    stat_cols: &[ColDef],
-    is_batting: bool,
+    stat_cols: &[StatCol],
     width: usize,
 ) {
     let header_style = Style::default()
@@ -196,7 +206,7 @@ fn build_section(
 
     // Active rows
     for row in &active {
-        lines.push(build_player_line(row, stat_cols, is_batting, false));
+        lines.push(build_player_line(row, stat_cols, false));
     }
 
     // Separator before bench/IL (if any)
@@ -209,13 +219,13 @@ fn build_section(
         )));
 
         for row in &inactive {
-            lines.push(build_player_line(row, stat_cols, is_batting, true));
+            lines.push(build_player_line(row, stat_cols, true));
         }
     }
 
     // TOTALS row
     if let Some(t) = totals {
-        lines.push(build_totals_line(t, stat_cols, is_batting));
+        lines.push(build_totals_line(t, stat_cols));
     }
 }
 
@@ -226,8 +236,8 @@ fn is_inactive(row: &DailyPlayerRow) -> bool {
 }
 
 /// Total width consumed by info + stat columns.
-fn total_row_width(stat_cols: &[ColDef]) -> usize {
-    let info_w: usize = INFO_COLS.iter().map(|c| c.width + 1).sum();
+fn total_row_width(stat_cols: &[StatCol]) -> usize {
+    let info_w: usize = INFO_WIDTHS.iter().map(|(_, w)| w + 1).sum();
     let stat_w: usize = stat_cols.iter().map(|c| c.width + 1).sum();
     info_w + stat_w
 }
@@ -236,18 +246,18 @@ fn total_row_width(stat_cols: &[ColDef]) -> usize {
 // Header line
 // ---------------------------------------------------------------------------
 
-fn build_header_line(stat_cols: &[ColDef]) -> Line<'static> {
+fn build_header_line(stat_cols: &[StatCol]) -> Line<'static> {
     let style = Style::default()
         .fg(Color::DarkGray)
         .add_modifier(Modifier::BOLD);
     let mut parts = Vec::new();
 
-    for col in INFO_COLS {
-        parts.push(Span::styled(pad_left(col.label, col.width), style));
+    for &(label, width) in INFO_WIDTHS {
+        parts.push(Span::styled(pad_left(label, width), style));
         parts.push(Span::raw(" "));
     }
     for col in stat_cols {
-        parts.push(Span::styled(pad_right_align(col.label, col.width), style));
+        parts.push(Span::styled(pad_right_align(&col.label, col.width), style));
         parts.push(Span::raw(" "));
     }
 
@@ -260,8 +270,7 @@ fn build_header_line(stat_cols: &[ColDef]) -> Line<'static> {
 
 fn build_player_line(
     row: &DailyPlayerRow,
-    stat_cols: &[ColDef],
-    is_batting: bool,
+    stat_cols: &[StatCol],
     dim: bool,
 ) -> Line<'static> {
     let has_game = row.opponent.is_some();
@@ -277,41 +286,45 @@ fn build_player_line(
     let mut parts = Vec::new();
 
     // Slot: show IL tag in red if applicable
+    let slot_width = INFO_WIDTHS[0].1;
     if is_il {
         parts.push(Span::styled(
-            pad_left(&row.slot, INFO_COLS[0].width),
+            pad_left(&row.slot, slot_width),
             Style::default().fg(Color::Red),
         ));
     } else {
         parts.push(Span::styled(
-            pad_left(&row.slot, INFO_COLS[0].width),
+            pad_left(&row.slot, slot_width),
             text_style,
         ));
     }
     parts.push(Span::raw(" "));
 
     // Player name (truncate to column width)
-    let name = truncate(&row.player_name, INFO_COLS[1].width);
+    let name_width = INFO_WIDTHS[1].1;
+    let name = truncate(&row.player_name, name_width);
     parts.push(Span::styled(
-        pad_left(&name, INFO_COLS[1].width),
+        pad_left(&name, name_width),
         text_style,
     ));
     parts.push(Span::raw(" "));
 
     // Team
+    let team_width = INFO_WIDTHS[2].1;
     parts.push(Span::styled(
-        pad_left(&row.team, INFO_COLS[2].width),
+        pad_left(&row.team, team_width),
         text_style,
     ));
     parts.push(Span::raw(" "));
 
     // Opponent
+    let opp_width = INFO_WIDTHS[3].1;
     let opp_display = row
         .opponent
         .as_deref()
         .unwrap_or("--");
     parts.push(Span::styled(
-        pad_left(opp_display, INFO_COLS[3].width),
+        pad_left(opp_display, opp_width),
         text_style,
     ));
     parts.push(Span::raw(" "));
@@ -322,7 +335,7 @@ fn build_player_line(
         let display = if !has_game {
             "--".to_string()
         } else {
-            format_stat(val, i, is_batting)
+            format_stat(val, col.precision)
         };
         parts.push(Span::styled(
             pad_right_align(&display, col.width),
@@ -340,8 +353,7 @@ fn build_player_line(
 
 fn build_totals_line(
     totals: &DailyTotals,
-    stat_cols: &[ColDef],
-    is_batting: bool,
+    stat_cols: &[StatCol],
 ) -> Line<'static> {
     let bold = Style::default()
         .fg(Color::White)
@@ -350,7 +362,7 @@ fn build_totals_line(
     let mut parts = Vec::new();
 
     // "TOTALS" spans the info columns
-    let info_width: usize = INFO_COLS.iter().map(|c| c.width + 1).sum();
+    let info_width: usize = INFO_WIDTHS.iter().map(|(_, w)| w + 1).sum();
     let label = pad_left("TOTALS", info_width.saturating_sub(1));
     parts.push(Span::styled(label, bold));
     parts.push(Span::raw(" "));
@@ -358,7 +370,7 @@ fn build_totals_line(
     // Stat values
     for (i, col) in stat_cols.iter().enumerate() {
         let val = totals.stats.get(i).copied().flatten();
-        let display = format_stat(val, i, is_batting);
+        let display = format_stat(val, col.precision);
         parts.push(Span::styled(
             pad_right_align(&display, col.width),
             bold,
@@ -373,23 +385,15 @@ fn build_totals_line(
 // Formatting helpers
 // ---------------------------------------------------------------------------
 
-/// Format a stat value given its column index and section type.
-///
-/// Batting columns: AB(0), H(1), R(2), HR(3), RBI(4), BB(5), SB(6), AVG(7)
-/// Pitching columns: IP(0), H(1), ER(2), BB(3), K(4), W(5), SV(6), HD(7)
-fn format_stat(val: Option<f64>, col_index: usize, is_batting: bool) -> String {
+/// Format a stat value using the column's display precision.
+fn format_stat(val: Option<f64>, precision: u8) -> String {
     match val {
         None => "--".to_string(),
         Some(v) => {
-            if is_batting && col_index == 7 {
-                // AVG: .XXX format
-                format!("{:.3}", v)
-            } else if !is_batting && col_index == 0 {
-                // IP: X.X format
-                format!("{:.1}", v)
-            } else {
-                // Integer counting stat
+            if precision == 0 {
                 format!("{}", v as i64)
+            } else {
+                format!("{:.prec$}", v, prec = precision as usize)
             }
         }
     }
@@ -514,10 +518,26 @@ mod tests {
         }
     }
 
+    fn batting_headers() -> Vec<String> {
+        ["AB", "H", "R", "HR", "RBI", "BB", "SB", "AVG"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    fn pitching_headers() -> Vec<String> {
+        ["IP", "H", "ER", "BB", "K", "W", "SV", "HD"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
     fn make_test_scoring_day() -> ScoringDay {
         ScoringDay {
             date: "2026-03-26".to_string(),
             label: "March 26".to_string(),
+            batting_stat_columns: batting_headers(),
+            pitching_stat_columns: pitching_headers(),
             batting_rows: vec![
                 make_active_batter("C", "B. Rice", Some("@BOS")),
                 make_active_batter("1B", "F. Freeman", Some("SD")),
@@ -589,6 +609,8 @@ mod tests {
         let day = ScoringDay {
             date: "2026-03-26".to_string(),
             label: "March 26".to_string(),
+            batting_stat_columns: vec![],
+            pitching_stat_columns: vec![],
             batting_rows: Vec::new(),
             pitching_rows: Vec::new(),
             batting_totals: None,
@@ -630,30 +652,42 @@ mod tests {
     // -- Formatting tests --
 
     #[test]
-    fn format_stat_batting_avg() {
-        assert_eq!(format_stat(Some(0.276), 7, true), "0.276");
-        assert_eq!(format_stat(Some(0.0), 7, true), "0.000");
-        assert_eq!(format_stat(Some(1.0), 7, true), "1.000");
+    fn format_stat_rate_precision_3() {
+        assert_eq!(format_stat(Some(0.276), 3), "0.276");
+        assert_eq!(format_stat(Some(0.0), 3), "0.000");
+        assert_eq!(format_stat(Some(1.0), 3), "1.000");
     }
 
     #[test]
-    fn format_stat_pitching_ip() {
-        assert_eq!(format_stat(Some(7.0), 0, false), "7.0");
-        assert_eq!(format_stat(Some(0.1), 0, false), "0.1");
+    fn format_stat_precision_1() {
+        assert_eq!(format_stat(Some(7.0), 1), "7.0");
+        assert_eq!(format_stat(Some(0.1), 1), "0.1");
     }
 
     #[test]
     fn format_stat_counting_integer() {
-        assert_eq!(format_stat(Some(4.0), 0, true), "4"); // AB
-        assert_eq!(format_stat(Some(0.0), 3, true), "0"); // HR
-        assert_eq!(format_stat(Some(8.0), 4, false), "8"); // K
+        assert_eq!(format_stat(Some(4.0), 0), "4");
+        assert_eq!(format_stat(Some(0.0), 0), "0");
+        assert_eq!(format_stat(Some(8.0), 0), "8");
     }
 
     #[test]
     fn format_stat_none_shows_dashes() {
-        assert_eq!(format_stat(None, 0, true), "--");
-        assert_eq!(format_stat(None, 7, true), "--");
-        assert_eq!(format_stat(None, 0, false), "--");
+        assert_eq!(format_stat(None, 0), "--");
+        assert_eq!(format_stat(None, 3), "--");
+        assert_eq!(format_stat(None, 1), "--");
+    }
+
+    #[test]
+    fn precision_for_known_stats() {
+        assert_eq!(precision_for_stat("AVG"), 3);
+        assert_eq!(precision_for_stat("OBP"), 3);
+        assert_eq!(precision_for_stat("ERA"), 2);
+        assert_eq!(precision_for_stat("WHIP"), 2);
+        assert_eq!(precision_for_stat("IP"), 1);
+        assert_eq!(precision_for_stat("HR"), 0);
+        assert_eq!(precision_for_stat("K"), 0);
+        assert_eq!(precision_for_stat("AB"), 0);
     }
 
     // -- Inactive detection --
@@ -681,7 +715,8 @@ mod tests {
     #[test]
     fn no_game_player_shows_dashes_in_line() {
         let row = make_active_batter("3B", "A. Riley", None);
-        let line = build_player_line(&row, BATTING_STAT_COLS, true, false);
+        let cols = stat_cols_from_headers(&batting_headers());
+        let line = build_player_line(&row, &cols, false);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         // Should contain "--" for opponent and all stat columns
         assert!(text.contains("--"));
@@ -692,10 +727,40 @@ mod tests {
     #[test]
     fn bench_player_with_game_shows_stats() {
         let row = make_bench_batter("T. Grisham", true);
-        let line = build_player_line(&row, BATTING_STAT_COLS, true, true);
+        let cols = stat_cols_from_headers(&batting_headers());
+        let line = build_player_line(&row, &cols, true);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         // Should contain stat values, not "--" for stats
         assert!(text.contains("3")); // AB = 3
         assert!(text.contains("0.000")); // AVG = .000
+    }
+
+    // -- Dynamic column tests --
+
+    #[test]
+    fn stat_cols_from_headers_computes_widths() {
+        let cols = stat_cols_from_headers(&["AB".to_string(), "AVG".to_string()]);
+        assert_eq!(cols.len(), 2);
+        assert_eq!(cols[0].precision, 0);
+        assert_eq!(cols[1].precision, 3);
+        assert!(cols[0].width >= 4); // minimum width for counting stat
+        assert!(cols[1].width >= 5); // wider for rate stat
+    }
+
+    #[test]
+    fn empty_stat_columns_renders_without_panic() {
+        let day = ScoringDay {
+            date: "2026-03-26".to_string(),
+            label: "March 26".to_string(),
+            batting_stat_columns: vec![],
+            pitching_stat_columns: vec![],
+            batting_rows: vec![make_active_batter("C", "B. Rice", Some("@BOS"))],
+            pitching_rows: vec![],
+            batting_totals: None,
+            pitching_totals: None,
+        };
+        let lines = build_all_lines(&day, 120);
+        // Should still have section headers + col header + player row + gap + pitching header + col header
+        assert!(lines.len() >= 4);
     }
 }

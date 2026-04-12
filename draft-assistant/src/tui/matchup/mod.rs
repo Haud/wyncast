@@ -693,6 +693,8 @@ mod tests {
         ScoringDay {
             date: "2026-03-26".to_string(),
             label: label.to_string(),
+            batting_stat_columns: vec![],
+            pitching_stat_columns: vec![],
             batting_rows: Vec::new(),
             pitching_rows: Vec::new(),
             batting_totals: None,

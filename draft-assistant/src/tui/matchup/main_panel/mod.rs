@@ -310,6 +310,8 @@ mod tests {
         ScoringDay {
             date: "2026-03-26".to_string(),
             label: "March 26".to_string(),
+            batting_stat_columns: vec!["AB".to_string(), "H".to_string(), "R".to_string()],
+            pitching_stat_columns: vec![],
             batting_rows: vec![DailyPlayerRow {
                 slot: "C".to_string(),
                 player_name: "Ben Rice".to_string(),

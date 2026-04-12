@@ -720,6 +720,8 @@ async fn handle_matchup_state(
     let scoring_day = ScoringDay {
         date: payload.selected_day.clone(),
         label: payload.selected_day.clone(),
+        batting_stat_columns: payload.batting.headers.clone(),
+        pitching_stat_columns: payload.pitching.headers.clone(),
         batting_rows,
         pitching_rows,
         batting_totals,
@@ -1418,6 +1420,8 @@ mod tests {
         let day = crate::matchup::ScoringDay {
             date: "2026-03-26".to_string(),
             label: "March 26".to_string(),
+            batting_stat_columns: vec![],
+            pitching_stat_columns: vec!["IP".to_string(), "K".to_string()],
             batting_rows: vec![],
             pitching_rows,
             batting_totals: None,
@@ -1434,6 +1438,8 @@ mod tests {
         let day = crate::matchup::ScoringDay {
             date: "2026-03-26".to_string(),
             label: "March 26".to_string(),
+            batting_stat_columns: vec![],
+            pitching_stat_columns: vec![],
             batting_rows: vec![],
             pitching_rows: vec![
                 crate::matchup::DailyPlayerRow {
