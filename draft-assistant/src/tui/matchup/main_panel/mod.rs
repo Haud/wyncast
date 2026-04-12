@@ -1,6 +1,7 @@
 // Matchup main panel: tab container for daily stats, analytics, and roster views.
 
 pub mod analytics;
+pub mod daily_stats;
 
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
@@ -16,6 +17,7 @@ use crate::tui::subscription::Subscription;
 use crate::tui::subscription::keybinding::KeybindManager;
 
 pub use analytics::{MatchupAnalyticsPanel, MatchupAnalyticsPanelMessage};
+pub use daily_stats::{DailyStatsPanel, DailyStatsPanelMessage};
 
 // ---------------------------------------------------------------------------
 // MatchupTab
@@ -29,60 +31,6 @@ pub enum MatchupTab {
     MyRoster,
     OppRoster,
 }
-
-// ---------------------------------------------------------------------------
-// Stub panels
-// ---------------------------------------------------------------------------
-
-/// Daily stats panel (stub — will be implemented in a later task).
-pub struct DailyStatsPanel {
-    scroll: ScrollState,
-}
-
-/// Message type for the daily stats panel.
-#[derive(Debug, Clone)]
-pub enum DailyStatsPanelMessage {
-    Scroll(ScrollDirection),
-}
-
-impl DailyStatsPanel {
-    pub fn new() -> Self {
-        Self {
-            scroll: ScrollState::new(),
-        }
-    }
-
-    pub fn update(&mut self, msg: DailyStatsPanelMessage) -> Option<Action> {
-        match msg {
-            DailyStatsPanelMessage::Scroll(dir) => {
-                self.scroll.scroll(dir, 20);
-                None
-            }
-        }
-    }
-
-    pub fn scroll_offset(&self) -> usize {
-        self.scroll.offset()
-    }
-
-    pub fn view(&self, frame: &mut Frame, area: Rect, _focused: bool) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Daily Stats ")
-            .border_style(Style::default().fg(Color::DarkGray));
-        let text = Paragraph::new(Line::from("Daily stats coming soon..."))
-            .style(Style::default().fg(Color::DarkGray))
-            .block(block);
-        frame.render_widget(text, area);
-    }
-}
-
-impl Default for DailyStatsPanel {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 
 /// Roster view panel (stub — reused for both My Roster and Opp Roster tabs).
 pub struct RosterViewPanel {
@@ -203,8 +151,15 @@ impl MatchupMainPanel {
         registry: Option<&StatRegistry>,
         focused: bool,
     ) {
+        let current_day = scoring_period_days.get(selected_day);
         match self.active_tab {
-            MatchupTab::DailyStats => self.daily_panel.view(frame, area, focused),
+            MatchupTab::DailyStats => {
+                if let Some(day) = current_day {
+                    self.daily_panel.view(frame, area, day, focused);
+                } else {
+                    self.daily_panel.view_placeholder(frame, area);
+                }
+            }
             MatchupTab::Analytics => self.analytics_panel.view(
                 frame,
                 area,
@@ -286,13 +241,27 @@ mod tests {
     }
 
     #[test]
-    fn view_does_not_panic_daily_stats() {
+    fn view_does_not_panic_daily_stats_no_data() {
         let backend = ratatui::backend::TestBackend::new(80, 20);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let panel = MatchupMainPanel::new();
         terminal
             .draw(|frame| {
                 panel.view(frame, frame.area(), &[], &[], 0, 0, 7, 0, 5, None, false)
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn view_does_not_panic_daily_stats_with_data() {
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let panel = MatchupMainPanel::new();
+        let day = make_test_scoring_day();
+        let days = vec![day];
+        terminal
+            .draw(|frame| {
+                panel.view(frame, frame.area(), &[], &days, 0, 0, 7, 0, 5, None, false)
             })
             .unwrap();
     }
@@ -334,5 +303,29 @@ mod tests {
                 panel.view(frame, frame.area(), &[], &[], 0, 0, 7, 0, 5, None, false)
             })
             .unwrap();
+    }
+
+    fn make_test_scoring_day() -> ScoringDay {
+        use crate::matchup::{DailyPlayerRow, DailyTotals};
+        ScoringDay {
+            date: "2026-03-26".to_string(),
+            label: "March 26".to_string(),
+            batting_stat_columns: vec!["AB".to_string(), "H".to_string(), "R".to_string()],
+            pitching_stat_columns: vec![],
+            batting_rows: vec![DailyPlayerRow {
+                slot: "C".to_string(),
+                player_name: "Ben Rice".to_string(),
+                team: "NYY".to_string(),
+                positions: vec!["C".to_string()],
+                opponent: Some("@BOS".to_string()),
+                game_status: None,
+                stats: vec![Some(4.0), Some(1.0), Some(0.0)],
+            }],
+            pitching_rows: vec![],
+            batting_totals: Some(DailyTotals {
+                stats: vec![Some(4.0), Some(1.0), Some(0.0)],
+            }),
+            pitching_totals: None,
+        }
     }
 }

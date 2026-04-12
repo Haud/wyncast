@@ -55,6 +55,14 @@ pub struct CategoryScore {
 pub struct ScoringDay {
     pub date: String,
     pub label: String,
+    /// Stat column headers for batting (e.g. ["AB", "H", "R", "HR", "RBI", "BB", "SB", "AVG"]).
+    /// Provided by the extension; indices align with `DailyPlayerRow::stats`.
+    #[serde(default)]
+    pub batting_stat_columns: Vec<String>,
+    /// Stat column headers for pitching (e.g. ["IP", "H", "ER", "BB", "K", "W", "SV", "HD"]).
+    /// Provided by the extension; indices align with `DailyPlayerRow::stats`.
+    #[serde(default)]
+    pub pitching_stat_columns: Vec<String>,
     pub batting_rows: Vec<DailyPlayerRow>,
     pub pitching_rows: Vec<DailyPlayerRow>,
     pub batting_totals: Option<DailyTotals>,
@@ -172,6 +180,8 @@ mod tests {
             scoring_period_days: vec![ScoringDay {
                 date: "2026-03-26".to_string(),
                 label: "March 26".to_string(),
+                batting_stat_columns: vec!["AB".to_string(), "H".to_string(), "R".to_string()],
+                pitching_stat_columns: vec![],
                 batting_rows: vec![DailyPlayerRow {
                     slot: "C".to_string(),
                     player_name: "Ben Rice".to_string(),

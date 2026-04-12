@@ -839,6 +839,8 @@ mod tests {
             ScoringDay {
                 date: "2026-03-26".to_string(),
                 label: "March 26".to_string(),
+                batting_stat_columns: vec![],
+                pitching_stat_columns: vec![],
                 batting_rows: vec![],
                 pitching_rows: vec![
                     make_pitcher_row("SP", "Valdez", Some("@TEX")),
@@ -851,6 +853,8 @@ mod tests {
             ScoringDay {
                 date: "2026-03-27".to_string(),
                 label: "March 27".to_string(),
+                batting_stat_columns: vec![],
+                pitching_stat_columns: vec![],
                 batting_rows: vec![],
                 pitching_rows: vec![
                     make_pitcher_row("SP", "Cole", Some("@TOR")),
@@ -869,6 +873,8 @@ mod tests {
         let days = vec![ScoringDay {
             date: "2026-03-26".to_string(),
             label: "March 26".to_string(),
+            batting_stat_columns: vec![],
+            pitching_stat_columns: vec![],
             batting_rows: vec![],
             pitching_rows: vec![
                 make_pitcher_row("RP", "Weaver", Some("@BOS")),
@@ -886,6 +892,8 @@ mod tests {
         let days = vec![ScoringDay {
             date: "2026-03-26".to_string(),
             label: "March 26".to_string(),
+            batting_stat_columns: vec![],
+            pitching_stat_columns: vec![],
             batting_rows: vec![],
             pitching_rows: vec![
                 make_pitcher_row("SP", "Valdez", None), // day off
@@ -1025,6 +1033,8 @@ mod tests {
         ScoringDay {
             date: "2026-03-26".to_string(),
             label: label.to_string(),
+            batting_stat_columns: vec![],
+            pitching_stat_columns: vec![],
             batting_rows: vec![],
             pitching_rows: vec![],
             batting_totals: None,
