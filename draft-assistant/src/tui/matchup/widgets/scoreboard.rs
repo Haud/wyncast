@@ -1,0 +1,652 @@
+// Scoreboard widget: category-by-category H2H comparison header.
+//
+// Fixed 5-row layout:
+//   Row 1: Header —    R    HR   RBI   BB   SB   AVG  |  K    W    SV   HD   ERA    WHIP  |  Score
+//   Row 2: My team — values with winning indicators
+//   Row 3: Opp team — values with winning indicators
+//   Row 4: Diff — differential with color coding
+//   Row 5: Bottom border (part of the Block)
+
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::Frame;
+
+use crate::matchup::{CategoryScore, CategoryState, TeamMatchupState};
+use crate::stats::{SortDirection, StatRegistry};
+
+/// Column width for each stat value cell.
+const COL_WIDTH: usize = 6;
+
+/// Column width for the team name label.
+const LABEL_WIDTH: usize = 8;
+
+/// Format a stat value using the given precision.
+///
+/// For AVG (precision 3) and ERA/WHIP (precision 2), strips the leading "0"
+/// so we get ".275" instead of "0.275".
+fn format_value(value: f64, precision: u8) -> String {
+    let formatted = format!("{:.prec$}", value, prec = precision as usize);
+    if precision >= 2 && value.abs() < 1.0 && value >= 0.0 {
+        // Strip leading zero: "0.275" -> ".275"
+        formatted.strip_prefix('0').unwrap_or(&formatted).to_string()
+    } else {
+        formatted
+    }
+}
+
+/// Format a differential value with sign prefix.
+///
+/// For `LowerIsBetter` stats (ERA, WHIP), the sign is inverted for display:
+/// a negative raw diff means we're better, so we show it as positive (green).
+fn format_diff(my_value: f64, opp_value: f64, precision: u8, lower_is_better: bool) -> String {
+    let raw_diff = my_value - opp_value;
+    // For display: positive means "good for us"
+    let display_diff = if lower_is_better { -raw_diff } else { raw_diff };
+
+    let abs_formatted = format_value(display_diff.abs(), precision);
+
+    if display_diff > 0.0 {
+        format!("+{}", abs_formatted)
+    } else if display_diff < 0.0 {
+        format!("-{}", abs_formatted)
+    } else {
+        abs_formatted
+    }
+}
+
+/// Determine the color for a differential value.
+///
+/// For `LowerIsBetter` stats, the sense is inverted: negative raw diff = good.
+fn diff_color(my_value: f64, opp_value: f64, lower_is_better: bool) -> Color {
+    let raw_diff = my_value - opp_value;
+    let display_diff = if lower_is_better { -raw_diff } else { raw_diff };
+
+    if display_diff > 0.0 {
+        Color::Green
+    } else if display_diff < 0.0 {
+        Color::Red
+    } else {
+        Color::Yellow
+    }
+}
+
+/// Truncate a string to at most `max_len` characters.
+pub fn truncate_name(name: &str, max_len: usize) -> String {
+    if name.len() <= max_len {
+        name.to_string()
+    } else {
+        name[..max_len].to_string()
+    }
+}
+
+/// Look up format precision for a stat abbreviation from the registry.
+fn precision_for_stat(abbrev: &str, registry: &StatRegistry) -> u8 {
+    registry
+        .get(abbrev)
+        .map(|def| def.format_precision)
+        .unwrap_or(0)
+}
+
+/// Look up whether a stat is LowerIsBetter from the registry.
+fn is_lower_better(abbrev: &str, registry: &StatRegistry) -> bool {
+    registry
+        .get(abbrev)
+        .map(|def| def.sort_direction == SortDirection::LowerIsBetter)
+        .unwrap_or(false)
+}
+
+/// Render the scoreboard into the given area.
+///
+/// Displays all 12 H2H categories with both teams' values, winning indicators,
+/// differentials, and the W-L-T matchup score.
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    category_scores: &[CategoryScore],
+    my_team: &TeamMatchupState,
+    opp_team: &TeamMatchupState,
+    registry: &StatRegistry,
+) {
+    let batting_cats: Vec<&CategoryScore> = category_scores
+        .iter()
+        .filter(|c| registry.get(&c.stat_abbrev).is_some_and(|d| d.player_type == crate::stats::PlayerType::Hitter))
+        .collect();
+    let pitching_cats: Vec<&CategoryScore> = category_scores
+        .iter()
+        .filter(|c| registry.get(&c.stat_abbrev).is_some_and(|d| d.player_type == crate::stats::PlayerType::Pitcher))
+        .collect();
+
+    let lines = vec![
+        build_header_line(&batting_cats, &pitching_cats),
+        build_team_line(
+            &truncate_name(&my_team.abbrev, LABEL_WIDTH - 1),
+            &batting_cats,
+            &pitching_cats,
+            true,
+            &my_team.category_score,
+            registry,
+        ),
+        build_team_line(
+            &truncate_name(&opp_team.abbrev, LABEL_WIDTH - 1),
+            &batting_cats,
+            &pitching_cats,
+            false,
+            &opp_team.category_score,
+            registry,
+        ),
+        build_diff_line(&batting_cats, &pitching_cats, registry),
+    ];
+
+    let paragraph = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::BOTTOM)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
+    frame.render_widget(paragraph, area);
+}
+
+/// Build the header row with stat abbreviations.
+fn build_header_line(batting: &[&CategoryScore], pitching: &[&CategoryScore]) -> Line<'static> {
+    let mut spans = Vec::new();
+    let header_style = Style::default().fg(Color::DarkGray);
+
+    // Label column (blank for header)
+    spans.push(Span::styled(format!("{:width$}", "", width = LABEL_WIDTH), header_style));
+
+    // Batting categories
+    for cat in batting {
+        spans.push(Span::styled(
+            format!("{:>width$}", cat.stat_abbrev, width = COL_WIDTH),
+            header_style,
+        ));
+    }
+
+    // Separator
+    spans.push(Span::styled(" \u{2502} ", header_style));
+
+    // Pitching categories
+    for cat in pitching {
+        spans.push(Span::styled(
+            format!("{:>width$}", cat.stat_abbrev, width = COL_WIDTH),
+            header_style,
+        ));
+    }
+
+    // Score column separator and header
+    spans.push(Span::styled(" \u{2502} ", header_style));
+    spans.push(Span::styled("Score", header_style));
+
+    Line::from(spans)
+}
+
+/// Build a team row showing stat values with winning indicators.
+fn build_team_line(
+    label: &str,
+    batting: &[&CategoryScore],
+    pitching: &[&CategoryScore],
+    is_my_team: bool,
+    matchup_score: &crate::matchup::TeamRecord,
+    registry: &StatRegistry,
+) -> Line<'static> {
+    let mut spans = Vec::new();
+
+    // Team name label
+    spans.push(Span::styled(
+        format!("{:width$}", label, width = LABEL_WIDTH),
+        Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+    ));
+
+    // Batting values
+    for cat in batting {
+        let value = if is_my_team { cat.my_value } else { cat.opp_value };
+        let prec = precision_for_stat(&cat.stat_abbrev, registry);
+        let formatted = format_value(value, prec);
+        let (style, prefix) = cell_style(cat.state, is_my_team);
+        let display = format!("{:>width$}", format!("{}{}", prefix, formatted), width = COL_WIDTH);
+        spans.push(Span::styled(display, style));
+    }
+
+    // Separator
+    spans.push(Span::styled(" \u{2502} ", Style::default().fg(Color::DarkGray)));
+
+    // Pitching values
+    for cat in pitching {
+        let value = if is_my_team { cat.my_value } else { cat.opp_value };
+        let prec = precision_for_stat(&cat.stat_abbrev, registry);
+        let formatted = format_value(value, prec);
+        let (style, prefix) = cell_style(cat.state, is_my_team);
+        let display = format!("{:>width$}", format!("{}{}", prefix, formatted), width = COL_WIDTH);
+        spans.push(Span::styled(display, style));
+    }
+
+    // Score column
+    spans.push(Span::styled(" \u{2502} ", Style::default().fg(Color::DarkGray)));
+    spans.push(Span::styled(
+        matchup_score.to_string(),
+        Style::default().fg(Color::White),
+    ));
+
+    Line::from(spans)
+}
+
+/// Determine the style and prefix for a stat cell based on win state.
+///
+/// Returns `(Style, prefix_str)`. The winning team's cell gets `*` prefix,
+/// green bold text. Losing gets default white. Tied gets yellow.
+fn cell_style(state: CategoryState, is_my_team: bool) -> (Style, &'static str) {
+    match state {
+        CategoryState::Winning => {
+            if is_my_team {
+                // My team is winning: I'm green+bold with *
+                (
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                    "*",
+                )
+            } else {
+                // Opp team, but my team is winning: opp is default
+                (Style::default().fg(Color::White), "")
+            }
+        }
+        CategoryState::Losing => {
+            if is_my_team {
+                // My team is losing: I'm default
+                (Style::default().fg(Color::White), "")
+            } else {
+                // Opp team is winning (my team losing): opp gets green+bold with *
+                (
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                    "*",
+                )
+            }
+        }
+        CategoryState::Tied => (Style::default().fg(Color::Yellow), ""),
+    }
+}
+
+/// Build the differential row.
+fn build_diff_line(
+    batting: &[&CategoryScore],
+    pitching: &[&CategoryScore],
+    registry: &StatRegistry,
+) -> Line<'static> {
+    let mut spans = Vec::new();
+    let label_style = Style::default().fg(Color::DarkGray);
+
+    // Label
+    spans.push(Span::styled(
+        format!("{:width$}", "Diff", width = LABEL_WIDTH),
+        label_style,
+    ));
+
+    // Batting diffs
+    for cat in batting {
+        let prec = precision_for_stat(&cat.stat_abbrev, registry);
+        let lower = is_lower_better(&cat.stat_abbrev, registry);
+        let diff_str = format_diff(cat.my_value, cat.opp_value, prec, lower);
+        let color = diff_color(cat.my_value, cat.opp_value, lower);
+        spans.push(Span::styled(
+            format!("{:>width$}", diff_str, width = COL_WIDTH),
+            Style::default().fg(color),
+        ));
+    }
+
+    // Separator
+    spans.push(Span::styled(" \u{2502} ", label_style));
+
+    // Pitching diffs
+    for cat in pitching {
+        let prec = precision_for_stat(&cat.stat_abbrev, registry);
+        let lower = is_lower_better(&cat.stat_abbrev, registry);
+        let diff_str = format_diff(cat.my_value, cat.opp_value, prec, lower);
+        let color = diff_color(cat.my_value, cat.opp_value, lower);
+        spans.push(Span::styled(
+            format!("{:>width$}", diff_str, width = COL_WIDTH),
+            Style::default().fg(color),
+        ));
+    }
+
+    // Empty score column
+    spans.push(Span::styled(" \u{2502} ", label_style));
+
+    Line::from(spans)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::matchup::TeamRecord;
+    use crate::test_utils::test_registry;
+
+    fn make_category(abbrev: &str, my: f64, opp: f64, state: CategoryState) -> CategoryScore {
+        CategoryScore {
+            stat_abbrev: abbrev.to_string(),
+            my_value: my,
+            opp_value: opp,
+            state,
+        }
+    }
+
+    fn make_full_categories() -> Vec<CategoryScore> {
+        vec![
+            make_category("R", 5.0, 3.0, CategoryState::Winning),
+            make_category("HR", 2.0, 3.0, CategoryState::Losing),
+            make_category("RBI", 5.0, 4.0, CategoryState::Winning),
+            make_category("BB", 3.0, 1.0, CategoryState::Winning),
+            make_category("SB", 1.0, 2.0, CategoryState::Losing),
+            make_category("AVG", 0.275, 0.290, CategoryState::Losing),
+            make_category("K", 42.0, 48.0, CategoryState::Losing),
+            make_category("W", 1.0, 2.0, CategoryState::Losing),
+            make_category("SV", 0.0, 1.0, CategoryState::Losing),
+            make_category("HD", 2.0, 0.0, CategoryState::Winning),
+            make_category("ERA", 3.50, 4.20, CategoryState::Winning),
+            make_category("WHIP", 1.20, 1.35, CategoryState::Winning),
+        ]
+    }
+
+    fn make_my_team() -> TeamMatchupState {
+        TeamMatchupState {
+            name: "Bob Dole Experience".to_string(),
+            abbrev: "BDE".to_string(),
+            record: TeamRecord { wins: 1, losses: 0, ties: 0 },
+            category_score: TeamRecord { wins: 6, losses: 4, ties: 2 },
+        }
+    }
+
+    fn make_opp_team() -> TeamMatchupState {
+        TeamMatchupState {
+            name: "Certified! Smokified!".to_string(),
+            abbrev: "C!S!".to_string(),
+            record: TeamRecord { wins: 0, losses: 1, ties: 0 },
+            category_score: TeamRecord { wins: 4, losses: 6, ties: 2 },
+        }
+    }
+
+    // -- format_value tests --
+
+    #[test]
+    fn format_counting_stat() {
+        assert_eq!(format_value(5.0, 0), "5");
+        assert_eq!(format_value(42.0, 0), "42");
+        assert_eq!(format_value(0.0, 0), "0");
+    }
+
+    #[test]
+    fn format_avg_strips_leading_zero() {
+        assert_eq!(format_value(0.275, 3), ".275");
+        assert_eq!(format_value(0.290, 3), ".290");
+        assert_eq!(format_value(0.000, 3), ".000");
+    }
+
+    #[test]
+    fn format_era_strips_leading_zero() {
+        assert_eq!(format_value(0.50, 2), ".50");
+    }
+
+    #[test]
+    fn format_era_above_one() {
+        assert_eq!(format_value(3.50, 2), "3.50");
+        assert_eq!(format_value(4.20, 2), "4.20");
+    }
+
+    #[test]
+    fn format_whip_above_one() {
+        assert_eq!(format_value(1.20, 2), "1.20");
+        assert_eq!(format_value(1.35, 2), "1.35");
+    }
+
+    // -- format_diff tests --
+
+    #[test]
+    fn diff_higher_is_better_positive() {
+        // R: 5 vs 3, higher is better => +2 (green)
+        assert_eq!(format_diff(5.0, 3.0, 0, false), "+2");
+    }
+
+    #[test]
+    fn diff_higher_is_better_negative() {
+        // HR: 2 vs 3, higher is better => -1 (red)
+        assert_eq!(format_diff(2.0, 3.0, 0, false), "-1");
+    }
+
+    #[test]
+    fn diff_higher_is_better_zero() {
+        assert_eq!(format_diff(3.0, 3.0, 0, false), "0");
+    }
+
+    #[test]
+    fn diff_lower_is_better_winning() {
+        // ERA: 3.50 vs 4.20, lower is better
+        // raw diff = -0.70 (negative), but lower is better so display_diff = +0.70
+        assert_eq!(format_diff(3.50, 4.20, 2, true), "+.70");
+    }
+
+    #[test]
+    fn diff_lower_is_better_losing() {
+        // ERA: 4.20 vs 3.50, lower is better
+        // raw diff = +0.70, but lower is better so display_diff = -0.70
+        assert_eq!(format_diff(4.20, 3.50, 2, true), "-.70");
+    }
+
+    #[test]
+    fn diff_lower_is_better_tied() {
+        assert_eq!(format_diff(3.50, 3.50, 2, true), ".00");
+    }
+
+    // -- diff_color tests --
+
+    #[test]
+    fn diff_color_higher_positive_is_green() {
+        assert_eq!(diff_color(5.0, 3.0, false), Color::Green);
+    }
+
+    #[test]
+    fn diff_color_higher_negative_is_red() {
+        assert_eq!(diff_color(2.0, 3.0, false), Color::Red);
+    }
+
+    #[test]
+    fn diff_color_higher_zero_is_yellow() {
+        assert_eq!(diff_color(3.0, 3.0, false), Color::Yellow);
+    }
+
+    #[test]
+    fn diff_color_lower_winning_is_green() {
+        // ERA: 3.50 vs 4.20, lower is better => we're winning => green
+        assert_eq!(diff_color(3.50, 4.20, true), Color::Green);
+    }
+
+    #[test]
+    fn diff_color_lower_losing_is_red() {
+        // ERA: 4.20 vs 3.50, lower is better => we're losing => red
+        assert_eq!(diff_color(4.20, 3.50, true), Color::Red);
+    }
+
+    // -- truncate_name tests --
+
+    #[test]
+    fn truncate_short_name_unchanged() {
+        assert_eq!(truncate_name("BDE", 7), "BDE");
+    }
+
+    #[test]
+    fn truncate_long_name() {
+        assert_eq!(truncate_name("Bob Dole Experience", 7), "Bob Dol");
+    }
+
+    #[test]
+    fn truncate_exact_length() {
+        assert_eq!(truncate_name("1234567", 7), "1234567");
+    }
+
+    // -- cell_style tests --
+
+    #[test]
+    fn winning_my_team_is_green_bold_with_star() {
+        let (style, prefix) = cell_style(CategoryState::Winning, true);
+        assert_eq!(style.fg, Some(Color::Green));
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(prefix, "*");
+    }
+
+    #[test]
+    fn winning_opp_team_is_white() {
+        let (style, prefix) = cell_style(CategoryState::Winning, false);
+        assert_eq!(style.fg, Some(Color::White));
+        assert_eq!(prefix, "");
+    }
+
+    #[test]
+    fn losing_my_team_is_white() {
+        let (style, prefix) = cell_style(CategoryState::Losing, true);
+        assert_eq!(style.fg, Some(Color::White));
+        assert_eq!(prefix, "");
+    }
+
+    #[test]
+    fn losing_opp_team_is_green_bold_with_star() {
+        let (style, prefix) = cell_style(CategoryState::Losing, false);
+        assert_eq!(style.fg, Some(Color::Green));
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(prefix, "*");
+    }
+
+    #[test]
+    fn tied_is_yellow() {
+        let (style, prefix) = cell_style(CategoryState::Tied, true);
+        assert_eq!(style.fg, Some(Color::Yellow));
+        assert_eq!(prefix, "");
+
+        let (style, prefix) = cell_style(CategoryState::Tied, false);
+        assert_eq!(style.fg, Some(Color::Yellow));
+        assert_eq!(prefix, "");
+    }
+
+    // -- precision_for_stat tests --
+
+    #[test]
+    fn precision_from_registry() {
+        let registry = test_registry();
+        assert_eq!(precision_for_stat("R", &registry), 0);
+        assert_eq!(precision_for_stat("HR", &registry), 0);
+        assert_eq!(precision_for_stat("AVG", &registry), 3);
+        assert_eq!(precision_for_stat("ERA", &registry), 2);
+        assert_eq!(precision_for_stat("WHIP", &registry), 2);
+        assert_eq!(precision_for_stat("K", &registry), 0);
+    }
+
+    #[test]
+    fn unknown_stat_defaults_to_zero_precision() {
+        let registry = test_registry();
+        assert_eq!(precision_for_stat("UNKNOWN", &registry), 0);
+    }
+
+    // -- is_lower_better tests --
+
+    #[test]
+    fn era_is_lower_better() {
+        let registry = test_registry();
+        assert!(is_lower_better("ERA", &registry));
+        assert!(is_lower_better("WHIP", &registry));
+    }
+
+    #[test]
+    fn counting_stats_are_higher_better() {
+        let registry = test_registry();
+        assert!(!is_lower_better("R", &registry));
+        assert!(!is_lower_better("HR", &registry));
+        assert!(!is_lower_better("AVG", &registry));
+        assert!(!is_lower_better("K", &registry));
+    }
+
+    // -- render smoke tests --
+
+    #[test]
+    fn render_does_not_panic_empty_categories() {
+        let backend = ratatui::backend::TestBackend::new(160, 5);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let registry = test_registry();
+        let my_team = make_my_team();
+        let opp_team = make_opp_team();
+        terminal
+            .draw(|frame| render(frame, frame.area(), &[], &my_team, &opp_team, &registry))
+            .unwrap();
+    }
+
+    #[test]
+    fn render_does_not_panic_full_categories() {
+        let backend = ratatui::backend::TestBackend::new(160, 5);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let registry = test_registry();
+        let categories = make_full_categories();
+        let my_team = make_my_team();
+        let opp_team = make_opp_team();
+        terminal
+            .draw(|frame| {
+                render(
+                    frame,
+                    frame.area(),
+                    &categories,
+                    &my_team,
+                    &opp_team,
+                    &registry,
+                )
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn render_does_not_panic_narrow_terminal() {
+        let backend = ratatui::backend::TestBackend::new(80, 5);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let registry = test_registry();
+        let categories = make_full_categories();
+        let my_team = make_my_team();
+        let opp_team = make_opp_team();
+        terminal
+            .draw(|frame| {
+                render(
+                    frame,
+                    frame.area(),
+                    &categories,
+                    &my_team,
+                    &opp_team,
+                    &registry,
+                )
+            })
+            .unwrap();
+    }
+
+    // -- header line content --
+
+    #[test]
+    fn header_contains_stat_abbrevs() {
+        let categories = make_full_categories();
+        let registry = test_registry();
+        let batting: Vec<&CategoryScore> = categories
+            .iter()
+            .filter(|c| registry.get(&c.stat_abbrev).is_some_and(|d| d.player_type == crate::stats::PlayerType::Hitter))
+            .collect();
+        let pitching: Vec<&CategoryScore> = categories
+            .iter()
+            .filter(|c| registry.get(&c.stat_abbrev).is_some_and(|d| d.player_type == crate::stats::PlayerType::Pitcher))
+            .collect();
+        let line = build_header_line(&batting, &pitching);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("R"));
+        assert!(text.contains("HR"));
+        assert!(text.contains("AVG"));
+        assert!(text.contains("ERA"));
+        assert!(text.contains("WHIP"));
+        assert!(text.contains("Score"));
+    }
+}

@@ -10,6 +10,7 @@
 pub mod layout;
 pub mod main_panel;
 pub mod sidebar;
+pub mod widgets;
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -18,8 +19,9 @@ use crossterm::event::KeyCode;
 use ratatui::Frame;
 
 use crate::matchup::{
-    CategoryScore, CategoryState, MatchupInfo, MatchupSnapshot, ScoringDay, TeamMatchupState,
+    CategoryScore, MatchupInfo, MatchupSnapshot, ScoringDay, TeamMatchupState,
 };
+use crate::stats::StatRegistry;
 use crate::tui::action::Action;
 use crate::tui::scroll::ScrollDirection;
 use crate::tui::subscription::{Subscription, SubscriptionId};
@@ -107,6 +109,7 @@ pub struct MatchupScreen {
     pub gs_limit: u8,
     pub acquisitions_used: u8,
     pub acquisitions_limit: u8,
+    pub stat_registry: Option<StatRegistry>,
     sub_id_base: SubscriptionId,
 }
 
@@ -126,6 +129,7 @@ impl MatchupScreen {
             gs_limit: 7,
             acquisitions_used: 0,
             acquisitions_limit: 5,
+            stat_registry: None,
             sub_id_base: SubscriptionId::unique(),
         }
     }
@@ -153,60 +157,38 @@ impl MatchupScreen {
     pub fn view(&self, frame: &mut Frame, keybinds: &[KbHint]) {
         let layout = build_matchup_layout(frame.area());
 
-        // Status bar: matchup info placeholder
-        let status_text = if let Some(info) = &self.matchup_info {
-            let day_display = self.selected_day + 1;
-            let total_days = self.scoring_period_days.len();
-            format!(
-                " Matchup {} ({} - {})  |  {} vs {}  |  Day {} of {}",
-                info.matchup_period,
-                info.start_date,
-                info.end_date,
-                info.my_team_name,
-                info.opp_team_name,
-                day_display,
-                total_days,
-            )
-        } else {
-            " Matchup (waiting for data...)".to_string()
-        };
-        let status_bar = ratatui::widgets::Paragraph::new(status_text)
-            .style(
-                ratatui::style::Style::default()
-                    .fg(ratatui::style::Color::White)
-                    .bg(ratatui::style::Color::DarkGray),
-            );
-        frame.render_widget(status_bar, layout.status_bar);
+        // Status bar
+        widgets::status_bar::render(
+            frame,
+            layout.status_bar,
+            self.matchup_info.as_ref(),
+            self.selected_day,
+            self.scoring_period_days.len(),
+        );
 
-        // Scoreboard: category comparison placeholder
-        let scoreboard_text = if self.category_scores.is_empty() {
-            "Scoreboard (waiting for data...)".to_string()
-        } else {
-            let my_wins = self
-                .category_scores
-                .iter()
-                .filter(|c| c.state == CategoryState::Winning)
-                .count();
-            let opp_wins = self
-                .category_scores
-                .iter()
-                .filter(|c| c.state == CategoryState::Losing)
-                .count();
-            let ties = self
-                .category_scores
-                .iter()
-                .filter(|c| c.state == CategoryState::Tied)
-                .count();
-            format!("Scoreboard: {my_wins}-{opp_wins}-{ties}")
-        };
-        let scoreboard = ratatui::widgets::Paragraph::new(scoreboard_text)
-            .style(ratatui::style::Style::default().fg(ratatui::style::Color::Cyan))
-            .block(
-                ratatui::widgets::Block::default()
-                    .borders(ratatui::widgets::Borders::ALL)
-                    .title(" Scoreboard "),
+        // Scoreboard
+        if let (Some(my_team), Some(opp_team), Some(registry)) =
+            (&self.my_team, &self.opp_team, &self.stat_registry)
+        {
+            widgets::scoreboard::render(
+                frame,
+                layout.scoreboard,
+                &self.category_scores,
+                my_team,
+                opp_team,
+                registry,
             );
-        frame.render_widget(scoreboard, layout.scoreboard);
+        } else {
+            // Fallback placeholder when data/registry not yet available
+            let text = ratatui::widgets::Paragraph::new("Scoreboard (waiting for data...)")
+                .style(ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray))
+                .block(
+                    ratatui::widgets::Block::default()
+                        .borders(ratatui::widgets::Borders::ALL)
+                        .title(" Scoreboard "),
+                );
+            frame.render_widget(text, layout.scoreboard);
+        }
 
         // Main panel
         let main_focused = self.focused_panel == Some(MatchupFocusPanel::MainPanel);
@@ -701,7 +683,7 @@ mod tests {
     }
 
     fn make_test_snapshot() -> MatchupSnapshot {
-        use crate::matchup::TeamRecord;
+        use crate::matchup::{CategoryState, TeamRecord};
 
         MatchupSnapshot {
             matchup_info: MatchupInfo {
