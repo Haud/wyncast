@@ -1,5 +1,5 @@
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::db::Database;
 use crate::draft::pick::{espn_slot_from_position_str, DraftPick};
@@ -54,7 +54,16 @@ pub(super) async fn handle_ws_message(
     let msg: ExtensionMessage = match serde_json::from_str(json_str) {
         Ok(m) => m,
         Err(e) => {
-            warn!("Failed to parse extension message: {}", e);
+            // Logged at error level so the default log filter surfaces it —
+            // otherwise a schema drift between extension and Rust protocol
+            // silently drops every message. The JSON snippet is capped at
+            // 200 chars to make the `type` + first few payload keys visible
+            // without flooding the log with a full matchup payload.
+            let snippet: String = json_str.chars().take(200).collect();
+            error!(
+                "Failed to parse extension message: {} (first 200 chars: {})",
+                e, snippet
+            );
             return;
         }
     };

@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use crossterm::event::KeyCode;
 use ratatui::Frame;
+use tracing::info;
 
 use crate::protocol::{AppMode, AppSnapshot, ConnectionStatus, SettingsSection, TabId, UiUpdate, UserCommand};
 use crate::tui::subscription::{Subscription, SubscriptionId};
@@ -204,6 +205,19 @@ impl App {
                 }
             }
             UiUpdate::MatchupSnapshot(snapshot) => {
+                info!(
+                    "Applying matchup snapshot ({} batting rows, {} pitching rows)",
+                    snapshot
+                        .scoring_period_days
+                        .first()
+                        .map(|d| d.batting_rows.len())
+                        .unwrap_or(0),
+                    snapshot
+                        .scoring_period_days
+                        .first()
+                        .map(|d| d.pitching_rows.len())
+                        .unwrap_or(0),
+                );
                 self.matchup_screen.apply_snapshot(&snapshot);
                 self.matchup_snapshot = Some(*snapshot);
             }

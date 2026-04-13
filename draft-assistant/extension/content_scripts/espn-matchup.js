@@ -29,6 +29,20 @@ function warn(...args) {
   console.warn(LOG_PREFIX, ...args);
 }
 
+// Boot log fires as soon as the content script is injected, so the user can
+// confirm in DevTools that the expected URL actually matches the manifest
+// pattern (e.g. a boxscore URL with query params) and that the latest
+// extension build is loaded.
+log('espn-matchup content script loaded', {
+  url: typeof window !== 'undefined' ? window.location.href : '',
+});
+
+// One-shot flags to keep observability signals visible without spamming the
+// console on every poll/mutation tick. Reset on a successful send so later
+// regressions still log once.
+let loggedMissingFieldsOnce = false;
+let loggedFirstSendOnce = false;
+
 // ---------------------------------------------------------------------------
 // Utility helpers
 // ---------------------------------------------------------------------------
@@ -563,6 +577,16 @@ function scrapeMatchupState() {
     // Rust backend rejects the whole payload if these are missing.
     if (!matchupPeriod || !startDate || !endDate ||
         !myTeam || !myTeam.name || !oppTeam || !oppTeam.name) {
+      if (!loggedMissingFieldsOnce) {
+        loggedMissingFieldsOnce = true;
+        warn('scrapeMatchupState: required fields unresolved', {
+          matchupPeriod: Boolean(matchupPeriod),
+          startDate: Boolean(startDate),
+          endDate: Boolean(endDate),
+          myTeamName: Boolean(myTeam && myTeam.name),
+          oppTeamName: Boolean(oppTeam && oppTeam.name),
+        });
+      }
       return null;
     }
 
@@ -684,11 +708,27 @@ function handleStateUpdate() {
   const state = scrapeMatchupState();
   if (!state) return;
 
+  // First successful scrape since page load — reset the missing-fields
+  // one-shot so a later selector regression still warns once.
+  loggedMissingFieldsOnce = false;
+
   const fingerprint = computeFingerprint(state);
   if (fingerprint === lastFingerprint) return;
   lastFingerprint = fingerprint;
 
-  log('Sending MATCHUP_STATE update');
+  if (!loggedFirstSendOnce) {
+    loggedFirstSendOnce = true;
+    log('First MATCHUP_STATE send', {
+      matchupPeriod: state.matchupPeriod,
+      myTeam: state.myTeam && state.myTeam.name,
+      oppTeam: state.oppTeam && state.oppTeam.name,
+      categories: state.categories ? state.categories.length : 0,
+      battingPlayers: state.batting ? state.batting.players.length : 0,
+      pitchingPlayers: state.pitching ? state.pitching.players.length : 0,
+    });
+  } else {
+    log('Sending MATCHUP_STATE update');
+  }
   sendMatchupState(state);
 }
 
