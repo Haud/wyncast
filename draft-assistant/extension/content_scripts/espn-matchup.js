@@ -235,7 +235,7 @@ function scrapeTeamHeader(headerEl) {
   return {
     name: name,
     record: record,
-    matchup_score: score,
+    matchupScore: score,
   };
 }
 
@@ -245,7 +245,7 @@ function scrapeTeamHeader(headerEl) {
 
 /**
  * Scrape the category scoreboard table.
- * Returns an array of category objects with stat_id, abbrev, my_value, opp_value.
+ * Returns an array of category objects with statId, abbrev, myValue, oppValue.
  */
 function scrapeScoreboard() {
   const categories = [];
@@ -291,11 +291,11 @@ function scrapeScoreboard() {
       const homeText = homeCell ? homeCell.textContent.trim() : '';
 
       categories.push({
-        stat_id: statDefs[i].statId,
+        statId: statDefs[i].statId,
         abbrev: statDefs[i].abbrev,
-        my_value: parseStatValue(awayText),
-        opp_value: parseStatValue(homeText),
-        lower_is_better: LOWER_IS_BETTER_STATS.has(statDefs[i].statId),
+        myValue: parseStatValue(awayText),
+        oppValue: parseStatValue(homeText),
+        lowerIsBetter: LOWER_IS_BETTER_STATS.has(statDefs[i].statId),
       });
     }
   } catch (e) {
@@ -558,6 +558,14 @@ function scrapeMatchupState() {
     const myTeam = side === 'away' ? header.awayTeam : header.homeTeam;
     const oppTeam = side === 'away' ? header.homeTeam : header.awayTeam;
 
+    // Required fields: if any are unresolved, skip this send. The DOM will
+    // settle on a subsequent MutationObserver tick or periodic poll, and the
+    // Rust backend rejects the whole payload if these are missing.
+    if (!matchupPeriod || !startDate || !endDate ||
+        !myTeam || !myTeam.name || !oppTeam || !oppTeam.name) {
+      return null;
+    }
+
     // Scrape category scoreboard
     const categories = scrapeScoreboard();
 
@@ -569,12 +577,12 @@ function scrapeMatchupState() {
     const selectedDay = detectSelectedDay() || new Date().toISOString().split('T')[0];
 
     return {
-      matchup_period: matchupPeriod,
-      start_date: startDate,
-      end_date: endDate,
-      selected_day: selectedDay,
-      my_team: myTeam,
-      opp_team: oppTeam,
+      matchupPeriod: matchupPeriod,
+      startDate: startDate,
+      endDate: endDate,
+      selectedDay: selectedDay,
+      myTeam: myTeam,
+      oppTeam: oppTeam,
       categories: categories,
       batting: batting,
       pitching: pitching,
@@ -629,12 +637,12 @@ function computeFingerprint(state) {
   try {
     // Include key fields that change during live games
     const parts = [
-      state.matchup_period,
-      state.selected_day,
-      state.my_team ? state.my_team.matchup_score : '',
-      state.opp_team ? state.opp_team.matchup_score : '',
+      state.matchupPeriod,
+      state.selectedDay,
+      state.myTeam ? state.myTeam.matchupScore : '',
+      state.oppTeam ? state.oppTeam.matchupScore : '',
       state.categories ? state.categories.map(c =>
-        `${c.stat_id}:${c.my_value}:${c.opp_value}`
+        `${c.statId}:${c.myValue}:${c.oppValue}`
       ).join(',') : '',
       state.batting ? state.batting.players.length : 0,
       state.pitching ? state.pitching.players.length : 0,
