@@ -99,20 +99,46 @@ function parseMatchupPeriodFromTitle() {
 }
 
 /**
- * Parse a date range string like "Mar 25 - Apr 5" into ISO date strings.
+ * Parse a date range string into ISO date strings. Handles three title shapes:
+ *   "Mar 25 - Apr 5"  (different-month, full)
+ *   "Apr 6 - 12"      (same-month, end token is just a day number)
+ *   "Dec 28 - Jan 3"  (year rollover — end year bumped by 1)
  * Infers the year from the current season context.
+ *
+ * Self-test (manual — no JS harness in this extension):
+ *   parseDateRange('Mar 25 - Apr 5')  -> { start: 'YYYY-03-25', end: 'YYYY-04-05' }
+ *   parseDateRange('Apr 6 - 12')      -> { start: 'YYYY-04-06', end: 'YYYY-04-12' }
+ *   parseDateRange('Dec 28 - Jan 3')  -> { start: 'YYYY-12-28', end: '(YYYY+1)-01-03' }
+ *   parseDateRange('')                -> null
+ *   parseDateRange(null)              -> null
+ *   parseDateRange('garbage')         -> null
  */
 function parseDateRange(rangeStr) {
   if (!rangeStr) return null;
   try {
     const parts = rangeStr.split('-').map(s => s.trim());
-    if (parts.length !== 2) return null;
+    if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
 
     const year = inferSeasonYear();
     const start = parseMonthDay(parts[0], year);
-    const end = parseMonthDay(parts[1], year);
+    if (!start) return null;
 
-    if (!start || !end) return null;
+    // End token may be "Apr 5" (full) or just "12" (same-month abbreviation
+    // like "Apr 6 - 12"). In the abbreviated case reuse the start's month.
+    let end = parseMonthDay(parts[1], year);
+    if (!end) {
+      const dayOnly = parts[1].match(/^(\d+)$/);
+      if (!dayOnly) return null;
+      const startMonth = start.slice(5, 7);
+      end = `${year}-${startMonth}-${dayOnly[1].padStart(2, '0')}`;
+    }
+
+    // Year rollover ("Dec 28 - Jan 3"): if the computed end is before the
+    // start, the range spans a year boundary. ISO strings compare lexically.
+    if (end < start) {
+      end = `${year + 1}-${end.slice(5)}`;
+    }
+
     return { start: start, end: end };
   } catch (_e) {
     return null;
@@ -166,7 +192,10 @@ function inferSeasonYear() {
  */
 function getMatchupDatesFromNextData(matchupPeriod) {
   try {
-    if (typeof __NEXT_DATA__ === 'undefined') return null;
+    if (typeof __NEXT_DATA__ === 'undefined') {
+      warn('getMatchupDatesFromNextData: __NEXT_DATA__ undefined');
+      return null;
+    }
 
     const consts = __NEXT_DATA__.props.pageProps.page.config.constants;
     const scoringPeriods = consts.scoringPeriods;
@@ -184,11 +213,17 @@ function getMatchupDatesFromNextData(matchupPeriod) {
       if (weeklyPeriods) break;
     }
 
-    if (!weeklyPeriods) return null;
+    if (!weeklyPeriods) {
+      warn('getMatchupDatesFromNextData: no weekly periodType found in segments');
+      return null;
+    }
 
     // Find the matchup period entry
     const mp = weeklyPeriods.find(p => p.id === matchupPeriod);
-    if (!mp) return null;
+    if (!mp) {
+      warn('getMatchupDatesFromNextData: matchup period not found', { matchupPeriod });
+      return null;
+    }
 
     // Build scoring period lookup
     const spLookup = {};
@@ -198,14 +233,24 @@ function getMatchupDatesFromNextData(matchupPeriod) {
 
     const startSp = spLookup[mp.scoringPeriodStart];
     const endSp = spLookup[mp.scoringPeriodEnd];
-    if (!startSp || !endSp) return null;
+    if (!startSp || !endSp) {
+      warn('getMatchupDatesFromNextData: scoring period lookup miss', {
+        matchupPeriod,
+        scoringPeriodStart: mp.scoringPeriodStart,
+        scoringPeriodEnd: mp.scoringPeriodEnd,
+        haveStart: Boolean(startSp),
+        haveEnd: Boolean(endSp),
+      });
+      return null;
+    }
 
     // Convert epoch ms to YYYY-MM-DD
     const startDate = new Date(startSp.startDate).toISOString().split('T')[0];
     const endDate = new Date(endSp.endDate).toISOString().split('T')[0];
 
     return { startDate: startDate, endDate: endDate };
-  } catch (_e) {
+  } catch (e) {
+    warn('getMatchupDatesFromNextData: exception', e.message || e);
     return null;
   }
 }
