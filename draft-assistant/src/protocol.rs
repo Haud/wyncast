@@ -198,13 +198,17 @@ pub struct MatchupTeamPayload {
 }
 
 /// A single category's values from the matchup WebSocket message.
+///
+/// `my_value` and `opp_value` are `Option<f64>` because ESPN renders `"--"`
+/// for rate stats (AVG/ERA/WHIP) with a zero denominator, and the scoreboard
+/// can be partially rendered while the page is still loading.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MatchupCategoryPayload {
     pub stat_id: u16,
     pub abbrev: String,
-    pub my_value: f64,
-    pub opp_value: f64,
+    pub my_value: Option<f64>,
+    pub opp_value: Option<f64>,
     pub lower_is_better: bool,
 }
 
@@ -1660,8 +1664,8 @@ mod tests {
                 assert_eq!(payload.categories.len(), 3);
                 assert_eq!(payload.categories[0].stat_id, 20);
                 assert_eq!(payload.categories[0].abbrev, "R");
-                assert_eq!(payload.categories[0].my_value, 5.0);
-                assert_eq!(payload.categories[0].opp_value, 3.0);
+                assert_eq!(payload.categories[0].my_value, Some(5.0));
+                assert_eq!(payload.categories[0].opp_value, Some(3.0));
                 assert!(!payload.categories[0].lower_is_better);
                 assert!(payload.categories[2].lower_is_better);
                 assert_eq!(payload.batting.headers.len(), 8);
@@ -1673,6 +1677,57 @@ mod tests {
                 assert_eq!(payload.batting.totals.as_ref().unwrap().len(), 8);
                 assert_eq!(payload.pitching.players.len(), 0);
                 assert!(payload.pitching.totals.is_none());
+            }
+            other => panic!("Expected MatchupState, got {:?}", other),
+        }
+    }
+
+    /// Regression: the matchup content script emits camelCase JSON keys and
+    /// `null` for rate-stat category values that ESPN renders as `"--"`
+    /// (AVG/ERA/WHIP before any denominator exists). This test pins the exact
+    /// shape the extension sends so future drift is caught at the unit-test
+    /// level rather than by end-to-end failures.
+    #[test]
+    fn deserialize_extension_matchup_payload_shape() {
+        // Mirrors the exact JSON the background script relays over the
+        // WebSocket (`source` is stripped by background-core.js before relay).
+        let json = r#"{
+            "type": "MATCHUP_STATE",
+            "timestamp": 1711500000,
+            "payload": {
+                "matchupPeriod": 1,
+                "startDate": "2026-03-25",
+                "endDate": "2026-04-05",
+                "selectedDay": "2026-03-26",
+                "myTeam": {
+                    "name": "Bob Dole Experience",
+                    "record": "0-0-0",
+                    "matchupScore": "0-0-12"
+                },
+                "oppTeam": {
+                    "name": "Certified! Smokified!",
+                    "record": "0-0-0",
+                    "matchupScore": "0-0-12"
+                },
+                "categories": [
+                    { "statId": 20, "abbrev": "R", "myValue": 0, "oppValue": 0, "lowerIsBetter": false },
+                    { "statId": 2, "abbrev": "AVG", "myValue": null, "oppValue": null, "lowerIsBetter": false },
+                    { "statId": 47, "abbrev": "ERA", "myValue": null, "oppValue": 3.00, "lowerIsBetter": true }
+                ],
+                "batting": { "headers": ["AB", "H"], "players": [], "totals": null },
+                "pitching": { "headers": ["IP", "K"], "players": [], "totals": null }
+            }
+        }"#;
+
+        let msg: ExtensionMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ExtensionMessage::MatchupState { payload, .. } => {
+                assert_eq!(payload.matchup_period, 1);
+                assert_eq!(payload.categories[0].my_value, Some(0.0));
+                assert_eq!(payload.categories[1].my_value, None);
+                assert_eq!(payload.categories[1].opp_value, None);
+                assert_eq!(payload.categories[2].my_value, None);
+                assert_eq!(payload.categories[2].opp_value, Some(3.00));
             }
             other => panic!("Expected MatchupState, got {:?}", other),
         }
@@ -1700,8 +1755,8 @@ mod tests {
                 categories: vec![MatchupCategoryPayload {
                     stat_id: 20,
                     abbrev: "R".to_string(),
-                    my_value: 10.0,
-                    opp_value: 8.0,
+                    my_value: Some(10.0),
+                    opp_value: Some(8.0),
                     lower_is_better: false,
                 }],
                 batting: MatchupSectionPayload {

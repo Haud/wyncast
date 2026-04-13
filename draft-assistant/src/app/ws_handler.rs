@@ -628,7 +628,19 @@ fn parse_record(s: &str) -> TeamRecord {
 }
 
 /// Determine category win/loss/tie state from values and sort direction.
-fn category_state(my_value: f64, opp_value: f64, lower_is_better: bool) -> CategoryState {
+///
+/// `None` values (ESPN renders `"--"` for rate stats with a zero denominator)
+/// are treated as Tied — neither side earns credit for a category that has
+/// not yet produced a real value.
+fn category_state(
+    my_value: Option<f64>,
+    opp_value: Option<f64>,
+    lower_is_better: bool,
+) -> CategoryState {
+    let (my_value, opp_value) = match (my_value, opp_value) {
+        (Some(m), Some(o)) => (m, o),
+        _ => return CategoryState::Tied,
+    };
     if (my_value - opp_value).abs() < f64::EPSILON {
         CategoryState::Tied
     } else if lower_is_better {
@@ -681,8 +693,11 @@ async fn handle_matchup_state(
         .iter()
         .map(|cat| CategoryScore {
             stat_abbrev: cat.abbrev.clone(),
-            my_value: cat.my_value,
-            opp_value: cat.opp_value,
+            // Coerce None to 0.0 for the domain type — the `state` field still
+            // captures "no comparison possible" as Tied so downstream widgets
+            // don't incorrectly credit either team.
+            my_value: cat.my_value.unwrap_or(0.0),
+            opp_value: cat.opp_value.unwrap_or(0.0),
             state: category_state(cat.my_value, cat.opp_value, cat.lower_is_better),
         })
         .collect();
@@ -1210,29 +1225,29 @@ mod tests {
                 MatchupCategoryPayload {
                     stat_id: 20,
                     abbrev: "R".to_string(),
-                    my_value: 5.0,
-                    opp_value: 3.0,
+                    my_value: Some(5.0),
+                    opp_value: Some(3.0),
                     lower_is_better: false,
                 },
                 MatchupCategoryPayload {
                     stat_id: 5,
                     abbrev: "HR".to_string(),
-                    my_value: 2.0,
-                    opp_value: 3.0,
+                    my_value: Some(2.0),
+                    opp_value: Some(3.0),
                     lower_is_better: false,
                 },
                 MatchupCategoryPayload {
                     stat_id: 47,
                     abbrev: "ERA".to_string(),
-                    my_value: 3.50,
-                    opp_value: 4.20,
+                    my_value: Some(3.50),
+                    opp_value: Some(4.20),
                     lower_is_better: true,
                 },
                 MatchupCategoryPayload {
                     stat_id: 41,
                     abbrev: "WHIP".to_string(),
-                    my_value: 1.20,
-                    opp_value: 1.20,
+                    my_value: Some(1.20),
+                    opp_value: Some(1.20),
                     lower_is_better: true,
                 },
             ],
@@ -1330,7 +1345,7 @@ mod tests {
     #[test]
     fn category_state_higher_is_better_winning() {
         assert_eq!(
-            category_state(5.0, 3.0, false),
+            category_state(Some(5.0), Some(3.0), false),
             CategoryState::Winning
         );
     }
@@ -1338,7 +1353,7 @@ mod tests {
     #[test]
     fn category_state_higher_is_better_losing() {
         assert_eq!(
-            category_state(2.0, 3.0, false),
+            category_state(Some(2.0), Some(3.0), false),
             CategoryState::Losing
         );
     }
@@ -1347,7 +1362,7 @@ mod tests {
     fn category_state_lower_is_better_winning() {
         // ERA: lower is better, my 3.50 < opp 4.20 => winning
         assert_eq!(
-            category_state(3.50, 4.20, true),
+            category_state(Some(3.50), Some(4.20), true),
             CategoryState::Winning
         );
     }
@@ -1356,7 +1371,7 @@ mod tests {
     fn category_state_lower_is_better_losing() {
         // WHIP: lower is better, my 1.35 > opp 1.20 => losing
         assert_eq!(
-            category_state(1.35, 1.20, true),
+            category_state(Some(1.35), Some(1.20), true),
             CategoryState::Losing
         );
     }
@@ -1364,11 +1379,29 @@ mod tests {
     #[test]
     fn category_state_tied() {
         assert_eq!(
-            category_state(1.20, 1.20, true),
+            category_state(Some(1.20), Some(1.20), true),
             CategoryState::Tied
         );
         assert_eq!(
-            category_state(5.0, 5.0, false),
+            category_state(Some(5.0), Some(5.0), false),
+            CategoryState::Tied
+        );
+    }
+
+    #[test]
+    fn category_state_missing_values_are_tied() {
+        // ESPN renders "--" for rate stats with zero denominator. A missing
+        // value on either side (or both) must not credit a team with a win.
+        assert_eq!(
+            category_state(None, Some(3.00), true),
+            CategoryState::Tied
+        );
+        assert_eq!(
+            category_state(Some(3.00), None, true),
+            CategoryState::Tied
+        );
+        assert_eq!(
+            category_state(None, None, false),
             CategoryState::Tied
         );
     }
@@ -1383,8 +1416,8 @@ mod tests {
             .iter()
             .map(|cat| crate::matchup::CategoryScore {
                 stat_abbrev: cat.abbrev.clone(),
-                my_value: cat.my_value,
-                opp_value: cat.opp_value,
+                my_value: cat.my_value.unwrap_or(0.0),
+                opp_value: cat.opp_value.unwrap_or(0.0),
                 state: category_state(cat.my_value, cat.opp_value, cat.lower_is_better),
             })
             .collect();
