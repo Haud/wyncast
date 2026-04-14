@@ -204,10 +204,6 @@ impl MatchupScreen {
             &self.category_scores,
             &self.scoring_period_days,
             self.selected_day,
-            self.games_started,
-            self.gs_limit,
-            self.acquisitions_used,
-            self.acquisitions_limit,
             None, // StatRegistry not available at screen level yet
             my_name,
             opp_name,

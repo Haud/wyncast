@@ -93,10 +93,6 @@ impl MatchupMainPanel {
         category_scores: &[CategoryScore],
         scoring_period_days: &[ScoringDay],
         selected_day: usize,
-        games_started: u8,
-        gs_limit: u8,
-        acquisitions_used: u8,
-        acquisitions_limit: u8,
         registry: Option<&StatRegistry>,
         my_team_name: &str,
         opp_team_name: &str,
@@ -117,10 +113,6 @@ impl MatchupMainPanel {
                 category_scores,
                 scoring_period_days,
                 selected_day,
-                games_started,
-                gs_limit,
-                acquisitions_used,
-                acquisitions_limit,
                 registry,
                 focused,
             ),
@@ -200,7 +192,7 @@ mod tests {
         let panel = MatchupMainPanel::new();
         terminal
             .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &[], 0, 0, 7, 0, 5, None, "My Team", "Opp Team", false)
+                panel.view(frame, frame.area(), &[], &[], 0, None, "My Team", "Opp Team", false)
             })
             .unwrap();
     }
@@ -214,7 +206,7 @@ mod tests {
         let days = vec![day];
         terminal
             .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &days, 0, 0, 7, 0, 5, None, "My Team", "Opp Team", false)
+                panel.view(frame, frame.area(), &[], &days, 0, None, "My Team", "Opp Team", false)
             })
             .unwrap();
     }
@@ -227,7 +219,7 @@ mod tests {
         panel.active_tab = MatchupTab::Analytics;
         terminal
             .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &[], 0, 0, 7, 0, 5, None, "My Team", "Opp Team", false)
+                panel.view(frame, frame.area(), &[], &[], 0, None, "My Team", "Opp Team", false)
             })
             .unwrap();
     }
@@ -240,7 +232,7 @@ mod tests {
         panel.active_tab = MatchupTab::MyRoster;
         terminal
             .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &[], 0, 0, 7, 0, 5, None, "My Team", "Opp Team", false)
+                panel.view(frame, frame.area(), &[], &[], 0, None, "My Team", "Opp Team", false)
             })
             .unwrap();
     }
@@ -253,7 +245,7 @@ mod tests {
         panel.active_tab = MatchupTab::OppRoster;
         terminal
             .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &[], 0, 0, 7, 0, 5, None, "My Team", "Opp Team", false)
+                panel.view(frame, frame.area(), &[], &[], 0, None, "My Team", "Opp Team", false)
             })
             .unwrap();
     }

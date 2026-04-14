@@ -4,8 +4,6 @@
 // 1. Category Outlook — winning/losing/tied buckets
 // 2. Close Categories — swingable categories within threshold
 // 3. Pace Projections — linear projection of counting stats, component-based for rates
-// 4. GS Tracker — games started count vs limit
-// 5. Acquisitions — acquisition count vs limit
 
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -56,7 +54,6 @@ impl MatchupAnalyticsPanel {
     }
 
     /// Render the analytics panel with all matchup data.
-    #[allow(clippy::too_many_arguments)]
     pub fn view(
         &self,
         frame: &mut Frame,
@@ -64,10 +61,6 @@ impl MatchupAnalyticsPanel {
         category_scores: &[CategoryScore],
         scoring_period_days: &[ScoringDay],
         selected_day: usize,
-        games_started: u8,
-        gs_limit: u8,
-        acquisitions_used: u8,
-        acquisitions_limit: u8,
         registry: Option<&StatRegistry>,
         _focused: bool,
     ) {
@@ -111,18 +104,6 @@ impl MatchupAnalyticsPanel {
             total_days,
             registry,
         );
-
-        // Section 4: GS Tracker
-        build_gs_tracker(
-            &mut lines,
-            scoring_period_days,
-            selected_day,
-            games_started,
-            gs_limit,
-        );
-
-        // Section 5: Acquisitions
-        build_acquisitions(&mut lines, acquisitions_used, acquisitions_limit);
 
         let content_height = lines.len();
         let viewport_height = inner.height as usize;
@@ -395,96 +376,6 @@ fn build_pace_projections(
     }
 }
 
-fn build_gs_tracker(
-    lines: &mut Vec<Line<'static>>,
-    scoring_period_days: &[ScoringDay],
-    selected_day: usize,
-    games_started: u8,
-    gs_limit: u8,
-) {
-    section_header(lines, "GAMES STARTED TRACKER");
-
-    let gs_color = if games_started >= gs_limit {
-        Color::Red
-    } else if gs_limit - games_started <= 2 {
-        Color::Yellow
-    } else {
-        Color::Green
-    };
-
-    lines.push(Line::from(vec![
-        Span::raw("  Used: "),
-        Span::styled(
-            format!("{games_started}"),
-            Style::default().fg(gs_color),
-        ),
-        Span::raw(format!(" / {gs_limit} GS limit")),
-    ]));
-
-    let remaining_gs = gs_limit.saturating_sub(games_started);
-    lines.push(Line::from(format!("  Remaining: {remaining_gs}")));
-
-    // Show remaining SP starts from future days
-    let future_starts = collect_future_sp_starts(scoring_period_days, selected_day);
-    if !future_starts.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "  Remaining SP starts:",
-            Style::default().add_modifier(Modifier::BOLD),
-        )));
-        for (day_label, starts) in &future_starts {
-            let names = starts.join(", ");
-            lines.push(Line::from(format!("    {day_label}: {names}")));
-        }
-    }
-
-    if remaining_gs <= 2 && remaining_gs > 0 {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            format!("  WARNING: Only {remaining_gs} GS remaining - manage carefully"),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )));
-    }
-    if remaining_gs == 0 {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "  WARNING: GS limit reached!",
-            Style::default()
-                .fg(Color::Red)
-                .add_modifier(Modifier::BOLD),
-        )));
-    }
-}
-
-fn build_acquisitions(
-    lines: &mut Vec<Line<'static>>,
-    acquisitions_used: u8,
-    acquisitions_limit: u8,
-) {
-    section_header(lines, "ACQUISITIONS");
-
-    let remaining = acquisitions_limit.saturating_sub(acquisitions_used);
-    let color = if remaining == 0 {
-        Color::Red
-    } else if remaining <= 1 {
-        Color::Yellow
-    } else {
-        Color::Green
-    };
-
-    lines.push(Line::from(vec![
-        Span::raw("  Used: "),
-        Span::styled(
-            format!("{acquisitions_used}"),
-            Style::default().fg(color),
-        ),
-        Span::raw(format!(" / {acquisitions_limit} per matchup")),
-    ]));
-    lines.push(Line::from(format!("  Remaining: {remaining}")));
-}
-
 // ---------------------------------------------------------------------------
 // Computation helpers
 // ---------------------------------------------------------------------------
@@ -580,29 +471,6 @@ pub fn count_games_started(days: &[ScoringDay]) -> u8 {
 
 fn is_sp_start(row: &DailyPlayerRow) -> bool {
     row.slot == "SP" && row.opponent.is_some()
-}
-
-/// Collect future SP starts from days after selected_day.
-fn collect_future_sp_starts(
-    days: &[ScoringDay],
-    selected_day: usize,
-) -> Vec<(String, Vec<String>)> {
-    let mut results = Vec::new();
-    for day in days.iter().skip(selected_day + 1) {
-        let sp_names: Vec<String> = day
-            .pitching_rows
-            .iter()
-            .filter(|row| row.slot == "SP" && row.opponent.is_some())
-            .map(|row| {
-                let opp = row.opponent.as_deref().unwrap_or("???");
-                format!("{} ({})", row.player_name, opp)
-            })
-            .collect();
-        if !sp_names.is_empty() {
-            results.push((day.label.clone(), sp_names));
-        }
-    }
-    results
 }
 
 /// Build a close-category status string.
@@ -935,7 +803,7 @@ mod tests {
         let panel = MatchupAnalyticsPanel::new();
         terminal
             .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &[], 0, 0, 7, 0, 5, None, false)
+                panel.view(frame, frame.area(), &[], &[], 0, None, false)
             })
             .unwrap();
     }
@@ -960,10 +828,6 @@ mod tests {
                     &scores,
                     &days,
                     0,
-                    3,
-                    7,
-                    1,
-                    5,
                     Some(&reg),
                     false,
                 )
@@ -978,7 +842,7 @@ mod tests {
         let panel = MatchupAnalyticsPanel::new();
         terminal
             .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &[], 0, 0, 7, 0, 5, None, false)
+                panel.view(frame, frame.area(), &[], &[], 0, None, false)
             })
             .unwrap();
     }
