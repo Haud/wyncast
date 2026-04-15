@@ -35,8 +35,7 @@ use main_panel::{
     MatchupMainPanelMessage, MatchupTab, RosterViewPanelMessage,
 };
 use sidebar::{
-    CategoryTrackerPanelMessage, LimitsData, LimitsPanelMessage, MatchupSidebar,
-    MatchupSidebarMessage,
+    CategoryTrackerPanelMessage, LimitsData, MatchupSidebar, MatchupSidebarMessage,
 };
 
 // ---------------------------------------------------------------------------
@@ -48,18 +47,16 @@ use sidebar::{
 pub enum MatchupFocusPanel {
     MainPanel,
     CategoryTracker,
-    Limits,
 }
 
 impl MatchupFocusPanel {
     const CYCLE: &[MatchupFocusPanel] = &[
         MatchupFocusPanel::MainPanel,
         MatchupFocusPanel::CategoryTracker,
-        MatchupFocusPanel::Limits,
     ];
 
     /// Advance focus forward:
-    /// None -> MainPanel -> CategoryTracker -> Limits -> None
+    /// None -> MainPanel -> CategoryTracker -> None
     pub fn next(current: Option<MatchupFocusPanel>) -> Option<MatchupFocusPanel> {
         match current {
             None => Some(Self::CYCLE[0]),
@@ -74,7 +71,7 @@ impl MatchupFocusPanel {
     }
 
     /// Advance focus backward:
-    /// None -> Limits -> CategoryTracker -> MainPanel -> None
+    /// None -> CategoryTracker -> MainPanel -> None
     pub fn prev(current: Option<MatchupFocusPanel>) -> Option<MatchupFocusPanel> {
         match current {
             None => Some(*Self::CYCLE.last().unwrap()),
@@ -223,7 +220,7 @@ impl MatchupScreen {
         if let Some(sidebar_rect) = layout.sidebar {
             let sb_layout = build_sidebar_layout(sidebar_rect);
             let cat_focused = self.focused_panel == Some(MatchupFocusPanel::CategoryTracker);
-            let limits_focused = self.focused_panel == Some(MatchupFocusPanel::Limits);
+            let limits_focused = false;
 
             let total_days = self.scoring_period_days.len();
             let days_remaining = total_days.saturating_sub(self.selected_day + 1);
@@ -280,11 +277,6 @@ impl MatchupScreen {
             Some(MatchupFocusPanel::CategoryTracker) => {
                 self.sidebar.update(MatchupSidebarMessage::CategoryTracker(
                     CategoryTrackerPanelMessage::Scroll(dir),
-                ));
-            }
-            Some(MatchupFocusPanel::Limits) => {
-                self.sidebar.update(MatchupSidebarMessage::Limits(
-                    LimitsPanelMessage::Scroll(dir),
                 ));
             }
             Some(MatchupFocusPanel::MainPanel) | None => {
@@ -415,7 +407,6 @@ impl MatchupScreen {
                 None => 0,
                 Some(MatchupFocusPanel::MainPanel) => 1,
                 Some(MatchupFocusPanel::CategoryTracker) => 2,
-                Some(MatchupFocusPanel::Limits) => 3,
             };
             fp_disc.hash(&mut hasher);
             let tab_disc: u8 = match self.main_panel.active_tab() {
@@ -574,24 +565,20 @@ mod tests {
 
     #[test]
     fn focus_cycle_forward() {
-        // None -> MainPanel -> CategoryTracker -> Limits -> None
+        // None -> MainPanel -> CategoryTracker -> None
         let mut focus: Option<MatchupFocusPanel> = None;
         focus = MatchupFocusPanel::next(focus);
         assert_eq!(focus, Some(MatchupFocusPanel::MainPanel));
         focus = MatchupFocusPanel::next(focus);
         assert_eq!(focus, Some(MatchupFocusPanel::CategoryTracker));
         focus = MatchupFocusPanel::next(focus);
-        assert_eq!(focus, Some(MatchupFocusPanel::Limits));
-        focus = MatchupFocusPanel::next(focus);
         assert_eq!(focus, None);
     }
 
     #[test]
     fn focus_cycle_backward() {
-        // None -> Limits -> CategoryTracker -> MainPanel -> None
+        // None -> CategoryTracker -> MainPanel -> None
         let mut focus: Option<MatchupFocusPanel> = None;
-        focus = MatchupFocusPanel::prev(focus);
-        assert_eq!(focus, Some(MatchupFocusPanel::Limits));
         focus = MatchupFocusPanel::prev(focus);
         assert_eq!(focus, Some(MatchupFocusPanel::CategoryTracker));
         focus = MatchupFocusPanel::prev(focus);
