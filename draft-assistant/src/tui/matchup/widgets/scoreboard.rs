@@ -332,9 +332,6 @@ mod tests {
             stat_abbrev: abbrev.to_string(),
             home_value: home,
             away_value: away,
-            // Legacy aliases kept in sync during the home/away migration.
-            my_value: home,
-            opp_value: away,
             state,
         }
     }

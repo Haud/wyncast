@@ -532,9 +532,6 @@ mod tests {
             stat_abbrev: abbrev.to_string(),
             home_value: home,
             away_value: away,
-            // Legacy aliases kept in sync during the home/away migration.
-            my_value: home,
-            opp_value: away,
             state,
         }
     }
@@ -543,7 +540,7 @@ mod tests {
 
     #[test]
     fn category_outlook_groups_correctly() {
-        let scores = vec![
+        let scores = [
             make_cat("R", 5.0, 3.0, CategoryState::HomeWinning),
             make_cat("HR", 2.0, 3.0, CategoryState::AwayWinning),
             make_cat("SB", 1.0, 1.0, CategoryState::Tied),
@@ -713,9 +710,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let panel = MatchupAnalyticsPanel::new();
         terminal
-            .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &[], 0, None, false)
-            })
+            .draw(|frame| panel.view(frame, frame.area(), &[], &[], 0, None, false))
             .unwrap();
     }
 
@@ -752,9 +747,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let panel = MatchupAnalyticsPanel::new();
         terminal
-            .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &[], 0, None, false)
-            })
+            .draw(|frame| panel.view(frame, frame.area(), &[], &[], 0, None, false))
             .unwrap();
     }
 
@@ -798,8 +791,8 @@ mod tests {
             label: label.to_string(),
             batting_stat_columns: vec![],
             pitching_stat_columns: vec![],
-            batting_rows: vec![],
-            pitching_rows: vec![],
+            batting_rows: Vec::new(),
+            pitching_rows: Vec::new(),
             batting_totals: None,
             pitching_totals: None,
         }

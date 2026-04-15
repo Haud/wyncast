@@ -33,7 +33,7 @@ impl fmt::Display for TeamRecord {
     }
 }
 
-/// Which side of the matchup is ahead in a scoring category.
+/// Which team (if any) is ahead in a scoring category.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum CategoryState {
     HomeWinning,
@@ -47,11 +47,6 @@ pub struct CategoryScore {
     pub stat_abbrev: String,
     pub home_value: f64,
     pub away_value: f64,
-    // Legacy aliases kept alongside home/away during the migration. Producers
-    // populate both pairs; consumers are migrated piecemeal and the old fields
-    // are dropped in a follow-up commit.
-    pub my_value: f64,
-    pub opp_value: f64,
     pub state: CategoryState,
 }
 
@@ -168,16 +163,12 @@ mod tests {
                     stat_abbrev: "R".to_string(),
                     home_value: 5.0,
                     away_value: 3.0,
-                    my_value: 5.0,
-                    opp_value: 3.0,
                     state: CategoryState::HomeWinning,
                 },
                 CategoryScore {
                     stat_abbrev: "ERA".to_string(),
                     home_value: 3.45,
                     away_value: 4.12,
-                    my_value: 3.45,
-                    opp_value: 4.12,
                     state: CategoryState::HomeWinning,
                 },
             ],

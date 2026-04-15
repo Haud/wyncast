@@ -689,8 +689,6 @@ mod tests {
                 stat_abbrev: "R".to_string(),
                 home_value: 5.0,
                 away_value: 3.0,
-                my_value: 5.0,
-                opp_value: 3.0,
                 state: CategoryState::HomeWinning,
             }],
             selected_day: 0,
