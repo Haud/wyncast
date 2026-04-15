@@ -661,6 +661,31 @@ fn category_state(
     }
 }
 
+/// Convert a `MatchupSectionPayload` into a list of `DailyPlayerRow`s and the
+/// optional totals for that section.
+fn convert_section(
+    section: &crate::protocol::MatchupSectionPayload,
+) -> (Vec<DailyPlayerRow>, Option<DailyTotals>) {
+    let rows: Vec<DailyPlayerRow> = section
+        .players
+        .iter()
+        .map(|p| DailyPlayerRow {
+            slot: p.slot.clone(),
+            player_name: p.name.clone(),
+            team: p.team.clone(),
+            positions: p.positions.clone(),
+            opponent: p.opponent.clone(),
+            game_status: p.status.clone(),
+            stats: p.stats.clone(),
+        })
+        .collect();
+    let totals = section
+        .totals
+        .as_ref()
+        .map(|t| DailyTotals { stats: t.clone() });
+    (rows, totals)
+}
+
 /// Handle an incoming matchup state message from the extension.
 ///
 /// Converts the raw payload into a `MatchupSnapshot`, switches to
@@ -697,47 +722,13 @@ async fn handle_matchup_state(
 
     // Convert player tables into a single ScoringDay.
     // The extension sends one day's worth of data at a time (the selected day).
-    let batting_rows: Vec<DailyPlayerRow> = payload
-        .batting
-        .players
-        .iter()
-        .map(|p| DailyPlayerRow {
-            slot: p.slot.clone(),
-            player_name: p.name.clone(),
-            team: p.team.clone(),
-            positions: p.positions.clone(),
-            opponent: p.opponent.clone(),
-            game_status: p.status.clone(),
-            stats: p.stats.clone(),
-        })
-        .collect();
+    let (batting_rows, batting_totals) = convert_section(&payload.home_batting);
+    let (pitching_rows, pitching_totals) = convert_section(&payload.home_pitching);
+    let (away_batting_rows, away_batting_totals) = convert_section(&payload.away_batting);
+    let (away_pitching_rows, away_pitching_totals) = convert_section(&payload.away_pitching);
 
-    let pitching_rows: Vec<DailyPlayerRow> = payload
-        .pitching
-        .players
-        .iter()
-        .map(|p| DailyPlayerRow {
-            slot: p.slot.clone(),
-            player_name: p.name.clone(),
-            team: p.team.clone(),
-            positions: p.positions.clone(),
-            opponent: p.opponent.clone(),
-            game_status: p.status.clone(),
-            stats: p.stats.clone(),
-        })
-        .collect();
-
-    let batting_totals = payload.batting.totals.as_ref().map(|t| DailyTotals {
-        stats: t.clone(),
-    });
-    let pitching_totals = payload.pitching.totals.as_ref().map(|t| DailyTotals {
-        stats: t.clone(),
-    });
-
-    // Dual population: the top-level rows/totals still drive consumers,
-    // while `home` mirrors them for consumers that have migrated to the
-    // per-team representation. `away` is populated symmetrically in a
-    // subsequent commit once the protocol emits both sides.
+    // Dual-populate while consumers are migrated to the per-team shape:
+    // the flat `batting_rows`/`pitching_rows` mirror the home side for now.
     let home_roster = TeamDailyRoster {
         batting_rows: batting_rows.clone(),
         pitching_rows: pitching_rows.clone(),
@@ -747,14 +738,19 @@ async fn handle_matchup_state(
     let scoring_day = ScoringDay {
         date: payload.selected_day.clone(),
         label: payload.selected_day.clone(),
-        batting_stat_columns: payload.batting.headers.clone(),
-        pitching_stat_columns: payload.pitching.headers.clone(),
+        batting_stat_columns: payload.home_batting.headers.clone(),
+        pitching_stat_columns: payload.home_pitching.headers.clone(),
         batting_rows,
         pitching_rows,
         batting_totals,
         pitching_totals,
         home: home_roster,
-        away: TeamDailyRoster::default(),
+        away: TeamDailyRoster {
+            batting_rows: away_batting_rows,
+            pitching_rows: away_pitching_rows,
+            batting_totals: away_batting_totals,
+            pitching_totals: away_pitching_totals,
+        },
     };
 
     let scoring_period_days = vec![scoring_day];
@@ -1250,7 +1246,7 @@ mod tests {
                     lower_is_better: true,
                 },
             ],
-            batting: MatchupSectionPayload {
+            home_batting: MatchupSectionPayload {
                 headers: vec!["AB".to_string(), "H".to_string(), "R".to_string()],
                 players: vec![MatchupPlayerPayload {
                     slot: "C".to_string(),
@@ -1263,7 +1259,7 @@ mod tests {
                 }],
                 totals: Some(vec![Some(29.0), Some(8.0), Some(5.0)]),
             },
-            pitching: MatchupSectionPayload {
+            home_pitching: MatchupSectionPayload {
                 headers: vec!["IP".to_string(), "K".to_string()],
                 players: vec![
                     MatchupPlayerPayload {
@@ -1296,6 +1292,18 @@ mod tests {
                 ],
                 totals: Some(vec![Some(14.0), Some(19.0)]),
             },
+            // Away sections stubbed empty here; a later commit adds a real
+            // away fixture once the test that needs it lands.
+            away_batting: MatchupSectionPayload {
+                headers: vec![],
+                players: vec![],
+                totals: None,
+            },
+            away_pitching: MatchupSectionPayload {
+                headers: vec![],
+                players: vec![],
+                totals: None,
+            },
         }
     }
 
@@ -1322,8 +1330,10 @@ mod tests {
                 "categories": [
                     { "statId": 20, "abbrev": "R", "homeValue": 5.0, "awayValue": 3.0, "lowerIsBetter": false }
                 ],
-                "batting": { "headers": ["AB", "H"], "players": [], "totals": null },
-                "pitching": { "headers": ["IP", "K"], "players": [], "totals": null }
+                "homeBatting": { "headers": ["AB", "H"], "players": [], "totals": null },
+                "homePitching": { "headers": ["IP", "K"], "players": [], "totals": null },
+                "awayBatting": { "headers": ["AB", "H"], "players": [], "totals": null },
+                "awayPitching": { "headers": ["IP", "K"], "players": [], "totals": null }
             }
         }"#;
 

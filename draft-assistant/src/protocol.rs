@@ -172,6 +172,10 @@ pub struct HeartbeatPayload {
 // ---------------------------------------------------------------------------
 
 /// Matchup state scraped from the ESPN matchup page by the extension.
+///
+/// Teams and rosters are emitted symmetrically (home/away) rather than via a
+/// "my team vs opponent" distinction — ESPN doesn't surface which team
+/// belongs to the viewer in the DOM, so the TUI shows both sides neutrally.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MatchupStatePayload {
@@ -182,8 +186,10 @@ pub struct MatchupStatePayload {
     pub home_team: MatchupTeamPayload,
     pub away_team: MatchupTeamPayload,
     pub categories: Vec<MatchupCategoryPayload>,
-    pub batting: MatchupSectionPayload,
-    pub pitching: MatchupSectionPayload,
+    pub home_batting: MatchupSectionPayload,
+    pub home_pitching: MatchupSectionPayload,
+    pub away_batting: MatchupSectionPayload,
+    pub away_pitching: MatchupSectionPayload,
 }
 
 /// A team's info within the matchup WebSocket message.
@@ -1625,7 +1631,7 @@ mod tests {
                     { "statId": 5, "abbrev": "HR", "homeValue": 2.0, "awayValue": 4.0, "lowerIsBetter": false },
                     { "statId": 47, "abbrev": "ERA", "homeValue": 3.45, "awayValue": 4.12, "lowerIsBetter": true }
                 ],
-                "batting": {
+                "homeBatting": {
                     "headers": ["AB", "H", "R", "HR", "RBI", "BB", "SB", "AVG"],
                     "players": [
                         {
@@ -1640,7 +1646,27 @@ mod tests {
                     ],
                     "totals": [29.0, 8.0, 5.0, 2.0, 6.0, 5.0, 1.0, 0.276]
                 },
-                "pitching": {
+                "homePitching": {
+                    "headers": ["IP", "H", "ER", "BB", "K", "W", "SV", "HD"],
+                    "players": [],
+                    "totals": null
+                },
+                "awayBatting": {
+                    "headers": ["AB", "H", "R", "HR", "RBI", "BB", "SB", "AVG"],
+                    "players": [
+                        {
+                            "slot": "1B",
+                            "name": "Pete Alonso",
+                            "team": "NYM",
+                            "positions": ["1B"],
+                            "opponent": "@PHI",
+                            "status": null,
+                            "stats": [3.0, 2.0, 1.0, 1.0, 2.0, 1.0, 0.0, 0.667]
+                        }
+                    ],
+                    "totals": [27.0, 10.0, 7.0, 3.0, 8.0, 4.0, 0.0, 0.370]
+                },
+                "awayPitching": {
                     "headers": ["IP", "H", "ER", "BB", "K", "W", "SV", "HD"],
                     "players": [],
                     "totals": null
@@ -1668,15 +1694,19 @@ mod tests {
                 assert_eq!(payload.categories[0].away_value, Some(3.0));
                 assert!(!payload.categories[0].lower_is_better);
                 assert!(payload.categories[2].lower_is_better);
-                assert_eq!(payload.batting.headers.len(), 8);
-                assert_eq!(payload.batting.players.len(), 1);
-                assert_eq!(payload.batting.players[0].name, "Ben Rice");
-                assert_eq!(payload.batting.players[0].positions, vec!["1B", "C", "DH"]);
-                assert_eq!(payload.batting.players[0].opponent, Some("@BOS".to_string()));
-                assert_eq!(payload.batting.players[0].status, None);
-                assert_eq!(payload.batting.totals.as_ref().unwrap().len(), 8);
-                assert_eq!(payload.pitching.players.len(), 0);
-                assert!(payload.pitching.totals.is_none());
+                assert_eq!(payload.home_batting.headers.len(), 8);
+                assert_eq!(payload.home_batting.players.len(), 1);
+                assert_eq!(payload.home_batting.players[0].name, "Ben Rice");
+                assert_eq!(payload.home_batting.players[0].positions, vec!["1B", "C", "DH"]);
+                assert_eq!(payload.home_batting.players[0].opponent, Some("@BOS".to_string()));
+                assert_eq!(payload.home_batting.players[0].status, None);
+                assert_eq!(payload.home_batting.totals.as_ref().unwrap().len(), 8);
+                assert_eq!(payload.home_pitching.players.len(), 0);
+                assert!(payload.home_pitching.totals.is_none());
+                // Away roster distinct from home — both were populated.
+                assert_eq!(payload.away_batting.players.len(), 1);
+                assert_eq!(payload.away_batting.players[0].name, "Pete Alonso");
+                assert_eq!(payload.away_batting.totals.as_ref().unwrap().len(), 8);
             }
             other => panic!("Expected MatchupState, got {:?}", other),
         }
@@ -1714,8 +1744,10 @@ mod tests {
                     { "statId": 2, "abbrev": "AVG", "homeValue": null, "awayValue": null, "lowerIsBetter": false },
                     { "statId": 47, "abbrev": "ERA", "homeValue": null, "awayValue": 3.00, "lowerIsBetter": true }
                 ],
-                "batting": { "headers": ["AB", "H"], "players": [], "totals": null },
-                "pitching": { "headers": ["IP", "K"], "players": [], "totals": null }
+                "homeBatting": { "headers": ["AB", "H"], "players": [], "totals": null },
+                "homePitching": { "headers": ["IP", "K"], "players": [], "totals": null },
+                "awayBatting": { "headers": ["AB", "H"], "players": [], "totals": null },
+                "awayPitching": { "headers": ["IP", "K"], "players": [], "totals": null }
             }
         }"#;
 
@@ -1759,12 +1791,22 @@ mod tests {
                     away_value: Some(8.0),
                     lower_is_better: false,
                 }],
-                batting: MatchupSectionPayload {
+                home_batting: MatchupSectionPayload {
                     headers: vec!["AB".to_string(), "H".to_string()],
                     players: vec![],
                     totals: None,
                 },
-                pitching: MatchupSectionPayload {
+                home_pitching: MatchupSectionPayload {
+                    headers: vec!["IP".to_string(), "K".to_string()],
+                    players: vec![],
+                    totals: None,
+                },
+                away_batting: MatchupSectionPayload {
+                    headers: vec!["AB".to_string(), "H".to_string()],
+                    players: vec![],
+                    totals: None,
+                },
+                away_pitching: MatchupSectionPayload {
                     headers: vec!["IP".to_string(), "K".to_string()],
                     players: vec![],
                     totals: None,
