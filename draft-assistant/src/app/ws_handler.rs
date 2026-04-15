@@ -10,7 +10,7 @@ use crate::draft::state::{
 };
 use crate::matchup::{
     CategoryScore, CategoryState, DailyPlayerRow, DailyTotals, MatchupInfo, MatchupSnapshot,
-    ScoringDay, TeamMatchupState, TeamRecord,
+    ScoringDay, TeamDailyRoster, TeamMatchupState, TeamRecord,
 };
 use crate::protocol::{
     AppMode, DraftBoardData, ExtensionMessage, MatchupStatePayload, NominationInfo,
@@ -636,45 +636,58 @@ fn parse_record(s: &str) -> TeamRecord {
     }
 }
 
-/// Determine category win/loss/tie state from values and sort direction.
+/// Determine category win/loss/tie state from home and away values.
 ///
 /// `None` values (ESPN renders `"--"` for rate stats with a zero denominator)
 /// are treated as Tied — neither side earns credit for a category that has
 /// not yet produced a real value.
 fn category_state(
-    my_value: Option<f64>,
-    opp_value: Option<f64>,
+    home_value: Option<f64>,
+    away_value: Option<f64>,
     lower_is_better: bool,
 ) -> CategoryState {
-    let (my_value, opp_value) = match (my_value, opp_value) {
-        (Some(m), Some(o)) => (m, o),
+    let (home_value, away_value) = match (home_value, away_value) {
+        (Some(h), Some(a)) => (h, a),
         _ => return CategoryState::Tied,
     };
-    if (my_value - opp_value).abs() < f64::EPSILON {
+    if (home_value - away_value).abs() < f64::EPSILON {
         CategoryState::Tied
     } else if lower_is_better {
-        if my_value < opp_value { CategoryState::Winning } else { CategoryState::Losing }
-    } else if my_value > opp_value {
-        CategoryState::Winning
+        if home_value < away_value {
+            CategoryState::HomeWinning
+        } else {
+            CategoryState::AwayWinning
+        }
+    } else if home_value > away_value {
+        CategoryState::HomeWinning
     } else {
-        CategoryState::Losing
+        CategoryState::AwayWinning
     }
 }
 
-/// Count games started from the pitching player rows.
-///
-/// A pitcher counts as a GS if their slot starts with "SP" and they have an
-/// opponent (i.e. they are actually playing that day, not a rest/off day).
-fn count_games_started(days: &[ScoringDay]) -> u8 {
-    let mut count: u8 = 0;
-    for day in days {
-        for row in &day.pitching_rows {
-            if row.slot.starts_with("SP") && row.opponent.is_some() {
-                count = count.saturating_add(1);
-            }
-        }
-    }
-    count
+/// Convert a `MatchupSectionPayload` into a list of `DailyPlayerRow`s and the
+/// optional totals for that section.
+fn convert_section(
+    section: &crate::protocol::MatchupSectionPayload,
+) -> (Vec<DailyPlayerRow>, Option<DailyTotals>) {
+    let rows: Vec<DailyPlayerRow> = section
+        .players
+        .iter()
+        .map(|p| DailyPlayerRow {
+            slot: p.slot.clone(),
+            player_name: p.name.clone(),
+            team: p.team.clone(),
+            positions: p.positions.clone(),
+            opponent: p.opponent.clone(),
+            game_status: p.status.clone(),
+            stats: p.stats.clone(),
+        })
+        .collect();
+    let totals = section
+        .totals
+        .as_ref()
+        .map(|t| DailyTotals { stats: t.clone() });
+    (rows, totals)
 }
 
 /// Handle an incoming matchup state message from the extension.
@@ -687,16 +700,16 @@ async fn handle_matchup_state(
     ui_tx: &mpsc::Sender<UiUpdate>,
 ) {
     info!(
-        "Processing matchup state: {} vs {} (period {})",
-        payload.my_team.name, payload.opp_team.name, payload.matchup_period
+        "Processing matchup state: {} (home) vs {} (away) (period {})",
+        payload.home_team.name, payload.away_team.name, payload.matchup_period
     );
 
-    let my_record = parse_record(&payload.my_team.record);
-    let opp_record = parse_record(&payload.opp_team.record);
-    let my_category_score = parse_record(&payload.my_team.matchup_score);
-    let opp_category_score = parse_record(&payload.opp_team.matchup_score);
+    let home_record = parse_record(&payload.home_team.record);
+    let away_record = parse_record(&payload.away_team.record);
+    let home_category_score = parse_record(&payload.home_team.matchup_score);
+    let away_category_score = parse_record(&payload.away_team.matchup_score);
 
-    // Convert categories with win/loss state
+    // Convert categories with home/away lead state.
     let category_scores: Vec<CategoryScore> = payload
         .categories
         .iter()
@@ -705,95 +718,78 @@ async fn handle_matchup_state(
             // Coerce None to 0.0 for the domain type — the `state` field still
             // captures "no comparison possible" as Tied so downstream widgets
             // don't incorrectly credit either team.
-            my_value: cat.my_value.unwrap_or(0.0),
-            opp_value: cat.opp_value.unwrap_or(0.0),
-            state: category_state(cat.my_value, cat.opp_value, cat.lower_is_better),
+            home_value: cat.home_value.unwrap_or(0.0),
+            away_value: cat.away_value.unwrap_or(0.0),
+            state: category_state(cat.home_value, cat.away_value, cat.lower_is_better),
         })
         .collect();
 
-    // Convert player tables into a single ScoringDay.
-    // The extension sends one day's worth of data at a time (the selected day).
-    let batting_rows: Vec<DailyPlayerRow> = payload
-        .batting
-        .players
-        .iter()
-        .map(|p| DailyPlayerRow {
-            slot: p.slot.clone(),
-            player_name: p.name.clone(),
-            team: p.team.clone(),
-            positions: p.positions.clone(),
-            opponent: p.opponent.clone(),
-            game_status: p.status.clone(),
-            stats: p.stats.clone(),
-        })
-        .collect();
+    // Both sides' roster tables for this scoring day.
+    let (home_batting_rows, home_batting_totals) = convert_section(&payload.home_batting);
+    let (home_pitching_rows, home_pitching_totals) = convert_section(&payload.home_pitching);
+    let (away_batting_rows, away_batting_totals) = convert_section(&payload.away_batting);
+    let (away_pitching_rows, away_pitching_totals) = convert_section(&payload.away_pitching);
 
-    let pitching_rows: Vec<DailyPlayerRow> = payload
-        .pitching
-        .players
-        .iter()
-        .map(|p| DailyPlayerRow {
-            slot: p.slot.clone(),
-            player_name: p.name.clone(),
-            team: p.team.clone(),
-            positions: p.positions.clone(),
-            opponent: p.opponent.clone(),
-            game_status: p.status.clone(),
-            stats: p.stats.clone(),
-        })
-        .collect();
-
-    let batting_totals = payload.batting.totals.as_ref().map(|t| DailyTotals {
-        stats: t.clone(),
-    });
-    let pitching_totals = payload.pitching.totals.as_ref().map(|t| DailyTotals {
-        stats: t.clone(),
-    });
+    // Batting/pitching stat columns are league-wide; pick whichever side
+    // reports them (they should be identical). Fall back across sides if one
+    // side hasn't populated headers yet.
+    let batting_stat_columns = if !payload.home_batting.headers.is_empty() {
+        payload.home_batting.headers.clone()
+    } else {
+        payload.away_batting.headers.clone()
+    };
+    let pitching_stat_columns = if !payload.home_pitching.headers.is_empty() {
+        payload.home_pitching.headers.clone()
+    } else {
+        payload.away_pitching.headers.clone()
+    };
 
     let scoring_day = ScoringDay {
         date: payload.selected_day.clone(),
         label: payload.selected_day.clone(),
-        batting_stat_columns: payload.batting.headers.clone(),
-        pitching_stat_columns: payload.pitching.headers.clone(),
-        batting_rows,
-        pitching_rows,
-        batting_totals,
-        pitching_totals,
+        batting_stat_columns,
+        pitching_stat_columns,
+        home: TeamDailyRoster {
+            batting_rows: home_batting_rows,
+            pitching_rows: home_pitching_rows,
+            batting_totals: home_batting_totals,
+            pitching_totals: home_pitching_totals,
+        },
+        away: TeamDailyRoster {
+            batting_rows: away_batting_rows,
+            pitching_rows: away_pitching_rows,
+            batting_totals: away_batting_totals,
+            pitching_totals: away_pitching_totals,
+        },
     };
 
     let scoring_period_days = vec![scoring_day];
-
-    let games_started = count_games_started(&scoring_period_days);
 
     let snapshot = MatchupSnapshot {
         matchup_info: MatchupInfo {
             matchup_period: payload.matchup_period,
             start_date: payload.start_date,
             end_date: payload.end_date,
-            my_team_name: payload.my_team.name.clone(),
-            opp_team_name: payload.opp_team.name.clone(),
-            my_record,
-            opp_record,
+            home_team_name: payload.home_team.name.clone(),
+            away_team_name: payload.away_team.name.clone(),
+            home_record,
+            away_record,
         },
-        my_team: TeamMatchupState {
-            name: payload.my_team.name.clone(),
-            abbrev: abbreviate_team_name(&payload.my_team.name),
-            record: parse_record(&payload.my_team.record),
-            category_score: my_category_score,
+        home_team: TeamMatchupState {
+            name: payload.home_team.name.clone(),
+            abbrev: abbreviate_team_name(&payload.home_team.name),
+            record: parse_record(&payload.home_team.record),
+            category_score: home_category_score,
         },
-        opp_team: TeamMatchupState {
-            name: payload.opp_team.name.clone(),
-            abbrev: abbreviate_team_name(&payload.opp_team.name),
-            record: parse_record(&payload.opp_team.record),
-            category_score: opp_category_score,
+        away_team: TeamMatchupState {
+            name: payload.away_team.name.clone(),
+            abbrev: abbreviate_team_name(&payload.away_team.name),
+            record: parse_record(&payload.away_team.record),
+            category_score: away_category_score,
         },
         category_scores,
         selected_day: 0,
         scoring_period_days,
-        games_started,
-        gs_limit: 7,
-        acquisitions_used: 0,
-        acquisitions_limit: 5,
     };
 
     // Store snapshot in app state
@@ -1220,12 +1216,12 @@ mod tests {
             start_date: "2026-03-25".to_string(),
             end_date: "2026-04-05".to_string(),
             selected_day: "2026-03-26".to_string(),
-            my_team: MatchupTeamPayload {
+            home_team: MatchupTeamPayload {
                 name: "Bob Dole Experience".to_string(),
                 record: "3-2-0".to_string(),
                 matchup_score: "6-4-2".to_string(),
             },
-            opp_team: MatchupTeamPayload {
+            away_team: MatchupTeamPayload {
                 name: "Certified! Smokified!".to_string(),
                 record: "2-3-0".to_string(),
                 matchup_score: "4-6-2".to_string(),
@@ -1234,33 +1230,33 @@ mod tests {
                 MatchupCategoryPayload {
                     stat_id: 20,
                     abbrev: "R".to_string(),
-                    my_value: Some(5.0),
-                    opp_value: Some(3.0),
+                    home_value: Some(5.0),
+                    away_value: Some(3.0),
                     lower_is_better: false,
                 },
                 MatchupCategoryPayload {
                     stat_id: 5,
                     abbrev: "HR".to_string(),
-                    my_value: Some(2.0),
-                    opp_value: Some(3.0),
+                    home_value: Some(2.0),
+                    away_value: Some(3.0),
                     lower_is_better: false,
                 },
                 MatchupCategoryPayload {
                     stat_id: 47,
                     abbrev: "ERA".to_string(),
-                    my_value: Some(3.50),
-                    opp_value: Some(4.20),
+                    home_value: Some(3.50),
+                    away_value: Some(4.20),
                     lower_is_better: true,
                 },
                 MatchupCategoryPayload {
                     stat_id: 41,
                     abbrev: "WHIP".to_string(),
-                    my_value: Some(1.20),
-                    opp_value: Some(1.20),
+                    home_value: Some(1.20),
+                    away_value: Some(1.20),
                     lower_is_better: true,
                 },
             ],
-            batting: MatchupSectionPayload {
+            home_batting: MatchupSectionPayload {
                 headers: vec!["AB".to_string(), "H".to_string(), "R".to_string()],
                 players: vec![MatchupPlayerPayload {
                     slot: "C".to_string(),
@@ -1273,7 +1269,7 @@ mod tests {
                 }],
                 totals: Some(vec![Some(29.0), Some(8.0), Some(5.0)]),
             },
-            pitching: MatchupSectionPayload {
+            home_pitching: MatchupSectionPayload {
                 headers: vec!["IP".to_string(), "K".to_string()],
                 players: vec![
                     MatchupPlayerPayload {
@@ -1306,6 +1302,32 @@ mod tests {
                 ],
                 totals: Some(vec![Some(14.0), Some(19.0)]),
             },
+            away_batting: MatchupSectionPayload {
+                headers: vec!["AB".to_string(), "H".to_string(), "R".to_string()],
+                players: vec![MatchupPlayerPayload {
+                    slot: "1B".to_string(),
+                    name: "Pete Alonso".to_string(),
+                    team: "NYM".to_string(),
+                    positions: vec!["1B".to_string()],
+                    opponent: Some("@PHI".to_string()),
+                    status: None,
+                    stats: vec![Some(3.0), Some(2.0), Some(1.0)],
+                }],
+                totals: Some(vec![Some(27.0), Some(10.0), Some(7.0)]),
+            },
+            away_pitching: MatchupSectionPayload {
+                headers: vec!["IP".to_string(), "K".to_string()],
+                players: vec![MatchupPlayerPayload {
+                    slot: "SP".to_string(),
+                    name: "Corbin Burnes".to_string(),
+                    team: "ARI".to_string(),
+                    positions: vec!["SP".to_string()],
+                    opponent: Some("LAD".to_string()),
+                    status: None,
+                    stats: vec![Some(6.0), Some(7.0)],
+                }],
+                totals: Some(vec![Some(6.0), Some(7.0)]),
+            },
         }
     }
 
@@ -1319,21 +1341,23 @@ mod tests {
                 "startDate": "2026-03-25",
                 "endDate": "2026-04-05",
                 "selectedDay": "2026-03-26",
-                "myTeam": {
+                "homeTeam": {
                     "name": "Bob Dole Experience",
                     "record": "3-2-0",
                     "matchupScore": "6-4-2"
                 },
-                "oppTeam": {
+                "awayTeam": {
                     "name": "Certified! Smokified!",
                     "record": "2-3-0",
                     "matchupScore": "4-6-2"
                 },
                 "categories": [
-                    { "statId": 20, "abbrev": "R", "myValue": 5.0, "oppValue": 3.0, "lowerIsBetter": false }
+                    { "statId": 20, "abbrev": "R", "homeValue": 5.0, "awayValue": 3.0, "lowerIsBetter": false }
                 ],
-                "batting": { "headers": ["AB", "H"], "players": [], "totals": null },
-                "pitching": { "headers": ["IP", "K"], "players": [], "totals": null }
+                "homeBatting": { "headers": ["AB", "H"], "players": [], "totals": null },
+                "homePitching": { "headers": ["IP", "K"], "players": [], "totals": null },
+                "awayBatting": { "headers": ["AB", "H"], "players": [], "totals": null },
+                "awayPitching": { "headers": ["IP", "K"], "players": [], "totals": null }
             }
         }"#;
 
@@ -1342,8 +1366,8 @@ mod tests {
             crate::protocol::ExtensionMessage::MatchupState { timestamp, payload } => {
                 assert_eq!(timestamp, 1711500000);
                 assert_eq!(payload.matchup_period, 1);
-                assert_eq!(payload.my_team.name, "Bob Dole Experience");
-                assert_eq!(payload.opp_team.name, "Certified! Smokified!");
+                assert_eq!(payload.home_team.name, "Bob Dole Experience");
+                assert_eq!(payload.away_team.name, "Certified! Smokified!");
                 assert_eq!(payload.categories.len(), 1);
                 assert_eq!(payload.categories[0].abbrev, "R");
             }
@@ -1352,36 +1376,36 @@ mod tests {
     }
 
     #[test]
-    fn category_state_higher_is_better_winning() {
+    fn category_state_home_leads_higher_is_better() {
         assert_eq!(
             category_state(Some(5.0), Some(3.0), false),
-            CategoryState::Winning
+            CategoryState::HomeWinning
         );
     }
 
     #[test]
-    fn category_state_higher_is_better_losing() {
+    fn category_state_away_leads_higher_is_better() {
         assert_eq!(
             category_state(Some(2.0), Some(3.0), false),
-            CategoryState::Losing
+            CategoryState::AwayWinning
         );
     }
 
     #[test]
-    fn category_state_lower_is_better_winning() {
-        // ERA: lower is better, my 3.50 < opp 4.20 => winning
+    fn category_state_home_leads_lower_is_better() {
+        // ERA: lower is better, home 3.50 < away 4.20 => home winning
         assert_eq!(
             category_state(Some(3.50), Some(4.20), true),
-            CategoryState::Winning
+            CategoryState::HomeWinning
         );
     }
 
     #[test]
-    fn category_state_lower_is_better_losing() {
-        // WHIP: lower is better, my 1.35 > opp 1.20 => losing
+    fn category_state_away_leads_lower_is_better() {
+        // WHIP: lower is better, home 1.35 > away 1.20 => away winning
         assert_eq!(
             category_state(Some(1.35), Some(1.20), true),
-            CategoryState::Losing
+            CategoryState::AwayWinning
         );
     }
 
@@ -1425,99 +1449,27 @@ mod tests {
             .iter()
             .map(|cat| crate::matchup::CategoryScore {
                 stat_abbrev: cat.abbrev.clone(),
-                my_value: cat.my_value.unwrap_or(0.0),
-                opp_value: cat.opp_value.unwrap_or(0.0),
-                state: category_state(cat.my_value, cat.opp_value, cat.lower_is_better),
+                home_value: cat.home_value.unwrap_or(0.0),
+                away_value: cat.away_value.unwrap_or(0.0),
+                state: category_state(cat.home_value, cat.away_value, cat.lower_is_better),
             })
             .collect();
 
-        // R: 5 > 3, higher is better => Winning
+        // R: home 5 > away 3, higher is better => HomeWinning
         assert_eq!(scores[0].stat_abbrev, "R");
-        assert_eq!(scores[0].state, CategoryState::Winning);
+        assert_eq!(scores[0].state, CategoryState::HomeWinning);
 
-        // HR: 2 < 3, higher is better => Losing
+        // HR: home 2 < away 3, higher is better => AwayWinning
         assert_eq!(scores[1].stat_abbrev, "HR");
-        assert_eq!(scores[1].state, CategoryState::Losing);
+        assert_eq!(scores[1].state, CategoryState::AwayWinning);
 
-        // ERA: 3.50 < 4.20, lower is better => Winning
+        // ERA: home 3.50 < away 4.20, lower is better => HomeWinning
         assert_eq!(scores[2].stat_abbrev, "ERA");
-        assert_eq!(scores[2].state, CategoryState::Winning);
+        assert_eq!(scores[2].state, CategoryState::HomeWinning);
 
         // WHIP: 1.20 == 1.20, lower is better => Tied
         assert_eq!(scores[3].stat_abbrev, "WHIP");
         assert_eq!(scores[3].state, CategoryState::Tied);
-    }
-
-    #[test]
-    fn games_started_count_from_pitching_rows() {
-        let payload = make_matchup_payload();
-
-        // Build the scoring day the same way the handler does
-        let pitching_rows: Vec<crate::matchup::DailyPlayerRow> = payload
-            .pitching
-            .players
-            .iter()
-            .map(|p| crate::matchup::DailyPlayerRow {
-                slot: p.slot.clone(),
-                player_name: p.name.clone(),
-                team: p.team.clone(),
-                positions: p.positions.clone(),
-                opponent: p.opponent.clone(),
-                game_status: p.status.clone(),
-                stats: p.stats.clone(),
-            })
-            .collect();
-
-        let day = crate::matchup::ScoringDay {
-            date: "2026-03-26".to_string(),
-            label: "March 26".to_string(),
-            batting_stat_columns: vec![],
-            pitching_stat_columns: vec!["IP".to_string(), "K".to_string()],
-            batting_rows: vec![],
-            pitching_rows,
-            batting_totals: None,
-            pitching_totals: None,
-        };
-
-        // 2 SP slots with opponents, 1 RP slot => only SP slots count
-        let gs = count_games_started(&[day]);
-        assert_eq!(gs, 2);
-    }
-
-    #[test]
-    fn games_started_skips_sp_without_opponent() {
-        let day = crate::matchup::ScoringDay {
-            date: "2026-03-26".to_string(),
-            label: "March 26".to_string(),
-            batting_stat_columns: vec![],
-            pitching_stat_columns: vec![],
-            batting_rows: vec![],
-            pitching_rows: vec![
-                crate::matchup::DailyPlayerRow {
-                    slot: "SP".to_string(),
-                    player_name: "Starter A".to_string(),
-                    team: "NYY".to_string(),
-                    positions: vec!["SP".to_string()],
-                    opponent: Some("@BOS".to_string()),
-                    game_status: None,
-                    stats: vec![],
-                },
-                crate::matchup::DailyPlayerRow {
-                    slot: "SP".to_string(),
-                    player_name: "Starter B".to_string(),
-                    team: "LAD".to_string(),
-                    positions: vec!["SP".to_string()],
-                    opponent: None, // No game today
-                    game_status: None,
-                    stats: vec![],
-                },
-            ],
-            batting_totals: None,
-            pitching_totals: None,
-        };
-
-        let gs = count_games_started(&[day]);
-        assert_eq!(gs, 1);
     }
 
     #[test]
@@ -1611,6 +1563,37 @@ mod tests {
 
         let msg2 = ui_rx.recv().await.unwrap();
         assert!(matches!(msg2, UiUpdate::MatchupSnapshot(_)));
+    }
+
+    #[tokio::test]
+    async fn handle_matchup_state_populates_both_teams_rosters() {
+        let (ui_tx, _ui_rx) = mpsc::channel(32);
+        let payload = make_matchup_payload();
+        let mut state = create_test_app_state(crate::protocol::AppMode::Matchup);
+
+        handle_matchup_state(&mut state, payload, &ui_tx).await;
+
+        let snapshot = state
+            .matchup_snapshot
+            .as_ref()
+            .expect("snapshot should be set");
+        assert_eq!(snapshot.scoring_period_days.len(), 1);
+        let day = &snapshot.scoring_period_days[0];
+
+        // Home roster has the home team's players.
+        assert_eq!(day.home.batting_rows.len(), 1);
+        assert_eq!(day.home.batting_rows[0].player_name, "Ben Rice");
+        assert_eq!(day.home.pitching_rows.len(), 3);
+
+        // Away roster has a distinct set of players.
+        assert_eq!(day.away.batting_rows.len(), 1);
+        assert_eq!(day.away.batting_rows[0].player_name, "Pete Alonso");
+        assert_eq!(day.away.pitching_rows.len(), 1);
+        assert_eq!(day.away.pitching_rows[0].player_name, "Corbin Burnes");
+
+        // Totals are threaded through per side.
+        assert!(day.home.batting_totals.is_some());
+        assert!(day.away.batting_totals.is_some());
     }
 
     #[tokio::test]

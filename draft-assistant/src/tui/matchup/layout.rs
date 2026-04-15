@@ -8,8 +8,7 @@
 // | Scoreboard (5 rows)                               |
 // +-------------------------+------------------------+
 // | Main Panel (65%)         | Sidebar (35%)          |
-// |                          | +- Category (65%) ----+|
-// |                          | +- Limits (35%) ------+|
+// |                          |  Category Tracker      |
 // +-------------------------+------------------------+
 // | Help Bar (1 row)                                  |
 // +--------------------------------------------------+
@@ -27,19 +26,10 @@ pub struct MatchupLayout {
     pub scoreboard: Rect,
     /// Tab-switched content area (daily stats, analytics, rosters).
     pub main_panel: Rect,
-    /// Right sidebar: category tracker + limits. `None` if terminal < 100 cols.
+    /// Right sidebar: category tracker. `None` if terminal < 100 cols.
     pub sidebar: Option<Rect>,
     /// Bottom row: keyboard shortcut hints.
     pub help_bar: Rect,
-}
-
-/// Internal layout for the sidebar column.
-#[derive(Debug, Clone)]
-pub struct MatchupSidebarLayout {
-    /// Category tracker (upper ~65%).
-    pub category_tracker: Rect,
-    /// Limits and resources (lower ~35%).
-    pub limits: Rect,
 }
 
 /// Build the matchup layout from the available terminal area.
@@ -50,7 +40,7 @@ pub fn build_matchup_layout(area: Rect) -> MatchupLayout {
         .constraints([
             Constraint::Length(1), // status bar
             Constraint::Length(5), // scoreboard
-            Constraint::Min(10),  // content area
+            Constraint::Min(10),   // content area
             Constraint::Length(1), // help bar
         ])
         .split(area);
@@ -64,10 +54,7 @@ pub fn build_matchup_layout(area: Rect) -> MatchupLayout {
     let (main_panel, sidebar) = if area.width >= 100 {
         let horizontal = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(65),
-                Constraint::Percentage(35),
-            ])
+            .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
             .split(content);
         (horizontal[0], Some(horizontal[1]))
     } else {
@@ -80,22 +67,6 @@ pub fn build_matchup_layout(area: Rect) -> MatchupLayout {
         main_panel,
         sidebar,
         help_bar,
-    }
-}
-
-/// Build the internal sidebar layout from the sidebar area.
-pub fn build_sidebar_layout(sidebar: Rect) -> MatchupSidebarLayout {
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(65),
-            Constraint::Percentage(35),
-        ])
-        .split(sidebar);
-
-    MatchupSidebarLayout {
-        category_tracker: sections[0],
-        limits: sections[1],
     }
 }
 
@@ -197,28 +168,6 @@ mod tests {
                 area.height,
             );
         }
-    }
-
-    #[test]
-    fn sidebar_layout_stacks_vertically() {
-        let layout = build_matchup_layout(wide_area());
-        let sidebar = layout.sidebar.unwrap();
-        let sb_layout = build_sidebar_layout(sidebar);
-        assert!(
-            sb_layout.category_tracker.y < sb_layout.limits.y,
-            "Category tracker should be above limits"
-        );
-    }
-
-    #[test]
-    fn sidebar_layout_sections_same_width() {
-        let layout = build_matchup_layout(wide_area());
-        let sidebar = layout.sidebar.unwrap();
-        let sb_layout = build_sidebar_layout(sidebar);
-        assert_eq!(
-            sb_layout.category_tracker.width, sb_layout.limits.width,
-            "Sidebar sections should have the same width"
-        );
     }
 
     #[test]

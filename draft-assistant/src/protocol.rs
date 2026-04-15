@@ -172,6 +172,10 @@ pub struct HeartbeatPayload {
 // ---------------------------------------------------------------------------
 
 /// Matchup state scraped from the ESPN matchup page by the extension.
+///
+/// Teams and rosters are emitted symmetrically (home/away) rather than via a
+/// "my team vs opponent" distinction — ESPN doesn't surface which team
+/// belongs to the viewer in the DOM, so the TUI shows both sides neutrally.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MatchupStatePayload {
@@ -179,11 +183,13 @@ pub struct MatchupStatePayload {
     pub start_date: String,
     pub end_date: String,
     pub selected_day: String,
-    pub my_team: MatchupTeamPayload,
-    pub opp_team: MatchupTeamPayload,
+    pub home_team: MatchupTeamPayload,
+    pub away_team: MatchupTeamPayload,
     pub categories: Vec<MatchupCategoryPayload>,
-    pub batting: MatchupSectionPayload,
-    pub pitching: MatchupSectionPayload,
+    pub home_batting: MatchupSectionPayload,
+    pub home_pitching: MatchupSectionPayload,
+    pub away_batting: MatchupSectionPayload,
+    pub away_pitching: MatchupSectionPayload,
 }
 
 /// A team's info within the matchup WebSocket message.
@@ -199,7 +205,7 @@ pub struct MatchupTeamPayload {
 
 /// A single category's values from the matchup WebSocket message.
 ///
-/// `my_value` and `opp_value` are `Option<f64>` because ESPN renders `"--"`
+/// `home_value` and `away_value` are `Option<f64>` because ESPN renders `"--"`
 /// for rate stats (AVG/ERA/WHIP) with a zero denominator, and the scoreboard
 /// can be partially rendered while the page is still loading.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -207,8 +213,8 @@ pub struct MatchupTeamPayload {
 pub struct MatchupCategoryPayload {
     pub stat_id: u16,
     pub abbrev: String,
-    pub my_value: Option<f64>,
-    pub opp_value: Option<f64>,
+    pub home_value: Option<f64>,
+    pub away_value: Option<f64>,
     pub lower_is_better: bool,
 }
 
@@ -1610,22 +1616,22 @@ mod tests {
                 "startDate": "2026-03-25",
                 "endDate": "2026-04-05",
                 "selectedDay": "2026-03-26",
-                "myTeam": {
+                "homeTeam": {
                     "name": "Bob Dole Experience",
                     "record": "0-0-0",
                     "matchupScore": "2-3-7"
                 },
-                "oppTeam": {
+                "awayTeam": {
                     "name": "Certified! Smokified!",
                     "record": "0-0-0",
                     "matchupScore": "3-2-7"
                 },
                 "categories": [
-                    { "statId": 20, "abbrev": "R", "myValue": 5.0, "oppValue": 3.0, "lowerIsBetter": false },
-                    { "statId": 5, "abbrev": "HR", "myValue": 2.0, "oppValue": 4.0, "lowerIsBetter": false },
-                    { "statId": 47, "abbrev": "ERA", "myValue": 3.45, "oppValue": 4.12, "lowerIsBetter": true }
+                    { "statId": 20, "abbrev": "R", "homeValue": 5.0, "awayValue": 3.0, "lowerIsBetter": false },
+                    { "statId": 5, "abbrev": "HR", "homeValue": 2.0, "awayValue": 4.0, "lowerIsBetter": false },
+                    { "statId": 47, "abbrev": "ERA", "homeValue": 3.45, "awayValue": 4.12, "lowerIsBetter": true }
                 ],
-                "batting": {
+                "homeBatting": {
                     "headers": ["AB", "H", "R", "HR", "RBI", "BB", "SB", "AVG"],
                     "players": [
                         {
@@ -1640,7 +1646,27 @@ mod tests {
                     ],
                     "totals": [29.0, 8.0, 5.0, 2.0, 6.0, 5.0, 1.0, 0.276]
                 },
-                "pitching": {
+                "homePitching": {
+                    "headers": ["IP", "H", "ER", "BB", "K", "W", "SV", "HD"],
+                    "players": [],
+                    "totals": null
+                },
+                "awayBatting": {
+                    "headers": ["AB", "H", "R", "HR", "RBI", "BB", "SB", "AVG"],
+                    "players": [
+                        {
+                            "slot": "1B",
+                            "name": "Pete Alonso",
+                            "team": "NYM",
+                            "positions": ["1B"],
+                            "opponent": "@PHI",
+                            "status": null,
+                            "stats": [3.0, 2.0, 1.0, 1.0, 2.0, 1.0, 0.0, 0.667]
+                        }
+                    ],
+                    "totals": [27.0, 10.0, 7.0, 3.0, 8.0, 4.0, 0.0, 0.370]
+                },
+                "awayPitching": {
                     "headers": ["IP", "H", "ER", "BB", "K", "W", "SV", "HD"],
                     "players": [],
                     "totals": null
@@ -1656,27 +1682,31 @@ mod tests {
                 assert_eq!(payload.start_date, "2026-03-25");
                 assert_eq!(payload.end_date, "2026-04-05");
                 assert_eq!(payload.selected_day, "2026-03-26");
-                assert_eq!(payload.my_team.name, "Bob Dole Experience");
-                assert_eq!(payload.my_team.record, "0-0-0");
-                assert_eq!(payload.my_team.matchup_score, "2-3-7");
-                assert_eq!(payload.opp_team.name, "Certified! Smokified!");
-                assert_eq!(payload.opp_team.matchup_score, "3-2-7");
+                assert_eq!(payload.home_team.name, "Bob Dole Experience");
+                assert_eq!(payload.home_team.record, "0-0-0");
+                assert_eq!(payload.home_team.matchup_score, "2-3-7");
+                assert_eq!(payload.away_team.name, "Certified! Smokified!");
+                assert_eq!(payload.away_team.matchup_score, "3-2-7");
                 assert_eq!(payload.categories.len(), 3);
                 assert_eq!(payload.categories[0].stat_id, 20);
                 assert_eq!(payload.categories[0].abbrev, "R");
-                assert_eq!(payload.categories[0].my_value, Some(5.0));
-                assert_eq!(payload.categories[0].opp_value, Some(3.0));
+                assert_eq!(payload.categories[0].home_value, Some(5.0));
+                assert_eq!(payload.categories[0].away_value, Some(3.0));
                 assert!(!payload.categories[0].lower_is_better);
                 assert!(payload.categories[2].lower_is_better);
-                assert_eq!(payload.batting.headers.len(), 8);
-                assert_eq!(payload.batting.players.len(), 1);
-                assert_eq!(payload.batting.players[0].name, "Ben Rice");
-                assert_eq!(payload.batting.players[0].positions, vec!["1B", "C", "DH"]);
-                assert_eq!(payload.batting.players[0].opponent, Some("@BOS".to_string()));
-                assert_eq!(payload.batting.players[0].status, None);
-                assert_eq!(payload.batting.totals.as_ref().unwrap().len(), 8);
-                assert_eq!(payload.pitching.players.len(), 0);
-                assert!(payload.pitching.totals.is_none());
+                assert_eq!(payload.home_batting.headers.len(), 8);
+                assert_eq!(payload.home_batting.players.len(), 1);
+                assert_eq!(payload.home_batting.players[0].name, "Ben Rice");
+                assert_eq!(payload.home_batting.players[0].positions, vec!["1B", "C", "DH"]);
+                assert_eq!(payload.home_batting.players[0].opponent, Some("@BOS".to_string()));
+                assert_eq!(payload.home_batting.players[0].status, None);
+                assert_eq!(payload.home_batting.totals.as_ref().unwrap().len(), 8);
+                assert_eq!(payload.home_pitching.players.len(), 0);
+                assert!(payload.home_pitching.totals.is_none());
+                // Away roster distinct from home — both were populated.
+                assert_eq!(payload.away_batting.players.len(), 1);
+                assert_eq!(payload.away_batting.players[0].name, "Pete Alonso");
+                assert_eq!(payload.away_batting.totals.as_ref().unwrap().len(), 8);
             }
             other => panic!("Expected MatchupState, got {:?}", other),
         }
@@ -1699,23 +1729,25 @@ mod tests {
                 "startDate": "2026-03-25",
                 "endDate": "2026-04-05",
                 "selectedDay": "2026-03-26",
-                "myTeam": {
+                "homeTeam": {
                     "name": "Bob Dole Experience",
                     "record": "0-0-0",
                     "matchupScore": "0-0-12"
                 },
-                "oppTeam": {
+                "awayTeam": {
                     "name": "Certified! Smokified!",
                     "record": "0-0-0",
                     "matchupScore": "0-0-12"
                 },
                 "categories": [
-                    { "statId": 20, "abbrev": "R", "myValue": 0, "oppValue": 0, "lowerIsBetter": false },
-                    { "statId": 2, "abbrev": "AVG", "myValue": null, "oppValue": null, "lowerIsBetter": false },
-                    { "statId": 47, "abbrev": "ERA", "myValue": null, "oppValue": 3.00, "lowerIsBetter": true }
+                    { "statId": 20, "abbrev": "R", "homeValue": 0, "awayValue": 0, "lowerIsBetter": false },
+                    { "statId": 2, "abbrev": "AVG", "homeValue": null, "awayValue": null, "lowerIsBetter": false },
+                    { "statId": 47, "abbrev": "ERA", "homeValue": null, "awayValue": 3.00, "lowerIsBetter": true }
                 ],
-                "batting": { "headers": ["AB", "H"], "players": [], "totals": null },
-                "pitching": { "headers": ["IP", "K"], "players": [], "totals": null }
+                "homeBatting": { "headers": ["AB", "H"], "players": [], "totals": null },
+                "homePitching": { "headers": ["IP", "K"], "players": [], "totals": null },
+                "awayBatting": { "headers": ["AB", "H"], "players": [], "totals": null },
+                "awayPitching": { "headers": ["IP", "K"], "players": [], "totals": null }
             }
         }"#;
 
@@ -1723,11 +1755,11 @@ mod tests {
         match msg {
             ExtensionMessage::MatchupState { payload, .. } => {
                 assert_eq!(payload.matchup_period, 1);
-                assert_eq!(payload.categories[0].my_value, Some(0.0));
-                assert_eq!(payload.categories[1].my_value, None);
-                assert_eq!(payload.categories[1].opp_value, None);
-                assert_eq!(payload.categories[2].my_value, None);
-                assert_eq!(payload.categories[2].opp_value, Some(3.00));
+                assert_eq!(payload.categories[0].home_value, Some(0.0));
+                assert_eq!(payload.categories[1].home_value, None);
+                assert_eq!(payload.categories[1].away_value, None);
+                assert_eq!(payload.categories[2].home_value, None);
+                assert_eq!(payload.categories[2].away_value, Some(3.00));
             }
             other => panic!("Expected MatchupState, got {:?}", other),
         }
@@ -1742,12 +1774,12 @@ mod tests {
                 start_date: "2026-04-06".to_string(),
                 end_date: "2026-04-12".to_string(),
                 selected_day: "2026-04-07".to_string(),
-                my_team: MatchupTeamPayload {
+                home_team: MatchupTeamPayload {
                     name: "Team A".to_string(),
                     record: "1-0-0".to_string(),
                     matchup_score: "7-5-0".to_string(),
                 },
-                opp_team: MatchupTeamPayload {
+                away_team: MatchupTeamPayload {
                     name: "Team B".to_string(),
                     record: "0-1-0".to_string(),
                     matchup_score: "5-7-0".to_string(),
@@ -1755,16 +1787,26 @@ mod tests {
                 categories: vec![MatchupCategoryPayload {
                     stat_id: 20,
                     abbrev: "R".to_string(),
-                    my_value: Some(10.0),
-                    opp_value: Some(8.0),
+                    home_value: Some(10.0),
+                    away_value: Some(8.0),
                     lower_is_better: false,
                 }],
-                batting: MatchupSectionPayload {
+                home_batting: MatchupSectionPayload {
                     headers: vec!["AB".to_string(), "H".to_string()],
                     players: vec![],
                     totals: None,
                 },
-                pitching: MatchupSectionPayload {
+                home_pitching: MatchupSectionPayload {
+                    headers: vec!["IP".to_string(), "K".to_string()],
+                    players: vec![],
+                    totals: None,
+                },
+                away_batting: MatchupSectionPayload {
+                    headers: vec!["AB".to_string(), "H".to_string()],
+                    players: vec![],
+                    totals: None,
+                },
+                away_pitching: MatchupSectionPayload {
                     headers: vec!["IP".to_string(), "K".to_string()],
                     players: vec![],
                     totals: None,

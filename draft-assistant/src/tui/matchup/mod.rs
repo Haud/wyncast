@@ -6,6 +6,10 @@
 // - `update()` — handle MatchupScreenMessage
 // - `subscription()` — declare keybindings
 // - `view()` — render all components
+//
+// The matchup screen is rendered symmetrically (home vs away). There is no
+// "my team" / "opp team" distinction — both rosters are displayed on
+// equivalent tabs, and scoreboard rows/lead-bar cells are keyed by side.
 
 pub mod layout;
 pub mod main_panel;
@@ -29,15 +33,12 @@ use crate::tui::subscription::keybinding::{
     exact, shift, KeyBindingRecipe, KeybindHint as KbHint, KeybindManager, PRIORITY_NORMAL,
 };
 
-use layout::{build_matchup_layout, build_sidebar_layout};
+use layout::build_matchup_layout;
 use main_panel::{
     DailyStatsPanelMessage, MatchupAnalyticsPanelMessage, MatchupMainPanel,
     MatchupMainPanelMessage, MatchupTab, RosterViewPanelMessage,
 };
-use sidebar::{
-    CategoryTrackerPanelMessage, LimitsData, LimitsPanelMessage, MatchupSidebar,
-    MatchupSidebarMessage,
-};
+use sidebar::{CategoryTrackerPanelMessage, MatchupSidebar, MatchupSidebarMessage};
 
 // ---------------------------------------------------------------------------
 // MatchupFocusPanel
@@ -48,18 +49,16 @@ use sidebar::{
 pub enum MatchupFocusPanel {
     MainPanel,
     CategoryTracker,
-    Limits,
 }
 
 impl MatchupFocusPanel {
     const CYCLE: &[MatchupFocusPanel] = &[
         MatchupFocusPanel::MainPanel,
         MatchupFocusPanel::CategoryTracker,
-        MatchupFocusPanel::Limits,
     ];
 
     /// Advance focus forward:
-    /// None -> MainPanel -> CategoryTracker -> Limits -> None
+    /// None -> MainPanel -> CategoryTracker -> None
     pub fn next(current: Option<MatchupFocusPanel>) -> Option<MatchupFocusPanel> {
         match current {
             None => Some(Self::CYCLE[0]),
@@ -74,7 +73,7 @@ impl MatchupFocusPanel {
     }
 
     /// Advance focus backward:
-    /// None -> Limits -> CategoryTracker -> MainPanel -> None
+    /// None -> CategoryTracker -> MainPanel -> None
     pub fn prev(current: Option<MatchupFocusPanel>) -> Option<MatchupFocusPanel> {
         match current {
             None => Some(*Self::CYCLE.last().unwrap()),
@@ -101,15 +100,11 @@ pub struct MatchupScreen {
     pub focused_panel: Option<MatchupFocusPanel>,
     // Matchup state (set from MatchupSnapshot)
     pub matchup_info: Option<MatchupInfo>,
-    pub my_team: Option<TeamMatchupState>,
-    pub opp_team: Option<TeamMatchupState>,
+    pub home_team: Option<TeamMatchupState>,
+    pub away_team: Option<TeamMatchupState>,
     pub category_scores: Vec<CategoryScore>,
     pub selected_day: usize,
     pub scoring_period_days: Vec<ScoringDay>,
-    pub games_started: u8,
-    pub gs_limit: u8,
-    pub acquisitions_used: u8,
-    pub acquisitions_limit: u8,
     pub stat_registry: Option<StatRegistry>,
     sub_id_base: SubscriptionId,
 }
@@ -121,15 +116,11 @@ impl MatchupScreen {
             sidebar: MatchupSidebar::new(),
             focused_panel: None,
             matchup_info: None,
-            my_team: None,
-            opp_team: None,
+            home_team: None,
+            away_team: None,
             category_scores: Vec::new(),
             selected_day: 0,
             scoring_period_days: Vec::new(),
-            games_started: 0,
-            gs_limit: 7,
-            acquisitions_used: 0,
-            acquisitions_limit: 5,
             stat_registry: None,
             sub_id_base: SubscriptionId::unique(),
         }
@@ -138,14 +129,10 @@ impl MatchupScreen {
     /// Populate all fields from a MatchupSnapshot.
     pub fn apply_snapshot(&mut self, snapshot: &MatchupSnapshot) {
         self.matchup_info = Some(snapshot.matchup_info.clone());
-        self.my_team = Some(snapshot.my_team.clone());
-        self.opp_team = Some(snapshot.opp_team.clone());
+        self.home_team = Some(snapshot.home_team.clone());
+        self.away_team = Some(snapshot.away_team.clone());
         self.category_scores = snapshot.category_scores.clone();
         self.scoring_period_days = snapshot.scoring_period_days.clone();
-        self.games_started = snapshot.games_started;
-        self.gs_limit = snapshot.gs_limit;
-        self.acquisitions_used = snapshot.acquisitions_used;
-        self.acquisitions_limit = snapshot.acquisitions_limit;
         // Clamp selected_day to valid range
         if !self.scoring_period_days.is_empty()
             && self.selected_day >= self.scoring_period_days.len()
@@ -168,15 +155,15 @@ impl MatchupScreen {
         );
 
         // Scoreboard
-        if let (Some(my_team), Some(opp_team), Some(registry)) =
-            (&self.my_team, &self.opp_team, &self.stat_registry)
+        if let (Some(home_team), Some(away_team), Some(registry)) =
+            (&self.home_team, &self.away_team, &self.stat_registry)
         {
             widgets::scoreboard::render(
                 frame,
                 layout.scoreboard,
                 &self.category_scores,
-                my_team,
-                opp_team,
+                home_team,
+                away_team,
                 registry,
             );
         } else {
@@ -193,84 +180,42 @@ impl MatchupScreen {
 
         // Main panel
         let main_focused = self.focused_panel == Some(MatchupFocusPanel::MainPanel);
-        let my_name = self
+        let home_name = self
             .matchup_info
             .as_ref()
-            .map(|i| i.my_team_name.as_str())
-            .unwrap_or("My Roster");
-        let opp_name = self
+            .map(|i| i.home_team_name.as_str())
+            .unwrap_or("Home Roster");
+        let away_name = self
             .matchup_info
             .as_ref()
-            .map(|i| i.opp_team_name.as_str())
-            .unwrap_or("Opponent Roster");
+            .map(|i| i.away_team_name.as_str())
+            .unwrap_or("Away Roster");
         self.main_panel.view(
             frame,
             layout.main_panel,
             &self.category_scores,
             &self.scoring_period_days,
             self.selected_day,
-            self.games_started,
-            self.gs_limit,
-            self.acquisitions_used,
-            self.acquisitions_limit,
             None, // StatRegistry not available at screen level yet
-            my_name,
-            opp_name,
+            home_name,
+            away_name,
             main_focused,
         );
 
         // Sidebar (only if wide enough)
         if let Some(sidebar_rect) = layout.sidebar {
-            let sb_layout = build_sidebar_layout(sidebar_rect);
             let cat_focused = self.focused_panel == Some(MatchupFocusPanel::CategoryTracker);
-            let limits_focused = self.focused_panel == Some(MatchupFocusPanel::Limits);
-
-            let total_days = self.scoring_period_days.len();
-            let days_remaining = total_days.saturating_sub(self.selected_day + 1);
-            let (games_today, total_active) = self.compute_games_today();
-
-            let limits_data = LimitsData {
-                gs_used: self.games_started,
-                gs_limit: self.gs_limit,
-                acq_used: self.acquisitions_used,
-                acq_limit: self.acquisitions_limit,
-                days_remaining,
-                games_today,
-                total_active,
-            };
 
             self.sidebar.view(
                 frame,
-                sb_layout.category_tracker,
-                sb_layout.limits,
+                sidebar_rect,
                 &self.category_scores,
-                &limits_data,
                 cat_focused,
-                limits_focused,
             );
         }
 
         // Help bar
         crate::tui::render_keybind_hints(frame, layout.help_bar, keybinds);
-    }
-
-    // -- Sidebar helpers --
-
-    /// Count games today: (players with a game, total active roster spots).
-    ///
-    /// Looks at the currently selected day's batting + pitching rows and counts
-    /// how many have an opponent scheduled (i.e., opponent is Some).
-    fn compute_games_today(&self) -> (usize, usize) {
-        let day = self.scoring_period_days.get(self.selected_day);
-        match day {
-            Some(day) => {
-                let all_rows = day.batting_rows.iter().chain(day.pitching_rows.iter());
-                let total = day.batting_rows.len() + day.pitching_rows.len();
-                let with_game = all_rows.filter(|r| r.opponent.is_some()).count();
-                (with_game, total)
-            }
-            None => (0, 0),
-        }
     }
 
     // -- Scroll dispatch --
@@ -280,11 +225,6 @@ impl MatchupScreen {
             Some(MatchupFocusPanel::CategoryTracker) => {
                 self.sidebar.update(MatchupSidebarMessage::CategoryTracker(
                     CategoryTrackerPanelMessage::Scroll(dir),
-                ));
-            }
-            Some(MatchupFocusPanel::Limits) => {
-                self.sidebar.update(MatchupSidebarMessage::Limits(
-                    LimitsPanelMessage::Scroll(dir),
                 ));
             }
             Some(MatchupFocusPanel::MainPanel) | None => {
@@ -300,13 +240,13 @@ impl MatchupScreen {
                             MatchupAnalyticsPanelMessage::Scroll(dir),
                         ));
                     }
-                    MatchupTab::MyRoster => {
-                        self.main_panel.update(MatchupMainPanelMessage::MyRoster(
+                    MatchupTab::HomeRoster => {
+                        self.main_panel.update(MatchupMainPanelMessage::HomeRoster(
                             RosterViewPanelMessage::Scroll(dir),
                         ));
                     }
-                    MatchupTab::OppRoster => {
-                        self.main_panel.update(MatchupMainPanelMessage::OppRoster(
+                    MatchupTab::AwayRoster => {
+                        self.main_panel.update(MatchupMainPanelMessage::AwayRoster(
                             RosterViewPanelMessage::Scroll(dir),
                         ));
                     }
@@ -415,14 +355,13 @@ impl MatchupScreen {
                 None => 0,
                 Some(MatchupFocusPanel::MainPanel) => 1,
                 Some(MatchupFocusPanel::CategoryTracker) => 2,
-                Some(MatchupFocusPanel::Limits) => 3,
             };
             fp_disc.hash(&mut hasher);
             let tab_disc: u8 = match self.main_panel.active_tab() {
                 MatchupTab::DailyStats => 0,
                 MatchupTab::Analytics => 1,
-                MatchupTab::MyRoster => 2,
-                MatchupTab::OppRoster => 3,
+                MatchupTab::HomeRoster => 2,
+                MatchupTab::AwayRoster => 3,
             };
             tab_disc.hash(&mut hasher);
             let own_id = SubscriptionId::from_u64(hasher.finish());
@@ -469,12 +408,12 @@ impl MatchupScreen {
                 )
                 .bind(
                     exact(KeyCode::Char('3')),
-                    |_| MatchupScreenMessage::SwitchTab(MatchupTab::MyRoster),
+                    |_| MatchupScreenMessage::SwitchTab(MatchupTab::HomeRoster),
                     None,
                 )
                 .bind(
                     exact(KeyCode::Char('4')),
-                    |_| MatchupScreenMessage::SwitchTab(MatchupTab::OppRoster),
+                    |_| MatchupScreenMessage::SwitchTab(MatchupTab::AwayRoster),
                     None,
                 )
                 .bind(
@@ -569,29 +508,26 @@ impl MatchupScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::matchup::TeamDailyRoster;
 
     // -- Focus cycling --
 
     #[test]
     fn focus_cycle_forward() {
-        // None -> MainPanel -> CategoryTracker -> Limits -> None
+        // None -> MainPanel -> CategoryTracker -> None
         let mut focus: Option<MatchupFocusPanel> = None;
         focus = MatchupFocusPanel::next(focus);
         assert_eq!(focus, Some(MatchupFocusPanel::MainPanel));
         focus = MatchupFocusPanel::next(focus);
         assert_eq!(focus, Some(MatchupFocusPanel::CategoryTracker));
         focus = MatchupFocusPanel::next(focus);
-        assert_eq!(focus, Some(MatchupFocusPanel::Limits));
-        focus = MatchupFocusPanel::next(focus);
         assert_eq!(focus, None);
     }
 
     #[test]
     fn focus_cycle_backward() {
-        // None -> Limits -> CategoryTracker -> MainPanel -> None
+        // None -> CategoryTracker -> MainPanel -> None
         let mut focus: Option<MatchupFocusPanel> = None;
-        focus = MatchupFocusPanel::prev(focus);
-        assert_eq!(focus, Some(MatchupFocusPanel::Limits));
         focus = MatchupFocusPanel::prev(focus);
         assert_eq!(focus, Some(MatchupFocusPanel::CategoryTracker));
         focus = MatchupFocusPanel::prev(focus);
@@ -664,14 +600,10 @@ mod tests {
         screen.apply_snapshot(&snapshot);
 
         assert!(screen.matchup_info.is_some());
-        assert!(screen.my_team.is_some());
-        assert!(screen.opp_team.is_some());
+        assert!(screen.home_team.is_some());
+        assert!(screen.away_team.is_some());
         assert_eq!(screen.category_scores.len(), 1);
         assert_eq!(screen.scoring_period_days.len(), 2);
-        assert_eq!(screen.games_started, 3);
-        assert_eq!(screen.gs_limit, 7);
-        assert_eq!(screen.acquisitions_used, 1);
-        assert_eq!(screen.acquisitions_limit, 5);
     }
 
     #[test]
@@ -726,53 +658,80 @@ mod tests {
             label: label.to_string(),
             batting_stat_columns: vec![],
             pitching_stat_columns: vec![],
-            batting_rows: Vec::new(),
-            pitching_rows: Vec::new(),
-            batting_totals: None,
-            pitching_totals: None,
+            home: TeamDailyRoster::default(),
+            away: TeamDailyRoster::default(),
         }
     }
 
     fn make_test_snapshot() -> MatchupSnapshot {
-        use crate::matchup::{CategoryState, TeamRecord};
+        use crate::matchup::{CategoryState, DailyPlayerRow, TeamRecord};
+
+        let home_row = DailyPlayerRow {
+            slot: "C".to_string(),
+            player_name: "Home Catcher".to_string(),
+            team: "NYY".to_string(),
+            positions: vec!["C".to_string()],
+            opponent: Some("@BOS".to_string()),
+            game_status: None,
+            stats: vec![Some(4.0)],
+        };
+        let away_row = DailyPlayerRow {
+            slot: "1B".to_string(),
+            player_name: "Away Firstbase".to_string(),
+            team: "NYM".to_string(),
+            positions: vec!["1B".to_string()],
+            opponent: Some("@PHI".to_string()),
+            game_status: None,
+            stats: vec![Some(3.0)],
+        };
+        let day1 = ScoringDay {
+            date: "2026-03-26".to_string(),
+            label: "Day 1".to_string(),
+            batting_stat_columns: vec!["AB".to_string()],
+            pitching_stat_columns: vec![],
+            home: TeamDailyRoster {
+                batting_rows: vec![home_row],
+                ..TeamDailyRoster::default()
+            },
+            away: TeamDailyRoster {
+                batting_rows: vec![away_row],
+                ..TeamDailyRoster::default()
+            },
+        };
 
         MatchupSnapshot {
             matchup_info: MatchupInfo {
                 matchup_period: 1,
                 start_date: "2026-03-25".to_string(),
                 end_date: "2026-04-05".to_string(),
-                my_team_name: "My Team".to_string(),
-                opp_team_name: "Opp Team".to_string(),
-                my_record: TeamRecord { wins: 1, losses: 0, ties: 0 },
-                opp_record: TeamRecord { wins: 0, losses: 1, ties: 0 },
+                home_team_name: "Home Team".to_string(),
+                away_team_name: "Away Team".to_string(),
+                home_record: TeamRecord { wins: 1, losses: 0, ties: 0 },
+                away_record: TeamRecord { wins: 0, losses: 1, ties: 0 },
             },
-            my_team: TeamMatchupState {
-                name: "My Team".to_string(),
-                abbrev: "MT".to_string(),
+            home_team: TeamMatchupState {
+                name: "Home Team".to_string(),
+                abbrev: "HT".to_string(),
                 record: TeamRecord { wins: 1, losses: 0, ties: 0 },
                 category_score: TeamRecord { wins: 6, losses: 4, ties: 2 },
             },
-            opp_team: TeamMatchupState {
-                name: "Opp Team".to_string(),
-                abbrev: "OT".to_string(),
+            away_team: TeamMatchupState {
+                name: "Away Team".to_string(),
+                abbrev: "AT".to_string(),
                 record: TeamRecord { wins: 0, losses: 1, ties: 0 },
                 category_score: TeamRecord { wins: 4, losses: 6, ties: 2 },
             },
             category_scores: vec![CategoryScore {
                 stat_abbrev: "R".to_string(),
-                my_value: 5.0,
-                opp_value: 3.0,
-                state: CategoryState::Winning,
+                home_value: 5.0,
+                away_value: 3.0,
+                state: CategoryState::HomeWinning,
             }],
             selected_day: 0,
             scoring_period_days: vec![
-                make_scoring_day("Day 1"),
+                day1,
                 make_scoring_day("Day 2"),
             ],
-            games_started: 3,
-            gs_limit: 7,
-            acquisitions_used: 1,
-            acquisitions_limit: 5,
         }
     }
 }

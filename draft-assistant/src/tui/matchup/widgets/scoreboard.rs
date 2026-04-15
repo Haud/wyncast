@@ -1,13 +1,19 @@
 // Scoreboard widget: category-by-category H2H comparison header.
 //
-// Fixed 5-row layout:
-//   Row 1: Header —    R    HR   RBI   BB   SB   AVG  |  K    W    SV   HD   ERA    WHIP  |  Score
-//   Row 2: My team — values with winning indicators
-//   Row 3: Opp team — values with winning indicators
-//   Row 4: Diff — differential with color coding
-//   Row 5: Bottom border (part of the Block)
+// The scoreboard is rendered symmetrically for home and away — there is no
+// "my team" bias. The matchup lead is visualised by a center-anchored leaning
+// bar under each team label.
+//
+// Layout (rendered top-to-bottom within the provided area):
+//   Row 1: Header    — blank label | R HR RBI … | K W SV … | (leaning bar space)
+//   Row 2: Home team — values with winning cells highlighted
+//   Row 3: Away team — values with winning cells highlighted
+//   Row 4: H-A diff  — per-category signed differential (home - away)
+//
+// To the right of the category columns we render a horizontal leaning bar
+// that visualises `home.category_score.wins - away.category_score.wins`.
 
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -36,36 +42,31 @@ fn format_value(value: f64, precision: u8) -> String {
     }
 }
 
-/// Format a differential value with sign prefix.
-///
-/// For `LowerIsBetter` stats (ERA, WHIP), the sign is inverted for display:
-/// a negative raw diff means we're better, so we show it as positive (green).
-fn format_diff(my_value: f64, opp_value: f64, precision: u8, lower_is_better: bool) -> String {
-    let raw_diff = my_value - opp_value;
-    // For display: positive means "good for us"
-    let display_diff = if lower_is_better { -raw_diff } else { raw_diff };
+/// Format a home-minus-away differential value with sign prefix.
+fn format_diff(home_value: f64, away_value: f64, precision: u8) -> String {
+    let raw_diff = home_value - away_value;
+    let abs_formatted = format_value(raw_diff.abs(), precision);
 
-    let abs_formatted = format_value(display_diff.abs(), precision);
-
-    if display_diff > 0.0 {
+    if raw_diff > 0.0 {
         format!("+{}", abs_formatted)
-    } else if display_diff < 0.0 {
+    } else if raw_diff < 0.0 {
         format!("-{}", abs_formatted)
     } else {
         abs_formatted
     }
 }
 
-/// Determine the color for a differential value.
+/// Determine the color for the home-minus-away differential cell.
 ///
-/// For `LowerIsBetter` stats, the sense is inverted: negative raw diff = good.
-fn diff_color(my_value: f64, opp_value: f64, lower_is_better: bool) -> Color {
-    let raw_diff = my_value - opp_value;
-    let display_diff = if lower_is_better { -raw_diff } else { raw_diff };
+/// For `LowerIsBetter` stats, the sign sense is inverted so the color still
+/// reflects who is "ahead", not just numerical sign.
+fn diff_color(home_value: f64, away_value: f64, lower_is_better: bool) -> Color {
+    let raw_diff = home_value - away_value;
+    let effective = if lower_is_better { -raw_diff } else { raw_diff };
 
-    if display_diff > 0.0 {
+    if effective > 0.0 {
         Color::Green
-    } else if display_diff < 0.0 {
+    } else if effective < 0.0 {
         Color::Red
     } else {
         Color::Yellow
@@ -99,41 +100,59 @@ fn is_lower_better(abbrev: &str, registry: &StatRegistry) -> bool {
 
 /// Render the scoreboard into the given area.
 ///
-/// Displays all 12 H2H categories with both teams' values, winning indicators,
-/// differentials, and the W-L-T matchup score.
+/// Displays all H2H categories with both teams' values, winning indicators,
+/// the H-A differential row, and a leaning bar showing the category-score lead.
 pub fn render(
     frame: &mut Frame,
     area: Rect,
     category_scores: &[CategoryScore],
-    my_team: &TeamMatchupState,
-    opp_team: &TeamMatchupState,
+    home_team: &TeamMatchupState,
+    away_team: &TeamMatchupState,
     registry: &StatRegistry,
 ) {
+    // Split the area into a table column (left) and a leaning-bar column (right).
+    // The bar hugs the right edge; the table takes the rest. We allocate a
+    // fixed 24-column strip for the bar when there's room, otherwise shrink.
+    let bar_width: u16 = 24;
+    let [table_area, bar_area] = if area.width > bar_width + 20 {
+        let chunks = Layout::horizontal([Constraint::Min(10), Constraint::Length(bar_width)])
+            .split(area);
+        [chunks[0], chunks[1]]
+    } else {
+        [area, Rect::new(area.x, area.y, 0, area.height)]
+    };
+
     let batting_cats: Vec<&CategoryScore> = category_scores
         .iter()
-        .filter(|c| registry.get(&c.stat_abbrev).is_some_and(|d| d.player_type == crate::stats::PlayerType::Hitter))
+        .filter(|c| {
+            registry
+                .get(&c.stat_abbrev)
+                .is_some_and(|d| d.player_type == crate::stats::PlayerType::Hitter)
+        })
         .collect();
     let pitching_cats: Vec<&CategoryScore> = category_scores
         .iter()
-        .filter(|c| registry.get(&c.stat_abbrev).is_some_and(|d| d.player_type == crate::stats::PlayerType::Pitcher))
+        .filter(|c| {
+            registry
+                .get(&c.stat_abbrev)
+                .is_some_and(|d| d.player_type == crate::stats::PlayerType::Pitcher)
+        })
         .collect();
 
     let lines = vec![
         build_header_line(&batting_cats, &pitching_cats),
         build_team_line(
-            &truncate_name(&my_team.abbrev, LABEL_WIDTH - 1),
+            &truncate_name(&home_team.abbrev, LABEL_WIDTH - 1),
             &batting_cats,
             &pitching_cats,
             true,
-            &my_team.category_score,
             registry,
         ),
         build_team_line(
-            &truncate_name(&opp_team.abbrev, LABEL_WIDTH - 1),
+            &truncate_name(&away_team.abbrev, LABEL_WIDTH - 1),
             &batting_cats,
             &pitching_cats,
             false,
-            &opp_team.category_score,
             registry,
         ),
         build_diff_line(&batting_cats, &pitching_cats, registry),
@@ -144,6 +163,102 @@ pub fn render(
             .borders(Borders::BOTTOM)
             .border_style(Style::default().fg(Color::DarkGray)),
     );
+    frame.render_widget(paragraph, table_area);
+
+    // Leaning bar (only render if we have room).
+    if bar_area.width > 0 {
+        render_lead_bar(frame, bar_area, home_team, away_team);
+    }
+}
+
+/// Render the center-anchored leaning bar that visualises the category-score
+/// lead (home.wins - away.wins).
+fn render_lead_bar(
+    frame: &mut Frame,
+    area: Rect,
+    home_team: &TeamMatchupState,
+    away_team: &TeamMatchupState,
+) {
+    if area.height == 0 || area.width < 10 {
+        return;
+    }
+
+    let home_wins = home_team.category_score.wins as i32;
+    let away_wins = away_team.category_score.wins as i32;
+    let total = (home_wins + away_wins).max(1) as f64;
+    let lead = (home_wins - away_wins) as f64;
+    // Proportion in [-1.0, 1.0]. Positive = home ahead.
+    let proportion = (lead / total).clamp(-1.0, 1.0);
+
+    // Reserve the outer two cells as padding; the bar fills the middle.
+    let inner_width = area.width.saturating_sub(2) as usize;
+    // Split into left and right halves around the center. For odd widths the
+    // center gets a single anchor cell.
+    let half = inner_width / 2;
+    let left_fill = if proportion < 0.0 {
+        ((proportion.abs() * half as f64).round() as usize).min(half)
+    } else {
+        0
+    };
+    let right_fill = if proportion > 0.0 {
+        ((proportion * half as f64).round() as usize).min(half)
+    } else {
+        0
+    };
+    let left_empty = half.saturating_sub(left_fill);
+    let right_empty = half.saturating_sub(right_fill);
+
+    // Score label: "6 - 4 - 2" (wins-losses-ties for home, mirrored for away).
+    let score_label = format!(
+        "{}  vs  {}",
+        home_team.category_score, away_team.category_score
+    );
+
+    // Line 1: score label (centered).
+    let label_line = Line::from(Span::styled(
+        score_label,
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    ));
+
+    // Line 2: the bar itself.
+    let bar_spans: Vec<Span<'static>> = vec![
+        Span::raw(" "),
+        Span::raw(" ".repeat(left_empty)),
+        Span::styled(
+            "\u{2588}".repeat(left_fill),
+            Style::default().fg(Color::Red),
+        ),
+        // Center anchor character.
+        Span::styled("\u{2503}", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            "\u{2588}".repeat(right_fill),
+            Style::default().fg(Color::Green),
+        ),
+        Span::raw(" ".repeat(right_empty)),
+        Span::raw(" "),
+    ];
+    let bar_line = Line::from(bar_spans);
+
+    // Line 3 (optional): "HOME +N" / "AWAY +N" / "TIED" text.
+    let diff_label = if lead > 0.0 {
+        Span::styled(
+            format!("HOME +{}", lead as i32),
+            Style::default().fg(Color::Green),
+        )
+    } else if lead < 0.0 {
+        Span::styled(
+            format!("AWAY +{}", (-lead) as i32),
+            Style::default().fg(Color::Red),
+        )
+    } else {
+        Span::styled("TIED", Style::default().fg(Color::Yellow))
+    };
+
+    let lines = vec![label_line, bar_line, Line::from(diff_label)];
+
+    let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, area);
 }
 
@@ -153,7 +268,10 @@ fn build_header_line(batting: &[&CategoryScore], pitching: &[&CategoryScore]) ->
     let header_style = Style::default().fg(Color::DarkGray);
 
     // Label column (blank for header)
-    spans.push(Span::styled(format!("{:width$}", "", width = LABEL_WIDTH), header_style));
+    spans.push(Span::styled(
+        format!("{:width$}", "", width = LABEL_WIDTH),
+        header_style,
+    ));
 
     // Batting categories
     for cat in batting {
@@ -174,20 +292,19 @@ fn build_header_line(batting: &[&CategoryScore], pitching: &[&CategoryScore]) ->
         ));
     }
 
-    // Score column separator and header
-    spans.push(Span::styled(" \u{2502} ", header_style));
-    spans.push(Span::styled("Score", header_style));
-
     Line::from(spans)
 }
 
 /// Build a team row showing stat values with winning indicators.
+///
+/// `is_home` selects whether `home_value` or `away_value` is shown for each
+/// category and which side of the `CategoryState` counts as "us" for
+/// highlighting.
 fn build_team_line(
     label: &str,
     batting: &[&CategoryScore],
     pitching: &[&CategoryScore],
-    is_my_team: bool,
-    matchup_score: &crate::matchup::TeamRecord,
+    is_home: bool,
     registry: &StatRegistry,
 ) -> Line<'static> {
     let mut spans = Vec::new();
@@ -195,51 +312,57 @@ fn build_team_line(
     // Team name label
     spans.push(Span::styled(
         format!("{:width$}", label, width = LABEL_WIDTH),
-        Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
     ));
 
     // Batting values
     for cat in batting {
-        let value = if is_my_team { cat.my_value } else { cat.opp_value };
+        let value = if is_home { cat.home_value } else { cat.away_value };
         let prec = precision_for_stat(&cat.stat_abbrev, registry);
         let formatted = format_value(value, prec);
-        let (style, prefix) = cell_style(cat.state, is_my_team);
-        let display = format!("{:>width$}", format!("{}{}", prefix, formatted), width = COL_WIDTH);
+        let (style, prefix) = cell_style(cat.state, is_home);
+        let display = format!(
+            "{:>width$}",
+            format!("{}{}", prefix, formatted),
+            width = COL_WIDTH
+        );
         spans.push(Span::styled(display, style));
     }
 
     // Separator
-    spans.push(Span::styled(" \u{2502} ", Style::default().fg(Color::DarkGray)));
+    spans.push(Span::styled(
+        " \u{2502} ",
+        Style::default().fg(Color::DarkGray),
+    ));
 
     // Pitching values
     for cat in pitching {
-        let value = if is_my_team { cat.my_value } else { cat.opp_value };
+        let value = if is_home { cat.home_value } else { cat.away_value };
         let prec = precision_for_stat(&cat.stat_abbrev, registry);
         let formatted = format_value(value, prec);
-        let (style, prefix) = cell_style(cat.state, is_my_team);
-        let display = format!("{:>width$}", format!("{}{}", prefix, formatted), width = COL_WIDTH);
+        let (style, prefix) = cell_style(cat.state, is_home);
+        let display = format!(
+            "{:>width$}",
+            format!("{}{}", prefix, formatted),
+            width = COL_WIDTH
+        );
         spans.push(Span::styled(display, style));
     }
-
-    // Score column
-    spans.push(Span::styled(" \u{2502} ", Style::default().fg(Color::DarkGray)));
-    spans.push(Span::styled(
-        matchup_score.to_string(),
-        Style::default().fg(Color::White),
-    ));
 
     Line::from(spans)
 }
 
 /// Determine the style and prefix for a stat cell based on win state.
 ///
-/// Returns `(Style, prefix_str)`. The winning team's cell gets `*` prefix,
-/// green bold text. Losing gets default white. Tied gets yellow.
-fn cell_style(state: CategoryState, is_my_team: bool) -> (Style, &'static str) {
+/// Returns `(Style, prefix_str)`. The winning team's cell gets a `*` prefix
+/// and green bold text; the losing side is plain white; tied is yellow.
+/// The treatment is fully symmetric between home and away.
+fn cell_style(state: CategoryState, is_home: bool) -> (Style, &'static str) {
     match state {
-        CategoryState::Winning => {
-            if is_my_team {
-                // My team is winning: I'm green+bold with *
+        CategoryState::HomeWinning => {
+            if is_home {
                 (
                     Style::default()
                         .fg(Color::Green)
@@ -247,16 +370,13 @@ fn cell_style(state: CategoryState, is_my_team: bool) -> (Style, &'static str) {
                     "*",
                 )
             } else {
-                // Opp team, but my team is winning: opp is default
                 (Style::default().fg(Color::White), "")
             }
         }
-        CategoryState::Losing => {
-            if is_my_team {
-                // My team is losing: I'm default
+        CategoryState::AwayWinning => {
+            if is_home {
                 (Style::default().fg(Color::White), "")
             } else {
-                // Opp team is winning (my team losing): opp gets green+bold with *
                 (
                     Style::default()
                         .fg(Color::Green)
@@ -269,7 +389,7 @@ fn cell_style(state: CategoryState, is_my_team: bool) -> (Style, &'static str) {
     }
 }
 
-/// Build the differential row.
+/// Build the H-A differential row.
 fn build_diff_line(
     batting: &[&CategoryScore],
     pitching: &[&CategoryScore],
@@ -280,7 +400,7 @@ fn build_diff_line(
 
     // Label
     spans.push(Span::styled(
-        format!("{:width$}", "Diff", width = LABEL_WIDTH),
+        format!("{:width$}", "H-A", width = LABEL_WIDTH),
         label_style,
     ));
 
@@ -288,8 +408,8 @@ fn build_diff_line(
     for cat in batting {
         let prec = precision_for_stat(&cat.stat_abbrev, registry);
         let lower = is_lower_better(&cat.stat_abbrev, registry);
-        let diff_str = format_diff(cat.my_value, cat.opp_value, prec, lower);
-        let color = diff_color(cat.my_value, cat.opp_value, lower);
+        let diff_str = format_diff(cat.home_value, cat.away_value, prec);
+        let color = diff_color(cat.home_value, cat.away_value, lower);
         spans.push(Span::styled(
             format!("{:>width$}", diff_str, width = COL_WIDTH),
             Style::default().fg(color),
@@ -303,16 +423,13 @@ fn build_diff_line(
     for cat in pitching {
         let prec = precision_for_stat(&cat.stat_abbrev, registry);
         let lower = is_lower_better(&cat.stat_abbrev, registry);
-        let diff_str = format_diff(cat.my_value, cat.opp_value, prec, lower);
-        let color = diff_color(cat.my_value, cat.opp_value, lower);
+        let diff_str = format_diff(cat.home_value, cat.away_value, prec);
+        let color = diff_color(cat.home_value, cat.away_value, lower);
         spans.push(Span::styled(
             format!("{:>width$}", diff_str, width = COL_WIDTH),
             Style::default().fg(color),
         ));
     }
-
-    // Empty score column
-    spans.push(Span::styled(" \u{2502} ", label_style));
 
     Line::from(spans)
 }
@@ -327,33 +444,33 @@ mod tests {
     use crate::matchup::TeamRecord;
     use crate::test_utils::test_registry;
 
-    fn make_category(abbrev: &str, my: f64, opp: f64, state: CategoryState) -> CategoryScore {
+    fn make_category(abbrev: &str, home: f64, away: f64, state: CategoryState) -> CategoryScore {
         CategoryScore {
             stat_abbrev: abbrev.to_string(),
-            my_value: my,
-            opp_value: opp,
+            home_value: home,
+            away_value: away,
             state,
         }
     }
 
     fn make_full_categories() -> Vec<CategoryScore> {
         vec![
-            make_category("R", 5.0, 3.0, CategoryState::Winning),
-            make_category("HR", 2.0, 3.0, CategoryState::Losing),
-            make_category("RBI", 5.0, 4.0, CategoryState::Winning),
-            make_category("BB", 3.0, 1.0, CategoryState::Winning),
-            make_category("SB", 1.0, 2.0, CategoryState::Losing),
-            make_category("AVG", 0.275, 0.290, CategoryState::Losing),
-            make_category("K", 42.0, 48.0, CategoryState::Losing),
-            make_category("W", 1.0, 2.0, CategoryState::Losing),
-            make_category("SV", 0.0, 1.0, CategoryState::Losing),
-            make_category("HD", 2.0, 0.0, CategoryState::Winning),
-            make_category("ERA", 3.50, 4.20, CategoryState::Winning),
-            make_category("WHIP", 1.20, 1.35, CategoryState::Winning),
+            make_category("R", 5.0, 3.0, CategoryState::HomeWinning),
+            make_category("HR", 2.0, 3.0, CategoryState::AwayWinning),
+            make_category("RBI", 5.0, 4.0, CategoryState::HomeWinning),
+            make_category("BB", 3.0, 1.0, CategoryState::HomeWinning),
+            make_category("SB", 1.0, 2.0, CategoryState::AwayWinning),
+            make_category("AVG", 0.275, 0.290, CategoryState::AwayWinning),
+            make_category("K", 42.0, 48.0, CategoryState::AwayWinning),
+            make_category("W", 1.0, 2.0, CategoryState::AwayWinning),
+            make_category("SV", 0.0, 1.0, CategoryState::AwayWinning),
+            make_category("HD", 2.0, 0.0, CategoryState::HomeWinning),
+            make_category("ERA", 3.50, 4.20, CategoryState::HomeWinning),
+            make_category("WHIP", 1.20, 1.35, CategoryState::HomeWinning),
         ]
     }
 
-    fn make_my_team() -> TeamMatchupState {
+    fn make_home_team() -> TeamMatchupState {
         TeamMatchupState {
             name: "Bob Dole Experience".to_string(),
             abbrev: "BDE".to_string(),
@@ -362,7 +479,7 @@ mod tests {
         }
     }
 
-    fn make_opp_team() -> TeamMatchupState {
+    fn make_away_team() -> TeamMatchupState {
         TeamMatchupState {
             name: "Certified! Smokified!".to_string(),
             abbrev: "C!S!".to_string(),
@@ -404,70 +521,57 @@ mod tests {
         assert_eq!(format_value(1.35, 2), "1.35");
     }
 
-    // -- format_diff tests --
+    // -- format_diff tests (home - away, always raw signed) --
 
     #[test]
-    fn diff_higher_is_better_positive() {
-        // R: 5 vs 3, higher is better => +2 (green)
-        assert_eq!(format_diff(5.0, 3.0, 0, false), "+2");
+    fn diff_home_ahead_counting() {
+        // R: home 5 vs away 3 => +2
+        assert_eq!(format_diff(5.0, 3.0, 0), "+2");
     }
 
     #[test]
-    fn diff_higher_is_better_negative() {
-        // HR: 2 vs 3, higher is better => -1 (red)
-        assert_eq!(format_diff(2.0, 3.0, 0, false), "-1");
+    fn diff_away_ahead_counting() {
+        // HR: home 2 vs away 3 => -1
+        assert_eq!(format_diff(2.0, 3.0, 0), "-1");
     }
 
     #[test]
-    fn diff_higher_is_better_zero() {
-        assert_eq!(format_diff(3.0, 3.0, 0, false), "0");
+    fn diff_zero() {
+        assert_eq!(format_diff(3.0, 3.0, 0), "0");
     }
 
     #[test]
-    fn diff_lower_is_better_winning() {
-        // ERA: 3.50 vs 4.20, lower is better
-        // raw diff = -0.70 (negative), but lower is better so display_diff = +0.70
-        assert_eq!(format_diff(3.50, 4.20, 2, true), "+.70");
-    }
-
-    #[test]
-    fn diff_lower_is_better_losing() {
-        // ERA: 4.20 vs 3.50, lower is better
-        // raw diff = +0.70, but lower is better so display_diff = -0.70
-        assert_eq!(format_diff(4.20, 3.50, 2, true), "-.70");
-    }
-
-    #[test]
-    fn diff_lower_is_better_tied() {
-        assert_eq!(format_diff(3.50, 3.50, 2, true), ".00");
+    fn diff_home_better_rate() {
+        // ERA: home 3.50 vs away 4.20 (lower is better) -> raw diff -0.70
+        assert_eq!(format_diff(3.50, 4.20, 2), "-.70");
     }
 
     // -- diff_color tests --
 
     #[test]
-    fn diff_color_higher_positive_is_green() {
+    fn diff_color_higher_is_better_home_ahead() {
         assert_eq!(diff_color(5.0, 3.0, false), Color::Green);
     }
 
     #[test]
-    fn diff_color_higher_negative_is_red() {
+    fn diff_color_higher_is_better_away_ahead() {
         assert_eq!(diff_color(2.0, 3.0, false), Color::Red);
     }
 
     #[test]
-    fn diff_color_higher_zero_is_yellow() {
+    fn diff_color_zero_is_yellow() {
         assert_eq!(diff_color(3.0, 3.0, false), Color::Yellow);
     }
 
     #[test]
-    fn diff_color_lower_winning_is_green() {
-        // ERA: 3.50 vs 4.20, lower is better => we're winning => green
+    fn diff_color_lower_is_better_home_ahead() {
+        // ERA: home 3.50 vs away 4.20 (lower is better) => home is ahead => green
         assert_eq!(diff_color(3.50, 4.20, true), Color::Green);
     }
 
     #[test]
-    fn diff_color_lower_losing_is_red() {
-        // ERA: 4.20 vs 3.50, lower is better => we're losing => red
+    fn diff_color_lower_is_better_away_ahead() {
+        // ERA: home 4.20 vs away 3.50 (lower is better) => away is ahead => red
         assert_eq!(diff_color(4.20, 3.50, true), Color::Red);
     }
 
@@ -488,40 +592,40 @@ mod tests {
         assert_eq!(truncate_name("1234567", 7), "1234567");
     }
 
-    // -- cell_style tests --
+    // -- cell_style tests: symmetric home/away --
 
     #[test]
-    fn winning_my_team_is_green_bold_with_star() {
-        let (style, prefix) = cell_style(CategoryState::Winning, true);
+    fn home_winning_home_cell_is_green_bold_starred() {
+        let (style, prefix) = cell_style(CategoryState::HomeWinning, true);
         assert_eq!(style.fg, Some(Color::Green));
         assert!(style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(prefix, "*");
     }
 
     #[test]
-    fn winning_opp_team_is_white() {
-        let (style, prefix) = cell_style(CategoryState::Winning, false);
+    fn home_winning_away_cell_is_white() {
+        let (style, prefix) = cell_style(CategoryState::HomeWinning, false);
         assert_eq!(style.fg, Some(Color::White));
         assert_eq!(prefix, "");
     }
 
     #[test]
-    fn losing_my_team_is_white() {
-        let (style, prefix) = cell_style(CategoryState::Losing, true);
+    fn away_winning_home_cell_is_white() {
+        let (style, prefix) = cell_style(CategoryState::AwayWinning, true);
         assert_eq!(style.fg, Some(Color::White));
         assert_eq!(prefix, "");
     }
 
     #[test]
-    fn losing_opp_team_is_green_bold_with_star() {
-        let (style, prefix) = cell_style(CategoryState::Losing, false);
+    fn away_winning_away_cell_is_green_bold_starred() {
+        let (style, prefix) = cell_style(CategoryState::AwayWinning, false);
         assert_eq!(style.fg, Some(Color::Green));
         assert!(style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(prefix, "*");
     }
 
     #[test]
-    fn tied_is_yellow() {
+    fn tied_is_yellow_on_both_sides() {
         let (style, prefix) = cell_style(CategoryState::Tied, true);
         assert_eq!(style.fg, Some(Color::Yellow));
         assert_eq!(prefix, "");
@@ -575,10 +679,10 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(160, 5);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let registry = test_registry();
-        let my_team = make_my_team();
-        let opp_team = make_opp_team();
+        let home_team = make_home_team();
+        let away_team = make_away_team();
         terminal
-            .draw(|frame| render(frame, frame.area(), &[], &my_team, &opp_team, &registry))
+            .draw(|frame| render(frame, frame.area(), &[], &home_team, &away_team, &registry))
             .unwrap();
     }
 
@@ -588,16 +692,16 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let registry = test_registry();
         let categories = make_full_categories();
-        let my_team = make_my_team();
-        let opp_team = make_opp_team();
+        let home_team = make_home_team();
+        let away_team = make_away_team();
         terminal
             .draw(|frame| {
                 render(
                     frame,
                     frame.area(),
                     &categories,
-                    &my_team,
-                    &opp_team,
+                    &home_team,
+                    &away_team,
                     &registry,
                 )
             })
@@ -610,16 +714,16 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let registry = test_registry();
         let categories = make_full_categories();
-        let my_team = make_my_team();
-        let opp_team = make_opp_team();
+        let home_team = make_home_team();
+        let away_team = make_away_team();
         terminal
             .draw(|frame| {
                 render(
                     frame,
                     frame.area(),
                     &categories,
-                    &my_team,
-                    &opp_team,
+                    &home_team,
+                    &away_team,
                     &registry,
                 )
             })
@@ -647,6 +751,50 @@ mod tests {
         assert!(text.contains("AVG"));
         assert!(text.contains("ERA"));
         assert!(text.contains("WHIP"));
-        assert!(text.contains("Score"));
+    }
+
+    // -- diff line label --
+
+    #[test]
+    fn diff_row_label_is_h_minus_a() {
+        let categories = make_full_categories();
+        let registry = test_registry();
+        let batting: Vec<&CategoryScore> = categories
+            .iter()
+            .filter(|c| registry.get(&c.stat_abbrev).is_some_and(|d| d.player_type == crate::stats::PlayerType::Hitter))
+            .collect();
+        let pitching: Vec<&CategoryScore> = categories
+            .iter()
+            .filter(|c| registry.get(&c.stat_abbrev).is_some_and(|d| d.player_type == crate::stats::PlayerType::Pitcher))
+            .collect();
+        let line = build_diff_line(&batting, &pitching, &registry);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("H-A"));
+    }
+
+    // -- leaning bar --
+
+    #[test]
+    fn lead_bar_renders_home_ahead() {
+        let backend = ratatui::backend::TestBackend::new(30, 3);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let home = make_home_team();
+        let away = make_away_team();
+        terminal
+            .draw(|frame| render_lead_bar(frame, frame.area(), &home, &away))
+            .unwrap();
+    }
+
+    #[test]
+    fn lead_bar_handles_zero_scores() {
+        let backend = ratatui::backend::TestBackend::new(30, 3);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut home = make_home_team();
+        let mut away = make_away_team();
+        home.category_score = TeamRecord { wins: 0, losses: 0, ties: 0 };
+        away.category_score = TeamRecord { wins: 0, losses: 0, ties: 0 };
+        terminal
+            .draw(|frame| render_lead_bar(frame, frame.area(), &home, &away))
+            .unwrap();
     }
 }

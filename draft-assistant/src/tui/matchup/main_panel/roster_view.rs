@@ -1,8 +1,9 @@
 // RosterViewPanel: aggregated roster stats across the entire scoring period.
 //
-// Reused for both "My Roster" (Tab 3) and "Opponent Roster" (Tab 4) — the
-// same component renders different data. Aggregates counting stats across all
-// ScoringDay entries and computes rate stats (AVG, ERA, WHIP) from components.
+// Reused for both the Home Roster (Tab 3) and Away Roster (Tab 4) — the
+// same component renders different data based on the `TeamSide` parameter.
+// Aggregates counting stats across all ScoringDay entries and computes rate
+// stats (AVG, ERA, WHIP) from components.
 
 use ratatui::layout::{Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -12,7 +13,7 @@ use ratatui::Frame;
 
 use std::collections::BTreeMap;
 
-use crate::matchup::ScoringDay;
+use crate::matchup::{ScoringDay, TeamSide};
 use crate::tui::action::Action;
 use crate::tui::scroll::{ScrollDirection, ScrollState};
 use crate::tui::widgets::focused_border_style;
@@ -118,20 +119,20 @@ pub struct AggregatedRoster {
 // Aggregation logic
 // ---------------------------------------------------------------------------
 
-/// Aggregate batting stats across all scoring days.
+/// Aggregate batting stats across all scoring days for the given team side.
 ///
 /// Players are identified by name. The first occurrence sets slot/team/positions.
 /// Counting stats are summed. GP counts days where the player had an opponent
 /// and was not on the bench. Stat indices are resolved dynamically from the
 /// `batting_stat_columns` sent by the extension.
-pub fn aggregate_batters(days: &[ScoringDay]) -> Vec<AggregatedBatter> {
+pub fn aggregate_batters(days: &[ScoringDay], side: TeamSide) -> Vec<AggregatedBatter> {
     let mut order: Vec<String> = Vec::new();
     let mut map: BTreeMap<String, AggregatedBatter> = BTreeMap::new();
 
     for day in days {
         let headers = &day.batting_stat_columns;
 
-        for row in &day.batting_rows {
+        for row in &day.roster(side).batting_rows {
             let entry = map.entry(row.player_name.clone()).or_insert_with(|| {
                 order.push(row.player_name.clone());
                 AggregatedBatter {
@@ -192,19 +193,19 @@ pub fn aggregate_batters(days: &[ScoringDay]) -> Vec<AggregatedBatter> {
         .collect()
 }
 
-/// Aggregate pitching stats across all scoring days.
+/// Aggregate pitching stats across all scoring days for the given team side.
 ///
 /// GS counts days where the pitcher's slot was "SP" and they had a game.
 /// Stat indices are resolved dynamically from the `pitching_stat_columns`
 /// sent by the extension.
-pub fn aggregate_pitchers(days: &[ScoringDay]) -> Vec<AggregatedPitcher> {
+pub fn aggregate_pitchers(days: &[ScoringDay], side: TeamSide) -> Vec<AggregatedPitcher> {
     let mut order: Vec<String> = Vec::new();
     let mut map: BTreeMap<String, AggregatedPitcher> = BTreeMap::new();
 
     for day in days {
         let headers = &day.pitching_stat_columns;
 
-        for row in &day.pitching_rows {
+        for row in &day.roster(side).pitching_rows {
             let entry = map.entry(row.player_name.clone()).or_insert_with(|| {
                 order.push(row.player_name.clone());
                 AggregatedPitcher {
@@ -268,11 +269,11 @@ pub fn aggregate_pitchers(days: &[ScoringDay]) -> Vec<AggregatedPitcher> {
         .collect()
 }
 
-/// Build complete aggregated roster from scoring days.
-pub fn aggregate_roster(days: &[ScoringDay]) -> AggregatedRoster {
+/// Build complete aggregated roster from scoring days for the given team side.
+pub fn aggregate_roster(days: &[ScoringDay], side: TeamSide) -> AggregatedRoster {
     AggregatedRoster {
-        batters: aggregate_batters(days),
-        pitchers: aggregate_pitchers(days),
+        batters: aggregate_batters(days, side),
+        pitchers: aggregate_pitchers(days, side),
     }
 }
 
@@ -344,7 +345,7 @@ pub enum RosterViewPanelMessage {
 
 /// Roster view panel: aggregated stats for an entire scoring period.
 ///
-/// Reused for both "My Roster" and "Opponent Roster" tabs.
+/// Reused for both the Home Roster and Away Roster tabs.
 pub struct RosterViewPanel {
     scroll: ScrollState,
 }
@@ -373,15 +374,17 @@ impl RosterViewPanel {
     ///
     /// `team_name` is displayed in the title.
     /// `days` contains all scoring period days to aggregate.
+    /// `side` selects which team's rosters to aggregate (Home or Away).
     pub fn view(
         &self,
         frame: &mut Frame,
         area: Rect,
         team_name: &str,
         days: &[ScoringDay],
+        side: TeamSide,
         focused: bool,
     ) {
-        let roster = aggregate_roster(days);
+        let roster = aggregate_roster(days, side);
         let lines = build_roster_lines(&roster);
 
         // Total content lines for scroll calculation
@@ -660,7 +663,7 @@ fn truncate(s: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::matchup::{DailyPlayerRow, ScoringDay};
+    use crate::matchup::{DailyPlayerRow, ScoringDay, TeamDailyRoster};
 
     // -- Test helpers --
 
@@ -716,6 +719,9 @@ mod tests {
             .collect()
     }
 
+    /// Build a day with batting/pitching rows placed on the Home side.
+    /// Away side is empty. Tests default to `TeamSide::Home` unless otherwise
+    /// noted.
     fn make_day(
         label: &str,
         batting: Vec<DailyPlayerRow>,
@@ -726,10 +732,13 @@ mod tests {
             label: label.to_string(),
             batting_stat_columns: batting_headers(),
             pitching_stat_columns: pitching_headers(),
-            batting_rows: batting,
-            pitching_rows: pitching,
-            batting_totals: None,
-            pitching_totals: None,
+            home: TeamDailyRoster {
+                batting_rows: batting,
+                pitching_rows: pitching,
+                batting_totals: None,
+                pitching_totals: None,
+            },
+            away: TeamDailyRoster::default(),
         }
     }
 
@@ -759,7 +768,7 @@ mod tests {
             ),
         ];
 
-        let batters = aggregate_batters(&days);
+        let batters = aggregate_batters(&days, TeamSide::Home);
         assert_eq!(batters.len(), 1);
 
         let rice = &batters[0];
@@ -796,7 +805,7 @@ mod tests {
             vec![],
         )];
 
-        let batters = aggregate_batters(&days);
+        let batters = aggregate_batters(&days, TeamSide::Home);
         assert_eq!(batters.len(), 2);
         assert_eq!(batters[0].player_name, "Player A");
         assert_eq!(batters[1].player_name, "Player B");
@@ -814,7 +823,7 @@ mod tests {
             vec![],
         )];
 
-        let batters = aggregate_batters(&days);
+        let batters = aggregate_batters(&days, TeamSide::Home);
         assert_eq!(batters.len(), 1);
         assert_eq!(batters[0].gp, 0); // Bench players don't count as GP
     }
@@ -831,7 +840,7 @@ mod tests {
             vec![],
         )];
 
-        let batters = aggregate_batters(&days);
+        let batters = aggregate_batters(&days, TeamSide::Home);
         assert_eq!(batters.len(), 1);
         assert_eq!(batters[0].gp, 0);
         assert_eq!(batters[0].ab, 0.0);
@@ -868,7 +877,7 @@ mod tests {
             vec![],
         )];
 
-        let batters = aggregate_batters(&days);
+        let batters = aggregate_batters(&days, TeamSide::Home);
         assert_eq!(batters[0].gp, 0);
     }
 
@@ -898,7 +907,7 @@ mod tests {
             ),
         ];
 
-        let pitchers = aggregate_pitchers(&days);
+        let pitchers = aggregate_pitchers(&days, TeamSide::Home);
         assert_eq!(pitchers.len(), 1);
 
         let valdez = &pitchers[0];
@@ -932,7 +941,7 @@ mod tests {
             )],
         )];
 
-        let pitchers = aggregate_pitchers(&days);
+        let pitchers = aggregate_pitchers(&days, TeamSide::Home);
         assert_eq!(pitchers.len(), 1);
         assert_eq!(pitchers[0].gs, 0); // RP slot doesn't count as GS
         assert_eq!(pitchers[0].sv, 1.0);
@@ -971,7 +980,7 @@ mod tests {
             )],
         )];
 
-        let pitchers = aggregate_pitchers(&days);
+        let pitchers = aggregate_pitchers(&days, TeamSide::Home);
         assert_eq!(pitchers[0].gs, 0);
         assert_eq!(pitchers[0].ip, 0.0);
     }
@@ -1184,9 +1193,89 @@ mod tests {
     #[test]
     fn aggregate_empty_days() {
         let days: Vec<ScoringDay> = vec![];
-        let roster = aggregate_roster(&days);
+        let roster = aggregate_roster(&days, TeamSide::Home);
         assert!(roster.batters.is_empty());
         assert!(roster.pitchers.is_empty());
+    }
+
+    // -- Side selection tests --
+
+    #[test]
+    fn aggregate_batters_selects_side() {
+        let day = ScoringDay {
+            date: "2026-03-26".to_string(),
+            label: "Day 1".to_string(),
+            batting_stat_columns: batting_headers(),
+            pitching_stat_columns: pitching_headers(),
+            home: TeamDailyRoster {
+                batting_rows: vec![make_batting_row(
+                    "C", "Home Hitter", "NYY", vec!["C"],
+                    Some("@BOS"),
+                    vec![Some(4.0), Some(2.0), Some(1.0), Some(0.0), Some(1.0), Some(0.0), Some(0.0), Some(0.500)],
+                )],
+                pitching_rows: vec![],
+                batting_totals: None,
+                pitching_totals: None,
+            },
+            away: TeamDailyRoster {
+                batting_rows: vec![make_batting_row(
+                    "1B", "Away Hitter", "NYM", vec!["1B"],
+                    Some("@PHI"),
+                    vec![Some(3.0), Some(1.0), Some(0.0), Some(0.0), Some(0.0), Some(1.0), Some(0.0), Some(0.333)],
+                )],
+                pitching_rows: vec![],
+                batting_totals: None,
+                pitching_totals: None,
+            },
+        };
+        let days = vec![day];
+
+        let home_batters = aggregate_batters(&days, TeamSide::Home);
+        assert_eq!(home_batters.len(), 1);
+        assert_eq!(home_batters[0].player_name, "Home Hitter");
+
+        let away_batters = aggregate_batters(&days, TeamSide::Away);
+        assert_eq!(away_batters.len(), 1);
+        assert_eq!(away_batters[0].player_name, "Away Hitter");
+    }
+
+    #[test]
+    fn aggregate_pitchers_selects_side() {
+        let day = ScoringDay {
+            date: "2026-03-26".to_string(),
+            label: "Day 1".to_string(),
+            batting_stat_columns: batting_headers(),
+            pitching_stat_columns: pitching_headers(),
+            home: TeamDailyRoster {
+                batting_rows: vec![],
+                pitching_rows: vec![make_pitching_row(
+                    "SP", "Home Ace", "LAD", vec!["SP"],
+                    Some("SD"),
+                    vec![Some(7.0), Some(4.0), Some(2.0), Some(1.0), Some(8.0), Some(1.0), Some(0.0), Some(0.0)],
+                )],
+                batting_totals: None,
+                pitching_totals: None,
+            },
+            away: TeamDailyRoster {
+                batting_rows: vec![],
+                pitching_rows: vec![make_pitching_row(
+                    "SP", "Away Ace", "HOU", vec!["SP"],
+                    Some("@TEX"),
+                    vec![Some(6.0), Some(5.0), Some(3.0), Some(2.0), Some(7.0), Some(0.0), Some(0.0), Some(0.0)],
+                )],
+                batting_totals: None,
+                pitching_totals: None,
+            },
+        };
+        let days = vec![day];
+
+        let home_pitchers = aggregate_pitchers(&days, TeamSide::Home);
+        assert_eq!(home_pitchers.len(), 1);
+        assert_eq!(home_pitchers[0].player_name, "Home Ace");
+
+        let away_pitchers = aggregate_pitchers(&days, TeamSide::Away);
+        assert_eq!(away_pitchers.len(), 1);
+        assert_eq!(away_pitchers[0].player_name, "Away Ace");
     }
 
     #[test]
@@ -1231,7 +1320,9 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let panel = RosterViewPanel::new();
         terminal
-            .draw(|frame| panel.view(frame, frame.area(), "Test Team", &[], false))
+            .draw(|frame| {
+                panel.view(frame, frame.area(), "Test Team", &[], TeamSide::Home, false)
+            })
             .unwrap();
     }
 
@@ -1254,7 +1345,16 @@ mod tests {
             )],
         )];
         terminal
-            .draw(|frame| panel.view(frame, frame.area(), "Bob Dole Experience", &days, true))
+            .draw(|frame| {
+                panel.view(
+                    frame,
+                    frame.area(),
+                    "Bob Dole Experience",
+                    &days,
+                    TeamSide::Home,
+                    true,
+                )
+            })
             .unwrap();
     }
 
@@ -1264,7 +1364,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let panel = RosterViewPanel::new();
         terminal
-            .draw(|frame| panel.view(frame, frame.area(), "Team", &[], false))
+            .draw(|frame| panel.view(frame, frame.area(), "Team", &[], TeamSide::Home, false))
             .unwrap();
     }
 
@@ -1287,7 +1387,7 @@ mod tests {
             vec![],
         )];
         terminal
-            .draw(|frame| panel.view(frame, frame.area(), "Team", &days, false))
+            .draw(|frame| panel.view(frame, frame.area(), "Team", &days, TeamSide::Home, false))
             .unwrap();
     }
 
@@ -1328,7 +1428,7 @@ mod tests {
             ),
         ];
 
-        let batters = aggregate_batters(&days);
+        let batters = aggregate_batters(&days, TeamSide::Home);
         assert_eq!(batters.len(), 1);
         assert_eq!(batters[0].gp, 1); // Only Day 1 counts (Day 2 no opp, Day 3 bench)
     }
@@ -1368,7 +1468,7 @@ mod tests {
             ),
         ];
 
-        let pitchers = aggregate_pitchers(&days);
+        let pitchers = aggregate_pitchers(&days, TeamSide::Home);
         assert_eq!(pitchers.len(), 1);
         assert_eq!(pitchers[0].gs, 1); // Only Day 1 counts (Day 2 RP, Day 3 no game)
         assert_eq!(pitchers[0].ip, 8.0); // 7 + 1

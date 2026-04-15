@@ -7,7 +7,7 @@ pub mod roster_view;
 use ratatui::layout::Rect;
 use ratatui::Frame;
 
-use crate::matchup::{CategoryScore, ScoringDay};
+use crate::matchup::{CategoryScore, ScoringDay, TeamSide};
 use crate::stats::StatRegistry;
 use crate::tui::action::Action;
 use crate::tui::subscription::Subscription;
@@ -26,8 +26,8 @@ pub use roster_view::{RosterViewPanel, RosterViewPanelMessage};
 pub enum MatchupTab {
     DailyStats,
     Analytics,
-    MyRoster,
-    OppRoster,
+    HomeRoster,
+    AwayRoster,
 }
 
 // ---------------------------------------------------------------------------
@@ -39,8 +39,8 @@ pub enum MatchupTab {
 pub enum MatchupMainPanelMessage {
     DailyStats(DailyStatsPanelMessage),
     Analytics(MatchupAnalyticsPanelMessage),
-    MyRoster(RosterViewPanelMessage),
-    OppRoster(RosterViewPanelMessage),
+    HomeRoster(RosterViewPanelMessage),
+    AwayRoster(RosterViewPanelMessage),
 }
 
 /// Mid-level component composing the four matchup tab panels.
@@ -48,8 +48,8 @@ pub struct MatchupMainPanel {
     pub active_tab: MatchupTab,
     pub daily_panel: DailyStatsPanel,
     pub analytics_panel: MatchupAnalyticsPanel,
-    pub my_roster_panel: RosterViewPanel,
-    pub opp_roster_panel: RosterViewPanel,
+    pub home_roster_panel: RosterViewPanel,
+    pub away_roster_panel: RosterViewPanel,
 }
 
 impl MatchupMainPanel {
@@ -58,8 +58,8 @@ impl MatchupMainPanel {
             active_tab: MatchupTab::DailyStats,
             daily_panel: DailyStatsPanel::new(),
             analytics_panel: MatchupAnalyticsPanel::new(),
-            my_roster_panel: RosterViewPanel::new(),
-            opp_roster_panel: RosterViewPanel::new(),
+            home_roster_panel: RosterViewPanel::new(),
+            away_roster_panel: RosterViewPanel::new(),
         }
     }
 
@@ -76,15 +76,15 @@ impl MatchupMainPanel {
         match msg {
             MatchupMainPanelMessage::DailyStats(m) => self.daily_panel.update(m),
             MatchupMainPanelMessage::Analytics(m) => self.analytics_panel.update(m),
-            MatchupMainPanelMessage::MyRoster(m) => self.my_roster_panel.update(m),
-            MatchupMainPanelMessage::OppRoster(m) => self.opp_roster_panel.update(m),
+            MatchupMainPanelMessage::HomeRoster(m) => self.home_roster_panel.update(m),
+            MatchupMainPanelMessage::AwayRoster(m) => self.away_roster_panel.update(m),
         }
     }
 
     /// Render the active tab's content.
     ///
     /// Analytics-specific data is passed through for the analytics panel.
-    /// When the analytics tab is not active, these parameters are unused.
+    /// Roster views select the correct side via their tab identity.
     #[allow(clippy::too_many_arguments)]
     pub fn view(
         &self,
@@ -93,13 +93,9 @@ impl MatchupMainPanel {
         category_scores: &[CategoryScore],
         scoring_period_days: &[ScoringDay],
         selected_day: usize,
-        games_started: u8,
-        gs_limit: u8,
-        acquisitions_used: u8,
-        acquisitions_limit: u8,
         registry: Option<&StatRegistry>,
-        my_team_name: &str,
-        opp_team_name: &str,
+        home_team_name: &str,
+        away_team_name: &str,
         focused: bool,
     ) {
         let current_day = scoring_period_days.get(selected_day);
@@ -117,20 +113,28 @@ impl MatchupMainPanel {
                 category_scores,
                 scoring_period_days,
                 selected_day,
-                games_started,
-                gs_limit,
-                acquisitions_used,
-                acquisitions_limit,
                 registry,
                 focused,
             ),
-            MatchupTab::MyRoster => {
-                self.my_roster_panel
-                    .view(frame, area, my_team_name, scoring_period_days, focused);
+            MatchupTab::HomeRoster => {
+                self.home_roster_panel.view(
+                    frame,
+                    area,
+                    home_team_name,
+                    scoring_period_days,
+                    TeamSide::Home,
+                    focused,
+                );
             }
-            MatchupTab::OppRoster => {
-                self.opp_roster_panel
-                    .view(frame, area, opp_team_name, scoring_period_days, focused);
+            MatchupTab::AwayRoster => {
+                self.away_roster_panel.view(
+                    frame,
+                    area,
+                    away_team_name,
+                    scoring_period_days,
+                    TeamSide::Away,
+                    focused,
+                );
             }
         }
     }
@@ -176,21 +180,21 @@ mod tests {
     }
 
     #[test]
-    fn my_roster_scroll_delegates() {
+    fn home_roster_scroll_delegates() {
         let mut panel = MatchupMainPanel::new();
-        panel.update(MatchupMainPanelMessage::MyRoster(
+        panel.update(MatchupMainPanelMessage::HomeRoster(
             RosterViewPanelMessage::Scroll(ScrollDirection::Down),
         ));
-        assert_eq!(panel.my_roster_panel.scroll_offset(), 1);
+        assert_eq!(panel.home_roster_panel.scroll_offset(), 1);
     }
 
     #[test]
-    fn opp_roster_scroll_delegates() {
+    fn away_roster_scroll_delegates() {
         let mut panel = MatchupMainPanel::new();
-        panel.update(MatchupMainPanelMessage::OppRoster(
+        panel.update(MatchupMainPanelMessage::AwayRoster(
             RosterViewPanelMessage::Scroll(ScrollDirection::Down),
         ));
-        assert_eq!(panel.opp_roster_panel.scroll_offset(), 1);
+        assert_eq!(panel.away_roster_panel.scroll_offset(), 1);
     }
 
     #[test]
@@ -200,7 +204,17 @@ mod tests {
         let panel = MatchupMainPanel::new();
         terminal
             .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &[], 0, 0, 7, 0, 5, None, "My Team", "Opp Team", false)
+                panel.view(
+                    frame,
+                    frame.area(),
+                    &[],
+                    &[],
+                    0,
+                    None,
+                    "Home Team",
+                    "Away Team",
+                    false,
+                )
             })
             .unwrap();
     }
@@ -214,7 +228,17 @@ mod tests {
         let days = vec![day];
         terminal
             .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &days, 0, 0, 7, 0, 5, None, "My Team", "Opp Team", false)
+                panel.view(
+                    frame,
+                    frame.area(),
+                    &[],
+                    &days,
+                    0,
+                    None,
+                    "Home Team",
+                    "Away Team",
+                    false,
+                )
             })
             .unwrap();
     }
@@ -227,58 +251,91 @@ mod tests {
         panel.active_tab = MatchupTab::Analytics;
         terminal
             .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &[], 0, 0, 7, 0, 5, None, "My Team", "Opp Team", false)
+                panel.view(
+                    frame,
+                    frame.area(),
+                    &[],
+                    &[],
+                    0,
+                    None,
+                    "Home Team",
+                    "Away Team",
+                    false,
+                )
             })
             .unwrap();
     }
 
     #[test]
-    fn view_does_not_panic_my_roster() {
+    fn view_does_not_panic_home_roster() {
         let backend = ratatui::backend::TestBackend::new(80, 20);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let mut panel = MatchupMainPanel::new();
-        panel.active_tab = MatchupTab::MyRoster;
+        panel.active_tab = MatchupTab::HomeRoster;
         terminal
             .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &[], 0, 0, 7, 0, 5, None, "My Team", "Opp Team", false)
+                panel.view(
+                    frame,
+                    frame.area(),
+                    &[],
+                    &[],
+                    0,
+                    None,
+                    "Home Team",
+                    "Away Team",
+                    false,
+                )
             })
             .unwrap();
     }
 
     #[test]
-    fn view_does_not_panic_opp_roster() {
+    fn view_does_not_panic_away_roster() {
         let backend = ratatui::backend::TestBackend::new(80, 20);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let mut panel = MatchupMainPanel::new();
-        panel.active_tab = MatchupTab::OppRoster;
+        panel.active_tab = MatchupTab::AwayRoster;
         terminal
             .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &[], 0, 0, 7, 0, 5, None, "My Team", "Opp Team", false)
+                panel.view(
+                    frame,
+                    frame.area(),
+                    &[],
+                    &[],
+                    0,
+                    None,
+                    "Home Team",
+                    "Away Team",
+                    false,
+                )
             })
             .unwrap();
     }
 
     fn make_test_scoring_day() -> ScoringDay {
-        use crate::matchup::{DailyPlayerRow, DailyTotals};
+        use crate::matchup::{DailyPlayerRow, DailyTotals, TeamDailyRoster};
         ScoringDay {
             date: "2026-03-26".to_string(),
             label: "March 26".to_string(),
             batting_stat_columns: vec!["AB".to_string(), "H".to_string(), "R".to_string()],
             pitching_stat_columns: vec![],
-            batting_rows: vec![DailyPlayerRow {
-                slot: "C".to_string(),
-                player_name: "Ben Rice".to_string(),
-                team: "NYY".to_string(),
-                positions: vec!["C".to_string()],
-                opponent: Some("@BOS".to_string()),
-                game_status: None,
-                stats: vec![Some(4.0), Some(1.0), Some(0.0)],
-            }],
-            pitching_rows: vec![],
-            batting_totals: Some(DailyTotals {
-                stats: vec![Some(4.0), Some(1.0), Some(0.0)],
-            }),
-            pitching_totals: None,
+            home: TeamDailyRoster {
+                batting_rows: vec![DailyPlayerRow {
+                    slot: "C".to_string(),
+                    player_name: "Ben Rice".to_string(),
+                    team: "NYY".to_string(),
+                    positions: vec!["C".to_string()],
+                    opponent: Some("@BOS".to_string()),
+                    game_status: None,
+                    stats: vec![Some(4.0), Some(1.0), Some(0.0)],
+                }],
+                pitching_rows: vec![],
+                batting_totals: Some(DailyTotals {
+                    stats: vec![Some(4.0), Some(1.0), Some(0.0)],
+                }),
+                pitching_totals: None,
+            },
+            away: TeamDailyRoster::default(),
         }
     }
 }

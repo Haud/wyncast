@@ -1,4 +1,9 @@
 // Matchup domain types for weekly head-to-head matchup tracking.
+//
+// The matchup page is rendered symmetrically (home vs away). There is no
+// "my team" / "opp team" distinction because ESPN's boxscore DOM doesn't
+// surface which side belongs to the viewer — all UI state is addressed by
+// `TeamSide::Home` or `TeamSide::Away`.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -13,10 +18,10 @@ pub struct MatchupInfo {
     pub matchup_period: u8,
     pub start_date: String,
     pub end_date: String,
-    pub my_team_name: String,
-    pub opp_team_name: String,
-    pub my_record: TeamRecord,
-    pub opp_record: TeamRecord,
+    pub home_team_name: String,
+    pub away_team_name: String,
+    pub home_record: TeamRecord,
+    pub away_record: TeamRecord,
 }
 
 /// A team's win-loss-tie record (season or matchup).
@@ -33,11 +38,27 @@ impl fmt::Display for TeamRecord {
     }
 }
 
-/// Whether we are winning, losing, or tied in a scoring category.
+/// Which side of the matchup a given piece of data belongs to.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TeamSide {
+    Home,
+    Away,
+}
+
+impl TeamSide {
+    pub fn label(self) -> &'static str {
+        match self {
+            TeamSide::Home => "home",
+            TeamSide::Away => "away",
+        }
+    }
+}
+
+/// Which team (if any) is ahead in a scoring category.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum CategoryState {
-    Winning,
-    Losing,
+    HomeWinning,
+    AwayWinning,
     Tied,
 }
 
@@ -45,28 +66,48 @@ pub enum CategoryState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CategoryScore {
     pub stat_abbrev: String,
-    pub my_value: f64,
-    pub opp_value: f64,
+    pub home_value: f64,
+    pub away_value: f64,
     pub state: CategoryState,
 }
 
-/// One day of the scoring period with player-level breakdowns.
+/// One team's roster and totals for a single day.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TeamDailyRoster {
+    pub batting_rows: Vec<DailyPlayerRow>,
+    pub pitching_rows: Vec<DailyPlayerRow>,
+    pub batting_totals: Option<DailyTotals>,
+    pub pitching_totals: Option<DailyTotals>,
+}
+
+/// One day of the scoring period with per-team player breakdowns.
+///
+/// Stat column headers are league-wide (identical for both teams), so they
+/// live on the day rather than per-team.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScoringDay {
     pub date: String,
     pub label: String,
     /// Stat column headers for batting (e.g. ["AB", "H", "R", "HR", "RBI", "BB", "SB", "AVG"]).
-    /// Provided by the extension; indices align with `DailyPlayerRow::stats`.
+    /// Indices align with `DailyPlayerRow::stats`.
     #[serde(default)]
     pub batting_stat_columns: Vec<String>,
     /// Stat column headers for pitching (e.g. ["IP", "H", "ER", "BB", "K", "W", "SV", "HD"]).
-    /// Provided by the extension; indices align with `DailyPlayerRow::stats`.
+    /// Indices align with `DailyPlayerRow::stats`.
     #[serde(default)]
     pub pitching_stat_columns: Vec<String>,
-    pub batting_rows: Vec<DailyPlayerRow>,
-    pub pitching_rows: Vec<DailyPlayerRow>,
-    pub batting_totals: Option<DailyTotals>,
-    pub pitching_totals: Option<DailyTotals>,
+    pub home: TeamDailyRoster,
+    pub away: TeamDailyRoster,
+}
+
+impl ScoringDay {
+    /// Return the roster for the requested side.
+    pub fn roster(&self, side: TeamSide) -> &TeamDailyRoster {
+        match side {
+            TeamSide::Home => &self.home,
+            TeamSide::Away => &self.away,
+        }
+    }
 }
 
 /// A single player's stats for one day.
@@ -107,15 +148,21 @@ pub struct TeamMatchupState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatchupSnapshot {
     pub matchup_info: MatchupInfo,
-    pub my_team: TeamMatchupState,
-    pub opp_team: TeamMatchupState,
+    pub home_team: TeamMatchupState,
+    pub away_team: TeamMatchupState,
     pub category_scores: Vec<CategoryScore>,
     pub selected_day: usize,
     pub scoring_period_days: Vec<ScoringDay>,
-    pub games_started: u8,
-    pub gs_limit: u8,
-    pub acquisitions_used: u8,
-    pub acquisitions_limit: u8,
+}
+
+impl MatchupSnapshot {
+    /// Return the team state for the requested side.
+    pub fn team(&self, side: TeamSide) -> &TeamMatchupState {
+        match side {
+            TeamSide::Home => &self.home_team,
+            TeamSide::Away => &self.away_team,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -139,24 +186,49 @@ mod tests {
     }
 
     #[test]
+    fn team_side_label() {
+        assert_eq!(TeamSide::Home.label(), "home");
+        assert_eq!(TeamSide::Away.label(), "away");
+    }
+
+    #[test]
     fn matchup_snapshot_construction() {
+        let home_row = DailyPlayerRow {
+            slot: "C".to_string(),
+            player_name: "Ben Rice".to_string(),
+            team: "NYY".to_string(),
+            positions: vec!["1B".to_string(), "C".to_string(), "DH".to_string()],
+            opponent: Some("@BOS".to_string()),
+            game_status: None,
+            stats: vec![Some(4.0), Some(1.0), Some(0.0)],
+        };
+        let away_row = DailyPlayerRow {
+            slot: "1B".to_string(),
+            player_name: "Pete Alonso".to_string(),
+            team: "NYM".to_string(),
+            positions: vec!["1B".to_string()],
+            opponent: Some("@PHI".to_string()),
+            game_status: None,
+            stats: vec![Some(3.0), Some(2.0), Some(1.0)],
+        };
+
         let snapshot = MatchupSnapshot {
             matchup_info: MatchupInfo {
                 matchup_period: 1,
                 start_date: "2026-03-25".to_string(),
                 end_date: "2026-04-05".to_string(),
-                my_team_name: "Bob Dole Experience".to_string(),
-                opp_team_name: "Certified! Smokified!".to_string(),
-                my_record: TeamRecord { wins: 0, losses: 0, ties: 0 },
-                opp_record: TeamRecord { wins: 0, losses: 0, ties: 0 },
+                home_team_name: "Bob Dole Experience".to_string(),
+                away_team_name: "Certified! Smokified!".to_string(),
+                home_record: TeamRecord { wins: 0, losses: 0, ties: 0 },
+                away_record: TeamRecord { wins: 0, losses: 0, ties: 0 },
             },
-            my_team: TeamMatchupState {
+            home_team: TeamMatchupState {
                 name: "Bob Dole Experience".to_string(),
                 abbrev: "BDE".to_string(),
                 record: TeamRecord { wins: 0, losses: 0, ties: 0 },
                 category_score: TeamRecord { wins: 2, losses: 3, ties: 7 },
             },
-            opp_team: TeamMatchupState {
+            away_team: TeamMatchupState {
                 name: "Certified! Smokified!".to_string(),
                 abbrev: "CS".to_string(),
                 record: TeamRecord { wins: 0, losses: 0, ties: 0 },
@@ -165,15 +237,15 @@ mod tests {
             category_scores: vec![
                 CategoryScore {
                     stat_abbrev: "R".to_string(),
-                    my_value: 5.0,
-                    opp_value: 3.0,
-                    state: CategoryState::Winning,
+                    home_value: 5.0,
+                    away_value: 3.0,
+                    state: CategoryState::HomeWinning,
                 },
                 CategoryScore {
                     stat_abbrev: "ERA".to_string(),
-                    my_value: 3.45,
-                    opp_value: 4.12,
-                    state: CategoryState::Winning,
+                    home_value: 3.45,
+                    away_value: 4.12,
+                    state: CategoryState::HomeWinning,
                 },
             ],
             selected_day: 1,
@@ -182,34 +254,41 @@ mod tests {
                 label: "March 26".to_string(),
                 batting_stat_columns: vec!["AB".to_string(), "H".to_string(), "R".to_string()],
                 pitching_stat_columns: vec![],
-                batting_rows: vec![DailyPlayerRow {
-                    slot: "C".to_string(),
-                    player_name: "Ben Rice".to_string(),
-                    team: "NYY".to_string(),
-                    positions: vec!["1B".to_string(), "C".to_string(), "DH".to_string()],
-                    opponent: Some("@BOS".to_string()),
-                    game_status: None,
-                    stats: vec![Some(4.0), Some(1.0), Some(0.0)],
-                }],
-                pitching_rows: vec![],
-                batting_totals: Some(DailyTotals {
-                    stats: vec![Some(29.0), Some(8.0), Some(5.0)],
-                }),
-                pitching_totals: None,
+                home: TeamDailyRoster {
+                    batting_rows: vec![home_row],
+                    pitching_rows: vec![],
+                    batting_totals: Some(DailyTotals {
+                        stats: vec![Some(29.0), Some(8.0), Some(5.0)],
+                    }),
+                    pitching_totals: None,
+                },
+                away: TeamDailyRoster {
+                    batting_rows: vec![away_row],
+                    pitching_rows: vec![],
+                    batting_totals: Some(DailyTotals {
+                        stats: vec![Some(27.0), Some(10.0), Some(7.0)],
+                    }),
+                    pitching_totals: None,
+                },
             }],
-            games_started: 3,
-            gs_limit: 7,
-            acquisitions_used: 1,
-            acquisitions_limit: 5,
         };
 
         assert_eq!(snapshot.matchup_info.matchup_period, 1);
-        assert_eq!(snapshot.my_team.category_score.to_string(), "2-3-7");
-        assert_eq!(snapshot.opp_team.category_score.to_string(), "3-2-7");
+        assert_eq!(snapshot.home_team.category_score.to_string(), "2-3-7");
+        assert_eq!(snapshot.away_team.category_score.to_string(), "3-2-7");
         assert_eq!(snapshot.category_scores.len(), 2);
         assert_eq!(snapshot.scoring_period_days.len(), 1);
-        assert_eq!(snapshot.scoring_period_days[0].batting_rows.len(), 1);
-        assert_eq!(snapshot.games_started, 3);
-        assert_eq!(snapshot.gs_limit, 7);
+        assert_eq!(snapshot.scoring_period_days[0].home.batting_rows.len(), 1);
+        assert_eq!(snapshot.scoring_period_days[0].away.batting_rows.len(), 1);
+        assert_eq!(
+            snapshot.scoring_period_days[0].home.batting_rows[0].player_name,
+            "Ben Rice"
+        );
+        assert_eq!(
+            snapshot.scoring_period_days[0].away.batting_rows[0].player_name,
+            "Pete Alonso"
+        );
+        assert_eq!(snapshot.team(TeamSide::Home).name, "Bob Dole Experience");
+        assert_eq!(snapshot.team(TeamSide::Away).name, "Certified! Smokified!");
     }
 }

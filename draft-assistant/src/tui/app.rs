@@ -205,18 +205,13 @@ impl App {
                 }
             }
             UiUpdate::MatchupSnapshot(snapshot) => {
+                let first_day = snapshot.scoring_period_days.first();
                 info!(
-                    "Applying matchup snapshot ({} batting rows, {} pitching rows)",
-                    snapshot
-                        .scoring_period_days
-                        .first()
-                        .map(|d| d.batting_rows.len())
-                        .unwrap_or(0),
-                    snapshot
-                        .scoring_period_days
-                        .first()
-                        .map(|d| d.pitching_rows.len())
-                        .unwrap_or(0),
+                    "Applying matchup snapshot (home: {} batting / {} pitching; away: {} batting / {} pitching)",
+                    first_day.map(|d| d.home.batting_rows.len()).unwrap_or(0),
+                    first_day.map(|d| d.home.pitching_rows.len()).unwrap_or(0),
+                    first_day.map(|d| d.away.batting_rows.len()).unwrap_or(0),
+                    first_day.map(|d| d.away.pitching_rows.len()).unwrap_or(0),
                 );
                 self.matchup_screen.apply_snapshot(&snapshot);
                 self.matchup_snapshot = Some(*snapshot);

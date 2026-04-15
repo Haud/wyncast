@@ -1,7 +1,7 @@
 // Matchup status bar: matchup period, team names, day counter, navigation hint.
 //
 // Single row display:
-// | Matchup 1 (Mar 25 - Apr 5)  |  Bob Dole Exp. vs Certified!  |  Day 2 of 12  |  <- -> Days |
+// | Matchup 1 (Mar 25 - Apr 5)  |  Away (away) vs Home (home)  |  Day 2 of 12  |  <- -> Days |
 
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -47,7 +47,10 @@ fn build_info_line(info: &MatchupInfo, selected_day: usize, total_days: usize) -
         ),
         Span::styled("  \u{2502}  ", sep),
         Span::styled(
-            format!("{} vs {}", info.my_team_name, info.opp_team_name),
+            format!(
+                "{} (away) vs {} (home)",
+                info.away_team_name, info.home_team_name
+            ),
             Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
         ),
         Span::styled("  \u{2502}  ", sep),
@@ -84,10 +87,10 @@ mod tests {
             matchup_period: 1,
             start_date: "Mar 25".to_string(),
             end_date: "Apr 5".to_string(),
-            my_team_name: "Bob Dole Exp.".to_string(),
-            opp_team_name: "Certified!".to_string(),
-            my_record: TeamRecord { wins: 1, losses: 0, ties: 0 },
-            opp_record: TeamRecord { wins: 0, losses: 1, ties: 0 },
+            home_team_name: "Bob Dole Exp.".to_string(),
+            away_team_name: "Certified!".to_string(),
+            home_record: TeamRecord { wins: 1, losses: 0, ties: 0 },
+            away_record: TeamRecord { wins: 0, losses: 1, ties: 0 },
         }
     }
 

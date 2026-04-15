@@ -10,7 +10,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::Frame;
 
-use crate::matchup::{DailyPlayerRow, DailyTotals, ScoringDay};
+use crate::matchup::{DailyPlayerRow, DailyTotals, ScoringDay, TeamDailyRoster};
 use crate::tui::action::Action;
 use crate::tui::scroll::{ScrollDirection, ScrollState};
 
@@ -146,37 +146,55 @@ impl Default for DailyStatsPanel {
 // Line building
 // ---------------------------------------------------------------------------
 
-/// Build all output lines for the daily stats view (batting + gap + pitching).
+/// Build all output lines for the daily stats view.
+///
+/// Renders the away team first, then the home team. Each team gets a batting
+/// and a pitching section with the same dynamic-column layout, separated by
+/// blank lines.
 fn build_all_lines(day: &ScoringDay, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
 
     let batting_cols = stat_cols_from_headers(&day.batting_stat_columns);
     let pitching_cols = stat_cols_from_headers(&day.pitching_stat_columns);
 
-    // -- Batting section --
-    build_section(
-        &mut lines,
-        &format!("{} Batting", day.label),
-        &day.batting_rows,
-        day.batting_totals.as_ref(),
-        &batting_cols,
-        width,
-    );
-
-    // Gap between sections
+    build_team_sections(&mut lines, "Away", &day.label, &day.away, &batting_cols, &pitching_cols, width);
     lines.push(Line::default());
-
-    // -- Pitching section --
-    build_section(
-        &mut lines,
-        &format!("{} Pitching", day.label),
-        &day.pitching_rows,
-        day.pitching_totals.as_ref(),
-        &pitching_cols,
-        width,
-    );
+    build_team_sections(&mut lines, "Home", &day.label, &day.home, &batting_cols, &pitching_cols, width);
 
     lines
+}
+
+/// Build the batting + pitching sections for a single team.
+#[allow(clippy::too_many_arguments)]
+fn build_team_sections(
+    lines: &mut Vec<Line<'static>>,
+    team_label: &str,
+    day_label: &str,
+    roster: &TeamDailyRoster,
+    batting_cols: &[StatCol],
+    pitching_cols: &[StatCol],
+    width: usize,
+) {
+    build_section(
+        lines,
+        &format!("{} {} Batting", team_label, day_label),
+        &roster.batting_rows,
+        roster.batting_totals.as_ref(),
+        batting_cols,
+        width,
+    );
+
+    // Gap between batting and pitching within a team block.
+    lines.push(Line::default());
+
+    build_section(
+        lines,
+        &format!("{} {} Pitching", team_label, day_label),
+        &roster.pitching_rows,
+        roster.pitching_totals.as_ref(),
+        pitching_cols,
+        width,
+    );
 }
 
 /// Build lines for one section (batting or pitching).
@@ -433,7 +451,7 @@ fn truncate(text: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::matchup::{DailyPlayerRow, DailyTotals, ScoringDay};
+    use crate::matchup::{DailyPlayerRow, DailyTotals, ScoringDay, TeamDailyRoster};
 
     fn make_active_batter(slot: &str, name: &str, opponent: Option<&str>) -> DailyPlayerRow {
         DailyPlayerRow {
@@ -533,11 +551,9 @@ mod tests {
     }
 
     fn make_test_scoring_day() -> ScoringDay {
-        ScoringDay {
-            date: "2026-03-26".to_string(),
-            label: "March 26".to_string(),
-            batting_stat_columns: batting_headers(),
-            pitching_stat_columns: pitching_headers(),
+        // Home team: the full fixture with bench/IL players covering every
+        // rendering branch. The content_height test anchors to this block.
+        let home = TeamDailyRoster {
             batting_rows: vec![
                 make_active_batter("C", "B. Rice", Some("@BOS")),
                 make_active_batter("1B", "F. Freeman", Some("SD")),
@@ -574,6 +590,31 @@ mod tests {
                     Some(1.0),
                 ],
             }),
+        };
+        // Away: a simpler one-batter-one-pitcher fixture, distinct from home.
+        let away = TeamDailyRoster {
+            batting_rows: vec![make_active_batter("1B", "P. Alonso", Some("@PHI"))],
+            pitching_rows: vec![make_active_pitcher("SP", "C. Burnes", "LAD")],
+            batting_totals: Some(DailyTotals {
+                stats: vec![
+                    Some(4.0), Some(2.0), Some(1.0), Some(1.0),
+                    Some(2.0), Some(1.0), Some(0.0), Some(0.500),
+                ],
+            }),
+            pitching_totals: Some(DailyTotals {
+                stats: vec![
+                    Some(6.0), Some(4.0), Some(2.0), Some(2.0),
+                    Some(7.0), Some(1.0), Some(0.0), Some(0.0),
+                ],
+            }),
+        };
+        ScoringDay {
+            date: "2026-03-26".to_string(),
+            label: "March 26".to_string(),
+            batting_stat_columns: batting_headers(),
+            pitching_stat_columns: pitching_headers(),
+            home,
+            away,
         }
     }
 
@@ -611,10 +652,8 @@ mod tests {
             label: "March 26".to_string(),
             batting_stat_columns: vec![],
             pitching_stat_columns: vec![],
-            batting_rows: Vec::new(),
-            pitching_rows: Vec::new(),
-            batting_totals: None,
-            pitching_totals: None,
+            home: TeamDailyRoster::default(),
+            away: TeamDailyRoster::default(),
         };
         terminal
             .draw(|frame| panel.view(frame, frame.area(), &day, false))
@@ -627,11 +666,17 @@ mod tests {
     fn content_height_matches_expected_lines() {
         let day = make_test_scoring_day();
         let lines = build_all_lines(&day, 120);
-        // Batting: header(1) + col_header(1) + active(3) + separator(1) + bench(2) + IL(1) + totals(1) = 10
-        // Gap: 1
-        // Pitching: header(1) + col_header(1) + active(2) + totals(1) = 5
-        // Total: 10 + 1 + 5 = 16
-        assert_eq!(lines.len(), 16);
+        // Away block (one-row batter + one-row pitcher, each with totals):
+        //   Batting: header(1) + col_header(1) + active(1) + totals(1) = 4
+        //   Gap: 1
+        //   Pitching: header(1) + col_header(1) + active(1) + totals(1) = 4
+        // Gap between teams: 1
+        // Home block:
+        //   Batting: header(1) + col_header(1) + active(3) + separator(1) + bench(2) + IL(1) + totals(1) = 10
+        //   Gap: 1
+        //   Pitching: header(1) + col_header(1) + active(2) + totals(1) = 5
+        // Total: (4 + 1 + 4) + 1 + (10 + 1 + 5) = 9 + 1 + 16 = 26
+        assert_eq!(lines.len(), 26);
     }
 
     #[test]
@@ -754,13 +799,14 @@ mod tests {
             label: "March 26".to_string(),
             batting_stat_columns: vec![],
             pitching_stat_columns: vec![],
-            batting_rows: vec![make_active_batter("C", "B. Rice", Some("@BOS"))],
-            pitching_rows: vec![],
-            batting_totals: None,
-            pitching_totals: None,
+            home: TeamDailyRoster {
+                batting_rows: vec![make_active_batter("C", "B. Rice", Some("@BOS"))],
+                ..TeamDailyRoster::default()
+            },
+            away: TeamDailyRoster::default(),
         };
         let lines = build_all_lines(&day, 120);
-        // Should still have section headers + col header + player row + gap + pitching header + col header
+        // Should still have section headers for both teams + col headers + player row + gaps
         assert!(lines.len() >= 4);
     }
 }
