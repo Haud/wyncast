@@ -1,9 +1,12 @@
 // Matchup analytics panel: computed matchup insights rendered in a scrollable view.
 //
 // Sections:
-// 1. Category Outlook — winning/losing/tied buckets
+// 1. Category Outlook — home-winning/away-winning/tied buckets
 // 2. Close Categories — swingable categories within threshold
 // 3. Pace Projections — linear projection of counting stats, component-based for rates
+//
+// The page is rendered symmetrically from the home/away perspective. The
+// "diff" column is home - away (positive = home ahead).
 
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -161,11 +164,11 @@ fn build_category_outlook(
         return;
     }
 
-    let winning: Vec<&CategoryScore> = scores
+    let home_winning: Vec<&CategoryScore> = scores
         .iter()
         .filter(|c| c.state == CategoryState::HomeWinning)
         .collect();
-    let losing: Vec<&CategoryScore> = scores
+    let away_winning: Vec<&CategoryScore> = scores
         .iter()
         .filter(|c| c.state == CategoryState::AwayWinning)
         .collect();
@@ -177,13 +180,13 @@ fn build_category_outlook(
     // Header row
     lines.push(Line::from(vec![
         Span::styled(
-            format!("  WINNING ({})            ", winning.len()),
+            format!("  HOME ({})               ", home_winning.len()),
             Style::default()
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!("LOSING ({})            ", losing.len()),
+            format!("AWAY ({})              ", away_winning.len()),
             Style::default()
                 .fg(Color::Red)
                 .add_modifier(Modifier::BOLD),
@@ -196,12 +199,15 @@ fn build_category_outlook(
         ),
     ]));
 
-    let max_rows = winning.len().max(losing.len()).max(tied.len());
+    let max_rows = home_winning
+        .len()
+        .max(away_winning.len())
+        .max(tied.len());
     for i in 0..max_rows {
         let mut spans = Vec::new();
 
-        // Winning column
-        if let Some(cat) = winning.get(i) {
+        // Home-winning column
+        if let Some(cat) = home_winning.get(i) {
             let diff = format_diff(cat, registry);
             spans.push(Span::styled(
                 format!("  {:<6}{:<18}", cat.stat_abbrev, diff),
@@ -211,8 +217,8 @@ fn build_category_outlook(
             spans.push(Span::raw("                        "));
         }
 
-        // Losing column
-        if let Some(cat) = losing.get(i) {
+        // Away-winning column
+        if let Some(cat) = away_winning.get(i) {
             let diff = format_diff(cat, registry);
             spans.push(Span::styled(
                 format!("{:<6}{:<16}", cat.stat_abbrev, diff),
@@ -252,9 +258,9 @@ fn build_close_categories(
         return;
     }
 
-    // Header
+    // Header (Home / Away / H-A diff)
     lines.push(Line::from(Span::styled(
-        "  Category  Mine    Theirs  Diff     Status",
+        "  Category  Home    Away    H-A      Status",
         Style::default().add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(Span::styled(
@@ -272,10 +278,11 @@ fn build_close_categories(
             .map(|d| d.sort_direction == SortDirection::LowerIsBetter)
             .unwrap_or(false);
 
-        let my_display = format_value(cat.my_value, precision);
-        let opp_display = format_value(cat.opp_value, precision);
+        let home_display = format_value(cat.home_value, precision);
+        let away_display = format_value(cat.away_value, precision);
 
-        let raw_diff = cat.my_value - cat.opp_value;
+        let raw_diff = cat.home_value - cat.away_value;
+        // effective_diff: positive means the leader (per lower_is_better) is ahead.
         let effective_diff = if lower_is_better { -raw_diff } else { raw_diff };
         let diff_display = format_signed_value(raw_diff, precision);
 
@@ -289,8 +296,8 @@ fn build_close_categories(
 
         lines.push(Line::from(vec![
             Span::raw(format!("  {:<10}", cat.stat_abbrev)),
-            Span::raw(format!("{:<8}", my_display)),
-            Span::raw(format!("{:<8}", opp_display)),
+            Span::raw(format!("{:<8}", home_display)),
+            Span::raw(format!("{:<8}", away_display)),
             Span::styled(format!("{:<9}", diff_display), Style::default().fg(color)),
             Span::styled(status, Style::default().fg(color)),
         ]));
@@ -327,11 +334,11 @@ fn build_pace_projections(
 
     // Header
     lines.push(Line::from(Span::styled(
-        "  Category  Current  Projected  Opp Proj  Proj Result",
+        "  Category  Home     Home Proj  Away Proj  Proj Result",
         Style::default().add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(Span::styled(
-        "  ────────  ───────  ─────────  ────────  ───────────────",
+        "  ────────  ───────  ─────────  ─────────  ───────────────",
         Style::default().fg(Color::DarkGray),
     )));
 
@@ -342,24 +349,25 @@ fn build_pace_projections(
             .map(|d| d.sort_direction == SortDirection::LowerIsBetter)
             .unwrap_or(false);
 
-        let my_proj = project_stat(cat.my_value, days_elapsed, total_days, stat_def);
-        let opp_proj = project_stat(cat.opp_value, days_elapsed, total_days, stat_def);
+        let home_proj = project_stat(cat.home_value, days_elapsed, total_days, stat_def);
+        let away_proj = project_stat(cat.away_value, days_elapsed, total_days, stat_def);
 
+        // Result is expressed from the home team's perspective.
         let proj_diff = if lower_is_better {
-            opp_proj - my_proj
+            away_proj - home_proj
         } else {
-            my_proj - opp_proj
+            home_proj - away_proj
         };
 
         let (result_label, result_color) = if proj_diff > 0.001 {
-            ("WIN", Color::Green)
+            ("HOME", Color::Green)
         } else if proj_diff < -0.001 {
-            ("LOSS", Color::Red)
+            ("AWAY", Color::Red)
         } else {
             ("TIE", Color::Yellow)
         };
 
-        let raw_proj_diff = my_proj - opp_proj;
+        let raw_proj_diff = home_proj - away_proj;
         let diff_str = format_signed_value(raw_proj_diff, precision);
         let result_str = format!("{result_label} ({diff_str})");
 
@@ -367,10 +375,10 @@ fn build_pace_projections(
             Span::raw(format!("  {:<10}", cat.stat_abbrev)),
             Span::raw(format!(
                 "{:<9}",
-                format_value(cat.my_value, precision)
+                format_value(cat.home_value, precision)
             )),
-            Span::raw(format!("{:<11}", format_value(my_proj, precision))),
-            Span::raw(format!("{:<10}", format_value(opp_proj, precision))),
+            Span::raw(format!("{:<11}", format_value(home_proj, precision))),
+            Span::raw(format!("{:<11}", format_value(away_proj, precision))),
             Span::styled(result_str, Style::default().fg(result_color)),
         ]));
     }
@@ -381,26 +389,18 @@ fn build_pace_projections(
 // ---------------------------------------------------------------------------
 
 /// Format a differential value for a category, accounting for stat precision.
+/// Diff is home - away.
 fn format_diff(cat: &CategoryScore, registry: Option<&StatRegistry>) -> String {
     let stat_def = registry.and_then(|r| r.get(&cat.stat_abbrev));
-    let lower_is_better = stat_def
-        .map(|d| d.sort_direction == SortDirection::LowerIsBetter)
-        .unwrap_or(false);
     let precision = stat_def.map_or(0, |d| d.format_precision as usize);
 
-    let raw_diff = cat.my_value - cat.opp_value;
-
-    if lower_is_better && precision > 0 {
-        // For rate stats where lower is better, show raw diff with annotation
-        format_signed_value(raw_diff, precision)
-    } else {
-        format_signed_value(raw_diff, precision)
-    }
+    let raw_diff = cat.home_value - cat.away_value;
+    format_signed_value(raw_diff, precision)
 }
 
 /// Check if a category is "close" (swingable) using registry thresholds.
 pub fn is_close_category(cat: &CategoryScore, registry: Option<&StatRegistry>) -> bool {
-    let diff = (cat.my_value - cat.opp_value).abs();
+    let diff = (cat.home_value - cat.away_value).abs();
 
     if let Some(reg) = registry {
         if let Some(stat_def) = reg.get(&cat.stat_abbrev) {
@@ -459,26 +459,28 @@ pub fn project_counting_stat(current: f64, days_elapsed: usize, total_days: usiz
 }
 
 /// Build a close-category status string.
+///
+/// `effective_diff` is positive when the current leader (per sort direction) is ahead.
 fn build_close_status(cat: &CategoryScore, is_counting: bool, effective_diff: f64) -> String {
     match cat.state {
-        CategoryState::HomeWinning => "WINNING - lead is narrow".to_string(),
-        CategoryState::Tied => {
-            if is_counting {
-                "TIED - 1 to lead".to_string()
-            } else {
-                "TIED".to_string()
-            }
-        }
+        CategoryState::HomeWinning => "HOME - lead is narrow".to_string(),
         CategoryState::AwayWinning => {
             if is_counting {
                 let to_tie = effective_diff.abs().ceil() as i64;
                 let to_lead = to_tie + 1;
                 format!(
-                    "LOSING - {} {} to tie, {} to lead",
+                    "AWAY - {} {} to tie, {} to lead",
                     to_tie, cat.stat_abbrev, to_lead
                 )
             } else {
-                "LOSING - gap is closeable".to_string()
+                "AWAY - gap is closeable".to_string()
+            }
+        }
+        CategoryState::Tied => {
+            if is_counting {
+                "TIED - 1 to lead".to_string()
+            } else {
+                "TIED".to_string()
             }
         }
     }
@@ -525,13 +527,14 @@ mod tests {
         StatRegistry::from_league_config(&LeagueConfig::default()).unwrap()
     }
 
-    fn make_cat(abbrev: &str, my: f64, opp: f64, state: CategoryState) -> CategoryScore {
+    fn make_cat(abbrev: &str, home: f64, away: f64, state: CategoryState) -> CategoryScore {
         CategoryScore {
             stat_abbrev: abbrev.to_string(),
-            home_value: my,
-            away_value: opp,
-            my_value: my,
-            opp_value: opp,
+            home_value: home,
+            away_value: away,
+            // Legacy aliases kept in sync during the home/away migration.
+            my_value: home,
+            opp_value: away,
             state,
         }
     }
@@ -547,11 +550,11 @@ mod tests {
             make_cat("RBI", 4.0, 2.0, CategoryState::HomeWinning),
         ];
 
-        let winning: Vec<_> = scores
+        let home_winning: Vec<_> = scores
             .iter()
             .filter(|c| c.state == CategoryState::HomeWinning)
             .collect();
-        let losing: Vec<_> = scores
+        let away_winning: Vec<_> = scores
             .iter()
             .filter(|c| c.state == CategoryState::AwayWinning)
             .collect();
@@ -560,12 +563,12 @@ mod tests {
             .filter(|c| c.state == CategoryState::Tied)
             .collect();
 
-        assert_eq!(winning.len(), 2);
-        assert_eq!(losing.len(), 1);
+        assert_eq!(home_winning.len(), 2);
+        assert_eq!(away_winning.len(), 1);
         assert_eq!(tied.len(), 1);
-        assert_eq!(winning[0].stat_abbrev, "R");
-        assert_eq!(winning[1].stat_abbrev, "RBI");
-        assert_eq!(losing[0].stat_abbrev, "HR");
+        assert_eq!(home_winning[0].stat_abbrev, "R");
+        assert_eq!(home_winning[1].stat_abbrev, "RBI");
+        assert_eq!(away_winning[0].stat_abbrev, "HR");
         assert_eq!(tied[0].stat_abbrev, "SB");
     }
 
