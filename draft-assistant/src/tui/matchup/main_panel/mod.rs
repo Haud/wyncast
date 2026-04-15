@@ -117,12 +117,24 @@ impl MatchupMainPanel {
                 focused,
             ),
             MatchupTab::HomeRoster => {
-                self.home_roster_panel
-                    .view(frame, area, home_team_name, scoring_period_days, focused);
+                self.home_roster_panel.view(
+                    frame,
+                    area,
+                    home_team_name,
+                    scoring_period_days,
+                    crate::matchup::TeamSide::Home,
+                    focused,
+                );
             }
             MatchupTab::AwayRoster => {
-                self.away_roster_panel
-                    .view(frame, area, away_team_name, scoring_period_days, focused);
+                self.away_roster_panel.view(
+                    frame,
+                    area,
+                    away_team_name,
+                    scoring_period_days,
+                    crate::matchup::TeamSide::Away,
+                    focused,
+                );
             }
         }
     }
