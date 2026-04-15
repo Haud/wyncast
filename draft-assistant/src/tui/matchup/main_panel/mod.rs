@@ -26,8 +26,8 @@ pub use roster_view::{RosterViewPanel, RosterViewPanelMessage};
 pub enum MatchupTab {
     DailyStats,
     Analytics,
-    MyRoster,
-    OppRoster,
+    HomeRoster,
+    AwayRoster,
 }
 
 // ---------------------------------------------------------------------------
@@ -39,8 +39,8 @@ pub enum MatchupTab {
 pub enum MatchupMainPanelMessage {
     DailyStats(DailyStatsPanelMessage),
     Analytics(MatchupAnalyticsPanelMessage),
-    MyRoster(RosterViewPanelMessage),
-    OppRoster(RosterViewPanelMessage),
+    HomeRoster(RosterViewPanelMessage),
+    AwayRoster(RosterViewPanelMessage),
 }
 
 /// Mid-level component composing the four matchup tab panels.
@@ -48,8 +48,8 @@ pub struct MatchupMainPanel {
     pub active_tab: MatchupTab,
     pub daily_panel: DailyStatsPanel,
     pub analytics_panel: MatchupAnalyticsPanel,
-    pub my_roster_panel: RosterViewPanel,
-    pub opp_roster_panel: RosterViewPanel,
+    pub home_roster_panel: RosterViewPanel,
+    pub away_roster_panel: RosterViewPanel,
 }
 
 impl MatchupMainPanel {
@@ -58,8 +58,8 @@ impl MatchupMainPanel {
             active_tab: MatchupTab::DailyStats,
             daily_panel: DailyStatsPanel::new(),
             analytics_panel: MatchupAnalyticsPanel::new(),
-            my_roster_panel: RosterViewPanel::new(),
-            opp_roster_panel: RosterViewPanel::new(),
+            home_roster_panel: RosterViewPanel::new(),
+            away_roster_panel: RosterViewPanel::new(),
         }
     }
 
@@ -76,8 +76,8 @@ impl MatchupMainPanel {
         match msg {
             MatchupMainPanelMessage::DailyStats(m) => self.daily_panel.update(m),
             MatchupMainPanelMessage::Analytics(m) => self.analytics_panel.update(m),
-            MatchupMainPanelMessage::MyRoster(m) => self.my_roster_panel.update(m),
-            MatchupMainPanelMessage::OppRoster(m) => self.opp_roster_panel.update(m),
+            MatchupMainPanelMessage::HomeRoster(m) => self.home_roster_panel.update(m),
+            MatchupMainPanelMessage::AwayRoster(m) => self.away_roster_panel.update(m),
         }
     }
 
@@ -94,8 +94,8 @@ impl MatchupMainPanel {
         scoring_period_days: &[ScoringDay],
         selected_day: usize,
         registry: Option<&StatRegistry>,
-        my_team_name: &str,
-        opp_team_name: &str,
+        home_team_name: &str,
+        away_team_name: &str,
         focused: bool,
     ) {
         let current_day = scoring_period_days.get(selected_day);
@@ -116,13 +116,13 @@ impl MatchupMainPanel {
                 registry,
                 focused,
             ),
-            MatchupTab::MyRoster => {
-                self.my_roster_panel
-                    .view(frame, area, my_team_name, scoring_period_days, focused);
+            MatchupTab::HomeRoster => {
+                self.home_roster_panel
+                    .view(frame, area, home_team_name, scoring_period_days, focused);
             }
-            MatchupTab::OppRoster => {
-                self.opp_roster_panel
-                    .view(frame, area, opp_team_name, scoring_period_days, focused);
+            MatchupTab::AwayRoster => {
+                self.away_roster_panel
+                    .view(frame, area, away_team_name, scoring_period_days, focused);
             }
         }
     }
@@ -168,21 +168,21 @@ mod tests {
     }
 
     #[test]
-    fn my_roster_scroll_delegates() {
+    fn home_roster_scroll_delegates() {
         let mut panel = MatchupMainPanel::new();
-        panel.update(MatchupMainPanelMessage::MyRoster(
+        panel.update(MatchupMainPanelMessage::HomeRoster(
             RosterViewPanelMessage::Scroll(ScrollDirection::Down),
         ));
-        assert_eq!(panel.my_roster_panel.scroll_offset(), 1);
+        assert_eq!(panel.home_roster_panel.scroll_offset(), 1);
     }
 
     #[test]
-    fn opp_roster_scroll_delegates() {
+    fn away_roster_scroll_delegates() {
         let mut panel = MatchupMainPanel::new();
-        panel.update(MatchupMainPanelMessage::OppRoster(
+        panel.update(MatchupMainPanelMessage::AwayRoster(
             RosterViewPanelMessage::Scroll(ScrollDirection::Down),
         ));
-        assert_eq!(panel.opp_roster_panel.scroll_offset(), 1);
+        assert_eq!(panel.away_roster_panel.scroll_offset(), 1);
     }
 
     #[test]
@@ -192,7 +192,7 @@ mod tests {
         let panel = MatchupMainPanel::new();
         terminal
             .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &[], 0, None, "My Team", "Opp Team", false)
+                panel.view(frame, frame.area(), &[], &[], 0, None, "Home Team", "Away Team", false)
             })
             .unwrap();
     }
@@ -206,7 +206,7 @@ mod tests {
         let days = vec![day];
         terminal
             .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &days, 0, None, "My Team", "Opp Team", false)
+                panel.view(frame, frame.area(), &[], &days, 0, None, "Home Team", "Away Team", false)
             })
             .unwrap();
     }
@@ -219,33 +219,33 @@ mod tests {
         panel.active_tab = MatchupTab::Analytics;
         terminal
             .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &[], 0, None, "My Team", "Opp Team", false)
+                panel.view(frame, frame.area(), &[], &[], 0, None, "Home Team", "Away Team", false)
             })
             .unwrap();
     }
 
     #[test]
-    fn view_does_not_panic_my_roster() {
+    fn view_does_not_panic_home_roster() {
         let backend = ratatui::backend::TestBackend::new(80, 20);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let mut panel = MatchupMainPanel::new();
-        panel.active_tab = MatchupTab::MyRoster;
+        panel.active_tab = MatchupTab::HomeRoster;
         terminal
             .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &[], 0, None, "My Team", "Opp Team", false)
+                panel.view(frame, frame.area(), &[], &[], 0, None, "Home Team", "Away Team", false)
             })
             .unwrap();
     }
 
     #[test]
-    fn view_does_not_panic_opp_roster() {
+    fn view_does_not_panic_away_roster() {
         let backend = ratatui::backend::TestBackend::new(80, 20);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let mut panel = MatchupMainPanel::new();
-        panel.active_tab = MatchupTab::OppRoster;
+        panel.active_tab = MatchupTab::AwayRoster;
         terminal
             .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &[], 0, None, "My Team", "Opp Team", false)
+                panel.view(frame, frame.area(), &[], &[], 0, None, "Home Team", "Away Team", false)
             })
             .unwrap();
     }

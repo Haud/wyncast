@@ -236,13 +236,13 @@ impl MatchupScreen {
                             MatchupAnalyticsPanelMessage::Scroll(dir),
                         ));
                     }
-                    MatchupTab::MyRoster => {
-                        self.main_panel.update(MatchupMainPanelMessage::MyRoster(
+                    MatchupTab::HomeRoster => {
+                        self.main_panel.update(MatchupMainPanelMessage::HomeRoster(
                             RosterViewPanelMessage::Scroll(dir),
                         ));
                     }
-                    MatchupTab::OppRoster => {
-                        self.main_panel.update(MatchupMainPanelMessage::OppRoster(
+                    MatchupTab::AwayRoster => {
+                        self.main_panel.update(MatchupMainPanelMessage::AwayRoster(
                             RosterViewPanelMessage::Scroll(dir),
                         ));
                     }
@@ -356,8 +356,8 @@ impl MatchupScreen {
             let tab_disc: u8 = match self.main_panel.active_tab() {
                 MatchupTab::DailyStats => 0,
                 MatchupTab::Analytics => 1,
-                MatchupTab::MyRoster => 2,
-                MatchupTab::OppRoster => 3,
+                MatchupTab::HomeRoster => 2,
+                MatchupTab::AwayRoster => 3,
             };
             tab_disc.hash(&mut hasher);
             let own_id = SubscriptionId::from_u64(hasher.finish());
@@ -404,12 +404,12 @@ impl MatchupScreen {
                 )
                 .bind(
                     exact(KeyCode::Char('3')),
-                    |_| MatchupScreenMessage::SwitchTab(MatchupTab::MyRoster),
+                    |_| MatchupScreenMessage::SwitchTab(MatchupTab::HomeRoster),
                     None,
                 )
                 .bind(
                     exact(KeyCode::Char('4')),
-                    |_| MatchupScreenMessage::SwitchTab(MatchupTab::OppRoster),
+                    |_| MatchupScreenMessage::SwitchTab(MatchupTab::AwayRoster),
                     None,
                 )
                 .bind(
