@@ -689,6 +689,9 @@ async fn handle_matchup_state(
             // Coerce None to 0.0 for the domain type — the `state` field still
             // captures "no comparison possible" as Tied so downstream widgets
             // don't incorrectly credit either team.
+            home_value: cat.home_value.unwrap_or(0.0),
+            away_value: cat.away_value.unwrap_or(0.0),
+            // Legacy aliases kept in sync during the home/away migration.
             my_value: cat.home_value.unwrap_or(0.0),
             opp_value: cat.away_value.unwrap_or(0.0),
             state: category_state(cat.home_value, cat.away_value, cat.lower_is_better),
@@ -1403,6 +1406,8 @@ mod tests {
             .iter()
             .map(|cat| crate::matchup::CategoryScore {
                 stat_abbrev: cat.abbrev.clone(),
+                home_value: cat.home_value.unwrap_or(0.0),
+                away_value: cat.away_value.unwrap_or(0.0),
                 my_value: cat.home_value.unwrap_or(0.0),
                 opp_value: cat.away_value.unwrap_or(0.0),
                 state: category_state(cat.home_value, cat.away_value, cat.lower_is_better),

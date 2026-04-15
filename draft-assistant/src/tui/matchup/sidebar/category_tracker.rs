@@ -337,6 +337,8 @@ mod tests {
     fn format_diff_positive_counting() {
         let cs = CategoryScore {
             stat_abbrev: "R".to_string(),
+            home_value: 10.0,
+            away_value: 7.0,
             my_value: 10.0,
             opp_value: 7.0,
             state: CategoryState::HomeWinning,
@@ -348,6 +350,8 @@ mod tests {
     fn format_diff_negative_counting() {
         let cs = CategoryScore {
             stat_abbrev: "HR".to_string(),
+            home_value: 3.0,
+            away_value: 5.0,
             my_value: 3.0,
             opp_value: 5.0,
             state: CategoryState::AwayWinning,
@@ -359,6 +363,8 @@ mod tests {
     fn format_diff_rate_stat() {
         let cs = CategoryScore {
             stat_abbrev: "AVG".to_string(),
+            home_value: 0.280,
+            away_value: 0.265,
             my_value: 0.280,
             opp_value: 0.265,
             state: CategoryState::HomeWinning,
@@ -372,6 +378,8 @@ mod tests {
     fn format_diff_era() {
         let cs = CategoryScore {
             stat_abbrev: "ERA".to_string(),
+            home_value: 3.00,
+            away_value: 3.50,
             my_value: 3.00,
             opp_value: 3.50,
             state: CategoryState::HomeWinning,
@@ -385,6 +393,8 @@ mod tests {
     fn format_diff_tied() {
         let cs = CategoryScore {
             stat_abbrev: "R".to_string(),
+            home_value: 5.0,
+            away_value: 5.0,
             my_value: 5.0,
             opp_value: 5.0,
             state: CategoryState::Tied,
@@ -437,12 +447,16 @@ mod tests {
         let scores = vec![
             CategoryScore {
                 stat_abbrev: "R".to_string(),
+                home_value: 10.0,
+                away_value: 7.0,
                 my_value: 10.0,
                 opp_value: 7.0,
                 state: CategoryState::HomeWinning,
             },
             CategoryScore {
                 stat_abbrev: "ERA".to_string(),
+                home_value: 3.00,
+                away_value: 4.00,
                 my_value: 3.00,
                 opp_value: 4.00,
                 state: CategoryState::HomeWinning,
@@ -460,6 +474,8 @@ mod tests {
         let panel = CategoryTrackerPanel::new();
         let scores = vec![CategoryScore {
             stat_abbrev: "R".to_string(),
+            home_value: 10.0,
+            away_value: 7.0,
             my_value: 10.0,
             opp_value: 7.0,
             state: CategoryState::HomeWinning,

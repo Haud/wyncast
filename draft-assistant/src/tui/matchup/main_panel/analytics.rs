@@ -528,6 +528,8 @@ mod tests {
     fn make_cat(abbrev: &str, my: f64, opp: f64, state: CategoryState) -> CategoryScore {
         CategoryScore {
             stat_abbrev: abbrev.to_string(),
+            home_value: my,
+            away_value: opp,
             my_value: my,
             opp_value: opp,
             state,
