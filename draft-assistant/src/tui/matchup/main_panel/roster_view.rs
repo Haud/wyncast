@@ -1198,6 +1198,86 @@ mod tests {
         assert!(roster.pitchers.is_empty());
     }
 
+    // -- Side selection tests --
+
+    #[test]
+    fn aggregate_batters_selects_side() {
+        let day = ScoringDay {
+            date: "2026-03-26".to_string(),
+            label: "Day 1".to_string(),
+            batting_stat_columns: batting_headers(),
+            pitching_stat_columns: pitching_headers(),
+            home: TeamDailyRoster {
+                batting_rows: vec![make_batting_row(
+                    "C", "Home Hitter", "NYY", vec!["C"],
+                    Some("@BOS"),
+                    vec![Some(4.0), Some(2.0), Some(1.0), Some(0.0), Some(1.0), Some(0.0), Some(0.0), Some(0.500)],
+                )],
+                pitching_rows: vec![],
+                batting_totals: None,
+                pitching_totals: None,
+            },
+            away: TeamDailyRoster {
+                batting_rows: vec![make_batting_row(
+                    "1B", "Away Hitter", "NYM", vec!["1B"],
+                    Some("@PHI"),
+                    vec![Some(3.0), Some(1.0), Some(0.0), Some(0.0), Some(0.0), Some(1.0), Some(0.0), Some(0.333)],
+                )],
+                pitching_rows: vec![],
+                batting_totals: None,
+                pitching_totals: None,
+            },
+        };
+        let days = vec![day];
+
+        let home_batters = aggregate_batters(&days, TeamSide::Home);
+        assert_eq!(home_batters.len(), 1);
+        assert_eq!(home_batters[0].player_name, "Home Hitter");
+
+        let away_batters = aggregate_batters(&days, TeamSide::Away);
+        assert_eq!(away_batters.len(), 1);
+        assert_eq!(away_batters[0].player_name, "Away Hitter");
+    }
+
+    #[test]
+    fn aggregate_pitchers_selects_side() {
+        let day = ScoringDay {
+            date: "2026-03-26".to_string(),
+            label: "Day 1".to_string(),
+            batting_stat_columns: batting_headers(),
+            pitching_stat_columns: pitching_headers(),
+            home: TeamDailyRoster {
+                batting_rows: vec![],
+                pitching_rows: vec![make_pitching_row(
+                    "SP", "Home Ace", "LAD", vec!["SP"],
+                    Some("SD"),
+                    vec![Some(7.0), Some(4.0), Some(2.0), Some(1.0), Some(8.0), Some(1.0), Some(0.0), Some(0.0)],
+                )],
+                batting_totals: None,
+                pitching_totals: None,
+            },
+            away: TeamDailyRoster {
+                batting_rows: vec![],
+                pitching_rows: vec![make_pitching_row(
+                    "SP", "Away Ace", "HOU", vec!["SP"],
+                    Some("@TEX"),
+                    vec![Some(6.0), Some(5.0), Some(3.0), Some(2.0), Some(7.0), Some(0.0), Some(0.0), Some(0.0)],
+                )],
+                batting_totals: None,
+                pitching_totals: None,
+            },
+        };
+        let days = vec![day];
+
+        let home_pitchers = aggregate_pitchers(&days, TeamSide::Home);
+        assert_eq!(home_pitchers.len(), 1);
+        assert_eq!(home_pitchers[0].player_name, "Home Ace");
+
+        let away_pitchers = aggregate_pitchers(&days, TeamSide::Away);
+        assert_eq!(away_pitchers.len(), 1);
+        assert_eq!(away_pitchers[0].player_name, "Away Ace");
+    }
+
     #[test]
     fn build_roster_lines_empty_shows_placeholder() {
         let roster = AggregatedRoster {

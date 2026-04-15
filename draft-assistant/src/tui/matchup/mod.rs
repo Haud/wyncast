@@ -6,6 +6,10 @@
 // - `update()` — handle MatchupScreenMessage
 // - `subscription()` — declare keybindings
 // - `view()` — render all components
+//
+// The matchup screen is rendered symmetrically (home vs away). There is no
+// "my team" / "opp team" distinction — both rosters are displayed on
+// equivalent tabs, and scoreboard rows/lead-bar cells are keyed by side.
 
 pub mod layout;
 pub mod main_panel;
@@ -660,7 +664,40 @@ mod tests {
     }
 
     fn make_test_snapshot() -> MatchupSnapshot {
-        use crate::matchup::{CategoryState, TeamRecord};
+        use crate::matchup::{CategoryState, DailyPlayerRow, TeamRecord};
+
+        let home_row = DailyPlayerRow {
+            slot: "C".to_string(),
+            player_name: "Home Catcher".to_string(),
+            team: "NYY".to_string(),
+            positions: vec!["C".to_string()],
+            opponent: Some("@BOS".to_string()),
+            game_status: None,
+            stats: vec![Some(4.0)],
+        };
+        let away_row = DailyPlayerRow {
+            slot: "1B".to_string(),
+            player_name: "Away Firstbase".to_string(),
+            team: "NYM".to_string(),
+            positions: vec!["1B".to_string()],
+            opponent: Some("@PHI".to_string()),
+            game_status: None,
+            stats: vec![Some(3.0)],
+        };
+        let day1 = ScoringDay {
+            date: "2026-03-26".to_string(),
+            label: "Day 1".to_string(),
+            batting_stat_columns: vec!["AB".to_string()],
+            pitching_stat_columns: vec![],
+            home: TeamDailyRoster {
+                batting_rows: vec![home_row],
+                ..TeamDailyRoster::default()
+            },
+            away: TeamDailyRoster {
+                batting_rows: vec![away_row],
+                ..TeamDailyRoster::default()
+            },
+        };
 
         MatchupSnapshot {
             matchup_info: MatchupInfo {
@@ -692,7 +729,7 @@ mod tests {
             }],
             selected_day: 0,
             scoring_period_days: vec![
-                make_scoring_day("Day 1"),
+                day1,
                 make_scoring_day("Day 2"),
             ],
         }

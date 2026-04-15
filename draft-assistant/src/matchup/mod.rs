@@ -81,16 +81,19 @@ pub struct TeamDailyRoster {
 }
 
 /// One day of the scoring period with per-team player breakdowns.
+///
+/// Stat column headers are league-wide (identical for both teams), so they
+/// live on the day rather than per-team.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScoringDay {
     pub date: String,
     pub label: String,
     /// Stat column headers for batting (e.g. ["AB", "H", "R", "HR", "RBI", "BB", "SB", "AVG"]).
-    /// Provided by the extension; indices align with `DailyPlayerRow::stats`.
+    /// Indices align with `DailyPlayerRow::stats`.
     #[serde(default)]
     pub batting_stat_columns: Vec<String>,
     /// Stat column headers for pitching (e.g. ["IP", "H", "ER", "BB", "K", "W", "SV", "HD"]).
-    /// Provided by the extension; indices align with `DailyPlayerRow::stats`.
+    /// Indices align with `DailyPlayerRow::stats`.
     #[serde(default)]
     pub pitching_stat_columns: Vec<String>,
     pub home: TeamDailyRoster,
@@ -190,6 +193,25 @@ mod tests {
 
     #[test]
     fn matchup_snapshot_construction() {
+        let home_row = DailyPlayerRow {
+            slot: "C".to_string(),
+            player_name: "Ben Rice".to_string(),
+            team: "NYY".to_string(),
+            positions: vec!["1B".to_string(), "C".to_string(), "DH".to_string()],
+            opponent: Some("@BOS".to_string()),
+            game_status: None,
+            stats: vec![Some(4.0), Some(1.0), Some(0.0)],
+        };
+        let away_row = DailyPlayerRow {
+            slot: "1B".to_string(),
+            player_name: "Pete Alonso".to_string(),
+            team: "NYM".to_string(),
+            positions: vec!["1B".to_string()],
+            opponent: Some("@PHI".to_string()),
+            game_status: None,
+            stats: vec![Some(3.0), Some(2.0), Some(1.0)],
+        };
+
         let snapshot = MatchupSnapshot {
             matchup_info: MatchupInfo {
                 matchup_period: 1,
@@ -233,22 +255,21 @@ mod tests {
                 batting_stat_columns: vec!["AB".to_string(), "H".to_string(), "R".to_string()],
                 pitching_stat_columns: vec![],
                 home: TeamDailyRoster {
-                    batting_rows: vec![DailyPlayerRow {
-                        slot: "C".to_string(),
-                        player_name: "Ben Rice".to_string(),
-                        team: "NYY".to_string(),
-                        positions: vec!["1B".to_string(), "C".to_string(), "DH".to_string()],
-                        opponent: Some("@BOS".to_string()),
-                        game_status: None,
-                        stats: vec![Some(4.0), Some(1.0), Some(0.0)],
-                    }],
+                    batting_rows: vec![home_row],
                     pitching_rows: vec![],
                     batting_totals: Some(DailyTotals {
                         stats: vec![Some(29.0), Some(8.0), Some(5.0)],
                     }),
                     pitching_totals: None,
                 },
-                away: TeamDailyRoster::default(),
+                away: TeamDailyRoster {
+                    batting_rows: vec![away_row],
+                    pitching_rows: vec![],
+                    batting_totals: Some(DailyTotals {
+                        stats: vec![Some(27.0), Some(10.0), Some(7.0)],
+                    }),
+                    pitching_totals: None,
+                },
             }],
         };
 
@@ -258,5 +279,16 @@ mod tests {
         assert_eq!(snapshot.category_scores.len(), 2);
         assert_eq!(snapshot.scoring_period_days.len(), 1);
         assert_eq!(snapshot.scoring_period_days[0].home.batting_rows.len(), 1);
+        assert_eq!(snapshot.scoring_period_days[0].away.batting_rows.len(), 1);
+        assert_eq!(
+            snapshot.scoring_period_days[0].home.batting_rows[0].player_name,
+            "Ben Rice"
+        );
+        assert_eq!(
+            snapshot.scoring_period_days[0].away.batting_rows[0].player_name,
+            "Pete Alonso"
+        );
+        assert_eq!(snapshot.team(TeamSide::Home).name, "Bob Dole Experience");
+        assert_eq!(snapshot.team(TeamSide::Away).name, "Certified! Smokified!");
     }
 }
