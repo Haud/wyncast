@@ -107,8 +107,8 @@ pub struct TeamMatchupState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatchupSnapshot {
     pub matchup_info: MatchupInfo,
-    pub my_team: TeamMatchupState,
-    pub opp_team: TeamMatchupState,
+    pub home_team: TeamMatchupState,
+    pub away_team: TeamMatchupState,
     pub category_scores: Vec<CategoryScore>,
     pub selected_day: usize,
     pub scoring_period_days: Vec<ScoringDay>,
@@ -146,13 +146,13 @@ mod tests {
                 home_record: TeamRecord { wins: 0, losses: 0, ties: 0 },
                 away_record: TeamRecord { wins: 0, losses: 0, ties: 0 },
             },
-            my_team: TeamMatchupState {
+            home_team: TeamMatchupState {
                 name: "Bob Dole Experience".to_string(),
                 abbrev: "BDE".to_string(),
                 record: TeamRecord { wins: 0, losses: 0, ties: 0 },
                 category_score: TeamRecord { wins: 2, losses: 3, ties: 7 },
             },
-            opp_team: TeamMatchupState {
+            away_team: TeamMatchupState {
                 name: "Certified! Smokified!".to_string(),
                 abbrev: "CS".to_string(),
                 record: TeamRecord { wins: 0, losses: 0, ties: 0 },
@@ -196,8 +196,8 @@ mod tests {
         };
 
         assert_eq!(snapshot.matchup_info.matchup_period, 1);
-        assert_eq!(snapshot.my_team.category_score.to_string(), "2-3-7");
-        assert_eq!(snapshot.opp_team.category_score.to_string(), "3-2-7");
+        assert_eq!(snapshot.home_team.category_score.to_string(), "2-3-7");
+        assert_eq!(snapshot.away_team.category_score.to_string(), "3-2-7");
         assert_eq!(snapshot.category_scores.len(), 2);
         assert_eq!(snapshot.scoring_period_days.len(), 1);
         assert_eq!(snapshot.scoring_period_days[0].batting_rows.len(), 1);

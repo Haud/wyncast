@@ -757,13 +757,13 @@ async fn handle_matchup_state(
             home_record,
             away_record,
         },
-        my_team: TeamMatchupState {
+        home_team: TeamMatchupState {
             name: payload.home_team.name.clone(),
             abbrev: abbreviate_team_name(&payload.home_team.name),
             record: parse_record(&payload.home_team.record),
             category_score: home_category_score,
         },
-        opp_team: TeamMatchupState {
+        away_team: TeamMatchupState {
             name: payload.away_team.name.clone(),
             abbrev: abbreviate_team_name(&payload.away_team.name),
             record: parse_record(&payload.away_team.record),

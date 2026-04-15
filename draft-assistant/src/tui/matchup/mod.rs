@@ -96,8 +96,8 @@ pub struct MatchupScreen {
     pub focused_panel: Option<MatchupFocusPanel>,
     // Matchup state (set from MatchupSnapshot)
     pub matchup_info: Option<MatchupInfo>,
-    pub my_team: Option<TeamMatchupState>,
-    pub opp_team: Option<TeamMatchupState>,
+    pub home_team: Option<TeamMatchupState>,
+    pub away_team: Option<TeamMatchupState>,
     pub category_scores: Vec<CategoryScore>,
     pub selected_day: usize,
     pub scoring_period_days: Vec<ScoringDay>,
@@ -112,8 +112,8 @@ impl MatchupScreen {
             sidebar: MatchupSidebar::new(),
             focused_panel: None,
             matchup_info: None,
-            my_team: None,
-            opp_team: None,
+            home_team: None,
+            away_team: None,
             category_scores: Vec::new(),
             selected_day: 0,
             scoring_period_days: Vec::new(),
@@ -125,8 +125,8 @@ impl MatchupScreen {
     /// Populate all fields from a MatchupSnapshot.
     pub fn apply_snapshot(&mut self, snapshot: &MatchupSnapshot) {
         self.matchup_info = Some(snapshot.matchup_info.clone());
-        self.my_team = Some(snapshot.my_team.clone());
-        self.opp_team = Some(snapshot.opp_team.clone());
+        self.home_team = Some(snapshot.home_team.clone());
+        self.away_team = Some(snapshot.away_team.clone());
         self.category_scores = snapshot.category_scores.clone();
         self.scoring_period_days = snapshot.scoring_period_days.clone();
         // Clamp selected_day to valid range
@@ -151,15 +151,15 @@ impl MatchupScreen {
         );
 
         // Scoreboard
-        if let (Some(my_team), Some(opp_team), Some(registry)) =
-            (&self.my_team, &self.opp_team, &self.stat_registry)
+        if let (Some(home_team), Some(away_team), Some(registry)) =
+            (&self.home_team, &self.away_team, &self.stat_registry)
         {
             widgets::scoreboard::render(
                 frame,
                 layout.scoreboard,
                 &self.category_scores,
-                my_team,
-                opp_team,
+                home_team,
+                away_team,
                 registry,
             );
         } else {
@@ -595,8 +595,8 @@ mod tests {
         screen.apply_snapshot(&snapshot);
 
         assert!(screen.matchup_info.is_some());
-        assert!(screen.my_team.is_some());
-        assert!(screen.opp_team.is_some());
+        assert!(screen.home_team.is_some());
+        assert!(screen.away_team.is_some());
         assert_eq!(screen.category_scores.len(), 1);
         assert_eq!(screen.scoring_period_days.len(), 2);
     }
@@ -673,15 +673,15 @@ mod tests {
                 home_record: TeamRecord { wins: 1, losses: 0, ties: 0 },
                 away_record: TeamRecord { wins: 0, losses: 1, ties: 0 },
             },
-            my_team: TeamMatchupState {
-                name: "My Team".to_string(),
-                abbrev: "MT".to_string(),
+            home_team: TeamMatchupState {
+                name: "Home Team".to_string(),
+                abbrev: "HT".to_string(),
                 record: TeamRecord { wins: 1, losses: 0, ties: 0 },
                 category_score: TeamRecord { wins: 6, losses: 4, ties: 2 },
             },
-            opp_team: TeamMatchupState {
-                name: "Opp Team".to_string(),
-                abbrev: "OT".to_string(),
+            away_team: TeamMatchupState {
+                name: "Away Team".to_string(),
+                abbrev: "AT".to_string(),
                 record: TeamRecord { wins: 0, losses: 1, ties: 0 },
                 category_score: TeamRecord { wins: 4, losses: 6, ties: 2 },
             },
