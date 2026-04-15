@@ -97,6 +97,23 @@ pub struct ScoringDay {
     pub pitching_rows: Vec<DailyPlayerRow>,
     pub batting_totals: Option<DailyTotals>,
     pub pitching_totals: Option<DailyTotals>,
+    /// New per-team rosters. Populated in parallel with the top-level
+    /// fields during a migration toward a fully symmetric representation.
+    /// Consumers may still read the top-level fields for now.
+    #[serde(default)]
+    pub home: TeamDailyRoster,
+    #[serde(default)]
+    pub away: TeamDailyRoster,
+}
+
+impl ScoringDay {
+    /// Return the roster for the requested side.
+    pub fn roster(&self, side: TeamSide) -> &TeamDailyRoster {
+        match side {
+            TeamSide::Home => &self.home,
+            TeamSide::Away => &self.away,
+        }
+    }
 }
 
 /// A single player's stats for one day.
@@ -238,6 +255,8 @@ mod tests {
                     stats: vec![Some(29.0), Some(8.0), Some(5.0)],
                 }),
                 pitching_totals: None,
+                home: TeamDailyRoster::default(),
+                away: TeamDailyRoster::default(),
             }],
         };
 

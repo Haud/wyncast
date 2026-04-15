@@ -433,7 +433,7 @@ fn truncate(text: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::matchup::{DailyPlayerRow, DailyTotals, ScoringDay};
+    use crate::matchup::{DailyPlayerRow, DailyTotals, ScoringDay, TeamDailyRoster};
 
     fn make_active_batter(slot: &str, name: &str, opponent: Option<&str>) -> DailyPlayerRow {
         DailyPlayerRow {
@@ -574,6 +574,8 @@ mod tests {
                     Some(1.0),
                 ],
             }),
+            home: TeamDailyRoster::default(),
+            away: TeamDailyRoster::default(),
         }
     }
 
@@ -615,6 +617,8 @@ mod tests {
             pitching_rows: Vec::new(),
             batting_totals: None,
             pitching_totals: None,
+            home: TeamDailyRoster::default(),
+            away: TeamDailyRoster::default(),
         };
         terminal
             .draw(|frame| panel.view(frame, frame.area(), &day, false))
@@ -758,6 +762,8 @@ mod tests {
             pitching_rows: vec![],
             batting_totals: None,
             pitching_totals: None,
+            home: TeamDailyRoster::default(),
+            away: TeamDailyRoster::default(),
         };
         let lines = build_all_lines(&day, 120);
         // Should still have section headers + col header + player row + gap + pitching header + col header

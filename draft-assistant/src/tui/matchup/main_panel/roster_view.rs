@@ -660,7 +660,7 @@ fn truncate(s: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::matchup::{DailyPlayerRow, ScoringDay};
+    use crate::matchup::{DailyPlayerRow, ScoringDay, TeamDailyRoster};
 
     // -- Test helpers --
 
@@ -730,6 +730,8 @@ mod tests {
             pitching_rows: pitching,
             batting_totals: None,
             pitching_totals: None,
+            home: TeamDailyRoster::default(),
+            away: TeamDailyRoster::default(),
         }
     }
 

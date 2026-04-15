@@ -10,7 +10,7 @@ use crate::draft::state::{
 };
 use crate::matchup::{
     CategoryScore, CategoryState, DailyPlayerRow, DailyTotals, MatchupInfo, MatchupSnapshot,
-    ScoringDay, TeamMatchupState, TeamRecord,
+    ScoringDay, TeamDailyRoster, TeamMatchupState, TeamRecord,
 };
 use crate::protocol::{
     AppMode, DraftBoardData, ExtensionMessage, MatchupStatePayload, NominationInfo,
@@ -734,6 +734,16 @@ async fn handle_matchup_state(
         stats: t.clone(),
     });
 
+    // Dual population: the top-level rows/totals still drive consumers,
+    // while `home` mirrors them for consumers that have migrated to the
+    // per-team representation. `away` is populated symmetrically in a
+    // subsequent commit once the protocol emits both sides.
+    let home_roster = TeamDailyRoster {
+        batting_rows: batting_rows.clone(),
+        pitching_rows: pitching_rows.clone(),
+        batting_totals: batting_totals.clone(),
+        pitching_totals: pitching_totals.clone(),
+    };
     let scoring_day = ScoringDay {
         date: payload.selected_day.clone(),
         label: payload.selected_day.clone(),
@@ -743,6 +753,8 @@ async fn handle_matchup_state(
         pitching_rows,
         batting_totals,
         pitching_totals,
+        home: home_roster,
+        away: TeamDailyRoster::default(),
     };
 
     let scoring_period_days = vec![scoring_day];

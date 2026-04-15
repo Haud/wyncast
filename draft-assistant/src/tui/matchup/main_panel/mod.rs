@@ -251,7 +251,7 @@ mod tests {
     }
 
     fn make_test_scoring_day() -> ScoringDay {
-        use crate::matchup::{DailyPlayerRow, DailyTotals};
+        use crate::matchup::{DailyPlayerRow, DailyTotals, TeamDailyRoster};
         ScoringDay {
             date: "2026-03-26".to_string(),
             label: "March 26".to_string(),
@@ -271,6 +271,8 @@ mod tests {
                 stats: vec![Some(4.0), Some(1.0), Some(0.0)],
             }),
             pitching_totals: None,
+            home: TeamDailyRoster::default(),
+            away: TeamDailyRoster::default(),
         }
     }
 }

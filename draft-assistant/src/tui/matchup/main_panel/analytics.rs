@@ -521,6 +521,7 @@ fn format_signed_value(value: f64, precision: usize) -> String {
 mod tests {
     use super::*;
     use crate::config::LeagueConfig;
+    use crate::matchup::TeamDailyRoster;
     use crate::tui::scroll::ScrollDirection;
 
     fn test_registry() -> StatRegistry {
@@ -795,6 +796,8 @@ mod tests {
             pitching_rows: Vec::new(),
             batting_totals: None,
             pitching_totals: None,
+            home: TeamDailyRoster::default(),
+            away: TeamDailyRoster::default(),
         }
     }
 }
