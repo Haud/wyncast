@@ -636,7 +636,7 @@ fn parse_record(s: &str) -> TeamRecord {
     }
 }
 
-/// Determine category win/loss/tie state from values and sort direction.
+/// Determine category win/loss/tie state from home and away values.
 ///
 /// `None` values (ESPN renders `"--"` for rate stats with a zero denominator)
 /// are treated as Tied — neither side earns credit for a category that has
@@ -653,7 +653,11 @@ fn category_state(
     if (home_value - away_value).abs() < f64::EPSILON {
         CategoryState::Tied
     } else if lower_is_better {
-        if home_value < away_value { CategoryState::HomeWinning } else { CategoryState::AwayWinning }
+        if home_value < away_value {
+            CategoryState::HomeWinning
+        } else {
+            CategoryState::AwayWinning
+        }
     } else if home_value > away_value {
         CategoryState::HomeWinning
     } else {
@@ -696,7 +700,7 @@ async fn handle_matchup_state(
     ui_tx: &mpsc::Sender<UiUpdate>,
 ) {
     info!(
-        "Processing matchup state: {} vs {} (period {})",
+        "Processing matchup state: {} (home) vs {} (away) (period {})",
         payload.home_team.name, payload.away_team.name, payload.matchup_period
     );
 
@@ -705,7 +709,7 @@ async fn handle_matchup_state(
     let home_category_score = parse_record(&payload.home_team.matchup_score);
     let away_category_score = parse_record(&payload.away_team.matchup_score);
 
-    // Convert categories with win/loss state
+    // Convert categories with home/away lead state.
     let category_scores: Vec<CategoryScore> = payload
         .categories
         .iter()
@@ -1298,17 +1302,31 @@ mod tests {
                 ],
                 totals: Some(vec![Some(14.0), Some(19.0)]),
             },
-            // Away sections stubbed empty here; a later commit adds a real
-            // away fixture once the test that needs it lands.
             away_batting: MatchupSectionPayload {
-                headers: vec![],
-                players: vec![],
-                totals: None,
+                headers: vec!["AB".to_string(), "H".to_string(), "R".to_string()],
+                players: vec![MatchupPlayerPayload {
+                    slot: "1B".to_string(),
+                    name: "Pete Alonso".to_string(),
+                    team: "NYM".to_string(),
+                    positions: vec!["1B".to_string()],
+                    opponent: Some("@PHI".to_string()),
+                    status: None,
+                    stats: vec![Some(3.0), Some(2.0), Some(1.0)],
+                }],
+                totals: Some(vec![Some(27.0), Some(10.0), Some(7.0)]),
             },
             away_pitching: MatchupSectionPayload {
-                headers: vec![],
-                players: vec![],
-                totals: None,
+                headers: vec!["IP".to_string(), "K".to_string()],
+                players: vec![MatchupPlayerPayload {
+                    slot: "SP".to_string(),
+                    name: "Corbin Burnes".to_string(),
+                    team: "ARI".to_string(),
+                    positions: vec!["SP".to_string()],
+                    opponent: Some("LAD".to_string()),
+                    status: None,
+                    stats: vec![Some(6.0), Some(7.0)],
+                }],
+                totals: Some(vec![Some(6.0), Some(7.0)]),
             },
         }
     }
@@ -1358,7 +1376,7 @@ mod tests {
     }
 
     #[test]
-    fn category_state_higher_is_better_home_winning() {
+    fn category_state_home_leads_higher_is_better() {
         assert_eq!(
             category_state(Some(5.0), Some(3.0), false),
             CategoryState::HomeWinning
@@ -1366,7 +1384,7 @@ mod tests {
     }
 
     #[test]
-    fn category_state_higher_is_better_away_winning() {
+    fn category_state_away_leads_higher_is_better() {
         assert_eq!(
             category_state(Some(2.0), Some(3.0), false),
             CategoryState::AwayWinning
@@ -1374,7 +1392,7 @@ mod tests {
     }
 
     #[test]
-    fn category_state_lower_is_better_home_winning() {
+    fn category_state_home_leads_lower_is_better() {
         // ERA: lower is better, home 3.50 < away 4.20 => home winning
         assert_eq!(
             category_state(Some(3.50), Some(4.20), true),
@@ -1383,7 +1401,7 @@ mod tests {
     }
 
     #[test]
-    fn category_state_lower_is_better_away_winning() {
+    fn category_state_away_leads_lower_is_better() {
         // WHIP: lower is better, home 1.35 > away 1.20 => away winning
         assert_eq!(
             category_state(Some(1.35), Some(1.20), true),
@@ -1437,15 +1455,15 @@ mod tests {
             })
             .collect();
 
-        // R: 5 > 3, higher is better => HomeWinning
+        // R: home 5 > away 3, higher is better => HomeWinning
         assert_eq!(scores[0].stat_abbrev, "R");
         assert_eq!(scores[0].state, CategoryState::HomeWinning);
 
-        // HR: 2 < 3, higher is better => AwayWinning
+        // HR: home 2 < away 3, higher is better => AwayWinning
         assert_eq!(scores[1].stat_abbrev, "HR");
         assert_eq!(scores[1].state, CategoryState::AwayWinning);
 
-        // ERA: 3.50 < 4.20, lower is better => HomeWinning
+        // ERA: home 3.50 < away 4.20, lower is better => HomeWinning
         assert_eq!(scores[2].stat_abbrev, "ERA");
         assert_eq!(scores[2].state, CategoryState::HomeWinning);
 
@@ -1545,6 +1563,37 @@ mod tests {
 
         let msg2 = ui_rx.recv().await.unwrap();
         assert!(matches!(msg2, UiUpdate::MatchupSnapshot(_)));
+    }
+
+    #[tokio::test]
+    async fn handle_matchup_state_populates_both_teams_rosters() {
+        let (ui_tx, _ui_rx) = mpsc::channel(32);
+        let payload = make_matchup_payload();
+        let mut state = create_test_app_state(crate::protocol::AppMode::Matchup);
+
+        handle_matchup_state(&mut state, payload, &ui_tx).await;
+
+        let snapshot = state
+            .matchup_snapshot
+            .as_ref()
+            .expect("snapshot should be set");
+        assert_eq!(snapshot.scoring_period_days.len(), 1);
+        let day = &snapshot.scoring_period_days[0];
+
+        // Home roster has the home team's players.
+        assert_eq!(day.home.batting_rows.len(), 1);
+        assert_eq!(day.home.batting_rows[0].player_name, "Ben Rice");
+        assert_eq!(day.home.pitching_rows.len(), 3);
+
+        // Away roster has a distinct set of players.
+        assert_eq!(day.away.batting_rows.len(), 1);
+        assert_eq!(day.away.batting_rows[0].player_name, "Pete Alonso");
+        assert_eq!(day.away.pitching_rows.len(), 1);
+        assert_eq!(day.away.pitching_rows[0].player_name, "Corbin Burnes");
+
+        // Totals are threaded through per side.
+        assert!(day.home.batting_totals.is_some());
+        assert!(day.away.batting_totals.is_some());
     }
 
     #[tokio::test]

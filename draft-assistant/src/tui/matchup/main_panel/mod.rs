@@ -7,7 +7,7 @@ pub mod roster_view;
 use ratatui::layout::Rect;
 use ratatui::Frame;
 
-use crate::matchup::{CategoryScore, ScoringDay};
+use crate::matchup::{CategoryScore, ScoringDay, TeamSide};
 use crate::stats::StatRegistry;
 use crate::tui::action::Action;
 use crate::tui::subscription::Subscription;
@@ -84,7 +84,7 @@ impl MatchupMainPanel {
     /// Render the active tab's content.
     ///
     /// Analytics-specific data is passed through for the analytics panel.
-    /// When the analytics tab is not active, these parameters are unused.
+    /// Roster views select the correct side via their tab identity.
     #[allow(clippy::too_many_arguments)]
     pub fn view(
         &self,
@@ -122,7 +122,7 @@ impl MatchupMainPanel {
                     area,
                     home_team_name,
                     scoring_period_days,
-                    crate::matchup::TeamSide::Home,
+                    TeamSide::Home,
                     focused,
                 );
             }
@@ -132,7 +132,7 @@ impl MatchupMainPanel {
                     area,
                     away_team_name,
                     scoring_period_days,
-                    crate::matchup::TeamSide::Away,
+                    TeamSide::Away,
                     focused,
                 );
             }
@@ -204,7 +204,17 @@ mod tests {
         let panel = MatchupMainPanel::new();
         terminal
             .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &[], 0, None, "Home Team", "Away Team", false)
+                panel.view(
+                    frame,
+                    frame.area(),
+                    &[],
+                    &[],
+                    0,
+                    None,
+                    "Home Team",
+                    "Away Team",
+                    false,
+                )
             })
             .unwrap();
     }
@@ -218,7 +228,17 @@ mod tests {
         let days = vec![day];
         terminal
             .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &days, 0, None, "Home Team", "Away Team", false)
+                panel.view(
+                    frame,
+                    frame.area(),
+                    &[],
+                    &days,
+                    0,
+                    None,
+                    "Home Team",
+                    "Away Team",
+                    false,
+                )
             })
             .unwrap();
     }
@@ -231,7 +251,17 @@ mod tests {
         panel.active_tab = MatchupTab::Analytics;
         terminal
             .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &[], 0, None, "Home Team", "Away Team", false)
+                panel.view(
+                    frame,
+                    frame.area(),
+                    &[],
+                    &[],
+                    0,
+                    None,
+                    "Home Team",
+                    "Away Team",
+                    false,
+                )
             })
             .unwrap();
     }
@@ -244,7 +274,17 @@ mod tests {
         panel.active_tab = MatchupTab::HomeRoster;
         terminal
             .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &[], 0, None, "Home Team", "Away Team", false)
+                panel.view(
+                    frame,
+                    frame.area(),
+                    &[],
+                    &[],
+                    0,
+                    None,
+                    "Home Team",
+                    "Away Team",
+                    false,
+                )
             })
             .unwrap();
     }
@@ -257,7 +297,17 @@ mod tests {
         panel.active_tab = MatchupTab::AwayRoster;
         terminal
             .draw(|frame| {
-                panel.view(frame, frame.area(), &[], &[], 0, None, "Home Team", "Away Team", false)
+                panel.view(
+                    frame,
+                    frame.area(),
+                    &[],
+                    &[],
+                    0,
+                    None,
+                    "Home Team",
+                    "Away Team",
+                    false,
+                )
             })
             .unwrap();
     }
