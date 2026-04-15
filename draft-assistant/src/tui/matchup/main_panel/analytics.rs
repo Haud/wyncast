@@ -11,7 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::matchup::{CategoryScore, CategoryState, DailyPlayerRow, ScoringDay};
+use crate::matchup::{CategoryScore, CategoryState, ScoringDay};
 use crate::stats::{SortDirection, StatComputation, StatDefinition, StatRegistry};
 use crate::tui::action::Action;
 use crate::tui::scroll::{ScrollDirection, ScrollState};
@@ -458,21 +458,6 @@ pub fn project_counting_stat(current: f64, days_elapsed: usize, total_days: usiz
     (current / days_elapsed as f64) * total_days as f64
 }
 
-/// Count games started from ScoringDay data.
-///
-/// A game start is a pitching row where slot = "SP", opponent is present,
-/// and the player is not on the bench.
-pub fn count_games_started(days: &[ScoringDay]) -> u8 {
-    days.iter()
-        .flat_map(|d| &d.pitching_rows)
-        .filter(|row| is_sp_start(row))
-        .count() as u8
-}
-
-fn is_sp_start(row: &DailyPlayerRow) -> bool {
-    row.slot == "SP" && row.opponent.is_some()
-}
-
 /// Build a close-category status string.
 fn build_close_status(cat: &CategoryScore, is_counting: bool, effective_diff: f64) -> String {
     match cat.state {
@@ -699,85 +684,6 @@ mod tests {
         assert!((result - 0.0).abs() < 1e-10);
     }
 
-    // -- GS counting tests --
-
-    #[test]
-    fn count_gs_from_scoring_days() {
-        let days = vec![
-            ScoringDay {
-                date: "2026-03-26".to_string(),
-                label: "March 26".to_string(),
-                batting_stat_columns: vec![],
-                pitching_stat_columns: vec![],
-                batting_rows: vec![],
-                pitching_rows: vec![
-                    make_pitcher_row("SP", "Valdez", Some("@TEX")),
-                    make_pitcher_row("SP", "Glasnow", Some("SD")),
-                    make_pitcher_row("RP", "Weaver", Some("@BOS")),
-                ],
-                batting_totals: None,
-                pitching_totals: None,
-            },
-            ScoringDay {
-                date: "2026-03-27".to_string(),
-                label: "March 27".to_string(),
-                batting_stat_columns: vec![],
-                pitching_stat_columns: vec![],
-                batting_rows: vec![],
-                pitching_rows: vec![
-                    make_pitcher_row("SP", "Cole", Some("@TOR")),
-                    make_pitcher_row("SP", "Woo", None), // no game
-                ],
-                batting_totals: None,
-                pitching_totals: None,
-            },
-        ];
-
-        assert_eq!(count_games_started(&days), 3);
-    }
-
-    #[test]
-    fn count_gs_no_starts() {
-        let days = vec![ScoringDay {
-            date: "2026-03-26".to_string(),
-            label: "March 26".to_string(),
-            batting_stat_columns: vec![],
-            pitching_stat_columns: vec![],
-            batting_rows: vec![],
-            pitching_rows: vec![
-                make_pitcher_row("RP", "Weaver", Some("@BOS")),
-                make_pitcher_row("RP", "Suarez", Some("@LAD")),
-            ],
-            batting_totals: None,
-            pitching_totals: None,
-        }];
-
-        assert_eq!(count_games_started(&days), 0);
-    }
-
-    #[test]
-    fn count_gs_sp_with_no_opponent_excluded() {
-        let days = vec![ScoringDay {
-            date: "2026-03-26".to_string(),
-            label: "March 26".to_string(),
-            batting_stat_columns: vec![],
-            pitching_stat_columns: vec![],
-            batting_rows: vec![],
-            pitching_rows: vec![
-                make_pitcher_row("SP", "Valdez", None), // day off
-            ],
-            batting_totals: None,
-            pitching_totals: None,
-        }];
-
-        assert_eq!(count_games_started(&days), 0);
-    }
-
-    #[test]
-    fn count_gs_empty_days() {
-        assert_eq!(count_games_started(&[]), 0);
-    }
-
     // -- Scroll tests --
 
     #[test]
@@ -880,18 +786,6 @@ mod tests {
     }
 
     // -- Test helpers --
-
-    fn make_pitcher_row(slot: &str, name: &str, opponent: Option<&str>) -> DailyPlayerRow {
-        DailyPlayerRow {
-            slot: slot.to_string(),
-            player_name: name.to_string(),
-            team: "TST".to_string(),
-            positions: vec!["SP".to_string()],
-            opponent: opponent.map(|s| s.to_string()),
-            game_status: None,
-            stats: vec![],
-        }
-    }
 
     fn make_scoring_day(label: &str) -> ScoringDay {
         ScoringDay {
