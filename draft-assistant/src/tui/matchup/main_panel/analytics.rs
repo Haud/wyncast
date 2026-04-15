@@ -792,10 +792,6 @@ mod tests {
             label: label.to_string(),
             batting_stat_columns: vec![],
             pitching_stat_columns: vec![],
-            batting_rows: Vec::new(),
-            pitching_rows: Vec::new(),
-            batting_totals: None,
-            pitching_totals: None,
             home: TeamDailyRoster::default(),
             away: TeamDailyRoster::default(),
         }

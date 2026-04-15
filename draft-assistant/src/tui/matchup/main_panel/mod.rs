@@ -269,21 +269,22 @@ mod tests {
             label: "March 26".to_string(),
             batting_stat_columns: vec!["AB".to_string(), "H".to_string(), "R".to_string()],
             pitching_stat_columns: vec![],
-            batting_rows: vec![DailyPlayerRow {
-                slot: "C".to_string(),
-                player_name: "Ben Rice".to_string(),
-                team: "NYY".to_string(),
-                positions: vec!["C".to_string()],
-                opponent: Some("@BOS".to_string()),
-                game_status: None,
-                stats: vec![Some(4.0), Some(1.0), Some(0.0)],
-            }],
-            pitching_rows: vec![],
-            batting_totals: Some(DailyTotals {
-                stats: vec![Some(4.0), Some(1.0), Some(0.0)],
-            }),
-            pitching_totals: None,
-            home: TeamDailyRoster::default(),
+            home: TeamDailyRoster {
+                batting_rows: vec![DailyPlayerRow {
+                    slot: "C".to_string(),
+                    player_name: "Ben Rice".to_string(),
+                    team: "NYY".to_string(),
+                    positions: vec!["C".to_string()],
+                    opponent: Some("@BOS".to_string()),
+                    game_status: None,
+                    stats: vec![Some(4.0), Some(1.0), Some(0.0)],
+                }],
+                pitching_rows: vec![],
+                batting_totals: Some(DailyTotals {
+                    stats: vec![Some(4.0), Some(1.0), Some(0.0)],
+                }),
+                pitching_totals: None,
+            },
             away: TeamDailyRoster::default(),
         }
     }

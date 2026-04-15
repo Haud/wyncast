@@ -504,6 +504,7 @@ impl MatchupScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::matchup::TeamDailyRoster;
 
     // -- Focus cycling --
 
@@ -648,16 +649,11 @@ mod tests {
     // -- Helpers --
 
     fn make_scoring_day(label: &str) -> ScoringDay {
-        use crate::matchup::TeamDailyRoster;
         ScoringDay {
             date: "2026-03-26".to_string(),
             label: label.to_string(),
             batting_stat_columns: vec![],
             pitching_stat_columns: vec![],
-            batting_rows: Vec::new(),
-            pitching_rows: Vec::new(),
-            batting_totals: None,
-            pitching_totals: None,
             home: TeamDailyRoster::default(),
             away: TeamDailyRoster::default(),
         }

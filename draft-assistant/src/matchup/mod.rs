@@ -80,7 +80,7 @@ pub struct TeamDailyRoster {
     pub pitching_totals: Option<DailyTotals>,
 }
 
-/// One day of the scoring period with player-level breakdowns.
+/// One day of the scoring period with per-team player breakdowns.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScoringDay {
     pub date: String,
@@ -93,16 +93,7 @@ pub struct ScoringDay {
     /// Provided by the extension; indices align with `DailyPlayerRow::stats`.
     #[serde(default)]
     pub pitching_stat_columns: Vec<String>,
-    pub batting_rows: Vec<DailyPlayerRow>,
-    pub pitching_rows: Vec<DailyPlayerRow>,
-    pub batting_totals: Option<DailyTotals>,
-    pub pitching_totals: Option<DailyTotals>,
-    /// New per-team rosters. Populated in parallel with the top-level
-    /// fields during a migration toward a fully symmetric representation.
-    /// Consumers may still read the top-level fields for now.
-    #[serde(default)]
     pub home: TeamDailyRoster,
-    #[serde(default)]
     pub away: TeamDailyRoster,
 }
 
@@ -241,21 +232,22 @@ mod tests {
                 label: "March 26".to_string(),
                 batting_stat_columns: vec!["AB".to_string(), "H".to_string(), "R".to_string()],
                 pitching_stat_columns: vec![],
-                batting_rows: vec![DailyPlayerRow {
-                    slot: "C".to_string(),
-                    player_name: "Ben Rice".to_string(),
-                    team: "NYY".to_string(),
-                    positions: vec!["1B".to_string(), "C".to_string(), "DH".to_string()],
-                    opponent: Some("@BOS".to_string()),
-                    game_status: None,
-                    stats: vec![Some(4.0), Some(1.0), Some(0.0)],
-                }],
-                pitching_rows: vec![],
-                batting_totals: Some(DailyTotals {
-                    stats: vec![Some(29.0), Some(8.0), Some(5.0)],
-                }),
-                pitching_totals: None,
-                home: TeamDailyRoster::default(),
+                home: TeamDailyRoster {
+                    batting_rows: vec![DailyPlayerRow {
+                        slot: "C".to_string(),
+                        player_name: "Ben Rice".to_string(),
+                        team: "NYY".to_string(),
+                        positions: vec!["1B".to_string(), "C".to_string(), "DH".to_string()],
+                        opponent: Some("@BOS".to_string()),
+                        game_status: None,
+                        stats: vec![Some(4.0), Some(1.0), Some(0.0)],
+                    }],
+                    pitching_rows: vec![],
+                    batting_totals: Some(DailyTotals {
+                        stats: vec![Some(29.0), Some(8.0), Some(5.0)],
+                    }),
+                    pitching_totals: None,
+                },
                 away: TeamDailyRoster::default(),
             }],
         };
@@ -265,6 +257,6 @@ mod tests {
         assert_eq!(snapshot.away_team.category_score.to_string(), "3-2-7");
         assert_eq!(snapshot.category_scores.len(), 2);
         assert_eq!(snapshot.scoring_period_days.len(), 1);
-        assert_eq!(snapshot.scoring_period_days[0].batting_rows.len(), 1);
+        assert_eq!(snapshot.scoring_period_days[0].home.batting_rows.len(), 1);
     }
 }

@@ -727,20 +727,11 @@ mod tests {
         batting: Vec<DailyPlayerRow>,
         pitching: Vec<DailyPlayerRow>,
     ) -> ScoringDay {
-        // Mirror home rows into the legacy top-level fields while the
-        // migration is in-flight. The aggregation paths under test read
-        // exclusively from `home`/`away`.
-        let batting_rows = batting.clone();
-        let pitching_rows = pitching.clone();
         ScoringDay {
             date: "2026-03-26".to_string(),
             label: label.to_string(),
             batting_stat_columns: batting_headers(),
             pitching_stat_columns: pitching_headers(),
-            batting_rows,
-            pitching_rows,
-            batting_totals: None,
-            pitching_totals: None,
             home: TeamDailyRoster {
                 batting_rows: batting,
                 pitching_rows: pitching,

@@ -608,23 +608,11 @@ mod tests {
                 ],
             }),
         };
-        // Mirror the home roster into the legacy top-level fields while
-        // both representations coexist. The rendering paths under test read
-        // from `home`/`away`; the clones exist only so the `ScoringDay`
-        // initializer is still complete.
-        let batting_rows = home.batting_rows.clone();
-        let pitching_rows = home.pitching_rows.clone();
-        let batting_totals = home.batting_totals.clone();
-        let pitching_totals = home.pitching_totals.clone();
         ScoringDay {
             date: "2026-03-26".to_string(),
             label: "March 26".to_string(),
             batting_stat_columns: batting_headers(),
             pitching_stat_columns: pitching_headers(),
-            batting_rows,
-            pitching_rows,
-            batting_totals,
-            pitching_totals,
             home,
             away,
         }
@@ -664,10 +652,6 @@ mod tests {
             label: "March 26".to_string(),
             batting_stat_columns: vec![],
             pitching_stat_columns: vec![],
-            batting_rows: Vec::new(),
-            pitching_rows: Vec::new(),
-            batting_totals: None,
-            pitching_totals: None,
             home: TeamDailyRoster::default(),
             away: TeamDailyRoster::default(),
         };
@@ -815,10 +799,6 @@ mod tests {
             label: "March 26".to_string(),
             batting_stat_columns: vec![],
             pitching_stat_columns: vec![],
-            batting_rows: vec![make_active_batter("C", "B. Rice", Some("@BOS"))],
-            pitching_rows: vec![],
-            batting_totals: None,
-            pitching_totals: None,
             home: TeamDailyRoster {
                 batting_rows: vec![make_active_batter("C", "B. Rice", Some("@BOS"))],
                 ..TeamDailyRoster::default()

@@ -720,31 +720,37 @@ async fn handle_matchup_state(
         })
         .collect();
 
-    // Convert player tables into a single ScoringDay.
-    // The extension sends one day's worth of data at a time (the selected day).
-    let (batting_rows, batting_totals) = convert_section(&payload.home_batting);
-    let (pitching_rows, pitching_totals) = convert_section(&payload.home_pitching);
+    // Both sides' roster tables for this scoring day.
+    let (home_batting_rows, home_batting_totals) = convert_section(&payload.home_batting);
+    let (home_pitching_rows, home_pitching_totals) = convert_section(&payload.home_pitching);
     let (away_batting_rows, away_batting_totals) = convert_section(&payload.away_batting);
     let (away_pitching_rows, away_pitching_totals) = convert_section(&payload.away_pitching);
 
-    // Dual-populate while consumers are migrated to the per-team shape:
-    // the flat `batting_rows`/`pitching_rows` mirror the home side for now.
-    let home_roster = TeamDailyRoster {
-        batting_rows: batting_rows.clone(),
-        pitching_rows: pitching_rows.clone(),
-        batting_totals: batting_totals.clone(),
-        pitching_totals: pitching_totals.clone(),
+    // Batting/pitching stat columns are league-wide; pick whichever side
+    // reports them (they should be identical). Fall back across sides if one
+    // side hasn't populated headers yet.
+    let batting_stat_columns = if !payload.home_batting.headers.is_empty() {
+        payload.home_batting.headers.clone()
+    } else {
+        payload.away_batting.headers.clone()
     };
+    let pitching_stat_columns = if !payload.home_pitching.headers.is_empty() {
+        payload.home_pitching.headers.clone()
+    } else {
+        payload.away_pitching.headers.clone()
+    };
+
     let scoring_day = ScoringDay {
         date: payload.selected_day.clone(),
         label: payload.selected_day.clone(),
-        batting_stat_columns: payload.home_batting.headers.clone(),
-        pitching_stat_columns: payload.home_pitching.headers.clone(),
-        batting_rows,
-        pitching_rows,
-        batting_totals,
-        pitching_totals,
-        home: home_roster,
+        batting_stat_columns,
+        pitching_stat_columns,
+        home: TeamDailyRoster {
+            batting_rows: home_batting_rows,
+            pitching_rows: home_pitching_rows,
+            batting_totals: home_batting_totals,
+            pitching_totals: home_pitching_totals,
+        },
         away: TeamDailyRoster {
             batting_rows: away_batting_rows,
             pitching_rows: away_pitching_rows,
