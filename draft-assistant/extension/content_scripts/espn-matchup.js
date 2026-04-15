@@ -261,7 +261,7 @@ function getMatchupDatesFromNextData(matchupPeriod) {
 
 /**
  * Scrape team info from the H2H matchup header.
- * Returns { myTeam, oppTeam } or null.
+ * Returns { awayTeam, homeTeam } or null.
  */
 function scrapeMatchupHeader() {
   try {
@@ -304,7 +304,8 @@ function scrapeTeamHeader(headerEl) {
 
 /**
  * Scrape the category scoreboard table.
- * Returns an array of category objects with statId, abbrev, myValue, oppValue.
+ * Returns an array of category objects with statId, abbrev, awayValue, homeValue.
+ * DOM ordering is: summaryRows[0] = away team, summaryRows[1] = home team.
  */
 function scrapeScoreboard() {
   const categories = [];
@@ -352,8 +353,8 @@ function scrapeScoreboard() {
       categories.push({
         statId: statDefs[i].statId,
         abbrev: statDefs[i].abbrev,
-        myValue: parseStatValue(awayText),
-        oppValue: parseStatValue(homeText),
+        awayValue: parseStatValue(awayText),
+        homeValue: parseStatValue(homeText),
         lowerIsBetter: LOWER_IS_BETTER_STATS.has(statDefs[i].statId),
       });
     }
@@ -369,65 +370,90 @@ function scrapeScoreboard() {
 
 /**
  * Scrape all player tables for a given section type ("Batters" or "Pitchers").
- * ESPN renders separate batting and pitching responsive tables.
- * Returns { headers, players, totals }.
+ * ESPN renders separate batting and pitching responsive tables — one per team.
+ * Returns `{ away: {headers, players, totals}, home: {headers, players, totals} }`.
+ * DOM order: first matching `.players-table` = away team, second = home team.
  */
-function scrapePlayerSection(sectionType) {
-  const result = { headers: [], players: [], totals: [] };
+function scrapePlayerSections(sectionType) {
+  const emptySection = () => ({ headers: [], players: [], totals: [] });
+  const result = { away: emptySection(), home: emptySection() };
 
   try {
     // Find all players-table containers
     const tables = document.querySelectorAll('.players-table');
 
+    const matches = [];
     for (const table of tables) {
       // Check if this table is for the requested section type
       const sectionHeader = table.querySelector('th[colspan]');
       if (!sectionHeader) continue;
       const headerText = sectionHeader.textContent.trim();
       if (headerText !== sectionType) continue;
+      matches.push(table);
+    }
 
-      // Extract stat column headers from the sub-header row
-      // These are in the scrollable portion (second colgroup area)
-      const subHeaderRow = table.querySelector('.Table__sub-header');
-      if (!subHeaderRow) continue;
+    if (matches.length > 2) {
+      warn(
+        'scrapePlayerSections: expected at most 2 tables for',
+        sectionType,
+        'but found',
+        matches.length,
+        '— using the first two in DOM order (away, home).',
+      );
+    }
 
-      // Get stat headers from spans with data-statid
-      const statSpans = table.querySelectorAll('.Table__sub-header span[data-statid]');
-      const headers = [];
-      statSpans.forEach(span => {
-        headers.push(span.textContent.trim());
-      });
-      result.headers = headers;
-
-      // Extract player rows (Table__TR--lg)
-      const playerRows = table.querySelectorAll('.Table__TR--lg');
-      // Also get the scrollable stat cells — ESPN splits the table into
-      // fixed-left (slot + player info) and scrollable (stats) portions.
-      // Both use the same row indices via data-idx.
-
-      // Build a map of data-idx -> stat cells from the scrollable side
-      const statCellsByIdx = buildStatCellMap(table, headers.length);
-
-      playerRows.forEach(row => {
-        const idx = row.getAttribute('data-idx');
-        const player = scrapePlayerRow(row, statCellsByIdx[idx] || []);
-        if (player) {
-          result.players.push(player);
-        }
-      });
-
-      // Look for TOTALS row
-      const totals = scrapeTotalsRow(table, headers.length);
-      if (totals) {
-        result.totals = totals;
-      }
-
-      break; // Found our section, done
+    if (matches[0]) {
+      result.away = scrapeSingleSection(matches[0]);
+    }
+    if (matches[1]) {
+      result.home = scrapeSingleSection(matches[1]);
     }
   } catch (e) {
     warn('Error scraping', sectionType, 'section:', e);
   }
   return result;
+}
+
+/**
+ * Scrape one `.players-table` element into { headers, players, totals }.
+ */
+function scrapeSingleSection(table) {
+  const out = { headers: [], players: [], totals: [] };
+
+  // Extract stat column headers from the sub-header row
+  // These are in the scrollable portion (second colgroup area)
+  const subHeaderRow = table.querySelector('.Table__sub-header');
+  if (!subHeaderRow) return out;
+
+  // Get stat headers from spans with data-statid
+  const statSpans = table.querySelectorAll('.Table__sub-header span[data-statid]');
+  const headers = [];
+  statSpans.forEach(span => {
+    headers.push(span.textContent.trim());
+  });
+  out.headers = headers;
+
+  // Extract player rows (Table__TR--lg)
+  const playerRows = table.querySelectorAll('.Table__TR--lg');
+
+  // Build a map of data-idx -> stat cells from the scrollable side
+  const statCellsByIdx = buildStatCellMap(table, headers.length);
+
+  playerRows.forEach(row => {
+    const idx = row.getAttribute('data-idx');
+    const player = scrapePlayerRow(row, statCellsByIdx[idx] || []);
+    if (player) {
+      out.players.push(player);
+    }
+  });
+
+  // Look for TOTALS row
+  const totals = scrapeTotalsRow(table, headers.length);
+  if (totals) {
+    out.totals = totals;
+  }
+
+  return out;
 }
 
 /**
@@ -563,28 +589,16 @@ function scrapeTotalsRow(tableContainer, headerCount) {
 }
 
 // ---------------------------------------------------------------------------
-// Identify "my team" (away team = logged-in user's team on boxscore page)
-// ---------------------------------------------------------------------------
-
-/**
- * Determine which team is "mine" (the logged-in user's team).
- * On ESPN matchup pages, the away team is always the team whose page the
- * user is viewing. If viewing your own matchup, you're the away team.
- * Returns 'away' or 'home'.
- */
-function identifyMyTeamSide() {
-  // The default ESPN boxscore shows the logged-in user's team as away.
-  // This is consistent across the ESPN UI.
-  return 'away';
-}
-
-// ---------------------------------------------------------------------------
 // Full state assembly
 // ---------------------------------------------------------------------------
 
 /**
  * Scrape the full matchup state from the DOM.
  * Returns the complete MATCHUP_STATE payload, or null if the page isn't ready.
+ *
+ * Team identification is symmetric: we emit home and away teams directly from
+ * the ESPN DOM without trying to detect which one is "the user's team". Both
+ * rosters are scraped so the TUI can render them side-by-side.
  */
 function scrapeMatchupState() {
   try {
@@ -612,24 +626,22 @@ function scrapeMatchupState() {
       endDate = periodInfo.endDate;
     }
 
-    // Determine which side is "my team"
-    const side = identifyMyTeamSide();
-    const myTeam = side === 'away' ? header.awayTeam : header.homeTeam;
-    const oppTeam = side === 'away' ? header.homeTeam : header.awayTeam;
+    const homeTeam = header.homeTeam;
+    const awayTeam = header.awayTeam;
 
     // Required fields: if any are unresolved, skip this send. The DOM will
     // settle on a subsequent MutationObserver tick or periodic poll, and the
     // Rust backend rejects the whole payload if these are missing.
     if (!matchupPeriod || !startDate || !endDate ||
-        !myTeam || !myTeam.name || !oppTeam || !oppTeam.name) {
+        !homeTeam || !homeTeam.name || !awayTeam || !awayTeam.name) {
       if (!loggedMissingFieldsOnce) {
         loggedMissingFieldsOnce = true;
         warn('scrapeMatchupState: required fields unresolved', {
           matchupPeriod: Boolean(matchupPeriod),
           startDate: Boolean(startDate),
           endDate: Boolean(endDate),
-          myTeamName: Boolean(myTeam && myTeam.name),
-          oppTeamName: Boolean(oppTeam && oppTeam.name),
+          homeTeamName: Boolean(homeTeam && homeTeam.name),
+          awayTeamName: Boolean(awayTeam && awayTeam.name),
         });
       }
       return null;
@@ -638,9 +650,11 @@ function scrapeMatchupState() {
     // Scrape category scoreboard
     const categories = scrapeScoreboard();
 
-    // Scrape player sections
-    const batting = scrapePlayerSection('Batters');
-    const pitching = scrapePlayerSection('Pitchers');
+    // Scrape both rosters. ESPN renders two .players-table elements per
+    // section — DOM order is away first, home second (matches summaryRows[0]
+    // = away, summaryRows[1] = home convention used elsewhere).
+    const batters = scrapePlayerSections('Batters');
+    const pitchers = scrapePlayerSections('Pitchers');
 
     // Determine selected day from any day selector or default to today
     const selectedDay = detectSelectedDay() || new Date().toISOString().split('T')[0];
@@ -650,11 +664,13 @@ function scrapeMatchupState() {
       startDate: startDate,
       endDate: endDate,
       selectedDay: selectedDay,
-      myTeam: myTeam,
-      oppTeam: oppTeam,
+      homeTeam: homeTeam,
+      awayTeam: awayTeam,
       categories: categories,
-      batting: batting,
-      pitching: pitching,
+      homeBatting: batters.home,
+      homePitching: pitchers.home,
+      awayBatting: batters.away,
+      awayPitching: pitchers.away,
     };
   } catch (e) {
     warn('Error assembling matchup state:', e);
@@ -708,17 +724,23 @@ function computeFingerprint(state) {
     const parts = [
       state.matchupPeriod,
       state.selectedDay,
-      state.myTeam ? state.myTeam.matchupScore : '',
-      state.oppTeam ? state.oppTeam.matchupScore : '',
+      state.homeTeam ? state.homeTeam.matchupScore : '',
+      state.awayTeam ? state.awayTeam.matchupScore : '',
       state.categories ? state.categories.map(c =>
-        `${c.statId}:${c.myValue}:${c.oppValue}`
+        `${c.statId}:${c.homeValue}:${c.awayValue}`
       ).join(',') : '',
-      state.batting ? state.batting.players.length : 0,
-      state.pitching ? state.pitching.players.length : 0,
-      state.batting && state.batting.totals ?
-        state.batting.totals.join(',') : '',
-      state.pitching && state.pitching.totals ?
-        state.pitching.totals.join(',') : '',
+      state.homeBatting ? state.homeBatting.players.length : 0,
+      state.homePitching ? state.homePitching.players.length : 0,
+      state.awayBatting ? state.awayBatting.players.length : 0,
+      state.awayPitching ? state.awayPitching.players.length : 0,
+      state.homeBatting && state.homeBatting.totals ?
+        state.homeBatting.totals.join(',') : '',
+      state.homePitching && state.homePitching.totals ?
+        state.homePitching.totals.join(',') : '',
+      state.awayBatting && state.awayBatting.totals ?
+        state.awayBatting.totals.join(',') : '',
+      state.awayPitching && state.awayPitching.totals ?
+        state.awayPitching.totals.join(',') : '',
     ];
     return parts.join('|');
   } catch (_e) {
@@ -765,11 +787,13 @@ function handleStateUpdate() {
     loggedFirstSendOnce = true;
     log('First MATCHUP_STATE send', {
       matchupPeriod: state.matchupPeriod,
-      myTeam: state.myTeam && state.myTeam.name,
-      oppTeam: state.oppTeam && state.oppTeam.name,
+      homeTeam: state.homeTeam && state.homeTeam.name,
+      awayTeam: state.awayTeam && state.awayTeam.name,
       categories: state.categories ? state.categories.length : 0,
-      battingPlayers: state.batting ? state.batting.players.length : 0,
-      pitchingPlayers: state.pitching ? state.pitching.players.length : 0,
+      homeBattingPlayers: state.homeBatting ? state.homeBatting.players.length : 0,
+      homePitchingPlayers: state.homePitching ? state.homePitching.players.length : 0,
+      awayBattingPlayers: state.awayBatting ? state.awayBatting.players.length : 0,
+      awayPitchingPlayers: state.awayPitching ? state.awayPitching.players.length : 0,
     });
   } else {
     log('Sending MATCHUP_STATE update');
