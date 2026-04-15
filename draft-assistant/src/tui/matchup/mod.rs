@@ -101,10 +101,6 @@ pub struct MatchupScreen {
     pub category_scores: Vec<CategoryScore>,
     pub selected_day: usize,
     pub scoring_period_days: Vec<ScoringDay>,
-    pub games_started: u8,
-    pub gs_limit: u8,
-    pub acquisitions_used: u8,
-    pub acquisitions_limit: u8,
     pub stat_registry: Option<StatRegistry>,
     sub_id_base: SubscriptionId,
 }
@@ -121,10 +117,6 @@ impl MatchupScreen {
             category_scores: Vec::new(),
             selected_day: 0,
             scoring_period_days: Vec::new(),
-            games_started: 0,
-            gs_limit: 7,
-            acquisitions_used: 0,
-            acquisitions_limit: 5,
             stat_registry: None,
             sub_id_base: SubscriptionId::unique(),
         }
@@ -137,10 +129,6 @@ impl MatchupScreen {
         self.opp_team = Some(snapshot.opp_team.clone());
         self.category_scores = snapshot.category_scores.clone();
         self.scoring_period_days = snapshot.scoring_period_days.clone();
-        self.games_started = snapshot.games_started;
-        self.gs_limit = snapshot.gs_limit;
-        self.acquisitions_used = snapshot.acquisitions_used;
-        self.acquisitions_limit = snapshot.acquisitions_limit;
         // Clamp selected_day to valid range
         if !self.scoring_period_days.is_empty()
             && self.selected_day >= self.scoring_period_days.len()
@@ -611,10 +599,6 @@ mod tests {
         assert!(screen.opp_team.is_some());
         assert_eq!(screen.category_scores.len(), 1);
         assert_eq!(screen.scoring_period_days.len(), 2);
-        assert_eq!(screen.games_started, 3);
-        assert_eq!(screen.gs_limit, 7);
-        assert_eq!(screen.acquisitions_used, 1);
-        assert_eq!(screen.acquisitions_limit, 5);
     }
 
     #[test]
@@ -712,10 +696,6 @@ mod tests {
                 make_scoring_day("Day 1"),
                 make_scoring_day("Day 2"),
             ],
-            games_started: 3,
-            gs_limit: 7,
-            acquisitions_used: 1,
-            acquisitions_limit: 5,
         }
     }
 }

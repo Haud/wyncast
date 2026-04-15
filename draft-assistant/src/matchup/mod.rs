@@ -112,10 +112,6 @@ pub struct MatchupSnapshot {
     pub category_scores: Vec<CategoryScore>,
     pub selected_day: usize,
     pub scoring_period_days: Vec<ScoringDay>,
-    pub games_started: u8,
-    pub gs_limit: u8,
-    pub acquisitions_used: u8,
-    pub acquisitions_limit: u8,
 }
 
 // ---------------------------------------------------------------------------
@@ -197,10 +193,6 @@ mod tests {
                 }),
                 pitching_totals: None,
             }],
-            games_started: 3,
-            gs_limit: 7,
-            acquisitions_used: 1,
-            acquisitions_limit: 5,
         };
 
         assert_eq!(snapshot.matchup_info.matchup_period, 1);
@@ -209,7 +201,5 @@ mod tests {
         assert_eq!(snapshot.category_scores.len(), 2);
         assert_eq!(snapshot.scoring_period_days.len(), 1);
         assert_eq!(snapshot.scoring_period_days[0].batting_rows.len(), 1);
-        assert_eq!(snapshot.games_started, 3);
-        assert_eq!(snapshot.gs_limit, 7);
     }
 }

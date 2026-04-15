@@ -661,22 +661,6 @@ fn category_state(
     }
 }
 
-/// Count games started from the pitching player rows.
-///
-/// A pitcher counts as a GS if their slot starts with "SP" and they have an
-/// opponent (i.e. they are actually playing that day, not a rest/off day).
-fn count_games_started(days: &[ScoringDay]) -> u8 {
-    let mut count: u8 = 0;
-    for day in days {
-        for row in &day.pitching_rows {
-            if row.slot.starts_with("SP") && row.opponent.is_some() {
-                count = count.saturating_add(1);
-            }
-        }
-    }
-    count
-}
-
 /// Handle an incoming matchup state message from the extension.
 ///
 /// Converts the raw payload into a `MatchupSnapshot`, switches to
@@ -763,8 +747,6 @@ async fn handle_matchup_state(
 
     let scoring_period_days = vec![scoring_day];
 
-    let games_started = count_games_started(&scoring_period_days);
-
     let snapshot = MatchupSnapshot {
         matchup_info: MatchupInfo {
             matchup_period: payload.matchup_period,
@@ -790,10 +772,6 @@ async fn handle_matchup_state(
         category_scores,
         selected_day: 0,
         scoring_period_days,
-        games_started,
-        gs_limit: 7,
-        acquisitions_used: 0,
-        acquisitions_limit: 5,
     };
 
     // Store snapshot in app state
@@ -1446,78 +1424,6 @@ mod tests {
         // WHIP: 1.20 == 1.20, lower is better => Tied
         assert_eq!(scores[3].stat_abbrev, "WHIP");
         assert_eq!(scores[3].state, CategoryState::Tied);
-    }
-
-    #[test]
-    fn games_started_count_from_pitching_rows() {
-        let payload = make_matchup_payload();
-
-        // Build the scoring day the same way the handler does
-        let pitching_rows: Vec<crate::matchup::DailyPlayerRow> = payload
-            .pitching
-            .players
-            .iter()
-            .map(|p| crate::matchup::DailyPlayerRow {
-                slot: p.slot.clone(),
-                player_name: p.name.clone(),
-                team: p.team.clone(),
-                positions: p.positions.clone(),
-                opponent: p.opponent.clone(),
-                game_status: p.status.clone(),
-                stats: p.stats.clone(),
-            })
-            .collect();
-
-        let day = crate::matchup::ScoringDay {
-            date: "2026-03-26".to_string(),
-            label: "March 26".to_string(),
-            batting_stat_columns: vec![],
-            pitching_stat_columns: vec!["IP".to_string(), "K".to_string()],
-            batting_rows: vec![],
-            pitching_rows,
-            batting_totals: None,
-            pitching_totals: None,
-        };
-
-        // 2 SP slots with opponents, 1 RP slot => only SP slots count
-        let gs = count_games_started(&[day]);
-        assert_eq!(gs, 2);
-    }
-
-    #[test]
-    fn games_started_skips_sp_without_opponent() {
-        let day = crate::matchup::ScoringDay {
-            date: "2026-03-26".to_string(),
-            label: "March 26".to_string(),
-            batting_stat_columns: vec![],
-            pitching_stat_columns: vec![],
-            batting_rows: vec![],
-            pitching_rows: vec![
-                crate::matchup::DailyPlayerRow {
-                    slot: "SP".to_string(),
-                    player_name: "Starter A".to_string(),
-                    team: "NYY".to_string(),
-                    positions: vec!["SP".to_string()],
-                    opponent: Some("@BOS".to_string()),
-                    game_status: None,
-                    stats: vec![],
-                },
-                crate::matchup::DailyPlayerRow {
-                    slot: "SP".to_string(),
-                    player_name: "Starter B".to_string(),
-                    team: "LAD".to_string(),
-                    positions: vec!["SP".to_string()],
-                    opponent: None, // No game today
-                    game_status: None,
-                    stats: vec![],
-                },
-            ],
-            batting_totals: None,
-            pitching_totals: None,
-        };
-
-        let gs = count_games_started(&[day]);
-        assert_eq!(gs, 1);
     }
 
     #[test]
