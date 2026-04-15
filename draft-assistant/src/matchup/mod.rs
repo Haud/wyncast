@@ -1,4 +1,9 @@
 // Matchup domain types for weekly head-to-head matchup tracking.
+//
+// The matchup page is rendered symmetrically (home vs away). There is no
+// "my team" / "opp team" distinction because ESPN's boxscore DOM doesn't
+// surface which side belongs to the viewer — all UI state is addressed by
+// `TeamSide::Home` or `TeamSide::Away`.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -33,6 +38,22 @@ impl fmt::Display for TeamRecord {
     }
 }
 
+/// Which side of the matchup a given piece of data belongs to.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TeamSide {
+    Home,
+    Away,
+}
+
+impl TeamSide {
+    pub fn label(self) -> &'static str {
+        match self {
+            TeamSide::Home => "home",
+            TeamSide::Away => "away",
+        }
+    }
+}
+
 /// Which team (if any) is ahead in a scoring category.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum CategoryState {
@@ -48,6 +69,15 @@ pub struct CategoryScore {
     pub home_value: f64,
     pub away_value: f64,
     pub state: CategoryState,
+}
+
+/// One team's roster and totals for a single day.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TeamDailyRoster {
+    pub batting_rows: Vec<DailyPlayerRow>,
+    pub pitching_rows: Vec<DailyPlayerRow>,
+    pub batting_totals: Option<DailyTotals>,
+    pub pitching_totals: Option<DailyTotals>,
 }
 
 /// One day of the scoring period with player-level breakdowns.
@@ -114,6 +144,16 @@ pub struct MatchupSnapshot {
     pub scoring_period_days: Vec<ScoringDay>,
 }
 
+impl MatchupSnapshot {
+    /// Return the team state for the requested side.
+    pub fn team(&self, side: TeamSide) -> &TeamMatchupState {
+        match side {
+            TeamSide::Home => &self.home_team,
+            TeamSide::Away => &self.away_team,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -132,6 +172,12 @@ mod tests {
     fn team_record_display_zeros() {
         let record = TeamRecord { wins: 0, losses: 0, ties: 0 };
         assert_eq!(record.to_string(), "0-0-0");
+    }
+
+    #[test]
+    fn team_side_label() {
+        assert_eq!(TeamSide::Home.label(), "home");
+        assert_eq!(TeamSide::Away.label(), "away");
     }
 
     #[test]
