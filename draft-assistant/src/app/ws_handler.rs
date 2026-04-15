@@ -642,19 +642,19 @@ fn parse_record(s: &str) -> TeamRecord {
 /// are treated as Tied — neither side earns credit for a category that has
 /// not yet produced a real value.
 fn category_state(
-    my_value: Option<f64>,
-    opp_value: Option<f64>,
+    home_value: Option<f64>,
+    away_value: Option<f64>,
     lower_is_better: bool,
 ) -> CategoryState {
-    let (my_value, opp_value) = match (my_value, opp_value) {
-        (Some(m), Some(o)) => (m, o),
+    let (home_value, away_value) = match (home_value, away_value) {
+        (Some(h), Some(a)) => (h, a),
         _ => return CategoryState::Tied,
     };
-    if (my_value - opp_value).abs() < f64::EPSILON {
+    if (home_value - away_value).abs() < f64::EPSILON {
         CategoryState::Tied
     } else if lower_is_better {
-        if my_value < opp_value { CategoryState::Winning } else { CategoryState::Losing }
-    } else if my_value > opp_value {
+        if home_value < away_value { CategoryState::Winning } else { CategoryState::Losing }
+    } else if home_value > away_value {
         CategoryState::Winning
     } else {
         CategoryState::Losing
@@ -672,13 +672,13 @@ async fn handle_matchup_state(
 ) {
     info!(
         "Processing matchup state: {} vs {} (period {})",
-        payload.my_team.name, payload.opp_team.name, payload.matchup_period
+        payload.home_team.name, payload.away_team.name, payload.matchup_period
     );
 
-    let my_record = parse_record(&payload.my_team.record);
-    let opp_record = parse_record(&payload.opp_team.record);
-    let my_category_score = parse_record(&payload.my_team.matchup_score);
-    let opp_category_score = parse_record(&payload.opp_team.matchup_score);
+    let my_record = parse_record(&payload.home_team.record);
+    let opp_record = parse_record(&payload.away_team.record);
+    let my_category_score = parse_record(&payload.home_team.matchup_score);
+    let opp_category_score = parse_record(&payload.away_team.matchup_score);
 
     // Convert categories with win/loss state
     let category_scores: Vec<CategoryScore> = payload
@@ -689,9 +689,9 @@ async fn handle_matchup_state(
             // Coerce None to 0.0 for the domain type — the `state` field still
             // captures "no comparison possible" as Tied so downstream widgets
             // don't incorrectly credit either team.
-            my_value: cat.my_value.unwrap_or(0.0),
-            opp_value: cat.opp_value.unwrap_or(0.0),
-            state: category_state(cat.my_value, cat.opp_value, cat.lower_is_better),
+            my_value: cat.home_value.unwrap_or(0.0),
+            opp_value: cat.away_value.unwrap_or(0.0),
+            state: category_state(cat.home_value, cat.away_value, cat.lower_is_better),
         })
         .collect();
 
@@ -752,21 +752,21 @@ async fn handle_matchup_state(
             matchup_period: payload.matchup_period,
             start_date: payload.start_date,
             end_date: payload.end_date,
-            my_team_name: payload.my_team.name.clone(),
-            opp_team_name: payload.opp_team.name.clone(),
+            my_team_name: payload.home_team.name.clone(),
+            opp_team_name: payload.away_team.name.clone(),
             my_record,
             opp_record,
         },
         my_team: TeamMatchupState {
-            name: payload.my_team.name.clone(),
-            abbrev: abbreviate_team_name(&payload.my_team.name),
-            record: parse_record(&payload.my_team.record),
+            name: payload.home_team.name.clone(),
+            abbrev: abbreviate_team_name(&payload.home_team.name),
+            record: parse_record(&payload.home_team.record),
             category_score: my_category_score,
         },
         opp_team: TeamMatchupState {
-            name: payload.opp_team.name.clone(),
-            abbrev: abbreviate_team_name(&payload.opp_team.name),
-            record: parse_record(&payload.opp_team.record),
+            name: payload.away_team.name.clone(),
+            abbrev: abbreviate_team_name(&payload.away_team.name),
+            record: parse_record(&payload.away_team.record),
             category_score: opp_category_score,
         },
         category_scores,
@@ -1198,12 +1198,12 @@ mod tests {
             start_date: "2026-03-25".to_string(),
             end_date: "2026-04-05".to_string(),
             selected_day: "2026-03-26".to_string(),
-            my_team: MatchupTeamPayload {
+            home_team: MatchupTeamPayload {
                 name: "Bob Dole Experience".to_string(),
                 record: "3-2-0".to_string(),
                 matchup_score: "6-4-2".to_string(),
             },
-            opp_team: MatchupTeamPayload {
+            away_team: MatchupTeamPayload {
                 name: "Certified! Smokified!".to_string(),
                 record: "2-3-0".to_string(),
                 matchup_score: "4-6-2".to_string(),
@@ -1212,29 +1212,29 @@ mod tests {
                 MatchupCategoryPayload {
                     stat_id: 20,
                     abbrev: "R".to_string(),
-                    my_value: Some(5.0),
-                    opp_value: Some(3.0),
+                    home_value: Some(5.0),
+                    away_value: Some(3.0),
                     lower_is_better: false,
                 },
                 MatchupCategoryPayload {
                     stat_id: 5,
                     abbrev: "HR".to_string(),
-                    my_value: Some(2.0),
-                    opp_value: Some(3.0),
+                    home_value: Some(2.0),
+                    away_value: Some(3.0),
                     lower_is_better: false,
                 },
                 MatchupCategoryPayload {
                     stat_id: 47,
                     abbrev: "ERA".to_string(),
-                    my_value: Some(3.50),
-                    opp_value: Some(4.20),
+                    home_value: Some(3.50),
+                    away_value: Some(4.20),
                     lower_is_better: true,
                 },
                 MatchupCategoryPayload {
                     stat_id: 41,
                     abbrev: "WHIP".to_string(),
-                    my_value: Some(1.20),
-                    opp_value: Some(1.20),
+                    home_value: Some(1.20),
+                    away_value: Some(1.20),
                     lower_is_better: true,
                 },
             ],
@@ -1297,18 +1297,18 @@ mod tests {
                 "startDate": "2026-03-25",
                 "endDate": "2026-04-05",
                 "selectedDay": "2026-03-26",
-                "myTeam": {
+                "homeTeam": {
                     "name": "Bob Dole Experience",
                     "record": "3-2-0",
                     "matchupScore": "6-4-2"
                 },
-                "oppTeam": {
+                "awayTeam": {
                     "name": "Certified! Smokified!",
                     "record": "2-3-0",
                     "matchupScore": "4-6-2"
                 },
                 "categories": [
-                    { "statId": 20, "abbrev": "R", "myValue": 5.0, "oppValue": 3.0, "lowerIsBetter": false }
+                    { "statId": 20, "abbrev": "R", "homeValue": 5.0, "awayValue": 3.0, "lowerIsBetter": false }
                 ],
                 "batting": { "headers": ["AB", "H"], "players": [], "totals": null },
                 "pitching": { "headers": ["IP", "K"], "players": [], "totals": null }
@@ -1320,8 +1320,8 @@ mod tests {
             crate::protocol::ExtensionMessage::MatchupState { timestamp, payload } => {
                 assert_eq!(timestamp, 1711500000);
                 assert_eq!(payload.matchup_period, 1);
-                assert_eq!(payload.my_team.name, "Bob Dole Experience");
-                assert_eq!(payload.opp_team.name, "Certified! Smokified!");
+                assert_eq!(payload.home_team.name, "Bob Dole Experience");
+                assert_eq!(payload.away_team.name, "Certified! Smokified!");
                 assert_eq!(payload.categories.len(), 1);
                 assert_eq!(payload.categories[0].abbrev, "R");
             }
@@ -1403,9 +1403,9 @@ mod tests {
             .iter()
             .map(|cat| crate::matchup::CategoryScore {
                 stat_abbrev: cat.abbrev.clone(),
-                my_value: cat.my_value.unwrap_or(0.0),
-                opp_value: cat.opp_value.unwrap_or(0.0),
-                state: category_state(cat.my_value, cat.opp_value, cat.lower_is_better),
+                my_value: cat.home_value.unwrap_or(0.0),
+                opp_value: cat.away_value.unwrap_or(0.0),
+                state: category_state(cat.home_value, cat.away_value, cat.lower_is_better),
             })
             .collect();
 
