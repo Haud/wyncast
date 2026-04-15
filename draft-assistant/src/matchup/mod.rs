@@ -13,10 +13,10 @@ pub struct MatchupInfo {
     pub matchup_period: u8,
     pub start_date: String,
     pub end_date: String,
-    pub my_team_name: String,
-    pub opp_team_name: String,
-    pub my_record: TeamRecord,
-    pub opp_record: TeamRecord,
+    pub home_team_name: String,
+    pub away_team_name: String,
+    pub home_record: TeamRecord,
+    pub away_record: TeamRecord,
 }
 
 /// A team's win-loss-tie record (season or matchup).
@@ -141,10 +141,10 @@ mod tests {
                 matchup_period: 1,
                 start_date: "2026-03-25".to_string(),
                 end_date: "2026-04-05".to_string(),
-                my_team_name: "Bob Dole Experience".to_string(),
-                opp_team_name: "Certified! Smokified!".to_string(),
-                my_record: TeamRecord { wins: 0, losses: 0, ties: 0 },
-                opp_record: TeamRecord { wins: 0, losses: 0, ties: 0 },
+                home_team_name: "Bob Dole Experience".to_string(),
+                away_team_name: "Certified! Smokified!".to_string(),
+                home_record: TeamRecord { wins: 0, losses: 0, ties: 0 },
+                away_record: TeamRecord { wins: 0, losses: 0, ties: 0 },
             },
             my_team: TeamMatchupState {
                 name: "Bob Dole Experience".to_string(),

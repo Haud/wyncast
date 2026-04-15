@@ -176,16 +176,16 @@ impl MatchupScreen {
 
         // Main panel
         let main_focused = self.focused_panel == Some(MatchupFocusPanel::MainPanel);
-        let my_name = self
+        let home_name = self
             .matchup_info
             .as_ref()
-            .map(|i| i.my_team_name.as_str())
-            .unwrap_or("My Roster");
-        let opp_name = self
+            .map(|i| i.home_team_name.as_str())
+            .unwrap_or("Home Roster");
+        let away_name = self
             .matchup_info
             .as_ref()
-            .map(|i| i.opp_team_name.as_str())
-            .unwrap_or("Opponent Roster");
+            .map(|i| i.away_team_name.as_str())
+            .unwrap_or("Away Roster");
         self.main_panel.view(
             frame,
             layout.main_panel,
@@ -193,8 +193,8 @@ impl MatchupScreen {
             &self.scoring_period_days,
             self.selected_day,
             None, // StatRegistry not available at screen level yet
-            my_name,
-            opp_name,
+            home_name,
+            away_name,
             main_focused,
         );
 
@@ -668,10 +668,10 @@ mod tests {
                 matchup_period: 1,
                 start_date: "2026-03-25".to_string(),
                 end_date: "2026-04-05".to_string(),
-                my_team_name: "My Team".to_string(),
-                opp_team_name: "Opp Team".to_string(),
-                my_record: TeamRecord { wins: 1, losses: 0, ties: 0 },
-                opp_record: TeamRecord { wins: 0, losses: 1, ties: 0 },
+                home_team_name: "Home Team".to_string(),
+                away_team_name: "Away Team".to_string(),
+                home_record: TeamRecord { wins: 1, losses: 0, ties: 0 },
+                away_record: TeamRecord { wins: 0, losses: 1, ties: 0 },
             },
             my_team: TeamMatchupState {
                 name: "My Team".to_string(),

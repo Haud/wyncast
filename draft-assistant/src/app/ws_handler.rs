@@ -675,10 +675,10 @@ async fn handle_matchup_state(
         payload.home_team.name, payload.away_team.name, payload.matchup_period
     );
 
-    let my_record = parse_record(&payload.home_team.record);
-    let opp_record = parse_record(&payload.away_team.record);
-    let my_category_score = parse_record(&payload.home_team.matchup_score);
-    let opp_category_score = parse_record(&payload.away_team.matchup_score);
+    let home_record = parse_record(&payload.home_team.record);
+    let away_record = parse_record(&payload.away_team.record);
+    let home_category_score = parse_record(&payload.home_team.matchup_score);
+    let away_category_score = parse_record(&payload.away_team.matchup_score);
 
     // Convert categories with win/loss state
     let category_scores: Vec<CategoryScore> = payload
@@ -752,22 +752,22 @@ async fn handle_matchup_state(
             matchup_period: payload.matchup_period,
             start_date: payload.start_date,
             end_date: payload.end_date,
-            my_team_name: payload.home_team.name.clone(),
-            opp_team_name: payload.away_team.name.clone(),
-            my_record,
-            opp_record,
+            home_team_name: payload.home_team.name.clone(),
+            away_team_name: payload.away_team.name.clone(),
+            home_record,
+            away_record,
         },
         my_team: TeamMatchupState {
             name: payload.home_team.name.clone(),
             abbrev: abbreviate_team_name(&payload.home_team.name),
             record: parse_record(&payload.home_team.record),
-            category_score: my_category_score,
+            category_score: home_category_score,
         },
         opp_team: TeamMatchupState {
             name: payload.away_team.name.clone(),
             abbrev: abbreviate_team_name(&payload.away_team.name),
             record: parse_record(&payload.away_team.record),
-            category_score: opp_category_score,
+            category_score: away_category_score,
         },
         category_scores,
         selected_day: 0,
