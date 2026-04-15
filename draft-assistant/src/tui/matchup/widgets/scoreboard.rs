@@ -1,15 +1,19 @@
 // Scoreboard widget: category-by-category H2H comparison header.
 //
 // The scoreboard is rendered symmetrically for home and away — there is no
-// "my team" bias.
+// "my team" bias. The matchup lead is visualised by a center-anchored leaning
+// bar under each team label.
 //
 // Layout (rendered top-to-bottom within the provided area):
-//   Row 1: Header    — blank label | R HR RBI … | K W SV …
+//   Row 1: Header    — blank label | R HR RBI … | K W SV … | (leaning bar space)
 //   Row 2: Home team — values with winning cells highlighted
 //   Row 3: Away team — values with winning cells highlighted
 //   Row 4: H-A diff  — per-category signed differential (home - away)
+//
+// To the right of the category columns we render a horizontal leaning bar
+// that visualises `home.category_score.wins - away.category_score.wins`.
 
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -97,7 +101,7 @@ fn is_lower_better(abbrev: &str, registry: &StatRegistry) -> bool {
 /// Render the scoreboard into the given area.
 ///
 /// Displays all H2H categories with both teams' values, winning indicators,
-/// and the H-A differential row.
+/// the H-A differential row, and a leaning bar showing the category-score lead.
 pub fn render(
     frame: &mut Frame,
     area: Rect,
@@ -106,6 +110,18 @@ pub fn render(
     away_team: &TeamMatchupState,
     registry: &StatRegistry,
 ) {
+    // Split the area into a table column (left) and a leaning-bar column (right).
+    // The bar hugs the right edge; the table takes the rest. We allocate a
+    // fixed 24-column strip for the bar when there's room, otherwise shrink.
+    let bar_width: u16 = 24;
+    let [table_area, bar_area] = if area.width > bar_width + 20 {
+        let chunks = Layout::horizontal([Constraint::Min(10), Constraint::Length(bar_width)])
+            .split(area);
+        [chunks[0], chunks[1]]
+    } else {
+        [area, Rect::new(area.x, area.y, 0, area.height)]
+    };
+
     let batting_cats: Vec<&CategoryScore> = category_scores
         .iter()
         .filter(|c| {
@@ -147,6 +163,102 @@ pub fn render(
             .borders(Borders::BOTTOM)
             .border_style(Style::default().fg(Color::DarkGray)),
     );
+    frame.render_widget(paragraph, table_area);
+
+    // Leaning bar (only render if we have room).
+    if bar_area.width > 0 {
+        render_lead_bar(frame, bar_area, home_team, away_team);
+    }
+}
+
+/// Render the center-anchored leaning bar that visualises the category-score
+/// lead (home.wins - away.wins).
+fn render_lead_bar(
+    frame: &mut Frame,
+    area: Rect,
+    home_team: &TeamMatchupState,
+    away_team: &TeamMatchupState,
+) {
+    if area.height == 0 || area.width < 10 {
+        return;
+    }
+
+    let home_wins = home_team.category_score.wins as i32;
+    let away_wins = away_team.category_score.wins as i32;
+    let total = (home_wins + away_wins).max(1) as f64;
+    let lead = (home_wins - away_wins) as f64;
+    // Proportion in [-1.0, 1.0]. Positive = home ahead.
+    let proportion = (lead / total).clamp(-1.0, 1.0);
+
+    // Reserve the outer two cells as padding; the bar fills the middle.
+    let inner_width = area.width.saturating_sub(2) as usize;
+    // Split into left and right halves around the center. For odd widths the
+    // center gets a single anchor cell.
+    let half = inner_width / 2;
+    let left_fill = if proportion < 0.0 {
+        ((proportion.abs() * half as f64).round() as usize).min(half)
+    } else {
+        0
+    };
+    let right_fill = if proportion > 0.0 {
+        ((proportion * half as f64).round() as usize).min(half)
+    } else {
+        0
+    };
+    let left_empty = half.saturating_sub(left_fill);
+    let right_empty = half.saturating_sub(right_fill);
+
+    // Score label: "6 - 4 - 2" (wins-losses-ties for home, mirrored for away).
+    let score_label = format!(
+        "{}  vs  {}",
+        home_team.category_score, away_team.category_score
+    );
+
+    // Line 1: score label (centered).
+    let label_line = Line::from(Span::styled(
+        score_label,
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    ));
+
+    // Line 2: the bar itself.
+    let bar_spans: Vec<Span<'static>> = vec![
+        Span::raw(" "),
+        Span::raw(" ".repeat(left_empty)),
+        Span::styled(
+            "\u{2588}".repeat(left_fill),
+            Style::default().fg(Color::Red),
+        ),
+        // Center anchor character.
+        Span::styled("\u{2503}", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            "\u{2588}".repeat(right_fill),
+            Style::default().fg(Color::Green),
+        ),
+        Span::raw(" ".repeat(right_empty)),
+        Span::raw(" "),
+    ];
+    let bar_line = Line::from(bar_spans);
+
+    // Line 3 (optional): "HOME +N" / "AWAY +N" / "TIED" text.
+    let diff_label = if lead > 0.0 {
+        Span::styled(
+            format!("HOME +{}", lead as i32),
+            Style::default().fg(Color::Green),
+        )
+    } else if lead < 0.0 {
+        Span::styled(
+            format!("AWAY +{}", (-lead) as i32),
+            Style::default().fg(Color::Red),
+        )
+    } else {
+        Span::styled("TIED", Style::default().fg(Color::Yellow))
+    };
+
+    let lines = vec![label_line, bar_line, Line::from(diff_label)];
+
+    let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, area);
 }
 
@@ -409,7 +521,7 @@ mod tests {
         assert_eq!(format_value(1.35, 2), "1.35");
     }
 
-    // -- format_diff tests --
+    // -- format_diff tests (home - away, always raw signed) --
 
     #[test]
     fn diff_home_ahead_counting() {
@@ -639,5 +751,50 @@ mod tests {
         assert!(text.contains("AVG"));
         assert!(text.contains("ERA"));
         assert!(text.contains("WHIP"));
+    }
+
+    // -- diff line label --
+
+    #[test]
+    fn diff_row_label_is_h_minus_a() {
+        let categories = make_full_categories();
+        let registry = test_registry();
+        let batting: Vec<&CategoryScore> = categories
+            .iter()
+            .filter(|c| registry.get(&c.stat_abbrev).is_some_and(|d| d.player_type == crate::stats::PlayerType::Hitter))
+            .collect();
+        let pitching: Vec<&CategoryScore> = categories
+            .iter()
+            .filter(|c| registry.get(&c.stat_abbrev).is_some_and(|d| d.player_type == crate::stats::PlayerType::Pitcher))
+            .collect();
+        let line = build_diff_line(&batting, &pitching, &registry);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("H-A"));
+    }
+
+    // -- leaning bar --
+
+    #[test]
+    fn lead_bar_renders_home_ahead() {
+        let backend = ratatui::backend::TestBackend::new(30, 3);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let home = make_home_team();
+        let away = make_away_team();
+        terminal
+            .draw(|frame| render_lead_bar(frame, frame.area(), &home, &away))
+            .unwrap();
+    }
+
+    #[test]
+    fn lead_bar_handles_zero_scores() {
+        let backend = ratatui::backend::TestBackend::new(30, 3);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut home = make_home_team();
+        let mut away = make_away_team();
+        home.category_score = TeamRecord { wins: 0, losses: 0, ties: 0 };
+        away.category_score = TeamRecord { wins: 0, losses: 0, ties: 0 };
+        terminal
+            .draw(|frame| render_lead_bar(frame, frame.area(), &home, &away))
+            .unwrap();
     }
 }
