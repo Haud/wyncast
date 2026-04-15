@@ -689,7 +689,7 @@ mod tests {
                 stat_abbrev: "R".to_string(),
                 my_value: 5.0,
                 opp_value: 3.0,
-                state: CategoryState::Winning,
+                state: CategoryState::HomeWinning,
             }],
             selected_day: 0,
             scoring_period_days: vec![

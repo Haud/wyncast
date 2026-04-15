@@ -237,7 +237,7 @@ fn build_team_line(
 /// green bold text. Losing gets default white. Tied gets yellow.
 fn cell_style(state: CategoryState, is_my_team: bool) -> (Style, &'static str) {
     match state {
-        CategoryState::Winning => {
+        CategoryState::HomeWinning => {
             if is_my_team {
                 // My team is winning: I'm green+bold with *
                 (
@@ -251,7 +251,7 @@ fn cell_style(state: CategoryState, is_my_team: bool) -> (Style, &'static str) {
                 (Style::default().fg(Color::White), "")
             }
         }
-        CategoryState::Losing => {
+        CategoryState::AwayWinning => {
             if is_my_team {
                 // My team is losing: I'm default
                 (Style::default().fg(Color::White), "")
@@ -338,18 +338,18 @@ mod tests {
 
     fn make_full_categories() -> Vec<CategoryScore> {
         vec![
-            make_category("R", 5.0, 3.0, CategoryState::Winning),
-            make_category("HR", 2.0, 3.0, CategoryState::Losing),
-            make_category("RBI", 5.0, 4.0, CategoryState::Winning),
-            make_category("BB", 3.0, 1.0, CategoryState::Winning),
-            make_category("SB", 1.0, 2.0, CategoryState::Losing),
-            make_category("AVG", 0.275, 0.290, CategoryState::Losing),
-            make_category("K", 42.0, 48.0, CategoryState::Losing),
-            make_category("W", 1.0, 2.0, CategoryState::Losing),
-            make_category("SV", 0.0, 1.0, CategoryState::Losing),
-            make_category("HD", 2.0, 0.0, CategoryState::Winning),
-            make_category("ERA", 3.50, 4.20, CategoryState::Winning),
-            make_category("WHIP", 1.20, 1.35, CategoryState::Winning),
+            make_category("R", 5.0, 3.0, CategoryState::HomeWinning),
+            make_category("HR", 2.0, 3.0, CategoryState::AwayWinning),
+            make_category("RBI", 5.0, 4.0, CategoryState::HomeWinning),
+            make_category("BB", 3.0, 1.0, CategoryState::HomeWinning),
+            make_category("SB", 1.0, 2.0, CategoryState::AwayWinning),
+            make_category("AVG", 0.275, 0.290, CategoryState::AwayWinning),
+            make_category("K", 42.0, 48.0, CategoryState::AwayWinning),
+            make_category("W", 1.0, 2.0, CategoryState::AwayWinning),
+            make_category("SV", 0.0, 1.0, CategoryState::AwayWinning),
+            make_category("HD", 2.0, 0.0, CategoryState::HomeWinning),
+            make_category("ERA", 3.50, 4.20, CategoryState::HomeWinning),
+            make_category("WHIP", 1.20, 1.35, CategoryState::HomeWinning),
         ]
     }
 
@@ -492,7 +492,7 @@ mod tests {
 
     #[test]
     fn winning_my_team_is_green_bold_with_star() {
-        let (style, prefix) = cell_style(CategoryState::Winning, true);
+        let (style, prefix) = cell_style(CategoryState::HomeWinning, true);
         assert_eq!(style.fg, Some(Color::Green));
         assert!(style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(prefix, "*");
@@ -500,21 +500,21 @@ mod tests {
 
     #[test]
     fn winning_opp_team_is_white() {
-        let (style, prefix) = cell_style(CategoryState::Winning, false);
+        let (style, prefix) = cell_style(CategoryState::HomeWinning, false);
         assert_eq!(style.fg, Some(Color::White));
         assert_eq!(prefix, "");
     }
 
     #[test]
     fn losing_my_team_is_white() {
-        let (style, prefix) = cell_style(CategoryState::Losing, true);
+        let (style, prefix) = cell_style(CategoryState::AwayWinning, true);
         assert_eq!(style.fg, Some(Color::White));
         assert_eq!(prefix, "");
     }
 
     #[test]
     fn losing_opp_team_is_green_bold_with_star() {
-        let (style, prefix) = cell_style(CategoryState::Losing, false);
+        let (style, prefix) = cell_style(CategoryState::AwayWinning, false);
         assert_eq!(style.fg, Some(Color::Green));
         assert!(style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(prefix, "*");

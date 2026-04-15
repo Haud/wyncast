@@ -653,11 +653,11 @@ fn category_state(
     if (home_value - away_value).abs() < f64::EPSILON {
         CategoryState::Tied
     } else if lower_is_better {
-        if home_value < away_value { CategoryState::Winning } else { CategoryState::Losing }
+        if home_value < away_value { CategoryState::HomeWinning } else { CategoryState::AwayWinning }
     } else if home_value > away_value {
-        CategoryState::Winning
+        CategoryState::HomeWinning
     } else {
-        CategoryState::Losing
+        CategoryState::AwayWinning
     }
 }
 
@@ -1330,36 +1330,36 @@ mod tests {
     }
 
     #[test]
-    fn category_state_higher_is_better_winning() {
+    fn category_state_higher_is_better_home_winning() {
         assert_eq!(
             category_state(Some(5.0), Some(3.0), false),
-            CategoryState::Winning
+            CategoryState::HomeWinning
         );
     }
 
     #[test]
-    fn category_state_higher_is_better_losing() {
+    fn category_state_higher_is_better_away_winning() {
         assert_eq!(
             category_state(Some(2.0), Some(3.0), false),
-            CategoryState::Losing
+            CategoryState::AwayWinning
         );
     }
 
     #[test]
-    fn category_state_lower_is_better_winning() {
-        // ERA: lower is better, my 3.50 < opp 4.20 => winning
+    fn category_state_lower_is_better_home_winning() {
+        // ERA: lower is better, home 3.50 < away 4.20 => home winning
         assert_eq!(
             category_state(Some(3.50), Some(4.20), true),
-            CategoryState::Winning
+            CategoryState::HomeWinning
         );
     }
 
     #[test]
-    fn category_state_lower_is_better_losing() {
-        // WHIP: lower is better, my 1.35 > opp 1.20 => losing
+    fn category_state_lower_is_better_away_winning() {
+        // WHIP: lower is better, home 1.35 > away 1.20 => away winning
         assert_eq!(
             category_state(Some(1.35), Some(1.20), true),
-            CategoryState::Losing
+            CategoryState::AwayWinning
         );
     }
 
@@ -1409,17 +1409,17 @@ mod tests {
             })
             .collect();
 
-        // R: 5 > 3, higher is better => Winning
+        // R: 5 > 3, higher is better => HomeWinning
         assert_eq!(scores[0].stat_abbrev, "R");
-        assert_eq!(scores[0].state, CategoryState::Winning);
+        assert_eq!(scores[0].state, CategoryState::HomeWinning);
 
-        // HR: 2 < 3, higher is better => Losing
+        // HR: 2 < 3, higher is better => AwayWinning
         assert_eq!(scores[1].stat_abbrev, "HR");
-        assert_eq!(scores[1].state, CategoryState::Losing);
+        assert_eq!(scores[1].state, CategoryState::AwayWinning);
 
-        // ERA: 3.50 < 4.20, lower is better => Winning
+        // ERA: 3.50 < 4.20, lower is better => HomeWinning
         assert_eq!(scores[2].stat_abbrev, "ERA");
-        assert_eq!(scores[2].state, CategoryState::Winning);
+        assert_eq!(scores[2].state, CategoryState::HomeWinning);
 
         // WHIP: 1.20 == 1.20, lower is better => Tied
         assert_eq!(scores[3].stat_abbrev, "WHIP");

@@ -198,8 +198,8 @@ fn build_category_line(cs: &CategoryScore, available_width: usize) -> Line<'stat
     let label_width = 6; // " ABBR " (1 space + 4 chars + 1 space)
     let diff_str = format_diff(cs);
     let status_str = match cs.state {
-        CategoryState::Winning => "WIN",
-        CategoryState::Losing => "LOSS",
+        CategoryState::HomeWinning => "WIN",
+        CategoryState::AwayWinning => "LOSS",
         CategoryState::Tied => "TIED",
     };
     let right_str = format!(" {} {}", diff_str, status_str);
@@ -215,14 +215,14 @@ fn build_category_line(cs: &CategoryScore, available_width: usize) -> Line<'stat
     let empty = bar_width.saturating_sub(filled);
 
     let (my_color, opp_color) = match cs.state {
-        CategoryState::Winning => (Color::Green, Color::DarkGray),
-        CategoryState::Losing => (Color::Red, Color::DarkGray),
+        CategoryState::HomeWinning => (Color::Green, Color::DarkGray),
+        CategoryState::AwayWinning => (Color::Red, Color::DarkGray),
         CategoryState::Tied => (Color::Yellow, Color::DarkGray),
     };
 
     let status_color = match cs.state {
-        CategoryState::Winning => Color::Green,
-        CategoryState::Losing => Color::Red,
+        CategoryState::HomeWinning => Color::Green,
+        CategoryState::AwayWinning => Color::Red,
         CategoryState::Tied => Color::Yellow,
     };
 
@@ -339,7 +339,7 @@ mod tests {
             stat_abbrev: "R".to_string(),
             my_value: 10.0,
             opp_value: 7.0,
-            state: CategoryState::Winning,
+            state: CategoryState::HomeWinning,
         };
         assert_eq!(format_diff(&cs), "+3");
     }
@@ -350,7 +350,7 @@ mod tests {
             stat_abbrev: "HR".to_string(),
             my_value: 3.0,
             opp_value: 5.0,
-            state: CategoryState::Losing,
+            state: CategoryState::AwayWinning,
         };
         assert_eq!(format_diff(&cs), "-2");
     }
@@ -361,7 +361,7 @@ mod tests {
             stat_abbrev: "AVG".to_string(),
             my_value: 0.280,
             opp_value: 0.265,
-            state: CategoryState::Winning,
+            state: CategoryState::HomeWinning,
         };
         let diff = format_diff(&cs);
         assert!(diff.starts_with('+'));
@@ -374,7 +374,7 @@ mod tests {
             stat_abbrev: "ERA".to_string(),
             my_value: 3.00,
             opp_value: 3.50,
-            state: CategoryState::Winning,
+            state: CategoryState::HomeWinning,
         };
         let diff = format_diff(&cs);
         // diff is -0.50 (my ERA is lower = good)
@@ -439,13 +439,13 @@ mod tests {
                 stat_abbrev: "R".to_string(),
                 my_value: 10.0,
                 opp_value: 7.0,
-                state: CategoryState::Winning,
+                state: CategoryState::HomeWinning,
             },
             CategoryScore {
                 stat_abbrev: "ERA".to_string(),
                 my_value: 3.00,
                 opp_value: 4.00,
-                state: CategoryState::Winning,
+                state: CategoryState::HomeWinning,
             },
         ];
         terminal
@@ -462,7 +462,7 @@ mod tests {
             stat_abbrev: "R".to_string(),
             my_value: 10.0,
             opp_value: 7.0,
-            state: CategoryState::Winning,
+            state: CategoryState::HomeWinning,
         }];
         terminal
             .draw(|frame| panel.view(frame, frame.area(), &scores, false))

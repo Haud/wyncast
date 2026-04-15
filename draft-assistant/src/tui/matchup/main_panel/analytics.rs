@@ -163,11 +163,11 @@ fn build_category_outlook(
 
     let winning: Vec<&CategoryScore> = scores
         .iter()
-        .filter(|c| c.state == CategoryState::Winning)
+        .filter(|c| c.state == CategoryState::HomeWinning)
         .collect();
     let losing: Vec<&CategoryScore> = scores
         .iter()
-        .filter(|c| c.state == CategoryState::Losing)
+        .filter(|c| c.state == CategoryState::AwayWinning)
         .collect();
     let tied: Vec<&CategoryScore> = scores
         .iter()
@@ -282,8 +282,8 @@ fn build_close_categories(
         let status = build_close_status(cat, is_counting, effective_diff);
 
         let color = match cat.state {
-            CategoryState::Winning => Color::Green,
-            CategoryState::Losing => Color::Red,
+            CategoryState::HomeWinning => Color::Green,
+            CategoryState::AwayWinning => Color::Red,
             CategoryState::Tied => Color::Yellow,
         };
 
@@ -461,7 +461,7 @@ pub fn project_counting_stat(current: f64, days_elapsed: usize, total_days: usiz
 /// Build a close-category status string.
 fn build_close_status(cat: &CategoryScore, is_counting: bool, effective_diff: f64) -> String {
     match cat.state {
-        CategoryState::Winning => "WINNING - lead is narrow".to_string(),
+        CategoryState::HomeWinning => "WINNING - lead is narrow".to_string(),
         CategoryState::Tied => {
             if is_counting {
                 "TIED - 1 to lead".to_string()
@@ -469,7 +469,7 @@ fn build_close_status(cat: &CategoryScore, is_counting: bool, effective_diff: f6
                 "TIED".to_string()
             }
         }
-        CategoryState::Losing => {
+        CategoryState::AwayWinning => {
             if is_counting {
                 let to_tie = effective_diff.abs().ceil() as i64;
                 let to_lead = to_tie + 1;
@@ -539,19 +539,19 @@ mod tests {
     #[test]
     fn category_outlook_groups_correctly() {
         let scores = vec![
-            make_cat("R", 5.0, 3.0, CategoryState::Winning),
-            make_cat("HR", 2.0, 3.0, CategoryState::Losing),
+            make_cat("R", 5.0, 3.0, CategoryState::HomeWinning),
+            make_cat("HR", 2.0, 3.0, CategoryState::AwayWinning),
             make_cat("SB", 1.0, 1.0, CategoryState::Tied),
-            make_cat("RBI", 4.0, 2.0, CategoryState::Winning),
+            make_cat("RBI", 4.0, 2.0, CategoryState::HomeWinning),
         ];
 
         let winning: Vec<_> = scores
             .iter()
-            .filter(|c| c.state == CategoryState::Winning)
+            .filter(|c| c.state == CategoryState::HomeWinning)
             .collect();
         let losing: Vec<_> = scores
             .iter()
-            .filter(|c| c.state == CategoryState::Losing)
+            .filter(|c| c.state == CategoryState::AwayWinning)
             .collect();
         let tied: Vec<_> = scores
             .iter()
@@ -574,10 +574,10 @@ mod tests {
         let reg = test_registry();
 
         // HR threshold is 3.0 for matchup
-        let close = make_cat("HR", 2.0, 4.0, CategoryState::Losing); // diff=2
+        let close = make_cat("HR", 2.0, 4.0, CategoryState::AwayWinning); // diff=2
         assert!(is_close_category(&close, Some(&reg)));
 
-        let not_close = make_cat("HR", 2.0, 10.0, CategoryState::Losing); // diff=8
+        let not_close = make_cat("HR", 2.0, 10.0, CategoryState::AwayWinning); // diff=8
         assert!(!is_close_category(&not_close, Some(&reg)));
     }
 
@@ -586,10 +586,10 @@ mod tests {
         let reg = test_registry();
 
         // ERA matchup_close_threshold = 1.00
-        let close = make_cat("ERA", 3.50, 4.00, CategoryState::Winning); // diff=0.50
+        let close = make_cat("ERA", 3.50, 4.00, CategoryState::HomeWinning); // diff=0.50
         assert!(is_close_category(&close, Some(&reg)));
 
-        let not_close = make_cat("ERA", 2.00, 5.50, CategoryState::Winning); // diff=3.50
+        let not_close = make_cat("ERA", 2.00, 5.50, CategoryState::HomeWinning); // diff=3.50
         assert!(!is_close_category(&not_close, Some(&reg)));
     }
 
@@ -598,10 +598,10 @@ mod tests {
         let reg = test_registry();
 
         // WHIP matchup_close_threshold = 0.20
-        let close = make_cat("WHIP", 1.10, 1.25, CategoryState::Winning); // diff=0.15
+        let close = make_cat("WHIP", 1.10, 1.25, CategoryState::HomeWinning); // diff=0.15
         assert!(is_close_category(&close, Some(&reg)));
 
-        let not_close = make_cat("WHIP", 1.00, 1.50, CategoryState::Winning); // diff=0.50
+        let not_close = make_cat("WHIP", 1.00, 1.50, CategoryState::HomeWinning); // diff=0.50
         assert!(!is_close_category(&not_close, Some(&reg)));
     }
 
@@ -610,20 +610,20 @@ mod tests {
         let reg = test_registry();
 
         // AVG matchup_close_threshold = 0.020
-        let close = make_cat("AVG", 0.280, 0.295, CategoryState::Losing); // diff=0.015
+        let close = make_cat("AVG", 0.280, 0.295, CategoryState::AwayWinning); // diff=0.015
         assert!(is_close_category(&close, Some(&reg)));
 
-        let not_close = make_cat("AVG", 0.250, 0.310, CategoryState::Losing); // diff=0.060
+        let not_close = make_cat("AVG", 0.250, 0.310, CategoryState::AwayWinning); // diff=0.060
         assert!(!is_close_category(&not_close, Some(&reg)));
     }
 
     #[test]
     fn close_category_fallback_without_registry() {
         // Without registry, uses hardcoded fallback
-        let close = make_cat("HR", 2.0, 4.0, CategoryState::Losing); // diff=2, threshold=3
+        let close = make_cat("HR", 2.0, 4.0, CategoryState::AwayWinning); // diff=2, threshold=3
         assert!(is_close_category(&close, None));
 
-        let not_close = make_cat("HR", 2.0, 10.0, CategoryState::Losing);
+        let not_close = make_cat("HR", 2.0, 10.0, CategoryState::AwayWinning);
         assert!(!is_close_category(&not_close, None));
     }
 
@@ -721,9 +721,9 @@ mod tests {
         let panel = MatchupAnalyticsPanel::new();
         let reg = test_registry();
         let scores = vec![
-            make_cat("R", 5.0, 3.0, CategoryState::Winning),
-            make_cat("HR", 2.0, 3.0, CategoryState::Losing),
-            make_cat("ERA", 3.50, 4.20, CategoryState::Winning),
+            make_cat("R", 5.0, 3.0, CategoryState::HomeWinning),
+            make_cat("HR", 2.0, 3.0, CategoryState::AwayWinning),
+            make_cat("ERA", 3.50, 4.20, CategoryState::HomeWinning),
         ];
         let days = vec![make_scoring_day("March 26"), make_scoring_day("March 27")];
         terminal

@@ -33,11 +33,11 @@ impl fmt::Display for TeamRecord {
     }
 }
 
-/// Whether we are winning, losing, or tied in a scoring category.
+/// Which side of the matchup is ahead in a scoring category.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum CategoryState {
-    Winning,
-    Losing,
+    HomeWinning,
+    AwayWinning,
     Tied,
 }
 
@@ -163,13 +163,13 @@ mod tests {
                     stat_abbrev: "R".to_string(),
                     my_value: 5.0,
                     opp_value: 3.0,
-                    state: CategoryState::Winning,
+                    state: CategoryState::HomeWinning,
                 },
                 CategoryScore {
                     stat_abbrev: "ERA".to_string(),
                     my_value: 3.45,
                     opp_value: 4.12,
-                    state: CategoryState::Winning,
+                    state: CategoryState::HomeWinning,
                 },
             ],
             selected_day: 1,
