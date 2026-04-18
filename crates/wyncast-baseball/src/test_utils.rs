@@ -339,6 +339,7 @@ impl TestPlayer {
 // ---------------------------------------------------------------------------
 
 /// Build a hitter `PlayerValuation` from raw projection stats.
+#[allow(clippy::too_many_arguments)]
 pub fn make_hitter(
     name: &str,
     r: u32,
@@ -380,6 +381,7 @@ pub fn make_hitter(
 }
 
 /// Build a pitcher `PlayerValuation` from raw projection stats.
+#[allow(clippy::too_many_arguments)]
 pub fn make_pitcher(
     name: &str,
     k: u32,

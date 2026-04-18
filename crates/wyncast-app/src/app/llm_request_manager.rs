@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-use crate::llm::client::LlmClient;
+use wyncast_llm::client::LlmClient;
 use crate::protocol::LlmEvent;
 
 /// Manages active LLM streaming requests by ID.

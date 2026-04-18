@@ -2,13 +2,13 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::draft::pick::DraftPick;
-use crate::draft::roster::RosterSlot;
-use crate::llm::provider::LlmProvider;
-use crate::matchup::MatchupSnapshot;
+use wyncast_baseball::draft::pick::DraftPick;
+use wyncast_baseball::draft::roster::RosterSlot;
+use wyncast_core::llm::provider::LlmProvider;
+use wyncast_baseball::matchup::MatchupSnapshot;
 use crate::onboarding::OnboardingStep;
-use crate::valuation::scarcity::ScarcityEntry;
-use crate::valuation::zscore::PlayerValuation;
+use wyncast_baseball::valuation::scarcity::ScarcityEntry;
+use wyncast_baseball::valuation::zscore::PlayerValuation;
 
 // ---------------------------------------------------------------------------
 // Extension -> Backend messages (JSON over WebSocket)
@@ -410,7 +410,7 @@ pub enum OnboardingAction {
     /// Save the strategy configuration with the given budget, weights, and optional overview.
     SaveStrategyConfig {
         hitting_budget_pct: u8,
-        category_weights: crate::tui::onboarding::strategy_setup::CategoryWeights,
+        category_weights: crate::onboarding::strategy_config::CategoryWeights,
         strategy_overview: Option<String>,
     },
     /// Request LLM-assisted strategy configuration from a natural language description.
@@ -447,7 +447,7 @@ pub enum OnboardingUpdate {
     /// Strategy LLM generation completed successfully with parsed config.
     StrategyLlmComplete {
         hitting_budget_pct: u8,
-        category_weights: crate::tui::onboarding::strategy_setup::CategoryWeights,
+        category_weights: crate::onboarding::strategy_config::CategoryWeights,
         strategy_overview: String,
     },
     /// Strategy LLM generation failed.
@@ -496,7 +496,7 @@ pub enum UserCommand {
         /// Strategy config to save, if any. (budget_pct, weights, overview)
         strategy: Option<(
             u8,
-            crate::tui::onboarding::strategy_setup::CategoryWeights,
+            crate::onboarding::strategy_config::CategoryWeights,
             Option<String>,
         )>,
     },
@@ -694,7 +694,7 @@ pub enum InstantVerdict {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stats::ProjectionData;
+    use wyncast_core::stats::ProjectionData;
 
     // -- TabFeature capability API --
 
@@ -1337,7 +1337,7 @@ mod tests {
 
     #[test]
     fn onboarding_action_variants_constructable() {
-        use crate::llm::provider::LlmProvider;
+        use wyncast_core::llm::provider::LlmProvider;
 
         // Ensure all OnboardingAction variants can be constructed
         let _set_provider = OnboardingAction::SetProvider(LlmProvider::Anthropic);
@@ -1346,7 +1346,7 @@ mod tests {
         let _test_conn = OnboardingAction::TestConnection;
         let _save_strategy = OnboardingAction::SaveStrategyConfig {
             hitting_budget_pct: 65,
-            category_weights: crate::tui::onboarding::strategy_setup::CategoryWeights::default(),
+            category_weights: crate::onboarding::strategy_config::CategoryWeights::default(),
             strategy_overview: Some("Test overview".to_string()),
         };
         let _configure_llm = OnboardingAction::ConfigureStrategyWithLlm("punt saves".to_string());

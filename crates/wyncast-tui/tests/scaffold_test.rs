@@ -96,8 +96,6 @@ fn source_files_exist() {
     let tui_files = [
         "src/main.rs",
         "src/lib.rs",
-        "src/app/mod.rs",
-        "src/protocol.rs",
         "src/llm/mod.rs",
         "src/tui/mod.rs",
         "src/tui/layout.rs",
@@ -150,6 +148,9 @@ fn source_files_exist() {
         "crates/wyncast-baseball/src/llm/mod.rs",
         "crates/wyncast-baseball/src/llm/prompt.rs",
         "crates/wyncast-baseball/src/matchup/mod.rs",
+        "crates/wyncast-app/src/app/mod.rs",
+        "crates/wyncast-app/src/protocol.rs",
+        "crates/wyncast-app/src/onboarding/mod.rs",
     ];
     for file in &core_files {
         let full = workspace_dir.join(file);

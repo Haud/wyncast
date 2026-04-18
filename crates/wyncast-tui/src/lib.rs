@@ -2,10 +2,7 @@
 // consumers can access the crate's public API.
 
 // Modules remaining in wyncast-tui
-pub mod app;
 pub mod llm;
-pub mod onboarding;
-pub mod protocol;
 pub mod tui;
 
 // Re-exports from wyncast-core for backward-compat within this crate's tests
@@ -21,6 +18,11 @@ pub use wyncast_core::ws_server;
 pub use wyncast_baseball::draft;
 pub use wyncast_baseball::matchup;
 pub use wyncast_baseball::valuation;
+
+// Re-exports from wyncast-app for backward-compat
+pub use wyncast_app::app;
+pub use wyncast_app::onboarding;
+pub use wyncast_app::protocol;
 
 #[cfg(test)]
 pub mod test_utils;

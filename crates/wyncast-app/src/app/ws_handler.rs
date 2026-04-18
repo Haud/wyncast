@@ -1,14 +1,14 @@
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
-use crate::db::Database;
-use crate::draft::pick::{espn_slot_from_position_str, DraftPick};
-use crate::draft::roster::Roster;
-use crate::draft::state::{
+use wyncast_core::db::Database;
+use wyncast_baseball::draft::pick::{espn_slot_from_position_str, DraftPick};
+use wyncast_baseball::draft::roster::Roster;
+use wyncast_baseball::draft::state::{
     compute_state_diff, ActiveNomination, DraftState, NominationPayload, PickPayload,
     ReconcileResult, StateUpdatePayload, TeamState,
 };
-use crate::matchup::{
+use wyncast_baseball::matchup::{
     CategoryScore, CategoryState, DailyPlayerRow, DailyTotals, MatchupInfo, MatchupSnapshot,
     ScoringDay, TeamDailyRoster, TeamMatchupState, TeamRecord,
 };
@@ -16,10 +16,10 @@ use crate::protocol::{
     AppMode, DraftBoardData, ExtensionMessage, MatchupStatePayload, NominationInfo,
     PickHistoryEntry, TeamIdMapping, UiUpdate,
 };
-use crate::valuation;
-use crate::stats::CategoryValues;
-use crate::valuation::auction::InflationTracker;
-use crate::valuation::scarcity::compute_scarcity;
+use wyncast_baseball::valuation;
+use wyncast_core::stats::CategoryValues;
+use wyncast_baseball::valuation::auction::InflationTracker;
+use wyncast_baseball::valuation::scarcity::compute_scarcity;
 
 use std::collections::HashMap;
 
@@ -1142,7 +1142,7 @@ async fn handle_player_projections(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::matchup::CategoryState;
+    use wyncast_baseball::matchup::CategoryState;
     use crate::protocol::{
         DraftBoardSlot, DraftBoardTeam, MatchupCategoryPayload, MatchupPlayerPayload,
         MatchupSectionPayload, MatchupStatePayload, MatchupTeamPayload,
@@ -1444,10 +1444,10 @@ mod tests {
         let payload = make_matchup_payload();
 
         // Manually convert categories to verify states
-        let scores: Vec<crate::matchup::CategoryScore> = payload
+        let scores: Vec<wyncast_baseball::matchup::CategoryScore> = payload
             .categories
             .iter()
-            .map(|cat| crate::matchup::CategoryScore {
+            .map(|cat| wyncast_baseball::matchup::CategoryScore {
                 stat_abbrev: cat.abbrev.clone(),
                 home_value: cat.home_value.unwrap_or(0.0),
                 away_value: cat.away_value.unwrap_or(0.0),
@@ -1519,15 +1519,15 @@ mod tests {
     }
 
     fn create_test_app_state(mode: crate::protocol::AppMode) -> AppState {
-        let config = crate::config::Config::default();
+        let config = wyncast_core::config::Config::default();
         let roster = AppState::default_roster_config();
-        let draft_state = crate::draft::state::DraftState::new(
+        let draft_state = wyncast_baseball::draft::state::DraftState::new(
             config.league.salary_cap,
             &roster,
         );
-        let db = crate::db::Database::open(":memory:").expect("in-memory db");
+        let db = wyncast_core::db::Database::open(":memory:").expect("in-memory db");
         let (llm_tx, _llm_rx) = mpsc::channel(1);
-        let llm_client = crate::llm::client::LlmClient::Disabled;
+        let llm_client = wyncast_llm::client::LlmClient::Disabled;
         AppState::new(
             config,
             draft_state,
