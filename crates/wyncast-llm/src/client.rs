@@ -9,9 +9,9 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-use crate::config::Config;
-use crate::llm::provider::LlmProvider;
-use crate::protocol::LlmEvent;
+use wyncast_core::config::Config;
+use wyncast_core::llm::events::LlmEvent;
+use wyncast_core::llm::provider::LlmProvider;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1679,8 +1679,8 @@ mod tests {
     // -- Helper to build a minimal Config for testing --
 
     fn make_test_config(api_key: Option<String>) -> Config {
-        use crate::config::*;
-        use crate::llm::provider::LlmProvider;
+        use wyncast_core::config::*;
+        use wyncast_core::llm::provider::LlmProvider;
         use std::collections::HashMap;
 
         Config {
@@ -1746,7 +1746,7 @@ mod tests {
         google_key: Option<String>,
         openai_key: Option<String>,
     ) -> Config {
-        use crate::config::*;
+        use wyncast_core::config::*;
         use std::collections::HashMap;
 
         Config {

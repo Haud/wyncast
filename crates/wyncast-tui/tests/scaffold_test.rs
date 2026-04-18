@@ -60,8 +60,6 @@ fn directory_structure_exists() {
 
     let crate_dirs = [
         "src",
-        "src/valuation",
-        "src/draft",
         "src/llm",
         "src/tui",
         "src/tui/widgets",
@@ -94,27 +92,13 @@ fn directory_structure_exists() {
 #[test]
 fn source_files_exist() {
     let crate_dir = crate_root();
-    let expected_files = [
+    // Files remaining in wyncast-tui
+    let tui_files = [
         "src/main.rs",
         "src/lib.rs",
         "src/app/mod.rs",
-        "src/config.rs",
-        "src/ws_server.rs",
         "src/protocol.rs",
-        "src/db.rs",
-        "src/valuation/mod.rs",
-        "src/valuation/projections.rs",
-        "src/valuation/zscore.rs",
-        "src/valuation/vor.rs",
-        "src/valuation/auction.rs",
-        "src/valuation/scarcity.rs",
-        "src/draft/mod.rs",
-        "src/draft/state.rs",
-        "src/draft/roster.rs",
-        "src/draft/pick.rs",
         "src/llm/mod.rs",
-        "src/llm/client.rs",
-        "src/llm/prompt.rs",
         "src/tui/mod.rs",
         "src/tui/layout.rs",
         "src/tui/app.rs",
@@ -133,11 +117,45 @@ fn source_files_exist() {
         "src/tui/widgets/budget.rs",
         "src/tui/widgets/status_bar.rs",
     ];
-    for file in &expected_files {
+    for file in &tui_files {
         let full = crate_dir.join(file);
         assert!(
             full.is_file(),
             "Expected source file '{}' to exist",
+            file
+        );
+    }
+
+    // Files moved to wyncast-core, wyncast-llm, and wyncast-baseball
+    let workspace_dir = workspace_root();
+    let core_files = [
+        "crates/wyncast-core/src/config.rs",
+        "crates/wyncast-core/src/ws_server.rs",
+        "crates/wyncast-core/src/db.rs",
+        "crates/wyncast-core/src/stats.rs",
+        "crates/wyncast-core/src/app_dirs.rs",
+        "crates/wyncast-core/src/migrations.rs",
+        "crates/wyncast-core/src/picks.rs",
+        "crates/wyncast-llm/src/client.rs",
+        "crates/wyncast-baseball/src/draft/mod.rs",
+        "crates/wyncast-baseball/src/draft/pick.rs",
+        "crates/wyncast-baseball/src/draft/roster.rs",
+        "crates/wyncast-baseball/src/draft/state.rs",
+        "crates/wyncast-baseball/src/valuation/mod.rs",
+        "crates/wyncast-baseball/src/valuation/projections.rs",
+        "crates/wyncast-baseball/src/valuation/zscore.rs",
+        "crates/wyncast-baseball/src/valuation/vor.rs",
+        "crates/wyncast-baseball/src/valuation/auction.rs",
+        "crates/wyncast-baseball/src/valuation/scarcity.rs",
+        "crates/wyncast-baseball/src/llm/mod.rs",
+        "crates/wyncast-baseball/src/llm/prompt.rs",
+        "crates/wyncast-baseball/src/matchup/mod.rs",
+    ];
+    for file in &core_files {
+        let full = workspace_dir.join(file);
+        assert!(
+            full.is_file(),
+            "Expected core source file '{}' to exist",
             file
         );
     }

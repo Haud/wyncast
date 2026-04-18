@@ -9,10 +9,10 @@ pub mod zscore;
 
 use std::collections::HashMap;
 
-use crate::config::{Config, LeagueConfig, StrategyConfig};
+use wyncast_core::config::{Config, LeagueConfig, StrategyConfig};
+use wyncast_core::stats::{self, CategoryValues, StatRegistry};
 use crate::draft::state::DraftState;
 use projections::AllProjections;
-use crate::stats::{self, CategoryValues, StatRegistry};
 use zscore::{
     CategoryZScores, PlayerValuation,
     compute_generic_pool_stats, compute_player_category_zscores,
