@@ -1,0 +1,2067 @@
+// Strategy setup screen: linear wizard flow for draft strategy configuration.
+//
+// This is Step 2 of the onboarding wizard. The wizard proceeds through four
+// steps:
+//   1. Input: large text area for natural language strategy description
+//   2. Generating: LLM streams output while processing the description
+//   3. Review: shows LLM-generated overview + budget/weights for inline editing
+//   4. Confirm: "Save this draft strategy?" Yes/No prompt
+//
+// When accessed from the Settings screen (after onboarding is complete), the
+// wizard shows the Review step directly with all values editable.
+
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::Frame;
+
+use crossterm::event::{KeyCode, KeyEvent};
+
+use crate::protocol::{OnboardingAction, UserCommand};
+use crate::tui::TextInput;
+use crate::tui::text_input::TextInputMessage;
+use crate::tui::subscription::{Subscription, SubscriptionId};
+use crate::tui::subscription::keybinding::{
+    exact, KeyBindingRecipe, KeybindHint, KeybindManager, KeyTrigger, PRIORITY_CAPTURE,
+    PRIORITY_NORMAL,
+};
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Default category list matching the league's configured category order.
+///
+/// Hitting categories first (R, HR, RBI, BB, SB, AVG),
+/// then pitching categories (K, W, SV, HD, ERA, WHIP).
+pub fn default_categories() -> Vec<String> {
+    ["R", "HR", "RBI", "BB", "SB", "AVG", "K", "W", "SV", "HD", "ERA", "WHIP"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Build a category list from a league config (batting + pitching categories).
+pub fn categories_from_league(league: &crate::config::LeagueConfig) -> Vec<String> {
+    league
+        .batting_categories
+        .categories
+        .iter()
+        .chain(league.pitching_categories.categories.iter())
+        .cloned()
+        .collect()
+}
+
+/// Number of columns in the category weight grid.
+pub const WEIGHT_COLS: usize = 3;
+
+// ---------------------------------------------------------------------------
+// StrategyWizardStep
+// ---------------------------------------------------------------------------
+
+/// Which step of the strategy wizard is active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StrategyWizardStep {
+    /// Step 1: user describes strategy in a large text input.
+    Input,
+    /// Step 2: LLM is generating config from the description.
+    Generating,
+    /// Step 3: review generated values (overview + budget + weights).
+    Review,
+    /// Step 4: "Save this draft strategy?" confirmation.
+    Confirm,
+}
+
+// ---------------------------------------------------------------------------
+// ReviewSection
+// ---------------------------------------------------------------------------
+
+/// Which part of the review step has keyboard focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewSection {
+    /// Strategy overview text (editable, scrollable).
+    Overview,
+    /// Hitting budget percentage field.
+    BudgetField,
+    /// Category weight grid.
+    CategoryWeights,
+}
+
+impl ReviewSection {
+    /// Ordered list of sections for Tab cycling in review mode.
+    const CYCLE: &[ReviewSection] = &[
+        ReviewSection::Overview,
+        ReviewSection::BudgetField,
+        ReviewSection::CategoryWeights,
+    ];
+
+    /// Advance to the next section (wraps around).
+    pub fn next(self) -> ReviewSection {
+        let idx = Self::CYCLE.iter().position(|&s| s == self).unwrap_or(0);
+        Self::CYCLE[(idx + 1) % Self::CYCLE.len()]
+    }
+
+    /// Go to the previous section (wraps around).
+    pub fn prev(self) -> ReviewSection {
+        let idx = Self::CYCLE.iter().position(|&s| s == self).unwrap_or(0);
+        if idx == 0 {
+            Self::CYCLE[Self::CYCLE.len() - 1]
+        } else {
+            Self::CYCLE[idx - 1]
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CategoryWeights
+// ---------------------------------------------------------------------------
+
+/// Category weight multipliers for all 12 league categories.
+///
+/// Provides indexed access via `get(idx)` and `set(idx, val)` using the
+/// `CATEGORIES` const array ordering.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CategoryWeights {
+    categories: Vec<String>,
+    weights: Vec<f32>,
+}
+
+impl Default for CategoryWeights {
+    fn default() -> Self {
+        Self::new(default_categories())
+    }
+}
+
+impl CategoryWeights {
+    /// Create a new `CategoryWeights` with the given category names.
+    /// All weights default to 1.0, except "SV" which defaults to 0.7.
+    pub fn new(categories: Vec<String>) -> Self {
+        let weights = categories
+            .iter()
+            .map(|cat| if cat == "SV" { 0.7 } else { 1.0 })
+            .collect();
+        CategoryWeights { categories, weights }
+    }
+
+    /// The category name list.
+    pub fn categories(&self) -> &[String] {
+        &self.categories
+    }
+
+    /// Number of categories.
+    pub fn len(&self) -> usize {
+        self.categories.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.categories.is_empty()
+    }
+
+    /// Get the weight value at the given index.
+    pub fn get(&self, idx: usize) -> f32 {
+        self.weights.get(idx).copied().unwrap_or(1.0)
+    }
+
+    /// Set the weight value at the given index. No-op for out-of-bounds.
+    pub fn set(&mut self, idx: usize, val: f32) {
+        if let Some(w) = self.weights.get_mut(idx) {
+            *w = val;
+        }
+    }
+
+    /// Look up a weight by category name.
+    pub fn get_by_name(&self, name: &str) -> Option<f32> {
+        self.categories
+            .iter()
+            .position(|c| c == name)
+            .map(|idx| self.weights[idx])
+    }
+
+    /// Return (category_name, weight_as_f64) pairs for serialization.
+    pub fn to_pairs(&self) -> Vec<(&str, f64)> {
+        self.categories
+            .iter()
+            .zip(self.weights.iter())
+            .map(|(cat, &w)| (cat.as_str(), w as f64))
+            .collect()
+    }
+
+    /// Convert to the config-compatible `CategoryWeights` (HashMap-based).
+    pub fn to_config_weights(&self) -> crate::config::CategoryWeights {
+        crate::config::CategoryWeights::from_pairs(
+            self.categories.iter().zip(self.weights.iter())
+                .map(|(cat, &val)| (cat.clone(), val as f64))
+        )
+    }
+
+    /// Create from the config-compatible `CategoryWeights` with a given category list.
+    pub fn from_config_weights(
+        w: &crate::config::CategoryWeights,
+        categories: Vec<String>,
+    ) -> Self {
+        let weights = categories
+            .iter()
+            .map(|cat| w.weight(cat) as f32)
+            .collect();
+        CategoryWeights { categories, weights }
+    }
+
+    /// Test helper: create from a slice of values using default categories.
+    #[cfg(test)]
+    pub fn from_values(values: &[f32]) -> Self {
+        let categories = default_categories();
+        assert_eq!(
+            categories.len(),
+            values.len(),
+            "values length must match default categories count"
+        );
+        CategoryWeights {
+            categories,
+            weights: values.to_vec(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// StrategySetupState
+// ---------------------------------------------------------------------------
+
+/// UI state for the strategy setup wizard.
+///
+/// Lives inside `ViewState` so the TUI can render it without any global state.
+#[derive(Debug, Clone)]
+pub struct StrategySetupState {
+    /// Current wizard step.
+    pub step: StrategyWizardStep,
+    /// Text area content for strategy description (with cursor tracking).
+    pub strategy_input: TextInput,
+    /// Whether the strategy text input is in edit mode (cursor active).
+    pub input_editing: bool,
+    /// Whether the LLM is currently generating.
+    pub generating: bool,
+    /// Streamed LLM output text (shown during Generating step).
+    pub generation_output: String,
+    /// Error message from LLM generation, if any.
+    pub generation_error: Option<String>,
+    /// Hitting budget percentage (0-100).
+    pub hitting_budget_pct: u8,
+    /// Category weight values.
+    pub category_weights: CategoryWeights,
+    /// LLM-generated prose overview of the strategy.
+    pub strategy_overview: String,
+    /// Which field is being edited in Review step (None = not editing,
+    /// Some("budget") or Some(category name)).
+    pub editing_field: Option<String>,
+    /// Current text being typed in an editable numeric field (with cursor tracking).
+    pub field_input: TextInput,
+    /// Which category weight is highlighted (0-11).
+    pub selected_weight_idx: usize,
+    /// Which part of the Review step has focus.
+    pub review_section: ReviewSection,
+    /// Whether the confirm prompt is selecting "Yes" (true) or "No" (false).
+    pub confirm_yes: bool,
+    /// Whether the strategy overview text box is being edited in review mode.
+    pub overview_editing: bool,
+    /// Text input buffer for editing the strategy overview.
+    pub overview_input: TextInput,
+    /// Whether strategy settings have been modified since last save.
+    pub settings_dirty: bool,
+    /// Snapshot of strategy overview for Esc restore in settings mode.
+    pub snapshot_overview: String,
+    /// Snapshot of hitting budget percentage for Esc restore in settings mode.
+    pub snapshot_budget: u8,
+    /// Snapshot of category weights for Esc restore in settings mode.
+    pub snapshot_weights: CategoryWeights,
+    /// Stable base ID used to derive state-dependent subscription IDs.
+    /// The actual ID is hashed from this plus relevant state fields so the
+    /// listener is rebuilt when the active mode/state changes.
+    sub_id: SubscriptionId,
+}
+
+impl Default for StrategySetupState {
+    fn default() -> Self {
+        StrategySetupState {
+            step: StrategyWizardStep::Input,
+            strategy_input: TextInput::new(),
+            input_editing: true, // auto-focused in edit mode
+            generating: false,
+            generation_output: String::new(),
+            generation_error: None,
+            hitting_budget_pct: 65,
+            category_weights: CategoryWeights::default(),
+            strategy_overview: String::new(),
+            editing_field: None,
+            field_input: TextInput::new(),
+            selected_weight_idx: 0,
+            review_section: ReviewSection::Overview,
+            confirm_yes: true,
+            overview_editing: false,
+            overview_input: TextInput::new(),
+            settings_dirty: false,
+            snapshot_overview: String::new(),
+            snapshot_budget: 65,
+            snapshot_weights: CategoryWeights::default(),
+            sub_id: SubscriptionId::unique(),
+        }
+    }
+}
+
+impl StrategySetupState {
+    /// Move the selected weight index up (wraps).
+    pub fn weight_up(&mut self) {
+        if self.selected_weight_idx >= WEIGHT_COLS {
+            self.selected_weight_idx -= WEIGHT_COLS;
+        }
+    }
+
+    /// Move the selected weight index down (wraps).
+    pub fn weight_down(&mut self) {
+        let new_idx = self.selected_weight_idx + WEIGHT_COLS;
+        if new_idx < self.category_weights.len() {
+            self.selected_weight_idx = new_idx;
+        }
+    }
+
+    /// Move the selected weight index left.
+    pub fn weight_left(&mut self) {
+        if self.selected_weight_idx > 0 {
+            self.selected_weight_idx -= 1;
+        }
+    }
+
+    /// Move the selected weight index right.
+    pub fn weight_right(&mut self) {
+        if self.selected_weight_idx + 1 < self.category_weights.len() {
+            self.selected_weight_idx += 1;
+        }
+    }
+
+    /// Start editing a numeric field.
+    pub fn start_editing(&mut self, field_name: &str, current_value: &str) {
+        self.editing_field = Some(field_name.to_string());
+        self.field_input.set_value(current_value);
+    }
+
+    /// Confirm the current field edit and apply the value.
+    ///
+    /// Returns `true` if the edit was applied, `false` if the value was invalid.
+    /// On invalid input the editing state is preserved so the user can retry.
+    pub fn confirm_edit(&mut self) -> bool {
+        let field = match &self.editing_field {
+            Some(f) => f.clone(),
+            None => return false,
+        };
+
+        if field == "budget" {
+            if let Ok(val) = self.field_input.value().parse::<u8>() {
+                if val <= 100 {
+                    self.hitting_budget_pct = val;
+                    self.editing_field = None;
+                    self.field_input.clear();
+                    return true;
+                }
+            }
+            // Invalid input: preserve editing state so user can retry
+            return false;
+        }
+
+        // Category weight field
+        if let Ok(val) = self.field_input.value().parse::<f32>() {
+            if (0.0..=5.0).contains(&val) {
+                if let Some(idx) = self.category_weights.categories().iter().position(|c| c == &field) {
+                    self.category_weights.set(idx, val);
+                    self.editing_field = None;
+                    self.field_input.clear();
+                    return true;
+                }
+            }
+        }
+        // Invalid input: preserve editing state so user can retry
+        false
+    }
+
+    /// Cancel the current field edit.
+    pub fn cancel_edit(&mut self) {
+        self.editing_field = None;
+        self.field_input.clear();
+    }
+
+    /// Check if any field is currently being edited.
+    pub fn is_editing(&self) -> bool {
+        self.editing_field.is_some() || self.input_editing || self.overview_editing
+    }
+
+    /// Start editing the strategy overview text.
+    ///
+    /// Copies the current overview into the text input buffer and activates
+    /// editing mode.
+    pub fn start_overview_editing(&mut self) {
+        self.overview_input.set_value(&self.strategy_overview);
+        self.overview_editing = true;
+    }
+
+    /// Cancel overview editing and discard changes to the text input.
+    pub fn cancel_overview_editing(&mut self) {
+        self.overview_editing = false;
+        self.overview_input.clear();
+    }
+
+    /// Snapshot the current strategy values for Esc restoration in settings mode.
+    pub fn snapshot_settings(&mut self) {
+        self.snapshot_overview = self.strategy_overview.clone();
+        self.snapshot_budget = self.hitting_budget_pct;
+        self.snapshot_weights = self.category_weights.clone();
+    }
+
+    /// Restore strategy values from the last snapshot (undo unsaved changes).
+    pub fn restore_settings_snapshot(&mut self) {
+        self.strategy_overview = self.snapshot_overview.clone();
+        self.hitting_budget_pct = self.snapshot_budget;
+        self.category_weights = self.snapshot_weights.clone();
+        self.settings_dirty = false;
+        self.overview_editing = false;
+        self.overview_input.clear();
+        self.editing_field = None;
+        self.field_input.clear();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ELM message API
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum StrategySetupMessage {
+    // Input step
+    StartEditing,
+    TextInput(KeyEvent),
+    StopEditing,
+    SubmitText,
+    // Generating step
+    Retry,
+    GoBackToInput,
+    // Review step: navigation
+    NavigateUp,
+    NavigateDown,
+    NavigateLeft,
+    NavigateRight,
+    // Review step: overview editing
+    StartOverviewEdit,
+    OverviewInput(KeyEvent),
+    SubmitOverview,
+    CancelOverviewEdit,
+    // Review step: field editing
+    FieldDigit(char),
+    FieldInput(TextInputMessage),
+    ConfirmFieldEdit,
+    CancelFieldEdit,
+    // Review step: edit field (enter on a section)
+    EditField,
+    // Review step: flow
+    AdvanceToConfirm,
+    CancelGeneration,
+    // Confirm step
+    ToggleSelection,
+    ConfirmYes,
+    ConfirmNo,
+    GoBackToReview,
+    // General
+    GoBack,
+    Quit,
+}
+
+impl StrategySetupState {
+    /// Declare keybindings for the subscription system.
+    ///
+    /// State-dependent subscription ID: the listener is rebuilt whenever
+    /// `step`, `input_editing`, `overview_editing`, `generating`,
+    /// `generation_error`, `editing_field`, or `confirm_yes` changes,
+    /// so the correct binding set is always active.
+    pub fn subscription(
+        &self,
+        kb: &mut KeybindManager,
+    ) -> Subscription<StrategySetupMessage> {
+        // Derive state-dependent ID so the listener is rebuilt on state changes.
+        let mut hasher = DefaultHasher::new();
+        self.sub_id.hash(&mut hasher);
+        (self.step as u8).hash(&mut hasher);
+        (self.input_editing as u8).hash(&mut hasher);
+        (self.overview_editing as u8).hash(&mut hasher);
+        (self.generating as u8).hash(&mut hasher);
+        (self.generation_error.is_some() as u8).hash(&mut hasher);
+        (self.editing_field.is_some() as u8).hash(&mut hasher);
+        (self.confirm_yes as u8).hash(&mut hasher);
+        let sub_id = SubscriptionId::from_u64(hasher.finish());
+
+        match self.step {
+            StrategyWizardStep::Input => {
+                if self.input_editing {
+                    // CAPTURE mode: Esc and Enter are handled explicitly;
+                    // everything else is forwarded as TextInput(key).
+                    let recipe = KeyBindingRecipe::new(sub_id)
+                        .priority(PRIORITY_CAPTURE)
+                        .capture()
+                        .bind(
+                            exact(KeyCode::Esc),
+                            |_| StrategySetupMessage::StopEditing,
+                            KeybindHint::new("Esc", "Stop editing"),
+                        )
+                        .bind(
+                            exact(KeyCode::Enter),
+                            |_| StrategySetupMessage::SubmitText,
+                            KeybindHint::new("Enter", "Submit"),
+                        )
+                        .bind(
+                            KeyTrigger::Any,
+                            StrategySetupMessage::TextInput,
+                            None,
+                        );
+                    kb.subscribe(recipe)
+                } else {
+                    let recipe = KeyBindingRecipe::new(sub_id)
+                        .priority(PRIORITY_NORMAL)
+                        .bind(
+                            exact(KeyCode::Enter),
+                            |_| StrategySetupMessage::SubmitText,
+                            KeybindHint::new("Enter", "Submit"),
+                        )
+                        .bind(
+                            exact(KeyCode::Char('e')),
+                            |_| StrategySetupMessage::StartEditing,
+                            KeybindHint::new("e", "Edit"),
+                        )
+                        .bind(
+                            exact(KeyCode::Esc),
+                            |_| StrategySetupMessage::GoBack,
+                            KeybindHint::new("Esc", "Back"),
+                        )
+                        .bind(
+                            exact(KeyCode::Char('q')),
+                            |_| StrategySetupMessage::Quit,
+                            KeybindHint::new("q", "Quit"),
+                        );
+                    kb.subscribe(recipe)
+                }
+            }
+
+            StrategyWizardStep::Generating => {
+                if self.generation_error.is_some() {
+                    let recipe = KeyBindingRecipe::new(sub_id)
+                        .priority(PRIORITY_NORMAL)
+                        .bind(
+                            exact(KeyCode::Enter),
+                            |_| StrategySetupMessage::Retry,
+                            KeybindHint::new("Enter", "Retry"),
+                        )
+                        .bind(
+                            exact(KeyCode::Esc),
+                            |_| StrategySetupMessage::GoBackToInput,
+                            KeybindHint::new("Esc", "Back"),
+                        )
+                        .bind(
+                            exact(KeyCode::Char('q')),
+                            |_| StrategySetupMessage::Quit,
+                            KeybindHint::new("q", "Quit"),
+                        );
+                    kb.subscribe(recipe)
+                } else {
+                    // No error: only quit is available while generating.
+                    let recipe = KeyBindingRecipe::new(sub_id)
+                        .priority(PRIORITY_NORMAL)
+                        .bind(
+                            exact(KeyCode::Char('q')),
+                            |_| StrategySetupMessage::Quit,
+                            KeybindHint::new("q", "Quit"),
+                        );
+                    kb.subscribe(recipe)
+                }
+            }
+
+            StrategyWizardStep::Review => {
+                if self.overview_editing {
+                    // CAPTURE mode: forward all keys through overview input.
+                    let recipe = KeyBindingRecipe::new(sub_id)
+                        .priority(PRIORITY_CAPTURE)
+                        .capture()
+                        .bind(
+                            exact(KeyCode::Enter),
+                            |_| StrategySetupMessage::SubmitOverview,
+                            KeybindHint::new("Enter", "Submit"),
+                        )
+                        .bind(
+                            exact(KeyCode::Esc),
+                            |_| StrategySetupMessage::CancelOverviewEdit,
+                            KeybindHint::new("Esc", "Cancel"),
+                        )
+                        .bind(
+                            KeyTrigger::Any,
+                            StrategySetupMessage::OverviewInput,
+                            None,
+                        );
+                    return kb.subscribe(recipe);
+                }
+
+                if self.editing_field.is_some() {
+                    // Field editing mode: digits and cursor keys for field_input.
+                    let recipe = KeyBindingRecipe::new(sub_id)
+                        .priority(PRIORITY_NORMAL)
+                        .bind(
+                            exact(KeyCode::Enter),
+                            |_| StrategySetupMessage::ConfirmFieldEdit,
+                            KeybindHint::new("Enter", "Confirm"),
+                        )
+                        .bind(
+                            exact(KeyCode::Esc),
+                            |_| StrategySetupMessage::CancelFieldEdit,
+                            KeybindHint::new("Esc", "Cancel"),
+                        )
+                        .bind(
+                            KeyTrigger::AnyChar,
+                            |key| {
+                                if let KeyCode::Char(c) = key.code {
+                                    StrategySetupMessage::FieldDigit(c)
+                                } else {
+                                    // AnyChar always gives Char(_), but satisfy exhaustiveness
+                                    StrategySetupMessage::FieldDigit('\0')
+                                }
+                            },
+                            None,
+                        )
+                        .bind(
+                            exact(KeyCode::Up),
+                            |_| StrategySetupMessage::FieldInput(TextInputMessage::MoveHome),
+                            None,
+                        )
+                        .bind(
+                            exact(KeyCode::Down),
+                            |_| StrategySetupMessage::FieldInput(TextInputMessage::MoveEnd),
+                            None,
+                        )
+                        .bind(
+                            exact(KeyCode::Left),
+                            |_| StrategySetupMessage::FieldInput(TextInputMessage::MoveLeft),
+                            KeybindHint::new("←/→", "Move cursor"),
+                        )
+                        .bind(
+                            exact(KeyCode::Right),
+                            |_| StrategySetupMessage::FieldInput(TextInputMessage::MoveRight),
+                            None,
+                        )
+                        .bind(
+                            exact(KeyCode::Home),
+                            |_| StrategySetupMessage::FieldInput(TextInputMessage::MoveHome),
+                            None,
+                        )
+                        .bind(
+                            exact(KeyCode::End),
+                            |_| StrategySetupMessage::FieldInput(TextInputMessage::MoveEnd),
+                            None,
+                        )
+                        .bind(
+                            exact(KeyCode::Backspace),
+                            |_| StrategySetupMessage::FieldInput(TextInputMessage::Backspace),
+                            KeybindHint::new("Bksp/Del", "Delete"),
+                        )
+                        .bind(
+                            exact(KeyCode::Delete),
+                            |_| StrategySetupMessage::FieldInput(TextInputMessage::Delete),
+                            None,
+                        );
+                    return kb.subscribe(recipe);
+                }
+
+                if self.generating {
+                    let mut recipe = KeyBindingRecipe::new(sub_id)
+                        .priority(PRIORITY_NORMAL)
+                        .bind(
+                            exact(KeyCode::Esc),
+                            |_| StrategySetupMessage::CancelGeneration,
+                            KeybindHint::new("Esc", "Cancel"),
+                        );
+                    if self.generation_error.is_some() {
+                        recipe = recipe.bind(
+                            exact(KeyCode::Enter),
+                            |_| StrategySetupMessage::Retry,
+                            KeybindHint::new("Enter", "Retry"),
+                        );
+                    }
+                    recipe = recipe.bind(
+                        exact(KeyCode::Char('q')),
+                        |_| StrategySetupMessage::Quit,
+                        KeybindHint::new("q", "Quit"),
+                    );
+                    return kb.subscribe(recipe);
+                }
+
+                // Normal review navigation
+                let recipe = KeyBindingRecipe::new(sub_id)
+                    .priority(PRIORITY_NORMAL)
+                    .bind(
+                        exact(KeyCode::Up),
+                        |_| StrategySetupMessage::NavigateUp,
+                        KeybindHint::new("↑/k", "Up"),
+                    )
+                    .bind(
+                        exact(KeyCode::Char('k')),
+                        |_| StrategySetupMessage::NavigateUp,
+                        None,
+                    )
+                    .bind(
+                        exact(KeyCode::Down),
+                        |_| StrategySetupMessage::NavigateDown,
+                        KeybindHint::new("↓/j", "Down"),
+                    )
+                    .bind(
+                        exact(KeyCode::Char('j')),
+                        |_| StrategySetupMessage::NavigateDown,
+                        None,
+                    )
+                    .bind(
+                        exact(KeyCode::Left),
+                        |_| StrategySetupMessage::NavigateLeft,
+                        KeybindHint::new("←/h", "Left"),
+                    )
+                    .bind(
+                        exact(KeyCode::Char('h')),
+                        |_| StrategySetupMessage::NavigateLeft,
+                        None,
+                    )
+                    .bind(
+                        exact(KeyCode::Right),
+                        |_| StrategySetupMessage::NavigateRight,
+                        KeybindHint::new("→/l", "Right"),
+                    )
+                    .bind(
+                        exact(KeyCode::Char('l')),
+                        |_| StrategySetupMessage::NavigateRight,
+                        None,
+                    )
+                    .bind(
+                        exact(KeyCode::Enter),
+                        |_| StrategySetupMessage::EditField,
+                        KeybindHint::new("Enter", "Edit field"),
+                    )
+                    .bind(
+                        exact(KeyCode::Char('s')),
+                        |_| StrategySetupMessage::AdvanceToConfirm,
+                        KeybindHint::new("s", "Save/Continue"),
+                    )
+                    .bind(
+                        exact(KeyCode::Esc),
+                        |_| StrategySetupMessage::GoBack,
+                        KeybindHint::new("Esc", "Back"),
+                    )
+                    .bind(
+                        exact(KeyCode::Char('q')),
+                        |_| StrategySetupMessage::Quit,
+                        KeybindHint::new("q", "Quit"),
+                    );
+                kb.subscribe(recipe)
+            }
+
+            StrategyWizardStep::Confirm => {
+                // confirm_yes is hashed into sub_id, so this recipe is rebuilt
+                // when confirm_yes changes, letting us pick the correct Enter handler.
+                let enter_msg: fn(KeyEvent) -> StrategySetupMessage = if self.confirm_yes {
+                    |_| StrategySetupMessage::ConfirmYes
+                } else {
+                    |_| StrategySetupMessage::GoBackToReview
+                };
+                let recipe = KeyBindingRecipe::new(sub_id)
+                    .priority(PRIORITY_NORMAL)
+                    .bind(
+                        exact(KeyCode::Left),
+                        |_| StrategySetupMessage::ToggleSelection,
+                        KeybindHint::new("←/→", "Toggle"),
+                    )
+                    .bind(
+                        exact(KeyCode::Right),
+                        |_| StrategySetupMessage::ToggleSelection,
+                        None,
+                    )
+                    .bind(
+                        exact(KeyCode::Char('h')),
+                        |_| StrategySetupMessage::ToggleSelection,
+                        None,
+                    )
+                    .bind(
+                        exact(KeyCode::Char('l')),
+                        |_| StrategySetupMessage::ToggleSelection,
+                        None,
+                    )
+                    .bind(
+                        exact(KeyCode::Char('y')),
+                        |_| StrategySetupMessage::ConfirmYes,
+                        KeybindHint::new("y/n", "Yes/No"),
+                    )
+                    .bind(
+                        exact(KeyCode::Char('n')),
+                        |_| StrategySetupMessage::ConfirmNo,
+                        None,
+                    )
+                    .bind(
+                        exact(KeyCode::Enter),
+                        enter_msg,
+                        KeybindHint::new("Enter", "Confirm"),
+                    )
+                    .bind(
+                        exact(KeyCode::Esc),
+                        |_| StrategySetupMessage::GoBackToReview,
+                        KeybindHint::new("Esc", "Back"),
+                    )
+                    .bind(
+                        exact(KeyCode::Char('q')),
+                        |_| StrategySetupMessage::Quit,
+                        KeybindHint::new("q", "Quit"),
+                    );
+                kb.subscribe(recipe)
+            }
+        }
+    }
+
+    pub fn update(&mut self, msg: StrategySetupMessage) -> Option<UserCommand> {
+        match msg {
+            // -- Input step --
+            StrategySetupMessage::StartEditing => {
+                self.input_editing = true;
+                None
+            }
+            StrategySetupMessage::StopEditing => {
+                self.input_editing = false;
+                None
+            }
+            StrategySetupMessage::TextInput(key) => {
+                if let Some(ti_msg) = TextInput::key_to_message(&key) {
+                    self.strategy_input.update(ti_msg);
+                }
+                None
+            }
+            StrategySetupMessage::SubmitText => {
+                if !self.strategy_input.value().trim().is_empty() {
+                    self.input_editing = false;
+                    self.step = StrategyWizardStep::Generating;
+                    self.generating = true;
+                    self.generation_output.clear();
+                    self.generation_error = None;
+                    let text = self.strategy_input.value().to_string();
+                    Some(UserCommand::OnboardingAction(
+                        OnboardingAction::ConfigureStrategyWithLlm(text),
+                    ))
+                } else if self.input_editing {
+                    // Already editing, text empty — do nothing
+                    None
+                } else {
+                    // Not editing, no text — enter edit mode
+                    self.input_editing = true;
+                    None
+                }
+            }
+
+            // -- Generating step --
+            StrategySetupMessage::Retry => {
+                self.generating = true;
+                self.generation_output.clear();
+                self.generation_error = None;
+                let text = self.strategy_input.value().to_string();
+                Some(UserCommand::OnboardingAction(
+                    OnboardingAction::ConfigureStrategyWithLlm(text),
+                ))
+            }
+            StrategySetupMessage::GoBackToInput => {
+                self.step = StrategyWizardStep::Input;
+                self.input_editing = true;
+                self.generating = false;
+                self.generation_error = None;
+                None
+            }
+
+            // -- Review: overview editing --
+            StrategySetupMessage::StartOverviewEdit => {
+                self.start_overview_editing();
+                None
+            }
+            StrategySetupMessage::OverviewInput(key) => {
+                if let Some(ti_msg) = TextInput::key_to_message(&key) {
+                    self.overview_input.update(ti_msg);
+                }
+                None
+            }
+            StrategySetupMessage::SubmitOverview => {
+                let text = self.overview_input.value().to_string();
+                if !text.trim().is_empty() {
+                    self.overview_editing = false;
+                    self.generating = true;
+                    self.generation_output.clear();
+                    self.generation_error = None;
+                    self.strategy_input.set_value(&text);
+                    Some(UserCommand::OnboardingAction(
+                        OnboardingAction::ConfigureStrategyWithLlm(text),
+                    ))
+                } else {
+                    None
+                }
+            }
+            StrategySetupMessage::CancelOverviewEdit => {
+                self.cancel_overview_editing();
+                None
+            }
+
+            // -- Review: cancel generation --
+            StrategySetupMessage::CancelGeneration => {
+                if self.generating || self.generation_error.is_some() {
+                    self.generating = false;
+                    self.generation_error = None;
+                    self.start_overview_editing();
+                }
+                None
+            }
+
+            // -- Review: field editing --
+            StrategySetupMessage::FieldDigit(c) => {
+                if !(c.is_ascii_digit() || c == '.') {
+                    return None;
+                }
+                self.field_input.insert_char(c);
+                None
+            }
+            StrategySetupMessage::FieldInput(ti_msg) => {
+                self.field_input.update(ti_msg);
+                None
+            }
+            StrategySetupMessage::ConfirmFieldEdit => {
+                if self.confirm_edit() {
+                    self.settings_dirty = true;
+                }
+                None
+            }
+            StrategySetupMessage::CancelFieldEdit => {
+                self.cancel_edit();
+                None
+            }
+            StrategySetupMessage::EditField => {
+                match self.review_section {
+                    ReviewSection::Overview => {
+                        self.start_overview_editing();
+                    }
+                    ReviewSection::BudgetField => {
+                        let current = format!("{}", self.hitting_budget_pct);
+                        self.start_editing("budget", &current);
+                    }
+                    ReviewSection::CategoryWeights => {
+                        let idx = self.selected_weight_idx;
+                        if idx < self.category_weights.len() {
+                            let cat_name = self.category_weights.categories()[idx].clone();
+                            let current = format!("{:.1}", self.category_weights.get(idx));
+                            self.start_editing(&cat_name, &current);
+                        }
+                    }
+                }
+                None
+            }
+
+            // -- Review: navigation --
+            StrategySetupMessage::NavigateUp => {
+                match self.review_section {
+                    ReviewSection::Overview => {}
+                    ReviewSection::BudgetField => {
+                        self.review_section = ReviewSection::Overview;
+                    }
+                    ReviewSection::CategoryWeights => {
+                        if self.selected_weight_idx < WEIGHT_COLS {
+                            self.review_section = ReviewSection::BudgetField;
+                        } else {
+                            self.weight_up();
+                        }
+                    }
+                }
+                None
+            }
+            StrategySetupMessage::NavigateDown => {
+                match self.review_section {
+                    ReviewSection::Overview => {
+                        self.review_section = ReviewSection::BudgetField;
+                    }
+                    ReviewSection::BudgetField => {
+                        self.review_section = ReviewSection::CategoryWeights;
+                    }
+                    ReviewSection::CategoryWeights => {
+                        self.weight_down();
+                    }
+                }
+                None
+            }
+            StrategySetupMessage::NavigateLeft => {
+                if self.review_section == ReviewSection::CategoryWeights {
+                    self.weight_left();
+                }
+                None
+            }
+            StrategySetupMessage::NavigateRight => {
+                if self.review_section == ReviewSection::CategoryWeights {
+                    self.weight_right();
+                }
+                None
+            }
+
+            // -- Review: flow --
+            StrategySetupMessage::AdvanceToConfirm => {
+                self.step = StrategyWizardStep::Confirm;
+                self.confirm_yes = true;
+                None
+            }
+            // -- Confirm step --
+            StrategySetupMessage::ToggleSelection => {
+                self.confirm_yes = !self.confirm_yes;
+                None
+            }
+            StrategySetupMessage::ConfirmYes => {
+                let weights = self.category_weights.clone();
+                let pct = self.hitting_budget_pct;
+                let overview = if self.strategy_overview.is_empty() {
+                    None
+                } else {
+                    Some(self.strategy_overview.clone())
+                };
+                Some(UserCommand::OnboardingAction(
+                    OnboardingAction::SaveStrategyConfig {
+                        hitting_budget_pct: pct,
+                        category_weights: weights,
+                        strategy_overview: overview,
+                    },
+                ))
+            }
+            StrategySetupMessage::ConfirmNo | StrategySetupMessage::GoBackToReview => {
+                self.step = StrategyWizardStep::Review;
+                None
+            }
+
+            // -- General --
+            StrategySetupMessage::GoBack => {
+                match self.step {
+                    StrategyWizardStep::Input => {
+                        Some(UserCommand::OnboardingAction(OnboardingAction::GoBack))
+                    }
+                    StrategyWizardStep::Review => {
+                        self.step = StrategyWizardStep::Input;
+                        self.input_editing = true;
+                        None
+                    }
+                    _ => None,
+                }
+            }
+            StrategySetupMessage::Quit => Some(UserCommand::Quit),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Render
+// ---------------------------------------------------------------------------
+
+/// Render the strategy setup wizard into the given area.
+pub fn render(frame: &mut Frame, area: Rect, state: &StrategySetupState) {
+    match state.step {
+        StrategyWizardStep::Input => render_input_step(frame, area, state),
+        StrategyWizardStep::Generating => render_generating_step(frame, area, state),
+        StrategyWizardStep::Review => render_review_step(frame, area, state),
+        StrategyWizardStep::Confirm => render_confirm_step(frame, area, state),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Step 1: Input
+// ---------------------------------------------------------------------------
+
+fn render_input_step(frame: &mut Frame, area: Rect, state: &StrategySetupState) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(Line::from(vec![Span::styled(
+            " Describe Your Draft Strategy ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]))
+        .title_alignment(Alignment::Center);
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let sections = Layout::vertical([
+        Constraint::Length(1), // top padding
+        Constraint::Length(2), // instructions
+        Constraint::Length(1), // spacer
+        Constraint::Min(6),   // text area (fills remaining space)
+        Constraint::Length(1), // spacer / error overlay
+    ])
+    .split(inner);
+
+    // Horizontal centering
+    let content_width = 70u16.min(inner.width);
+    let h_offset = (inner.width.saturating_sub(content_width)) / 2;
+    let content_rect = |row: Rect| -> Rect {
+        Rect {
+            x: row.x + h_offset,
+            y: row.y,
+            width: content_width.min(row.width.saturating_sub(h_offset)),
+            height: row.height,
+        }
+    };
+
+    // Instructions
+    let instructions = Paragraph::new(vec![
+        Line::from(Span::styled(
+            "Describe your draft strategy in plain English below.",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "The AI will generate budget split, category weights, and a strategy overview.",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ]);
+    frame.render_widget(instructions, content_rect(sections[1]));
+
+    // Text area
+    let border_style = if state.input_editing {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::White)
+    };
+
+    let input_value = state.strategy_input.value();
+    let text_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style);
+
+    let text_para = if state.input_editing {
+        let text_style = Style::default().fg(Color::White);
+        let cursor_style = Style::default().fg(Color::Black).bg(Color::Cyan);
+        let selection_style = Style::default().fg(Color::White).bg(Color::DarkGray);
+        let input_spans = state.strategy_input.styled_spans(text_style, cursor_style, selection_style);
+        Paragraph::new(Line::from(input_spans))
+        .block(text_block)
+        .wrap(Wrap { trim: false })
+    } else if input_value.is_empty() {
+        Paragraph::new(Line::from(Span::styled(
+            "e.g. Stars-and-scrubs, punt saves, heavy on BB and HD...",
+            Style::default().fg(Color::DarkGray),
+        )))
+        .block(text_block)
+        .wrap(Wrap { trim: false })
+    } else {
+        Paragraph::new(Line::from(Span::styled(
+            input_value,
+            Style::default().fg(Color::White),
+        )))
+        .block(text_block)
+        .wrap(Wrap { trim: false })
+    };
+
+    frame.render_widget(text_para, content_rect(sections[3]));
+
+    // Error message if present (from a previous failed generation)
+    if let Some(ref err) = state.generation_error {
+        // Overlay error on the last line of the text area
+        let err_line = Line::from(Span::styled(
+            format!("  Error: {}", err),
+            Style::default().fg(Color::Red),
+        ));
+        let err_area = content_rect(sections[4]);
+        frame.render_widget(Paragraph::new(err_line), err_area);
+    }
+
+}
+
+// ---------------------------------------------------------------------------
+// Step 2: Generating
+// ---------------------------------------------------------------------------
+
+fn render_generating_step(frame: &mut Frame, area: Rect, state: &StrategySetupState) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(Line::from(vec![Span::styled(
+            " Configure Your Draft Strategy ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]))
+        .title_alignment(Alignment::Center);
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if state.generation_error.is_some() {
+        // Error state: show error message centered with retry/back options
+        let sections = Layout::vertical([
+            Constraint::Min(1),    // top spacer
+            Constraint::Length(1), // error icon
+            Constraint::Length(1), // spacer
+            Constraint::Length(2), // error message
+            Constraint::Min(1),    // bottom spacer
+        ])
+        .split(inner);
+
+        let content_width = 60u16.min(inner.width);
+        let h_offset = (inner.width.saturating_sub(content_width)) / 2;
+        let content_rect = |row: Rect| -> Rect {
+            Rect {
+                x: row.x + h_offset,
+                y: row.y,
+                width: content_width.min(row.width.saturating_sub(h_offset)),
+                height: row.height,
+            }
+        };
+
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "Generation failed",
+                Style::default()
+                    .fg(Color::Red)
+                    .add_modifier(Modifier::BOLD),
+            )))
+            .alignment(Alignment::Center),
+            content_rect(sections[1]),
+        );
+
+        if let Some(ref err) = state.generation_error {
+            frame.render_widget(
+                Paragraph::new(Span::styled(err.as_str(), Style::default().fg(Color::Red)))
+                    .alignment(Alignment::Center)
+                    .wrap(Wrap { trim: false }),
+                content_rect(sections[3]),
+            );
+        }
+
+    } else {
+        // Generating: centered "Thinking..." with a simple animation
+        let sections = Layout::vertical([
+            Constraint::Min(1),    // top spacer
+            Constraint::Length(1), // thinking text
+            Constraint::Length(1), // dots
+            Constraint::Min(1),    // bottom spacer
+        ])
+        .split(inner);
+
+        let content_width = 40u16.min(inner.width);
+        let h_offset = (inner.width.saturating_sub(content_width)) / 2;
+        let content_rect = |row: Rect| -> Rect {
+            Rect {
+                x: row.x + h_offset,
+                y: row.y,
+                width: content_width.min(row.width.saturating_sub(h_offset)),
+                height: row.height,
+            }
+        };
+
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "Thinking...",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )))
+            .alignment(Alignment::Center),
+            content_rect(sections[1]),
+        );
+
+        // Subtle animated dots based on output length (each token advances the animation)
+        let dot_count = (state.generation_output.len() / 20) % 4;
+        let dots = ".".repeat(dot_count);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                dots,
+                Style::default().fg(Color::DarkGray),
+            )))
+            .alignment(Alignment::Center),
+            content_rect(sections[2]),
+        );
+
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Step 3: Review
+// ---------------------------------------------------------------------------
+
+fn render_review_step(frame: &mut Frame, area: Rect, state: &StrategySetupState) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(Line::from(vec![Span::styled(
+            " Review Your Strategy ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]))
+        .title_alignment(Alignment::Center);
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Keybind hints are shown exclusively in the app-level bottom help bar
+    // (see compute_settings_keybinds / compute_onboarding_keybinds in tui/mod.rs).
+    let num_weight_rows = state.category_weights.len().div_ceil(WEIGHT_COLS);
+    let sections = Layout::vertical([
+        Constraint::Length(1),  // top padding
+        Constraint::Length(1),  // "Strategy Overview:" label
+        Constraint::Min(6),    // overview text (fills available space)
+        Constraint::Length(1),  // spacer
+        Constraint::Length(1),  // budget field
+        Constraint::Length(1),  // spacer
+        Constraint::Length(1),  // "Category Weights:" label
+        Constraint::Length(num_weight_rows as u16),  // weight grid
+    ])
+    .split(inner);
+
+    let content_width = 70u16.min(inner.width);
+    let h_offset = (inner.width.saturating_sub(content_width)) / 2;
+    let content_rect = |row: Rect| -> Rect {
+        Rect {
+            x: row.x + h_offset,
+            y: row.y,
+            width: content_width.min(row.width.saturating_sub(h_offset)),
+            height: row.height,
+        }
+    };
+
+    // --- Strategy Overview ---
+    let overview_active = state.review_section == ReviewSection::Overview;
+    let overview_label_style = if overview_active {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+
+    // Show status badge next to label
+    let label_spans = if state.generating {
+        vec![
+            Span::styled("Strategy Overview:  ", overview_label_style),
+            Span::styled(
+                "Thinking...",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]
+    } else if state.generation_error.is_some() {
+        vec![
+            Span::styled("Strategy Overview:  ", overview_label_style),
+            Span::styled(
+                "[error]",
+                Style::default()
+                    .fg(Color::Red)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]
+    } else if state.overview_editing {
+        vec![
+            Span::styled("Strategy Overview:  ", overview_label_style),
+            Span::styled(
+                "[editing]",
+                Style::default().fg(Color::Cyan),
+            ),
+        ]
+    } else {
+        vec![Span::styled("Strategy Overview:", overview_label_style)]
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(label_spans)),
+        content_rect(sections[1]),
+    );
+
+    let overview_border = if state.overview_editing {
+        Style::default().fg(Color::Yellow)
+    } else if overview_active {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let overview_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(overview_border);
+
+    if state.overview_editing {
+        // Editable text input with cursor
+        let text_style = Style::default().fg(Color::White);
+        let cursor_style = Style::default().fg(Color::Black).bg(Color::Yellow);
+        let selection_style = Style::default().fg(Color::White).bg(Color::DarkGray);
+        let input_spans = state.overview_input.styled_spans(text_style, cursor_style, selection_style);
+        let overview_para = Paragraph::new(Line::from(input_spans))
+        .block(overview_block)
+        .wrap(Wrap { trim: false });
+        frame.render_widget(overview_para, content_rect(sections[2]));
+    } else if state.generating {
+        // Generating: show animated dots in the overview area
+        let dot_count = (state.generation_output.len() / 20) % 4;
+        let dots = ".".repeat(dot_count);
+        let overview_para = Paragraph::new(Span::styled(
+            dots,
+            Style::default().fg(Color::DarkGray),
+        ))
+        .block(overview_block)
+        .wrap(Wrap { trim: false });
+        frame.render_widget(overview_para, content_rect(sections[2]));
+    } else if let Some(ref err) = state.generation_error {
+        // Error state: show error message in red
+        let error_lines = vec![
+            Line::from(Span::styled(
+                format!("Error: {err}"),
+                Style::default().fg(Color::Red),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Esc: back to editing | Enter: retry",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ];
+        let overview_para = Paragraph::new(error_lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Red)),
+            )
+            .wrap(Wrap { trim: false });
+        frame.render_widget(overview_para, content_rect(sections[2]));
+    } else {
+        let overview_text = if state.strategy_overview.is_empty() {
+            "(No overview generated)"
+        } else {
+            &state.strategy_overview
+        };
+        let overview_para = Paragraph::new(Span::styled(
+            overview_text,
+            Style::default().fg(Color::White),
+        ))
+        .block(overview_block)
+        .wrap(Wrap { trim: false });
+        frame.render_widget(overview_para, content_rect(sections[2]));
+    };
+
+    // --- Budget field ---
+    render_budget_field(frame, content_rect(sections[4]), state);
+
+    // --- Category weights label ---
+    let weights_active = state.review_section == ReviewSection::CategoryWeights;
+    let weights_label_style = if weights_active {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "Category Weights:",
+            weights_label_style,
+        ))),
+        content_rect(sections[6]),
+    );
+
+    // --- Weight grid ---
+    render_weight_grid(frame, content_rect(sections[7]), state);
+}
+
+// ---------------------------------------------------------------------------
+// Step 4: Confirm
+// ---------------------------------------------------------------------------
+
+fn render_confirm_step(frame: &mut Frame, area: Rect, state: &StrategySetupState) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(Line::from(vec![Span::styled(
+            " Save Strategy ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]))
+        .title_alignment(Alignment::Center);
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let sections = Layout::vertical([
+        Constraint::Min(1),    // centering space
+        Constraint::Length(1), // question
+        Constraint::Length(2), // spacer
+        Constraint::Length(1), // yes/no buttons
+        Constraint::Min(1),    // centering space
+    ])
+    .split(inner);
+
+    let content_width = 50u16.min(inner.width);
+    let h_offset = (inner.width.saturating_sub(content_width)) / 2;
+    let content_rect = |row: Rect| -> Rect {
+        Rect {
+            x: row.x + h_offset,
+            y: row.y,
+            width: content_width.min(row.width.saturating_sub(h_offset)),
+            height: row.height,
+        }
+    };
+
+    // Question
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "Save this draft strategy?",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .alignment(Alignment::Center),
+        content_rect(sections[1]),
+    );
+
+    // Yes/No buttons
+    let yes_style = if state.confirm_yes {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Green)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Green)
+    };
+
+    let no_style = if !state.confirm_yes {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Red)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Red)
+    };
+
+    let buttons = Line::from(vec![
+        Span::styled("  [ Yes, save and enter draft ]", yes_style),
+        Span::styled("    ", Style::default()),
+        Span::styled("[ No, go back ]", no_style),
+    ]);
+    frame.render_widget(
+        Paragraph::new(buttons).alignment(Alignment::Center),
+        content_rect(sections[3]),
+    );
+
+}
+
+// ---------------------------------------------------------------------------
+// Render helpers (shared across steps)
+// ---------------------------------------------------------------------------
+
+/// Render the budget field.
+fn render_budget_field(frame: &mut Frame, area: Rect, state: &StrategySetupState) {
+    let active = state.review_section == ReviewSection::BudgetField;
+    let editing = state.editing_field.as_deref() == Some("budget");
+
+    let label_style = if active {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+
+    let value_style = if editing {
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
+    } else if active {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+
+    let line = if editing {
+        let cursor_style = Style::default().fg(Color::Black).bg(Color::Cyan);
+        let selection_style = Style::default().fg(Color::White).bg(Color::DarkGray);
+        let mut spans = vec![
+            Span::styled("  Budget (hitting %):     ", label_style),
+            Span::styled("[ ", value_style),
+        ];
+        spans.extend(state.field_input.styled_spans(value_style, cursor_style, selection_style));
+        spans.push(Span::styled(" ]", value_style));
+        Line::from(spans)
+    } else {
+        Line::from(vec![
+            Span::styled("  Budget (hitting %):     ", label_style),
+            Span::styled(format!("[ {} ]", state.hitting_budget_pct), value_style),
+        ])
+    };
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+/// Render the category weight grid.
+fn render_weight_grid(frame: &mut Frame, area: Rect, state: &StrategySetupState) {
+    let weights_active = state.review_section == ReviewSection::CategoryWeights;
+    let cat_count = state.category_weights.len();
+    let num_rows = cat_count.div_ceil(WEIGHT_COLS);
+
+    for row in 0..num_rows {
+        if row as u16 >= area.height {
+            break;
+        }
+        let row_rect = Rect {
+            x: area.x,
+            y: area.y + row as u16,
+            width: area.width,
+            height: 1,
+        };
+
+        let mut spans = vec![Span::styled("  ", Style::default())];
+
+        for col in 0..WEIGHT_COLS {
+            let idx = row * WEIGHT_COLS + col;
+            if idx >= cat_count {
+                break;
+            }
+
+            let cat_name = &state.category_weights.categories()[idx];
+            let is_selected = weights_active && idx == state.selected_weight_idx;
+            let is_editing =
+                is_selected && state.editing_field.as_deref() == Some(cat_name.as_str());
+
+            let name_style = if is_selected {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+
+            let value_style = if is_editing {
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else if is_selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+
+            spans.push(Span::styled(
+                format!("{:<4}", cat_name),
+                name_style,
+            ));
+
+            if is_editing {
+                let cursor_style = Style::default().fg(Color::Black).bg(Color::Cyan);
+                let selection_style = Style::default().fg(Color::White).bg(Color::DarkGray);
+                spans.push(Span::styled("[ ", value_style));
+                spans.extend(state.field_input.styled_spans(value_style, cursor_style, selection_style));
+                spans.push(Span::styled(" ]", value_style));
+            } else {
+                spans.push(Span::styled(
+                    format!("[ {:<4}]", format!("{:.1}", state.category_weights.get(idx))),
+                    value_style,
+                ));
+            }
+            if col < WEIGHT_COLS - 1 {
+                spans.push(Span::styled("  ", Style::default()));
+            }
+        }
+
+        frame.render_widget(Paragraph::new(Line::from(spans)), row_rect);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- CategoryWeights tests --
+
+    #[test]
+    fn default_weights() {
+        let w = CategoryWeights::default();
+        assert!((w.get_by_name("R").unwrap() - 1.0).abs() < f32::EPSILON);
+        assert!((w.get_by_name("SV").unwrap() - 0.7).abs() < f32::EPSILON);
+        assert!((w.get_by_name("HD").unwrap() - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn get_set_roundtrip() {
+        let mut w = CategoryWeights::default();
+        w.set(3, 1.3); // BB
+        assert!((w.get(3) - 1.3).abs() < f32::EPSILON);
+        assert!((w.get_by_name("BB").unwrap() - 1.3).abs() < f32::EPSILON);
+
+        w.set(8, 0.3); // SV
+        assert!((w.get(8) - 0.3).abs() < f32::EPSILON);
+        assert!((w.get_by_name("SV").unwrap() - 0.3).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn get_out_of_bounds_returns_default() {
+        let w = CategoryWeights::default();
+        assert!((w.get(99) - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn set_out_of_bounds_is_noop() {
+        let mut w = CategoryWeights::default();
+        w.set(99, 5.0);
+        // No crash, values unchanged
+        assert!((w.get_by_name("R").unwrap() - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn to_from_config_roundtrip() {
+        let w = CategoryWeights::from_values(&[1.0, 1.1, 0.9, 1.3, 1.0, 1.0, 1.0, 1.0, 0.3, 1.2, 1.0, 1.0]);
+        let config_w = w.to_config_weights();
+        let back = CategoryWeights::from_config_weights(&config_w, default_categories());
+        // Compare within f32 precision (f64->f32 loses some precision)
+        for i in 0..12 {
+            assert!(
+                (w.get(i) - back.get(i)).abs() < 0.001,
+                "mismatch at index {}: {} vs {}",
+                i,
+                w.get(i),
+                back.get(i)
+            );
+        }
+    }
+
+    // -- StrategySetupState tests --
+
+    #[test]
+    fn default_state() {
+        let s = StrategySetupState::default();
+        assert_eq!(s.step, StrategyWizardStep::Input);
+        assert_eq!(s.hitting_budget_pct, 65);
+        assert!(!s.generating);
+        assert!(s.input_editing); // auto-focused
+        assert!(s.editing_field.is_none());
+        assert_eq!(s.review_section, ReviewSection::Overview);
+        assert!(s.confirm_yes);
+    }
+
+    #[test]
+    fn review_section_next_wraps() {
+        let s = ReviewSection::CategoryWeights;
+        assert_eq!(s.next(), ReviewSection::Overview);
+    }
+
+    #[test]
+    fn review_section_prev_wraps() {
+        let s = ReviewSection::Overview;
+        assert_eq!(s.prev(), ReviewSection::CategoryWeights);
+    }
+
+    #[test]
+    fn review_section_next_cycle() {
+        let s = ReviewSection::Overview;
+        assert_eq!(s.next(), ReviewSection::BudgetField);
+        assert_eq!(s.next().next(), ReviewSection::CategoryWeights);
+    }
+
+    #[test]
+    fn weight_navigation() {
+        let mut s = StrategySetupState::default();
+        assert_eq!(s.selected_weight_idx, 0);
+
+        s.weight_right();
+        assert_eq!(s.selected_weight_idx, 1);
+
+        s.weight_down();
+        assert_eq!(s.selected_weight_idx, 4); // 1 + WEIGHT_COLS(3) = 4
+
+        s.weight_left();
+        assert_eq!(s.selected_weight_idx, 3);
+
+        s.weight_up();
+        assert_eq!(s.selected_weight_idx, 0);
+    }
+
+    #[test]
+    fn weight_navigation_bounds() {
+        let mut s = StrategySetupState::default();
+        s.weight_left(); // Already at 0, should stay
+        assert_eq!(s.selected_weight_idx, 0);
+
+        s.weight_up(); // Already at top, should stay
+        assert_eq!(s.selected_weight_idx, 0);
+
+        s.selected_weight_idx = 11; // Last index
+        s.weight_right(); // At end, should stay
+        assert_eq!(s.selected_weight_idx, 11);
+
+        s.weight_down(); // Would go past end, should stay
+        assert_eq!(s.selected_weight_idx, 11);
+    }
+
+    #[test]
+    fn edit_budget_field() {
+        let mut s = StrategySetupState::default();
+        s.start_editing("budget", "65");
+        assert_eq!(s.editing_field.as_deref(), Some("budget"));
+        assert_eq!(s.field_input.value(), "65");
+
+        s.field_input.set_value("70");
+        assert!(s.confirm_edit());
+        assert_eq!(s.hitting_budget_pct, 70);
+        assert!(s.editing_field.is_none());
+    }
+
+    #[test]
+    fn edit_budget_rejects_over_100() {
+        let mut s = StrategySetupState::default();
+        s.start_editing("budget", "65");
+        s.field_input.set_value("101");
+        assert!(!s.confirm_edit());
+        assert_eq!(s.hitting_budget_pct, 65); // unchanged
+        // Editing state should be preserved so user can retry
+        assert_eq!(s.editing_field.as_deref(), Some("budget"));
+        assert_eq!(s.field_input.value(), "101");
+    }
+
+    #[test]
+    fn edit_weight_field() {
+        let mut s = StrategySetupState::default();
+        s.start_editing("BB", "1.0");
+        s.field_input.set_value("1.3");
+        assert!(s.confirm_edit());
+        assert!((s.category_weights.get_by_name("BB").unwrap() - 1.3).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn edit_weight_accepts_zero() {
+        let mut s = StrategySetupState::default();
+        s.start_editing("SV", "0.7");
+        s.field_input.set_value("0.0");
+        assert!(s.confirm_edit());
+        assert!((s.category_weights.get_by_name("SV").unwrap() - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn edit_weight_rejects_negative() {
+        let mut s = StrategySetupState::default();
+        s.start_editing("SV", "0.7");
+        s.field_input.set_value("-0.1");
+        assert!(!s.confirm_edit());
+        assert!((s.category_weights.get_by_name("SV").unwrap() - 0.7).abs() < f32::EPSILON);
+        // Editing state should be preserved so user can retry
+        assert_eq!(s.editing_field.as_deref(), Some("SV"));
+    }
+
+    #[test]
+    fn edit_weight_rejects_over_5() {
+        let mut s = StrategySetupState::default();
+        s.start_editing("R", "1.0");
+        s.field_input.set_value("5.1");
+        assert!(!s.confirm_edit());
+        // Editing state should be preserved so user can retry
+        assert_eq!(s.editing_field.as_deref(), Some("R"));
+    }
+
+    #[test]
+    fn cancel_edit() {
+        let mut s = StrategySetupState::default();
+        s.start_editing("budget", "65");
+        s.field_input.set_value("99");
+        s.cancel_edit();
+        assert!(s.editing_field.is_none());
+        assert_eq!(s.hitting_budget_pct, 65); // unchanged
+    }
+
+    #[test]
+    fn is_editing_checks() {
+        let mut s = StrategySetupState::default();
+        // Default has input_editing = true
+        assert!(s.is_editing());
+
+        s.input_editing = false;
+        assert!(!s.is_editing());
+
+        s.editing_field = Some("budget".to_string());
+        assert!(s.is_editing());
+    }
+
+    // -- Render tests --
+
+    #[test]
+    fn render_input_step_does_not_panic() {
+        let backend = ratatui::backend::TestBackend::new(80, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let state = StrategySetupState::default();
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state))
+            .unwrap();
+    }
+
+    #[test]
+    fn render_generating_step_does_not_panic() {
+        let backend = ratatui::backend::TestBackend::new(80, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut state = StrategySetupState::default();
+        state.step = StrategyWizardStep::Generating;
+        state.generating = true;
+        state.generation_output = "Processing...".to_string();
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state))
+            .unwrap();
+    }
+
+    #[test]
+    fn render_review_step_does_not_panic() {
+        let backend = ratatui::backend::TestBackend::new(80, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut state = StrategySetupState::default();
+        state.step = StrategyWizardStep::Review;
+        state.strategy_overview = "Stars-and-scrubs approach.".to_string();
+        state.review_section = ReviewSection::BudgetField;
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state))
+            .unwrap();
+    }
+
+    #[test]
+    fn render_confirm_step_does_not_panic() {
+        let backend = ratatui::backend::TestBackend::new(80, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut state = StrategySetupState::default();
+        state.step = StrategyWizardStep::Confirm;
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state))
+            .unwrap();
+    }
+
+    #[test]
+    fn render_review_editing_does_not_panic() {
+        let backend = ratatui::backend::TestBackend::new(80, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut state = StrategySetupState::default();
+        state.step = StrategyWizardStep::Review;
+        state.editing_field = Some("budget".to_string());
+        state.field_input.set_value("70");
+        state.review_section = ReviewSection::BudgetField;
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state))
+            .unwrap();
+    }
+
+    #[test]
+    fn render_generating_error_does_not_panic() {
+        let backend = ratatui::backend::TestBackend::new(80, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut state = StrategySetupState::default();
+        state.step = StrategyWizardStep::Generating;
+        state.generation_error = Some("LLM disabled".to_string());
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state))
+            .unwrap();
+    }
+
+    #[test]
+    fn render_small_terminal_does_not_panic() {
+        let backend = ratatui::backend::TestBackend::new(40, 15);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let state = StrategySetupState::default();
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state))
+            .unwrap();
+    }
+
+    // -- Overview editing tests --
+
+    #[test]
+    fn start_overview_editing_copies_text() {
+        let mut s = StrategySetupState::default();
+        s.strategy_overview = "Stars-and-scrubs approach.".to_string();
+        s.start_overview_editing();
+        assert!(s.overview_editing);
+        assert_eq!(s.overview_input.value(), "Stars-and-scrubs approach.");
+    }
+
+    #[test]
+    fn cancel_overview_editing_clears_input() {
+        let mut s = StrategySetupState::default();
+        s.strategy_overview = "Original overview.".to_string();
+        s.start_overview_editing();
+        s.overview_input.set_value("Modified text");
+        s.cancel_overview_editing();
+        assert!(!s.overview_editing);
+        assert!(s.overview_input.is_empty());
+        // Original overview is unchanged
+        assert_eq!(s.strategy_overview, "Original overview.");
+    }
+
+    #[test]
+    fn is_editing_includes_overview_editing() {
+        let mut s = StrategySetupState::default();
+        s.input_editing = false;
+        assert!(!s.is_editing());
+
+        s.overview_editing = true;
+        assert!(s.is_editing());
+    }
+
+    // -- Settings snapshot tests --
+
+    #[test]
+    fn snapshot_and_restore_settings() {
+        let mut s = StrategySetupState::default();
+        s.strategy_overview = "Original".to_string();
+        s.hitting_budget_pct = 65;
+        // BB is index 3 in default categories
+        s.category_weights.set(3, 1.3);
+        s.snapshot_settings();
+
+        // Modify values
+        s.strategy_overview = "Modified".to_string();
+        s.hitting_budget_pct = 80;
+        s.category_weights.set(3, 2.0);
+        s.settings_dirty = true;
+        s.overview_editing = true;
+
+        // Restore
+        s.restore_settings_snapshot();
+        assert_eq!(s.strategy_overview, "Original");
+        assert_eq!(s.hitting_budget_pct, 65);
+        assert!((s.category_weights.get_by_name("BB").unwrap() - 1.3).abs() < f32::EPSILON);
+        assert!(!s.settings_dirty);
+        assert!(!s.overview_editing);
+    }
+
+    // -- Render tests for new states --
+
+    #[test]
+    fn render_review_overview_editing_does_not_panic() {
+        let backend = ratatui::backend::TestBackend::new(80, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut state = StrategySetupState::default();
+        state.step = StrategyWizardStep::Review;
+        state.overview_editing = true;
+        state.overview_input.set_value("Editing this strategy text");
+        state.review_section = ReviewSection::Overview;
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state))
+            .unwrap();
+    }
+
+    #[test]
+    fn render_review_generating_does_not_panic() {
+        let backend = ratatui::backend::TestBackend::new(80, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut state = StrategySetupState::default();
+        state.step = StrategyWizardStep::Review;
+        state.generating = true;
+        state.generation_output = "Processing tokens...".to_string();
+        state.review_section = ReviewSection::Overview;
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state))
+            .unwrap();
+    }
+}
