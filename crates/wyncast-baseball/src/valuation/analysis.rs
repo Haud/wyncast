@@ -4,9 +4,9 @@
 // needs, and category impact into a single actionable verdict for each
 // nominated player.
 
+use wyncast_core::stats::{CategoryValues, StatRegistry};
 use crate::draft::pick::Position;
 use crate::draft::roster::Roster;
-use crate::stats::{CategoryValues, StatRegistry};
 use crate::valuation::auction::InflationTracker;
 use crate::valuation::scarcity::{ScarcityEntry, ScarcityUrgency, scarcity_for_position};
 use crate::valuation::zscore::PlayerValuation;
@@ -342,7 +342,7 @@ fn find_similar_players(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stats::CategoryValues;
+    use wyncast_core::stats::CategoryValues;
     use crate::test_utils::{approx_eq, test_registry, test_roster_config, TestPlayer};
     use crate::valuation::auction::InflationTracker;
     use crate::valuation::scarcity::compute_scarcity;

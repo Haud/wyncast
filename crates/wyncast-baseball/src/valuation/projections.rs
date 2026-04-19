@@ -3,9 +3,9 @@
 // Reads Razzball-format CSV files: a single combined pitchers CSV with a POS
 // column (SP/RP) and an HLD column containing real holds data.
 
-use crate::config::{Config, DataPaths};
-use crate::protocol::EspnPlayerProjection;
-use crate::stats::ProjectionData;
+use wyncast_core::config::{Config, DataPaths};
+use wyncast_core::espn::EspnPlayerProjection;
+use wyncast_core::stats::ProjectionData;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::Path;
@@ -338,7 +338,7 @@ fn resolve_data_path(raw: &str) -> std::path::PathBuf {
     }
 
     // Release (and debug fallback): resolve relative to app data dir
-    crate::app_dirs::app_data_dir().join(p)
+    wyncast_core::app_dirs::app_data_dir().join(p)
 }
 
 /// Load all projection data from explicit paths. Exposed for testing and flexibility.
@@ -901,7 +901,7 @@ Bobby Witt Jr.,KC, SS ,652,590,171,27,96,87,49,32,0.289";
 
     // -- ESPN projection conversion tests --
 
-    use crate::protocol::{EspnBattingProjection, EspnPitchingProjection, EspnPlayerProjection};
+    use wyncast_core::espn::{EspnBattingProjection, EspnPitchingProjection, EspnPlayerProjection};
 
     fn make_espn_hitter(name: &str, pos_id: u16) -> EspnPlayerProjection {
         EspnPlayerProjection {

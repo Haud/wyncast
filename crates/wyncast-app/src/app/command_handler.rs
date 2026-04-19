@@ -43,7 +43,7 @@ pub(super) async fn handle_user_command(
             );
             if team_idx < state.draft_state.teams.len() {
                 let team = &state.draft_state.teams[team_idx];
-                let pick = crate::draft::pick::DraftPick {
+                let pick = wyncast_baseball::draft::pick::DraftPick {
                     pick_number: 0, // overwritten by record_pick
                     team_id: team.team_id.clone(),
                     team_name: team.team_name.clone(),
@@ -92,12 +92,12 @@ pub(super) async fn handle_user_command(
                 .onboarding_progress
                 .llm_provider
                 .clone()
-                .unwrap_or(crate::llm::provider::LlmProvider::Anthropic);
+                .unwrap_or(wyncast_core::llm::provider::LlmProvider::Anthropic);
             let raw_key = get_api_key_for_provider(&provider, &state.config);
             let mask = if raw_key.is_empty() {
                 None
             } else {
-                let m = crate::tui::onboarding::llm_setup::mask_api_key(&raw_key);
+                let m = crate::onboarding::strategy_config::mask_api_key(&raw_key);
                 if m.is_empty() { None } else { Some(m) }
             };
             let _ = ui_tx
@@ -161,9 +161,9 @@ pub(super) async fn handle_user_command(
             // Review step with the correct values (including strategy_overview).
             if section == crate::protocol::SettingsSection::StrategyConfig {
                 let pct = (state.config.strategy.hitting_budget_fraction * 100.0).round() as u8;
-                let weights = crate::tui::onboarding::strategy_setup::CategoryWeights::from_config_weights(
+                let weights = crate::onboarding::strategy_config::CategoryWeights::from_config_weights(
                     &state.config.strategy.weights,
-                    crate::tui::onboarding::strategy_setup::categories_from_league(&state.config.league),
+                    crate::onboarding::strategy_config::categories_from_league(&state.config.league),
                 );
                 let overview = state.config.strategy.strategy_overview.clone().unwrap_or_default();
                 let _ = ui_tx

@@ -20,28 +20,28 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tracing::{info, warn};
 
-use crate::config::Config;
-use crate::db::Database;
-use crate::draft::pick::{playing_positions_from_slots, Position};
-use crate::draft::state::{
+use wyncast_core::config::Config;
+use wyncast_core::db::Database;
+use wyncast_baseball::draft::pick::{playing_positions_from_slots, Position};
+use wyncast_baseball::draft::state::{
     ActiveNomination, DraftState, NominationPayload, PickPayload,
     StateUpdatePayload, TeamBudgetPayload,
 };
-use crate::llm::client::LlmClient;
-use crate::llm::prompt::{self, BudgetContext};
+use wyncast_llm::client::LlmClient;
+use wyncast_baseball::llm::prompt::{self, BudgetContext};
 
 use crate::onboarding::{OnboardingManager, OnboardingProgress, RealFileSystem};
 use crate::protocol::{
     AppMode, AppSnapshot, ConnectionStatus, LlmEvent, NominationInfo,
     TabId, TeamSnapshot, UiUpdate, UserCommand,
 };
-use crate::stats::{CategoryValues, StatRegistry};
-use crate::valuation::analysis::{compute_instant_analysis, InstantAnalysis};
-use crate::valuation::auction::InflationTracker;
-use crate::valuation::projections::AllProjections;
-use crate::valuation::scarcity::{compute_scarcity, ScarcityEntry};
-use crate::valuation::zscore::PlayerValuation;
-use crate::ws_server::WsEvent;
+use wyncast_core::stats::{CategoryValues, StatRegistry};
+use wyncast_baseball::valuation::analysis::{compute_instant_analysis, InstantAnalysis};
+use wyncast_baseball::valuation::auction::InflationTracker;
+use wyncast_baseball::valuation::projections::AllProjections;
+use wyncast_baseball::valuation::scarcity::{compute_scarcity, ScarcityEntry};
+use wyncast_baseball::valuation::zscore::PlayerValuation;
+use wyncast_core::ws_server::WsEvent;
 
 // ---------------------------------------------------------------------------
 // Supporting types
@@ -143,7 +143,7 @@ pub struct AppState {
     /// `None` until roster is inferred from the ESPN draft board.
     pub roster_config: Option<std::collections::HashMap<String, usize>>,
     /// Latest matchup snapshot received from the extension.
-    pub matchup_snapshot: Option<crate::matchup::MatchupSnapshot>,
+    pub matchup_snapshot: Option<wyncast_baseball::matchup::MatchupSnapshot>,
 }
 
 impl AppState {
@@ -266,7 +266,7 @@ impl AppState {
         let (Some(projections), Some(roster)) = (&self.all_projections, &self.roster_config) else {
             return;
         };
-        self.available_players = crate::valuation::compute_initial(
+        self.available_players = wyncast_baseball::valuation::compute_initial(
             projections,
             &self.config,
             roster,
@@ -315,7 +315,7 @@ impl AppState {
     /// 4. Update inflation and scarcity
     pub fn process_new_picks(
         &mut self,
-        new_picks: Vec<crate::draft::pick::DraftPick>,
+        new_picks: Vec<wyncast_baseball::draft::pick::DraftPick>,
     ) {
         if new_picks.is_empty() {
             return;
@@ -996,17 +996,17 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::sync::atomic::Ordering;
-    use crate::config::*;
-    use crate::db::Database;
-    use crate::draft::pick::{DraftPick, Position};
-    use crate::draft::state::{ActiveNomination, DraftState};
+    use wyncast_core::config::*;
+    use wyncast_core::db::Database;
+    use wyncast_baseball::draft::pick::{DraftPick, Position};
+    use wyncast_baseball::draft::state::{ActiveNomination, DraftState};
     use crate::protocol::{LlmEvent, OnboardingAction, OnboardingUpdate, UserCommand};
-    use crate::test_utils::{
+    use wyncast_baseball::test_utils::{
         self, make_hitter, make_pitcher, test_espn_budgets, test_registry, test_roster_config,
         test_strategy_config,
     };
-    use crate::valuation::projections::{AllProjections, PitcherType};
-    use crate::valuation::zscore::PlayerValuation;
+    use wyncast_baseball::valuation::projections::{AllProjections, PitcherType};
+    use wyncast_baseball::valuation::zscore::PlayerValuation;
 
     // -----------------------------------------------------------------------
     // Test helpers
@@ -1137,7 +1137,7 @@ mod tests {
         let test_roster = AppState::default_roster_config();
         let registry = StatRegistry::from_league_config(&config.league)
             .expect("test registry");
-        crate::valuation::recalculate_all(
+        wyncast_baseball::valuation::recalculate_all(
             &mut available,
             &test_roster,
             &config.league,
@@ -2817,7 +2817,7 @@ mod tests {
         let test_roster = AppState::default_roster_config();
         let registry = StatRegistry::from_league_config(&config.league)
             .expect("test registry");
-        crate::valuation::recalculate_all(
+        wyncast_baseball::valuation::recalculate_all(
             &mut available,
             &test_roster,
             &config.league,
@@ -2880,12 +2880,12 @@ mod tests {
         // Step 2: reconcile_budgets registers teams (first call)
         // This also calls replay_pending_picks
         let budgets = vec![
-            crate::draft::state::TeamBudgetPayload {
+            wyncast_baseball::draft::state::TeamBudgetPayload {
                 team_id: "1".into(),
                 team_name: "Team Alpha".into(),
                 budget: 215, // 260 - 45
             },
-            crate::draft::state::TeamBudgetPayload {
+            wyncast_baseball::draft::state::TeamBudgetPayload {
                 team_id: "2".into(),
                 team_name: "Team Beta".into(),
                 budget: 210, // 260 - 50
@@ -2934,7 +2934,7 @@ mod tests {
         let mut state = create_test_app_state();
 
         // Build internal payloads as they would come from the extension
-        use crate::draft::state::{
+        use wyncast_baseball::draft::state::{
             compute_state_diff, PickPayload, StateUpdatePayload as InternalStatePayload,
         };
 
@@ -3639,7 +3639,7 @@ mod tests {
     #[tokio::test]
     async fn save_strategy_config_updates_state_and_transitions_to_draft() {
         use crate::onboarding::OnboardingStep;
-        use crate::tui::onboarding::strategy_setup::CategoryWeights;
+        use crate::onboarding::strategy_config::CategoryWeights;
 
         let mut state = create_test_app_state();
         state.app_mode = AppMode::Onboarding(OnboardingStep::StrategySetup);
@@ -3702,7 +3702,7 @@ mod tests {
 
     #[test]
     fn parse_strategy_json_valid() {
-        let cats = crate::tui::onboarding::strategy_setup::default_categories();
+        let cats = crate::onboarding::strategy_config::default_categories();
         let json = r#"{"hitting_budget_pct": 70, "category_weights": {"R": 1.0, "HR": 1.1, "RBI": 1.0, "BB": 1.3, "SB": 0.8, "AVG": 1.0, "K": 1.0, "W": 1.0, "SV": 0.3, "HD": 1.2, "ERA": 1.0, "WHIP": 1.0}, "strategy_overview": "Test overview"}"#;
         let (pct, weights, overview) = onboarding_handler::parse_strategy_json(json, &cats).unwrap();
         assert_eq!(pct, 70);
@@ -3714,7 +3714,7 @@ mod tests {
 
     #[test]
     fn parse_strategy_json_with_markdown_fences() {
-        let cats = crate::tui::onboarding::strategy_setup::default_categories();
+        let cats = crate::onboarding::strategy_config::default_categories();
         let json = "```json\n{\"hitting_budget_pct\": 65, \"category_weights\": {\"R\": 1.0, \"HR\": 1.0, \"RBI\": 1.0, \"BB\": 1.0, \"SB\": 1.0, \"AVG\": 1.0, \"K\": 1.0, \"W\": 1.0, \"SV\": 0.7, \"HD\": 1.0, \"ERA\": 1.0, \"WHIP\": 1.0}}\n```";
         let (pct, weights, overview) = onboarding_handler::parse_strategy_json(json, &cats).unwrap();
         assert_eq!(pct, 65);
@@ -3724,7 +3724,7 @@ mod tests {
 
     #[test]
     fn parse_strategy_json_clamps_values() {
-        let cats = crate::tui::onboarding::strategy_setup::default_categories();
+        let cats = crate::onboarding::strategy_config::default_categories();
         let json = r#"{"hitting_budget_pct": 200, "category_weights": {"SV": -1.0, "BB": 7.0}}"#;
         let (pct, weights, _overview) = onboarding_handler::parse_strategy_json(json, &cats).unwrap();
         assert_eq!(pct, 100); // clamped to 100
@@ -3734,7 +3734,7 @@ mod tests {
 
     #[test]
     fn parse_strategy_json_missing_fields_uses_defaults() {
-        let cats = crate::tui::onboarding::strategy_setup::default_categories();
+        let cats = crate::onboarding::strategy_config::default_categories();
         let json = r#"{"category_weights": {"BB": 1.3}}"#;
         let (pct, weights, overview) = onboarding_handler::parse_strategy_json(json, &cats).unwrap();
         assert_eq!(pct, 65); // default
@@ -3745,14 +3745,14 @@ mod tests {
 
     #[test]
     fn parse_strategy_json_no_json_object() {
-        let cats = crate::tui::onboarding::strategy_setup::default_categories();
+        let cats = crate::onboarding::strategy_config::default_categories();
         let result = onboarding_handler::parse_strategy_json("no json here", &cats);
         assert!(result.is_err());
     }
 
     #[test]
     fn parse_strategy_json_with_surrounding_text() {
-        let cats = crate::tui::onboarding::strategy_setup::default_categories();
+        let cats = crate::onboarding::strategy_config::default_categories();
         let text = "Here is the configuration:\n{\"hitting_budget_pct\": 60, \"category_weights\": {}}\nEnjoy!";
         let (pct, _, _) = onboarding_handler::parse_strategy_json(text, &cats).unwrap();
         assert_eq!(pct, 60);
@@ -3830,7 +3830,7 @@ mod tests {
     #[tokio::test]
     async fn settings_save_strategy_updates_config_stays_in_settings() {
         use crate::protocol::SettingsSection;
-        use crate::tui::onboarding::strategy_setup::CategoryWeights;
+        use crate::onboarding::strategy_config::CategoryWeights;
 
         let mut state = create_test_app_state();
         state.app_mode = AppMode::Settings(SettingsSection::StrategyConfig);
@@ -3883,7 +3883,7 @@ mod tests {
 
         let mut state = create_test_app_state();
         state.app_mode = AppMode::Settings(SettingsSection::LlmConfig);
-        state.onboarding_progress.llm_provider = Some(crate::llm::provider::LlmProvider::Anthropic);
+        state.onboarding_progress.llm_provider = Some(wyncast_core::llm::provider::LlmProvider::Anthropic);
 
         // Initially disabled
         assert!(matches!(&*state.llm_client, LlmClient::Disabled));

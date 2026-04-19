@@ -2,14 +2,13 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::draft::pick::DraftPick;
-use crate::draft::roster::RosterSlot;
-use crate::llm::provider::LlmProvider;
-use crate::matchup::MatchupSnapshot;
+use wyncast_baseball::draft::pick::DraftPick;
+use wyncast_baseball::draft::roster::RosterSlot;
+use wyncast_core::llm::provider::LlmProvider;
+use wyncast_baseball::matchup::MatchupSnapshot;
 use crate::onboarding::OnboardingStep;
-use crate::valuation::scarcity::ScarcityEntry;
-use crate::stats::ProjectionData;
-use crate::valuation::zscore::PlayerValuation;
+use wyncast_baseball::valuation::scarcity::ScarcityEntry;
+use wyncast_baseball::valuation::zscore::PlayerValuation;
 
 // ---------------------------------------------------------------------------
 // Extension -> Backend messages (JSON over WebSocket)
@@ -245,93 +244,13 @@ pub struct MatchupPlayerPayload {
 // ESPN projection types (player projections from ESPN Fantasy API)
 // ---------------------------------------------------------------------------
 
-/// Player projections scraped from ESPN's Fantasy API by the extension.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct EspnProjectionsPayload {
-    pub players: Vec<EspnPlayerProjection>,
-}
-
-/// A single player's projection data from ESPN.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct EspnPlayerProjection {
-    /// ESPN's internal player ID.
-    pub espn_id: u32,
-    pub name: String,
-    pub team: String,
-    /// ESPN defaultPositionId (1=SP, 2=C, 3=1B, 4=2B, 5=3B, 6=SS, 7=LF, 8=CF, 9=RF, 10=DH, 11=RP).
-    pub default_position_id: u16,
-    /// ESPN eligible slot IDs for multi-position eligibility.
-    #[serde(default)]
-    pub eligible_slots: Vec<u16>,
-    /// Projected batting stats (None if player is pitcher-only).
-    pub batting: Option<EspnBattingProjection>,
-    /// Projected pitching stats (None if player is hitter-only).
-    pub pitching: Option<EspnPitchingProjection>,
-}
-
-/// Projected batting stats from ESPN.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct EspnBattingProjection {
-    pub pa: u32,
-    pub ab: u32,
-    pub h: u32,
-    pub hr: u32,
-    pub r: u32,
-    pub rbi: u32,
-    pub bb: u32,
-    pub sb: u32,
-    pub avg: f64,
-}
-
-/// Projected pitching stats from ESPN.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct EspnPitchingProjection {
-    pub ip: f64,
-    pub k: u32,
-    pub w: u32,
-    pub sv: u32,
-    pub hd: u32,
-    pub era: f64,
-    pub whip: f64,
-    pub g: u32,
-    pub gs: u32,
-}
-
-impl From<&EspnBattingProjection> for ProjectionData {
-    fn from(proj: &EspnBattingProjection) -> Self {
-        let mut data = ProjectionData::new();
-        data.insert("pa", f64::from(proj.pa));
-        data.insert("ab", f64::from(proj.ab));
-        data.insert("h", f64::from(proj.h));
-        data.insert("hr", f64::from(proj.hr));
-        data.insert("r", f64::from(proj.r));
-        data.insert("rbi", f64::from(proj.rbi));
-        data.insert("bb", f64::from(proj.bb));
-        data.insert("sb", f64::from(proj.sb));
-        data.insert("avg", proj.avg);
-        data
-    }
-}
-
-impl From<&EspnPitchingProjection> for ProjectionData {
-    fn from(proj: &EspnPitchingProjection) -> Self {
-        let mut data = ProjectionData::new();
-        data.insert("ip", proj.ip);
-        data.insert("k", f64::from(proj.k));
-        data.insert("w", f64::from(proj.w));
-        data.insert("sv", f64::from(proj.sv));
-        data.insert("hd", f64::from(proj.hd));
-        data.insert("era", proj.era);
-        data.insert("whip", proj.whip);
-        data.insert("g", f64::from(proj.g));
-        data.insert("gs", f64::from(proj.gs));
-        if proj.ip > 0.0 {
-            data.insert("k9", f64::from(proj.k) * 9.0 / proj.ip);
-        }
-        data
-    }
-}
+// Re-exported from wyncast-core so that wyncast-baseball can reference them
+// without depending on wyncast-tui (which would be circular).
+// The From<&EspnBattingProjection>/From<&EspnPitchingProjection> impls for
+// ProjectionData also live in wyncast-core::espn.
+pub use wyncast_core::espn::{
+    EspnBattingProjection, EspnPitchingProjection, EspnPlayerProjection, EspnProjectionsPayload,
+};
 
 // ---------------------------------------------------------------------------
 // Draft board grid types (complete team × roster slot data)
@@ -491,7 +410,7 @@ pub enum OnboardingAction {
     /// Save the strategy configuration with the given budget, weights, and optional overview.
     SaveStrategyConfig {
         hitting_budget_pct: u8,
-        category_weights: crate::tui::onboarding::strategy_setup::CategoryWeights,
+        category_weights: crate::onboarding::strategy_config::CategoryWeights,
         strategy_overview: Option<String>,
     },
     /// Request LLM-assisted strategy configuration from a natural language description.
@@ -528,7 +447,7 @@ pub enum OnboardingUpdate {
     /// Strategy LLM generation completed successfully with parsed config.
     StrategyLlmComplete {
         hitting_budget_pct: u8,
-        category_weights: crate::tui::onboarding::strategy_setup::CategoryWeights,
+        category_weights: crate::onboarding::strategy_config::CategoryWeights,
         strategy_overview: String,
     },
     /// Strategy LLM generation failed.
@@ -539,40 +458,9 @@ pub enum OnboardingUpdate {
 // Internal app messages (for mpsc channels, no serde needed)
 // ---------------------------------------------------------------------------
 
-/// Events produced by the LLM streaming client.
-///
-/// Each event carries a `generation` counter that identifies which LLM task
-/// produced it. The app orchestrator increments the generation each time it
-/// spawns a new LLM task, and discards events whose generation doesn't match
-/// the current one. This prevents stale tokens from a cancelled task being
-/// attributed to a newer analysis.
-#[derive(Debug, Clone, PartialEq)]
-pub enum LlmEvent {
-    /// A single token of streamed output.
-    Token { text: String, generation: u64 },
-    /// The LLM response is complete.
-    Complete {
-        full_text: String,
-        input_tokens: u32,
-        output_tokens: u32,
-        /// The stop reason from the API (e.g. "end_turn" or "max_tokens").
-        stop_reason: Option<String>,
-        generation: u64,
-    },
-    /// An error occurred during LLM interaction.
-    Error { message: String, generation: u64 },
-}
-
-impl LlmEvent {
-    /// Extract the request ID (generation) from any event variant.
-    pub fn request_id(&self) -> u64 {
-        match self {
-            LlmEvent::Token { generation, .. } => *generation,
-            LlmEvent::Complete { generation, .. } => *generation,
-            LlmEvent::Error { generation, .. } => *generation,
-        }
-    }
-}
+// LlmEvent moved to wyncast-core to allow wyncast-llm to produce it without
+// depending on wyncast-tui.
+pub use wyncast_core::llm::events::LlmEvent;
 
 /// Commands sent from the TUI to the app orchestrator.
 #[derive(Debug, Clone, PartialEq)]
@@ -608,7 +496,7 @@ pub enum UserCommand {
         /// Strategy config to save, if any. (budget_pct, weights, overview)
         strategy: Option<(
             u8,
-            crate::tui::onboarding::strategy_setup::CategoryWeights,
+            crate::onboarding::strategy_config::CategoryWeights,
             Option<String>,
         )>,
     },
@@ -778,17 +666,9 @@ pub struct TeamSnapshot {
     pub total_slots: usize,
 }
 
-/// Info about the current active nomination.
-#[derive(Debug, Clone, PartialEq)]
-pub struct NominationInfo {
-    pub player_name: String,
-    pub position: String,
-    pub nominated_by: String,
-    pub current_bid: u32,
-    pub current_bidder: Option<String>,
-    pub time_remaining: Option<u32>,
-    pub eligible_slots: Vec<u16>,
-}
+// Re-exported from wyncast-core so that wyncast-baseball (llm/prompt.rs) can
+// reference NominationInfo without depending on wyncast-tui (circular).
+pub use wyncast_core::nomination::NominationInfo;
 
 /// Instant analysis result for a nominated player.
 #[derive(Debug, Clone, PartialEq)]
@@ -814,6 +694,7 @@ pub enum InstantVerdict {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wyncast_core::stats::ProjectionData;
 
     // -- TabFeature capability API --
 
@@ -1456,7 +1337,7 @@ mod tests {
 
     #[test]
     fn onboarding_action_variants_constructable() {
-        use crate::llm::provider::LlmProvider;
+        use wyncast_core::llm::provider::LlmProvider;
 
         // Ensure all OnboardingAction variants can be constructed
         let _set_provider = OnboardingAction::SetProvider(LlmProvider::Anthropic);
@@ -1465,7 +1346,7 @@ mod tests {
         let _test_conn = OnboardingAction::TestConnection;
         let _save_strategy = OnboardingAction::SaveStrategyConfig {
             hitting_budget_pct: 65,
-            category_weights: crate::tui::onboarding::strategy_setup::CategoryWeights::default(),
+            category_weights: crate::onboarding::strategy_config::CategoryWeights::default(),
             strategy_overview: Some("Test overview".to_string()),
         };
         let _configure_llm = OnboardingAction::ConfigureStrategyWithLlm("punt saves".to_string());

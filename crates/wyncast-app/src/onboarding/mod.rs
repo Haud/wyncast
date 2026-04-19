@@ -7,6 +7,7 @@
 // inject a fake implementation and avoid writing to disk.
 
 pub mod fs;
+pub mod strategy_config;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -14,8 +15,8 @@ use tracing::warn;
 
 pub use fs::{FileSystem, RealFileSystem};
 
-use crate::config::CredentialsConfig;
-use crate::llm::provider::LlmProvider;
+use wyncast_core::config::CredentialsConfig;
+use wyncast_core::llm::provider::LlmProvider;
 
 // ---------------------------------------------------------------------------
 // OnboardingStep
@@ -135,7 +136,7 @@ impl<F: FileSystem> OnboardingManager<F> {
     pub fn save_strategy(
         &self,
         hitting_budget_pct: u8,
-        weights: &crate::tui::onboarding::strategy_setup::CategoryWeights,
+        weights: &crate::onboarding::strategy_config::CategoryWeights,
     ) -> std::io::Result<()> {
         self.save_strategy_full(hitting_budget_pct, weights, None, None, None)
     }
@@ -147,7 +148,7 @@ impl<F: FileSystem> OnboardingManager<F> {
     pub fn save_strategy_full(
         &self,
         hitting_budget_pct: u8,
-        weights: &crate::tui::onboarding::strategy_setup::CategoryWeights,
+        weights: &crate::onboarding::strategy_config::CategoryWeights,
         provider: Option<&LlmProvider>,
         model: Option<&str>,
         strategy_overview: Option<&str>,
@@ -783,7 +784,7 @@ mod tests {
 
     #[test]
     fn save_strategy_writes_to_strategy_toml() {
-        use crate::tui::onboarding::strategy_setup::CategoryWeights;
+        use crate::onboarding::strategy_config::CategoryWeights;
 
         let manager = fake_manager(FakeFileSystem::new());
         let weights = CategoryWeights::from_values(&[1.0, 1.1, 1.0, 1.3, 1.0, 1.0, 1.0, 1.0, 0.3, 1.2, 1.0, 1.0]);
@@ -803,7 +804,7 @@ mod tests {
 
     #[test]
     fn save_strategy_preserves_existing_sections() {
-        use crate::tui::onboarding::strategy_setup::CategoryWeights;
+        use crate::onboarding::strategy_config::CategoryWeights;
 
         // Pre-populate with existing content that has other sections
         let existing = "[pool]\nmin_pa = 200\nhitter_pool_size = 150\n\n[llm]\nmodel = \"claude-sonnet-4-6\"\n";
@@ -823,7 +824,7 @@ mod tests {
 
     #[test]
     fn save_strategy_temp_file_cleaned_up() {
-        use crate::tui::onboarding::strategy_setup::CategoryWeights;
+        use crate::onboarding::strategy_config::CategoryWeights;
 
         let manager = fake_manager(FakeFileSystem::new());
         let weights = CategoryWeights::default();

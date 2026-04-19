@@ -3407,6 +3407,75 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9edde0db4769d2dc68579893f2306b26c6ecfbe0ef499b013d731b7b9247e0b9"
 
 [[package]]
+name = "wyncast-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+ "tracing",
+ "wyncast-baseball",
+ "wyncast-core",
+ "wyncast-llm",
+]
+
+[[package]]
+name = "wyncast-baseball"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "csv",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+ "tracing",
+ "wyncast-core",
+ "wyncast-llm",
+]
+
+[[package]]
+name = "wyncast-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "directories",
+ "futures-util",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "wyncast-llm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures-util",
+ "reqwest",
+ "reqwest-eventsource",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "wyncast-core",
+]
+
+[[package]]
 name = "wyncast-tui"
 version = "0.1.0"
 dependencies = [
@@ -3429,6 +3498,10 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "wyncast-app",
+ "wyncast-baseball",
+ "wyncast-core",
+ "wyncast-llm",
 ]
 
 [[package]]

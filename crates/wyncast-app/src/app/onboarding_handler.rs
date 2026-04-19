@@ -4,15 +4,15 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use crate::config::Config;
-use crate::llm::client::LlmClient;
-use crate::llm::prompt;
+use wyncast_core::config::Config;
+use wyncast_llm::client::LlmClient;
+use wyncast_baseball::llm::prompt;
 use crate::onboarding::OnboardingStep;
 use crate::protocol::{
     AppMode, OnboardingAction, OnboardingUpdate, UiUpdate,
 };
-use crate::valuation;
-use crate::valuation::scarcity::compute_scarcity;
+use wyncast_baseball::valuation;
+use wyncast_baseball::valuation::scarcity::compute_scarcity;
 
 use super::{AppState, CONNECTION_TEST_FAILED, CONNECTION_TEST_PASSED};
 
@@ -26,7 +26,7 @@ pub(super) async fn handle_onboarding_action(
     action: OnboardingAction,
     ui_tx: &mpsc::Sender<UiUpdate>,
 ) {
-    use crate::llm::provider::LlmProvider;
+    use wyncast_core::llm::provider::LlmProvider;
 
     match action {
         OnboardingAction::SetProvider(provider) => {
@@ -372,7 +372,7 @@ pub(super) async fn handle_onboarding_action(
                         description
                     );
 
-                    let categories = crate::tui::onboarding::strategy_setup::categories_from_league(&state.config.league);
+                    let categories = crate::onboarding::strategy_config::categories_from_league(&state.config.league);
 
                     // Spawn LLM streaming task
                     let handle = tokio::spawn(async move {
@@ -472,7 +472,7 @@ pub(super) async fn handle_settings_action(
     action: OnboardingAction,
     ui_tx: &mpsc::Sender<UiUpdate>,
 ) {
-    use crate::llm::provider::LlmProvider;
+    use wyncast_core::llm::provider::LlmProvider;
 
     match action {
         OnboardingAction::SaveLlmConfig { provider, model_id, api_key } => {
@@ -497,9 +497,9 @@ pub(super) async fn handle_settings_action(
             // Persist LLM settings to strategy.toml
             if let Err(e) = state.onboarding_manager.save_strategy_full(
                 (state.config.strategy.hitting_budget_fraction * 100.0) as u8,
-                &crate::tui::onboarding::strategy_setup::CategoryWeights::from_config_weights(
+                &crate::onboarding::strategy_config::CategoryWeights::from_config_weights(
                     &state.config.strategy.weights,
-                    crate::tui::onboarding::strategy_setup::categories_from_league(&state.config.league),
+                    crate::onboarding::strategy_config::categories_from_league(&state.config.league),
                 ),
                 Some(&state.config.strategy.llm.provider),
                 Some(&state.config.strategy.llm.model),
@@ -518,7 +518,7 @@ pub(super) async fn handle_settings_action(
             let mask = if raw_key.is_empty() {
                 None
             } else {
-                let m = crate::tui::onboarding::llm_setup::mask_api_key(&raw_key);
+                let m = crate::onboarding::strategy_config::mask_api_key(&raw_key);
                 if m.is_empty() { None } else { Some(m) }
             };
             let _ = ui_tx
@@ -549,7 +549,7 @@ pub(super) async fn handle_settings_action(
             let mask = if raw_key.is_empty() {
                 None
             } else {
-                let m = crate::tui::onboarding::llm_setup::mask_api_key(&raw_key);
+                let m = crate::onboarding::strategy_config::mask_api_key(&raw_key);
                 if m.is_empty() { None } else { Some(m) }
             };
             let _ = ui_tx
@@ -714,12 +714,12 @@ pub(super) async fn handle_settings_action(
 /// Persist an API key for the given provider to both in-memory config and
 /// the `credentials.toml` file via the OnboardingManager's FileSystem trait.
 pub(super) fn save_api_key_for_provider(
-    provider: &crate::llm::provider::LlmProvider,
+    provider: &wyncast_core::llm::provider::LlmProvider,
     key: &str,
     config: &mut Config,
     onboarding_manager: &crate::onboarding::OnboardingManager<crate::onboarding::RealFileSystem>,
 ) {
-    use crate::llm::provider::LlmProvider;
+    use wyncast_core::llm::provider::LlmProvider;
 
     match provider {
         LlmProvider::Anthropic => {
@@ -742,10 +742,10 @@ pub(super) fn save_api_key_for_provider(
 
 /// Get the API key for a given provider from the current config.
 pub(super) fn get_api_key_for_provider(
-    provider: &crate::llm::provider::LlmProvider,
+    provider: &wyncast_core::llm::provider::LlmProvider,
     config: &Config,
 ) -> String {
-    use crate::llm::provider::LlmProvider;
+    use wyncast_core::llm::provider::LlmProvider;
 
     match provider {
         LlmProvider::Anthropic => config
@@ -770,11 +770,11 @@ pub(super) fn get_api_key_for_provider(
 ///
 /// Returns `Ok(message)` on success or `Err(message)` on failure.
 pub(super) async fn test_api_connection(
-    provider: &crate::llm::provider::LlmProvider,
+    provider: &wyncast_core::llm::provider::LlmProvider,
     api_key: &str,
     model_id: &str,
 ) -> Result<String, String> {
-    use crate::llm::provider::LlmProvider;
+    use wyncast_core::llm::provider::LlmProvider;
 
     let client = reqwest::Client::new();
 
@@ -867,8 +867,8 @@ pub(super) async fn test_api_connection(
 pub(super) fn parse_strategy_json(
     text: &str,
     categories: &[String],
-) -> Result<(u8, crate::tui::onboarding::strategy_setup::CategoryWeights, String), String> {
-    use crate::tui::onboarding::strategy_setup::CategoryWeights;
+) -> Result<(u8, crate::onboarding::strategy_config::CategoryWeights, String), String> {
+    use crate::onboarding::strategy_config::CategoryWeights;
 
     // Strip markdown code fences if present.
     // Use safe string operations to avoid panics on edge cases.

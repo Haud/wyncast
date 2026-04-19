@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use crate::config::{LeagueConfig, StrategyConfig};
+use wyncast_core::config::{LeagueConfig, StrategyConfig};
 use crate::draft::state::DraftState;
 use crate::valuation::zscore::PlayerValuation;
 
@@ -278,7 +278,7 @@ pub fn apply_auction_values(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::*;
+    use wyncast_core::config::*;
     use crate::draft::pick::Position;
     use crate::test_utils::{approx_eq, test_registry, test_roster_config, test_strategy_config, TestPlayer};
     use crate::valuation::projections::PitcherType;

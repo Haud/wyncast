@@ -5,7 +5,7 @@ use std::sync::{Mutex, MutexGuard};
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 
-use crate::draft::pick::DraftPick;
+use crate::picks::DraftPick;
 
 /// SQLite-backed persistence for players, projections, draft picks, and
 /// key-value draft state.

@@ -2,9 +2,9 @@
 
 use std::collections::HashMap;
 
-use crate::config::{CategoryWeights, Config, PoolConfig};
+use wyncast_core::config::{CategoryWeights, Config, PoolConfig};
+use wyncast_core::stats::{self, CategoryValues, StatComputation, StatRegistry};
 use crate::draft::pick::Position;
-use crate::stats::{self, CategoryValues, StatComputation, StatRegistry};
 use crate::valuation::projections::{AllProjections, HitterProjection, PitcherProjection, PitcherType};
 
 // ---------------------------------------------------------------------------
@@ -694,8 +694,8 @@ pub fn compute_initial_zscores(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::*;
-    use crate::stats::StatRegistry;
+    use wyncast_core::config::*;
+    use wyncast_core::stats::StatRegistry;
     use crate::test_utils::approx_eq;
     use crate::valuation::projections::*;
 
@@ -762,7 +762,7 @@ mod tests {
                     rp_pool_size: 80,
                 },
                 llm: LlmConfig {
-                    provider: crate::llm::provider::LlmProvider::Anthropic,
+                    provider: wyncast_core::llm::provider::LlmProvider::Anthropic,
                     model: "test".into(),
                     analysis_max_tokens: 2048,
                     planning_max_tokens: 2048,

@@ -5,12 +5,12 @@
 // pre-computed numbers so the LLM focuses on trade-offs and context
 // rather than arithmetic.
 
-use crate::config::LeagueConfig;
+use wyncast_core::config::LeagueConfig;
+use wyncast_core::nomination::NominationInfo;
+use wyncast_core::stats::{CategoryValues, StatDefinition, StatRegistry};
 use crate::draft::pick::Position;
 use crate::draft::roster::Roster;
 use crate::draft::state::DraftState;
-use crate::protocol::NominationInfo;
-use crate::stats::{CategoryValues, StatDefinition, StatRegistry};
 use crate::valuation::auction::InflationTracker;
 use crate::valuation::scarcity::ScarcityEntry;
 use crate::valuation::zscore::{CategoryZScores, PlayerValuation};
@@ -816,17 +816,17 @@ fn find_top_targets<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wyncast_core::nomination::NominationInfo;
+    use wyncast_core::stats::CategoryValues;
     use crate::draft::pick::DraftPick;
     use crate::draft::pick::Position;
     use crate::draft::roster::Roster;
-    use crate::protocol::NominationInfo;
     use crate::test_utils::{
         create_test_draft_state, test_league_config, test_registry, test_roster_config, TestPlayer,
     };
     use crate::valuation::auction::InflationTracker;
     use crate::valuation::projections::PitcherType;
     use crate::valuation::scarcity::compute_scarcity;
-    use crate::stats::CategoryValues;
 
     fn create_test_draft_state_10() -> DraftState {
         create_test_draft_state(10)
@@ -1489,7 +1489,7 @@ mod tests {
     // ---- format_category_line precision tests ----
 
     fn counting_stat_def(abbrev: &str) -> StatDefinition {
-        use crate::stats::{PlayerType, SortDirection, StatComputation};
+        use wyncast_core::stats::{PlayerType, SortDirection, StatComputation};
         StatDefinition {
             abbrev: abbrev.into(),
             display_name: abbrev.into(),
@@ -1506,7 +1506,7 @@ mod tests {
     }
 
     fn rate_stat_def(abbrev: &str, precision: u8) -> StatDefinition {
-        use crate::stats::{PlayerType, SortDirection, StatComputation};
+        use wyncast_core::stats::{PlayerType, SortDirection, StatComputation};
         StatDefinition {
             abbrev: abbrev.into(),
             display_name: abbrev.into(),
