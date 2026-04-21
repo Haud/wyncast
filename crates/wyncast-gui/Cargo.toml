@@ -1,0 +1,25 @@
+[package]
+name = "wyncast-gui"
+version.workspace = true
+edition = "2024"
+
+[[bin]]
+name = "wyncast-gui"
+path = "src/main.rs"
+
+[dependencies]
+wyncast-core      = { path = "../wyncast-core" }
+wyncast-app       = { path = "../wyncast-app" }
+wyncast-baseball  = { path = "../wyncast-baseball" }
+wyncast-llm       = { path = "../wyncast-llm" }
+iced              = { version = "0.14.0", features = ["advanced", "tokio", "canvas", "image"] }
+iced_fonts        = { version = "0.3.0", features = ["lucide"] }
+twui              = { git = "https://github.com/Haud/twui" }
+tokio             = { workspace = true }
+tracing           = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow            = { workspace = true }
+futures           = "0.3"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
