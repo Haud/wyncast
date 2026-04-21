@@ -14,7 +14,7 @@ wyncast-baseball  = { path = "../wyncast-baseball" }
 wyncast-llm       = { path = "../wyncast-llm" }
 iced              = { version = "0.14.0", features = ["advanced", "tokio", "canvas", "image"] }
 iced_fonts        = { version = "0.3.0", features = ["lucide"] }
-twui              = { path = "../../../../../twui" }
+twui              = { git = "https://github.com/Haud/twui" }
 tokio             = { workspace = true }
 tracing           = { workspace = true }
 tracing-subscriber = { workspace = true }

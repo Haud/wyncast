@@ -5591,6 +5591,7 @@ dependencies = [
 [[package]]
 name = "twui"
 version = "0.1.0"
+source = "git+https://github.com/Haud/twui#cd736f0a63dc8d2415f5a19e76c75d44be4c7799"
 dependencies = [
  "iced",
  "iced_fonts",
