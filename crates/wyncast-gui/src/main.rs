@@ -13,6 +13,7 @@ mod app;
 mod bridge;
 mod focus;
 mod message;
+mod screens;
 mod theme;
 mod widgets;
 
