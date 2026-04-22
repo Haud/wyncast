@@ -2,19 +2,22 @@ mod help_bar;
 mod layout;
 mod nomination_banner;
 mod status_bar;
-mod tabs;
+pub mod tabs;
 
-use iced::alignment;
+use iced::widget::Id as ScrollId;
 use iced::{Element, Length, Padding};
 use twui::{
     Colors, ConfirmationModal, TextColor, TextSize, TextStyle,
     frame, text, v_stack,
     BoxStyle, StackGap, StackStyle,
 };
-use wyncast_app::protocol::{ConnectionStatus, ScrollDirection, TabId};
+use wyncast_app::protocol::{
+    ConnectionStatus, ScrollDirection, TabId, UiUpdate,
+};
 
 use crate::focus::FocusTarget;
 use crate::widgets::{focus_ring, with_overlay};
+use tabs::analysis::{AnalysisMessage, AnalysisPanel};
 
 // ---------------------------------------------------------------------------
 // Messages & types
@@ -35,6 +38,7 @@ pub enum DraftMessage {
     QuitRequested,
     QuitConfirmed,
     QuitCancelled,
+    Analysis(AnalysisMessage),
 }
 
 // ---------------------------------------------------------------------------
@@ -44,6 +48,7 @@ pub enum DraftMessage {
 pub struct DraftScreen {
     pub active_tab: TabId,
     pub quit_modal_open: bool,
+    pub analysis: AnalysisPanel,
 }
 
 impl DraftScreen {
@@ -51,6 +56,34 @@ impl DraftScreen {
         Self {
             active_tab: TabId::Analysis,
             quit_modal_open: false,
+            analysis: AnalysisPanel::new(),
+        }
+    }
+
+    /// Apply an incoming `UiUpdate` that affects the draft screen.
+    ///
+    /// Returns `Some(scroll_id)` if the caller should snap the named
+    /// scrollable to the bottom (auto-scroll is active and new content arrived).
+    pub fn apply_ui_update(&mut self, update: &UiUpdate) -> Option<ScrollId> {
+        match update {
+            UiUpdate::LlmUpdate { request_id, update } => {
+                let snap = self.analysis.apply_llm_update(*request_id, update);
+                if snap {
+                    Some(self.analysis.scroll_id.clone())
+                } else {
+                    None
+                }
+            }
+            UiUpdate::NominationUpdate { info: _, analysis_request_id } => {
+                self.analysis.apply_nomination(*analysis_request_id);
+                // Snap to top of new analysis (or bottom of empty panel).
+                Some(self.analysis.scroll_id.clone())
+            }
+            UiUpdate::NominationCleared => {
+                self.analysis.reset();
+                None
+            }
+            _ => None,
         }
     }
 }
@@ -85,7 +118,7 @@ fn view_content<'a>(
 
 fn main_panel<'a>(screen: &'a DraftScreen, focus: FocusTarget) -> Element<'a, DraftMessage> {
     let tab_bar_elem = tabs::view(screen.active_tab);
-    let tab_content = tab_content_stub(screen.active_tab);
+    let tab_content = tab_content(screen);
     let tab_content_with_ring = focus_ring(tab_content, focus == FocusTarget::MainPanel);
 
     v_stack(
@@ -100,14 +133,16 @@ fn main_panel<'a>(screen: &'a DraftScreen, focus: FocusTarget) -> Element<'a, Dr
     .into()
 }
 
-fn tab_content_stub<'a>(active_tab: TabId) -> Element<'a, DraftMessage> {
-    let label = match active_tab {
-        TabId::Analysis => "Analysis — stub (Phase 3.2)",
-        TabId::Available => "Available Players — stub (Phase 3.3)",
-        TabId::DraftLog => "Draft Log — stub (Phase 3.4)",
-        TabId::Teams => "Teams — stub (Phase 3.4)",
-    };
+fn tab_content<'a>(screen: &'a DraftScreen) -> Element<'a, DraftMessage> {
+    match screen.active_tab {
+        TabId::Analysis => screen.analysis.view(),
+        TabId::Available => tab_stub("Available Players — stub (Phase 3.3)"),
+        TabId::DraftLog => tab_stub("Draft Log — stub (Phase 3.4)"),
+        TabId::Teams => tab_stub("Teams — stub (Phase 3.4)"),
+    }
+}
 
+fn tab_stub<'a>(label: &'static str) -> Element<'a, DraftMessage> {
     let placeholder: Element<DraftMessage> = text(
         label,
         TextStyle {
@@ -151,6 +186,8 @@ fn sidebar<'a>(focus: FocusTarget) -> Element<'a, DraftMessage> {
 }
 
 fn sidebar_panel_stub<'a>(label: &'static str, focused: bool) -> Element<'a, DraftMessage> {
+    use iced::alignment;
+
     let label_elem: Element<DraftMessage> = text(
         label,
         TextStyle {
