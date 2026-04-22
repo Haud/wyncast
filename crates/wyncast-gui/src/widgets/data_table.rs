@@ -17,14 +17,14 @@ impl Column {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct DataTableStyle {
+pub struct DataTableStyle<'a> {
     pub alternate_rows: bool,
+    pub row_tint_fn: Option<Box<dyn Fn(usize) -> Option<iced::Color> + 'a>>,
 }
 
-impl Default for DataTableStyle {
+impl<'a> Default for DataTableStyle<'a> {
     fn default() -> Self {
-        Self { alternate_rows: true }
+        Self { alternate_rows: true, row_tint_fn: None }
     }
 }
 
@@ -42,7 +42,7 @@ pub fn data_table<'a, Message: Clone + 'a>(
     rows: Vec<Vec<Element<'a, Message>>>,
     scroll_id: Id,
     highlighted_index: Option<usize>,
-    style: DataTableStyle,
+    style: DataTableStyle<'a>,
     on_row_click: Option<Box<dyn Fn(usize) -> Message + 'a>>,
 ) -> Element<'a, Message> {
     let header = build_header(&columns);
@@ -96,14 +96,15 @@ fn build_body<'a, Message: Clone + 'a>(
     columns: &[Column],
     rows: Vec<Vec<Element<'a, Message>>>,
     highlighted_index: Option<usize>,
-    style: DataTableStyle,
+    style: DataTableStyle<'a>,
     on_row_click: Option<Box<dyn Fn(usize) -> Message + 'a>>,
 ) -> Element<'a, Message> {
     let row_elements: Vec<Element<'a, Message>> = rows
         .into_iter()
         .enumerate()
         .map(|(idx, cells)| {
-            let bg = row_bg(idx, highlighted_index, style.alternate_rows);
+            let tint = style.row_tint_fn.as_ref().and_then(|f| f(idx));
+            let bg = row_bg(idx, highlighted_index, style.alternate_rows, tint);
 
             let row_cells: Vec<Element<'a, Message>> = cells
                 .into_iter()
@@ -141,9 +142,11 @@ fn build_body<'a, Message: Clone + 'a>(
     column(row_elements).width(Length::Fill).into()
 }
 
-fn row_bg(idx: usize, highlighted: Option<usize>, alternate: bool) -> iced::Color {
+fn row_bg(idx: usize, highlighted: Option<usize>, alternate: bool, tint: Option<iced::Color>) -> iced::Color {
     if highlighted == Some(idx) {
         Colors::Warning.rgba(Opacity::O30)
+    } else if let Some(c) = tint {
+        c
     } else if alternate && idx % 2 == 1 {
         Colors::Slate800.rgb()
     } else {
@@ -173,27 +176,41 @@ mod tests {
 
     #[test]
     fn row_bg_highlighted_is_warning() {
-        let bg = row_bg(2, Some(2), true);
+        let bg = row_bg(2, Some(2), true, None);
         let expected = Colors::Warning.rgba(Opacity::O30);
         assert_eq!(bg, expected);
     }
 
     #[test]
     fn row_bg_alternating_odd() {
-        let bg = row_bg(1, None, true);
+        let bg = row_bg(1, None, true, None);
         assert_eq!(bg, Colors::Slate800.rgb());
     }
 
     #[test]
     fn row_bg_alternating_even() {
-        let bg = row_bg(0, None, true);
+        let bg = row_bg(0, None, true, None);
         assert_eq!(bg, Colors::Slate900.rgb());
     }
 
     #[test]
     fn row_bg_no_alternate() {
-        let bg = row_bg(1, None, false);
+        let bg = row_bg(1, None, false, None);
         assert_eq!(bg, Colors::Slate900.rgb());
+    }
+
+    #[test]
+    fn row_bg_tint_overrides_alternate() {
+        let tint = iced::Color::from_rgb(0.0, 1.0, 0.0);
+        let bg = row_bg(1, None, true, Some(tint));
+        assert_eq!(bg, tint);
+    }
+
+    #[test]
+    fn row_bg_highlighted_overrides_tint() {
+        let tint = iced::Color::from_rgb(0.0, 1.0, 0.0);
+        let bg = row_bg(2, Some(2), true, Some(tint));
+        assert_eq!(bg, Colors::Warning.rgba(Opacity::O30));
     }
 
     #[test]
