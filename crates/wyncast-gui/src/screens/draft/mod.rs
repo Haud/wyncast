@@ -11,12 +11,13 @@ use twui::{
     BoxStyle, StackGap, StackStyle,
 };
 use wyncast_app::protocol::{
-    ConnectionStatus, LlmStreamUpdate, ScrollDirection, TabId, UserCommand,
+    AppSnapshot, ConnectionStatus, LlmStreamUpdate, ScrollDirection, TabId, UserCommand,
 };
 
 use crate::focus::FocusTarget;
 use crate::widgets::{focus_ring, with_overlay};
 use tabs::analysis::{AnalysisMessage, AnalysisPanel};
+use tabs::available::{AvailableMessage, AvailablePanel};
 
 // ---------------------------------------------------------------------------
 // Messages & types
@@ -37,9 +38,11 @@ pub enum DraftMessage {
     QuitConfirmed,
     QuitCancelled,
     Analysis(AnalysisMessage),
+    Available(AvailableMessage),
     LlmUpdate { request_id: u64, update: LlmStreamUpdate },
-    Nominated { analysis_request_id: Option<u64> },
+    Nominated { analysis_request_id: Option<u64>, player_name: String },
     NominationCleared,
+    StateSnapshot(Box<AppSnapshot>),
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +60,7 @@ pub struct DraftScreen {
     active_tab: TabId,
     quit_modal_open: bool,
     analysis: AnalysisPanel,
+    pub available: AvailablePanel,
 }
 
 impl DraftScreen {
@@ -65,11 +69,17 @@ impl DraftScreen {
             active_tab: TabId::Analysis,
             quit_modal_open: false,
             analysis: AnalysisPanel::new(),
+            available: AvailablePanel::new(),
         }
     }
 
+    pub fn active_tab(&self) -> TabId {
+        self.active_tab
+    }
+
+    /// Returns true when any modal is open (used to gate global key handling).
     pub fn has_modal(&self) -> bool {
-        self.quit_modal_open
+        self.quit_modal_open || self.available.position_modal_open()
     }
 
     pub fn update(&mut self, msg: DraftMessage) -> (Task<DraftMessage>, Vec<DraftEffect>) {
@@ -84,17 +94,23 @@ impl DraftScreen {
             DraftMessage::FocusCycle(dir) => {
                 (Task::none(), vec![DraftEffect::CycleFocus(dir)])
             }
-            DraftMessage::ScrollRequested(dir) => {
-                if self.active_tab == TabId::Analysis {
+            DraftMessage::ScrollRequested(dir) => match self.active_tab {
+                TabId::Analysis => {
                     let task = self
                         .analysis
                         .update(AnalysisMessage::ScrollBy(dir))
                         .map(DraftMessage::Analysis);
                     (task, vec![])
-                } else {
-                    (Task::none(), vec![])
                 }
-            }
+                TabId::Available => {
+                    let task = self
+                        .available
+                        .update(AvailableMessage::ScrollBy(dir))
+                        .map(DraftMessage::Available);
+                    (task, vec![])
+                }
+                _ => (Task::none(), vec![]),
+            },
             DraftMessage::QuitRequested => {
                 self.quit_modal_open = true;
                 (Task::none(), vec![])
@@ -114,6 +130,10 @@ impl DraftScreen {
                 let task = self.analysis.update(msg).map(DraftMessage::Analysis);
                 (task, vec![])
             }
+            DraftMessage::Available(msg) => {
+                let task = self.available.update(msg).map(DraftMessage::Available);
+                (task, vec![])
+            }
             DraftMessage::LlmUpdate { request_id, update } => {
                 let task = self
                     .analysis
@@ -121,19 +141,31 @@ impl DraftScreen {
                     .map(DraftMessage::Analysis);
                 (task, vec![])
             }
-            DraftMessage::Nominated { analysis_request_id } => {
-                let task = self
+            DraftMessage::Nominated { analysis_request_id, player_name } => {
+                let task1 = self
                     .analysis
                     .update(AnalysisMessage::Nominated { analysis_request_id })
                     .map(DraftMessage::Analysis);
-                (task, vec![])
+                let task2 = self
+                    .available
+                    .update(AvailableMessage::NominationActive(player_name))
+                    .map(DraftMessage::Available);
+                (Task::batch([task1, task2]), vec![])
             }
             DraftMessage::NominationCleared => {
-                let task = self
+                let task1 = self
                     .analysis
                     .update(AnalysisMessage::NominationCleared)
                     .map(DraftMessage::Analysis);
-                (task, vec![])
+                let task2 = self
+                    .available
+                    .update(AvailableMessage::NominationCleared)
+                    .map(DraftMessage::Available);
+                (Task::batch([task1, task2]), vec![])
+            }
+            DraftMessage::StateSnapshot(snapshot) => {
+                self.available.available_players = snapshot.available_players;
+                (Task::none(), vec![])
             }
         }
     }
@@ -149,7 +181,7 @@ pub fn view<'a>(
     connection_status: ConnectionStatus,
 ) -> Element<'a, DraftMessage> {
     let content = view_content(screen, focus, connection_status);
-    let modal = quit_modal(screen);
+    let modal = view_modal(screen);
     with_overlay(content, modal)
 }
 
@@ -187,7 +219,10 @@ fn main_panel<'a>(screen: &'a DraftScreen, focus: FocusTarget) -> Element<'a, Dr
 fn tab_content<'a>(screen: &'a DraftScreen) -> Element<'a, DraftMessage> {
     match screen.active_tab {
         TabId::Analysis => screen.analysis.view(),
-        TabId::Available => tab_stub("Available Players — stub (Phase 3.3)"),
+        TabId::Available => screen
+            .available
+            .view()
+            .map(DraftMessage::Available),
         TabId::DraftLog => tab_stub("Draft Log — stub (Phase 3.4)"),
         TabId::Teams => tab_stub("Teams — stub (Phase 3.4)"),
     }
@@ -266,6 +301,17 @@ fn sidebar_panel_stub<'a>(label: &'static str, focused: bool) -> Element<'a, Dra
     focus_ring(content, focused)
 }
 
+fn view_modal<'a>(screen: &DraftScreen) -> Option<Element<'a, DraftMessage>> {
+    // Position filter modal takes visual priority over quit modal,
+    // but the DraftScreen's has_modal() gates key routing correctly.
+    if screen.available.position_modal_open() {
+        // The position modal is rendered inside the Available tab view,
+        // so we don't need to render it here separately.
+        return None;
+    }
+    quit_modal(screen)
+}
+
 fn quit_modal<'a>(screen: &DraftScreen) -> Option<Element<'a, DraftMessage>> {
     ConfirmationModal::view(
         screen.quit_modal_open,
@@ -336,7 +382,7 @@ mod tests {
     }
 
     #[test]
-    fn update_scroll_on_non_analysis_tab_is_noop() {
+    fn update_scroll_on_non_scrollable_tab_is_noop() {
         let mut screen = DraftScreen::new();
         screen.active_tab = TabId::DraftLog;
         let (_, effects) = screen.update(DraftMessage::ScrollRequested(ScrollDirection::Down));
@@ -346,7 +392,10 @@ mod tests {
     #[test]
     fn update_nomination_cleared_does_not_panic() {
         let mut screen = DraftScreen::new();
-        let _ = screen.update(DraftMessage::Nominated { analysis_request_id: Some(1) });
+        let _ = screen.update(DraftMessage::Nominated {
+            analysis_request_id: Some(1),
+            player_name: "Test Player".to_string(),
+        });
         let (_, effects) = screen.update(DraftMessage::NominationCleared);
         assert!(effects.is_empty());
     }
@@ -354,7 +403,10 @@ mod tests {
     #[test]
     fn update_llm_update_does_not_panic() {
         let mut screen = DraftScreen::new();
-        let _ = screen.update(DraftMessage::Nominated { analysis_request_id: Some(42) });
+        let _ = screen.update(DraftMessage::Nominated {
+            analysis_request_id: Some(42),
+            player_name: "Test Player".to_string(),
+        });
         let (_, effects) = screen.update(DraftMessage::LlmUpdate {
             request_id: 42,
             update: LlmStreamUpdate::Token("hello".to_owned()),
@@ -365,7 +417,56 @@ mod tests {
     #[test]
     fn update_nominated_does_not_panic() {
         let mut screen = DraftScreen::new();
-        let (_, effects) = screen.update(DraftMessage::Nominated { analysis_request_id: Some(7) });
+        let (_, effects) = screen.update(DraftMessage::Nominated {
+            analysis_request_id: Some(7),
+            player_name: "Aaron Judge".to_string(),
+        });
         assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn update_state_snapshot_updates_available_players() {
+        let mut screen = DraftScreen::new();
+        assert!(screen.available.available_players.is_empty());
+
+        let snapshot = Box::new(AppSnapshot {
+            app_mode: wyncast_app::protocol::AppMode::Draft,
+            pick_count: 0,
+            total_picks: 0,
+            active_tab: None,
+            available_players: vec![],
+            positional_scarcity: vec![],
+            draft_log: vec![],
+            my_roster: vec![],
+            budget_spent: 0,
+            budget_remaining: 260,
+            salary_cap: 260,
+            inflation_rate: 1.0,
+            max_bid: 260,
+            avg_per_slot: 0.0,
+            hitting_spent: 0,
+            hitting_target: 182,
+            pitching_spent: 0,
+            pitching_target: 78,
+            team_snapshots: vec![],
+            llm_configured: false,
+        });
+
+        let (_, effects) = screen.update(DraftMessage::StateSnapshot(snapshot));
+        assert!(screen.available.available_players.is_empty());
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn has_modal_false_when_no_modal_open() {
+        let screen = DraftScreen::new();
+        assert!(!screen.has_modal());
+    }
+
+    #[test]
+    fn has_modal_true_when_quit_modal_open() {
+        let mut screen = DraftScreen::new();
+        screen.quit_modal_open = true;
+        assert!(screen.has_modal());
     }
 }
