@@ -4,15 +4,14 @@ mod nomination_banner;
 mod status_bar;
 pub mod tabs;
 
-use iced::widget::Id as ScrollId;
-use iced::{Element, Length, Padding};
+use iced::{Element, Length, Padding, Task};
 use twui::{
     Colors, ConfirmationModal, TextColor, TextSize, TextStyle,
     frame, text, v_stack,
     BoxStyle, StackGap, StackStyle,
 };
 use wyncast_app::protocol::{
-    ConnectionStatus, ScrollDirection, TabId, UiUpdate,
+    ConnectionStatus, LlmStreamUpdate, ScrollDirection, TabId, UserCommand,
 };
 
 use crate::focus::FocusTarget;
@@ -33,12 +32,21 @@ pub enum Direction {
 pub enum DraftMessage {
     TabSelected(TabId),
     FocusCycle(Direction),
-    #[allow(dead_code)]
     ScrollRequested(ScrollDirection),
     QuitRequested,
     QuitConfirmed,
     QuitCancelled,
     Analysis(AnalysisMessage),
+    LlmUpdate { request_id: u64, update: LlmStreamUpdate },
+    Nominated { analysis_request_id: Option<u64> },
+    NominationCleared,
+}
+
+#[derive(Debug, Clone)]
+pub enum DraftEffect {
+    SendCommand(UserCommand),
+    CycleFocus(Direction),
+    Exit,
 }
 
 // ---------------------------------------------------------------------------
@@ -46,9 +54,9 @@ pub enum DraftMessage {
 // ---------------------------------------------------------------------------
 
 pub struct DraftScreen {
-    pub active_tab: TabId,
-    pub quit_modal_open: bool,
-    pub analysis: AnalysisPanel,
+    active_tab: TabId,
+    quit_modal_open: bool,
+    analysis: AnalysisPanel,
 }
 
 impl DraftScreen {
@@ -60,30 +68,73 @@ impl DraftScreen {
         }
     }
 
-    /// Apply an incoming `UiUpdate` that affects the draft screen.
-    ///
-    /// Returns `Some(scroll_id)` if the caller should snap the named
-    /// scrollable to the bottom (auto-scroll is active and new content arrived).
-    pub fn apply_ui_update(&mut self, update: &UiUpdate) -> Option<ScrollId> {
-        match update {
-            UiUpdate::LlmUpdate { request_id, update } => {
-                let snap = self.analysis.apply_llm_update(*request_id, update);
-                if snap {
-                    Some(self.analysis.scroll_id.clone())
+    pub fn has_modal(&self) -> bool {
+        self.quit_modal_open
+    }
+
+    pub fn update(&mut self, msg: DraftMessage) -> (Task<DraftMessage>, Vec<DraftEffect>) {
+        match msg {
+            DraftMessage::TabSelected(tab) => {
+                self.active_tab = tab;
+                (
+                    Task::none(),
+                    vec![DraftEffect::SendCommand(UserCommand::SwitchTab(tab))],
+                )
+            }
+            DraftMessage::FocusCycle(dir) => {
+                (Task::none(), vec![DraftEffect::CycleFocus(dir)])
+            }
+            DraftMessage::ScrollRequested(dir) => {
+                if self.active_tab == TabId::Analysis {
+                    let task = self
+                        .analysis
+                        .update(AnalysisMessage::ScrollBy(dir))
+                        .map(DraftMessage::Analysis);
+                    (task, vec![])
                 } else {
-                    None
+                    (Task::none(), vec![])
                 }
             }
-            UiUpdate::NominationUpdate { info: _, analysis_request_id } => {
-                self.analysis.apply_nomination(*analysis_request_id);
-                // Snap to top of new analysis (or bottom of empty panel).
-                Some(self.analysis.scroll_id.clone())
+            DraftMessage::QuitRequested => {
+                self.quit_modal_open = true;
+                (Task::none(), vec![])
             }
-            UiUpdate::NominationCleared => {
-                self.analysis.reset();
-                None
+            DraftMessage::QuitConfirmed => (
+                Task::none(),
+                vec![
+                    DraftEffect::SendCommand(UserCommand::Quit),
+                    DraftEffect::Exit,
+                ],
+            ),
+            DraftMessage::QuitCancelled => {
+                self.quit_modal_open = false;
+                (Task::none(), vec![])
             }
-            _ => None,
+            DraftMessage::Analysis(msg) => {
+                let task = self.analysis.update(msg).map(DraftMessage::Analysis);
+                (task, vec![])
+            }
+            DraftMessage::LlmUpdate { request_id, update } => {
+                let task = self
+                    .analysis
+                    .update(AnalysisMessage::LlmUpdate { request_id, update })
+                    .map(DraftMessage::Analysis);
+                (task, vec![])
+            }
+            DraftMessage::Nominated { analysis_request_id } => {
+                let task = self
+                    .analysis
+                    .update(AnalysisMessage::Nominated { analysis_request_id })
+                    .map(DraftMessage::Analysis);
+                (task, vec![])
+            }
+            DraftMessage::NominationCleared => {
+                let task = self
+                    .analysis
+                    .update(AnalysisMessage::NominationCleared)
+                    .map(DraftMessage::Analysis);
+                (task, vec![])
+            }
         }
     }
 }
@@ -225,4 +276,96 @@ fn quit_modal<'a>(screen: &DraftScreen) -> Option<Element<'a, DraftMessage>> {
         DraftMessage::QuitConfirmed,
         DraftMessage::QuitCancelled,
     )
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wyncast_app::protocol::ScrollDirection;
+
+    #[test]
+    fn update_tab_selected_changes_tab_and_emits_command() {
+        let mut screen = DraftScreen::new();
+        let (_, effects) = screen.update(DraftMessage::TabSelected(TabId::DraftLog));
+        assert_eq!(screen.active_tab, TabId::DraftLog);
+        assert!(matches!(
+            effects.as_slice(),
+            [DraftEffect::SendCommand(UserCommand::SwitchTab(TabId::DraftLog))]
+        ));
+    }
+
+    #[test]
+    fn update_quit_requested_opens_modal() {
+        let mut screen = DraftScreen::new();
+        assert!(!screen.quit_modal_open);
+        let (_, effects) = screen.update(DraftMessage::QuitRequested);
+        assert!(screen.quit_modal_open);
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn update_quit_cancelled_closes_modal() {
+        let mut screen = DraftScreen::new();
+        screen.quit_modal_open = true;
+        let (_, effects) = screen.update(DraftMessage::QuitCancelled);
+        assert!(!screen.quit_modal_open);
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn update_quit_confirmed_emits_exit_and_command() {
+        let mut screen = DraftScreen::new();
+        let (_, effects) = screen.update(DraftMessage::QuitConfirmed);
+        assert_eq!(effects.len(), 2);
+        assert!(matches!(effects[0], DraftEffect::SendCommand(UserCommand::Quit)));
+        assert!(matches!(effects[1], DraftEffect::Exit));
+    }
+
+    #[test]
+    fn update_focus_cycle_emits_effect() {
+        let mut screen = DraftScreen::new();
+        let (_, effects) = screen.update(DraftMessage::FocusCycle(Direction::Forward));
+        assert!(matches!(
+            effects.as_slice(),
+            [DraftEffect::CycleFocus(Direction::Forward)]
+        ));
+    }
+
+    #[test]
+    fn update_scroll_on_non_analysis_tab_is_noop() {
+        let mut screen = DraftScreen::new();
+        screen.active_tab = TabId::DraftLog;
+        let (_, effects) = screen.update(DraftMessage::ScrollRequested(ScrollDirection::Down));
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn update_nomination_cleared_does_not_panic() {
+        let mut screen = DraftScreen::new();
+        let _ = screen.update(DraftMessage::Nominated { analysis_request_id: Some(1) });
+        let (_, effects) = screen.update(DraftMessage::NominationCleared);
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn update_llm_update_does_not_panic() {
+        let mut screen = DraftScreen::new();
+        let _ = screen.update(DraftMessage::Nominated { analysis_request_id: Some(42) });
+        let (_, effects) = screen.update(DraftMessage::LlmUpdate {
+            request_id: 42,
+            update: LlmStreamUpdate::Token("hello".to_owned()),
+        });
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn update_nominated_does_not_panic() {
+        let mut screen = DraftScreen::new();
+        let (_, effects) = screen.update(DraftMessage::Nominated { analysis_request_id: Some(7) });
+        assert!(effects.is_empty());
+    }
 }
