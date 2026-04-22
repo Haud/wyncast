@@ -1,5 +1,7 @@
 pub mod analysis;
 pub mod available;
+pub mod draft_log;
+pub mod teams;
 
 use iced::Element;
 use twui::{Tab, TabBarStyle, tab_bar};
