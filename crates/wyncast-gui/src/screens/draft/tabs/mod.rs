@@ -1,4 +1,5 @@
 pub mod analysis;
+pub mod available;
 
 use iced::Element;
 use twui::{Tab, TabBarStyle, tab_bar};

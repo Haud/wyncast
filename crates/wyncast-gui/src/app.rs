@@ -11,6 +11,7 @@ use crate::bridge;
 use crate::focus::FocusTarget;
 use crate::message::Message;
 use crate::screens::draft::{Direction, DraftEffect, DraftMessage, DraftScreen};
+use crate::screens::draft::tabs::available::AvailableMessage;
 
 // ---------------------------------------------------------------------------
 // State
@@ -73,14 +74,20 @@ pub fn update(app: &mut App, msg: Message) -> Task<Message> {
                         DraftMessage::LlmUpdate { request_id, update: llm_update },
                     )
                 }
-                UiUpdate::NominationUpdate { analysis_request_id, .. } => {
+                UiUpdate::NominationUpdate { info, analysis_request_id } => {
                     dispatch_draft(
                         app,
-                        DraftMessage::Nominated { analysis_request_id },
+                        DraftMessage::Nominated {
+                            analysis_request_id,
+                            player_name: info.player_name.clone(),
+                        },
                     )
                 }
                 UiUpdate::NominationCleared => {
                     dispatch_draft(app, DraftMessage::NominationCleared)
+                }
+                UiUpdate::StateSnapshot(snapshot) => {
+                    dispatch_draft(app, DraftMessage::StateSnapshot(snapshot))
                 }
                 _ => Task::none(),
             }
@@ -126,6 +133,17 @@ fn dispatch_draft(app: &mut App, msg: DraftMessage) -> Task<Message> {
 }
 
 fn handle_modal_key(app: &mut App, key: &iced::keyboard::Key) -> Task<Message> {
+    // Position filter modal: only Escape closes it.
+    if app.draft.available.position_modal_open() {
+        if matches!(key, iced::keyboard::Key::Named(Named::Escape)) {
+            return dispatch_draft(
+                app,
+                DraftMessage::Available(AvailableMessage::PositionFilterClosed),
+            );
+        }
+        return Task::none();
+    }
+    // Quit modal.
     match key {
         iced::keyboard::Key::Named(Named::Enter) => {
             dispatch_draft(app, DraftMessage::QuitConfirmed)
@@ -145,6 +163,14 @@ fn handle_global_key(app: &mut App, key: &iced::keyboard::Key, shift: bool) -> T
             "2" => dispatch_draft(app, DraftMessage::TabSelected(TabId::Available)),
             "3" => dispatch_draft(app, DraftMessage::TabSelected(TabId::DraftLog)),
             "4" => dispatch_draft(app, DraftMessage::TabSelected(TabId::Teams)),
+            "/" if app.draft.active_tab() == TabId::Available => dispatch_draft(
+                app,
+                DraftMessage::Available(AvailableMessage::FilterFocused(true)),
+            ),
+            "p" if app.draft.active_tab() == TabId::Available => dispatch_draft(
+                app,
+                DraftMessage::Available(AvailableMessage::PositionFilterOpened),
+            ),
             "j" => dispatch_draft(
                 app,
                 DraftMessage::ScrollRequested(wyncast_app::protocol::ScrollDirection::Down),
