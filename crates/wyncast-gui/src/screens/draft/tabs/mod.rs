@@ -1,3 +1,5 @@
+pub mod analysis;
+
 use iced::Element;
 use twui::{Tab, TabBarStyle, tab_bar};
 use wyncast_app::protocol::TabId;
