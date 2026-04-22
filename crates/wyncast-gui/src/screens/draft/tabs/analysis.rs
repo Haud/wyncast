@@ -1,7 +1,8 @@
+use iced::widget::operation::{self, AbsoluteOffset};
 use iced::widget::scrollable::Viewport;
 use iced::widget::Id as ScrollId;
-use iced::Element;
-use wyncast_app::protocol::LlmStreamUpdate;
+use iced::{Element, Task};
+use wyncast_app::protocol::{LlmStreamUpdate, ScrollDirection};
 
 use crate::widgets::{StreamStatus, scrollable_markdown};
 use super::super::DraftMessage;
@@ -12,8 +13,11 @@ use super::super::DraftMessage;
 
 #[derive(Debug, Clone)]
 pub enum AnalysisMessage {
-    /// User scrolled the panel; carries the relative y offset (0.0 = top, 1.0 = bottom).
     UserScrolled(f32),
+    LlmUpdate { request_id: u64, update: LlmStreamUpdate },
+    Nominated { analysis_request_id: Option<u64> },
+    NominationCleared,
+    ScrollBy(ScrollDirection),
 }
 
 // ---------------------------------------------------------------------------
@@ -21,14 +25,11 @@ pub enum AnalysisMessage {
 // ---------------------------------------------------------------------------
 
 pub struct AnalysisPanel {
-    pub text: String,
-    pub status: StreamStatus,
-    /// The request ID of the in-flight LLM stream. Only updates with a matching
-    /// ID are applied; stale tokens from cancelled requests are discarded.
-    pub request_id: Option<u64>,
-    pub scroll_id: ScrollId,
-    /// When true, new tokens trigger a snap-to-bottom task in the parent.
-    pub auto_scroll: bool,
+     text: String,
+     status: StreamStatus,
+     request_id: Option<u64>,
+     scroll_id: ScrollId,
+     auto_scroll: bool,
 }
 
 impl AnalysisPanel {
@@ -42,9 +43,38 @@ impl AnalysisPanel {
         }
     }
 
-    /// Apply an LLM stream update. Returns `true` if the caller should issue a
-    /// snap-to-bottom task (auto_scroll is active and new text was appended).
-    pub fn apply_llm_update(&mut self, request_id: u64, update: &LlmStreamUpdate) -> bool {
+    pub fn update(&mut self, msg: AnalysisMessage) -> Task<AnalysisMessage> {
+        match msg {
+            AnalysisMessage::UserScrolled(rel_y) => {
+                self.handle_scroll(rel_y);
+                Task::none()
+            }
+            AnalysisMessage::LlmUpdate { request_id, update } => {
+                if self.apply_llm_update(request_id, &update) {
+                    operation::snap_to_end(self.scroll_id.clone())
+                } else {
+                    Task::none()
+                }
+            }
+            AnalysisMessage::Nominated { analysis_request_id } => {
+                self.apply_nomination(analysis_request_id);
+                operation::snap_to_end(self.scroll_id.clone())
+            }
+            AnalysisMessage::NominationCleared => {
+                self.reset();
+                Task::none()
+            }
+            AnalysisMessage::ScrollBy(dir) => {
+                let (dx, dy) = scroll_amount(dir);
+                if dy < 0.0 {
+                    self.auto_scroll = false;
+                }
+                operation::scroll_by(self.scroll_id.clone(), AbsoluteOffset { x: dx, y: dy })
+            }
+        }
+    }
+
+    fn apply_llm_update(&mut self, request_id: u64, update: &LlmStreamUpdate) -> bool {
         if Some(request_id) != self.request_id {
             return false;
         }
@@ -68,9 +98,7 @@ impl AnalysisPanel {
         }
     }
 
-    /// Called when a new nomination arrives. Clears previous analysis and
-    /// records the new request ID.
-    pub fn apply_nomination(&mut self, analysis_request_id: Option<u64>) {
+    fn apply_nomination(&mut self, analysis_request_id: Option<u64>) {
         self.text.clear();
         self.request_id = analysis_request_id;
         self.status = if analysis_request_id.is_some() {
@@ -81,17 +109,14 @@ impl AnalysisPanel {
         self.auto_scroll = true;
     }
 
-    /// Called when the nomination is cleared (pick completed). Resets to idle.
-    pub fn reset(&mut self) {
+    fn reset(&mut self) {
         self.text.clear();
         self.status = StreamStatus::Idle;
         self.request_id = None;
         self.auto_scroll = true;
     }
 
-    /// Update auto_scroll based on the user's scroll position.
-    /// Re-enables auto_scroll when the user scrolls to the bottom.
-    pub fn handle_scroll(&mut self, rel_y: f32) {
+    fn handle_scroll(&mut self, rel_y: f32) {
         self.auto_scroll = rel_y >= 0.99;
     }
 
@@ -114,6 +139,15 @@ impl AnalysisPanel {
 impl Default for AnalysisPanel {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn scroll_amount(dir: ScrollDirection) -> (f32, f32) {
+    match dir {
+        ScrollDirection::Up => (0.0, -40.0),
+        ScrollDirection::Down => (0.0, 40.0),
+        ScrollDirection::PageUp => (0.0, -300.0),
+        ScrollDirection::PageDown => (0.0, 300.0),
     }
 }
 
@@ -256,5 +290,67 @@ mod tests {
         panel.auto_scroll = false;
         let snap = panel.apply_llm_update(1, &token("hi"));
         assert!(!snap, "should not snap when auto_scroll is disabled");
+    }
+
+    // --- Tests exercising the update() entry point ---
+
+    #[test]
+    fn update_user_scrolled_sets_auto_scroll() {
+        let mut panel = AnalysisPanel::new();
+        assert!(panel.auto_scroll);
+        let _ = panel.update(AnalysisMessage::UserScrolled(0.5));
+        assert!(!panel.auto_scroll);
+        let _ = panel.update(AnalysisMessage::UserScrolled(0.99));
+        assert!(panel.auto_scroll);
+    }
+
+    #[test]
+    fn update_llm_token_appends_text() {
+        let mut panel = AnalysisPanel::new();
+        panel.request_id = Some(1);
+        let _ = panel.update(AnalysisMessage::LlmUpdate {
+            request_id: 1,
+            update: token("hello"),
+        });
+        assert_eq!(panel.text, "hello");
+        assert_eq!(panel.status, StreamStatus::Streaming);
+    }
+
+    #[test]
+    fn update_nominated_resets_for_new_stream() {
+        let mut panel = AnalysisPanel::new();
+        panel.request_id = Some(1);
+        panel.apply_llm_update(1, &token("old"));
+        let _ = panel.update(AnalysisMessage::Nominated { analysis_request_id: Some(2) });
+        assert!(panel.text.is_empty());
+        assert_eq!(panel.request_id, Some(2));
+        assert_eq!(panel.status, StreamStatus::Streaming);
+    }
+
+    #[test]
+    fn update_nomination_cleared_resets_to_idle() {
+        let mut panel = AnalysisPanel::new();
+        panel.request_id = Some(1);
+        panel.apply_llm_update(1, &token("text"));
+        let _ = panel.update(AnalysisMessage::NominationCleared);
+        assert!(panel.text.is_empty());
+        assert_eq!(panel.status, StreamStatus::Idle);
+        assert!(panel.request_id.is_none());
+    }
+
+    #[test]
+    fn update_scroll_by_up_disables_auto_scroll() {
+        let mut panel = AnalysisPanel::new();
+        assert!(panel.auto_scroll);
+        let _ = panel.update(AnalysisMessage::ScrollBy(ScrollDirection::Up));
+        assert!(!panel.auto_scroll);
+    }
+
+    #[test]
+    fn update_scroll_by_down_preserves_auto_scroll() {
+        let mut panel = AnalysisPanel::new();
+        assert!(panel.auto_scroll);
+        let _ = panel.update(AnalysisMessage::ScrollBy(ScrollDirection::Down));
+        assert!(panel.auto_scroll);
     }
 }
