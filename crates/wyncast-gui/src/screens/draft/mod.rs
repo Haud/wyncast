@@ -18,6 +18,8 @@ use crate::focus::FocusTarget;
 use crate::widgets::{focus_ring, with_overlay};
 use tabs::analysis::{AnalysisMessage, AnalysisPanel};
 use tabs::available::{AvailableMessage, AvailablePanel};
+use tabs::draft_log::{DraftLogMessage, DraftLogPanel};
+use tabs::teams::{TeamsMessage, TeamsPanel};
 
 // ---------------------------------------------------------------------------
 // Messages & types
@@ -39,6 +41,8 @@ pub enum DraftMessage {
     QuitCancelled,
     Analysis(AnalysisMessage),
     Available(AvailableMessage),
+    DraftLog(DraftLogMessage),
+    Teams(TeamsMessage),
     LlmUpdate { request_id: u64, update: LlmStreamUpdate },
     Nominated { analysis_request_id: Option<u64>, player_name: String },
     NominationCleared,
@@ -61,6 +65,8 @@ pub struct DraftScreen {
     quit_modal_open: bool,
     analysis: AnalysisPanel,
     pub available: AvailablePanel,
+    pub draft_log: DraftLogPanel,
+    pub teams: TeamsPanel,
 }
 
 impl DraftScreen {
@@ -70,6 +76,8 @@ impl DraftScreen {
             quit_modal_open: false,
             analysis: AnalysisPanel::new(),
             available: AvailablePanel::new(),
+            draft_log: DraftLogPanel::new(),
+            teams: TeamsPanel::new(),
         }
     }
 
@@ -109,7 +117,20 @@ impl DraftScreen {
                         .map(DraftMessage::Available);
                     (task, vec![])
                 }
-                _ => (Task::none(), vec![]),
+                TabId::DraftLog => {
+                    let task = self
+                        .draft_log
+                        .update(DraftLogMessage::ScrollBy(dir))
+                        .map(DraftMessage::DraftLog);
+                    (task, vec![])
+                }
+                TabId::Teams => {
+                    let task = self
+                        .teams
+                        .update(TeamsMessage::ScrollBy(dir))
+                        .map(DraftMessage::Teams);
+                    (task, vec![])
+                }
             },
             DraftMessage::QuitRequested => {
                 self.quit_modal_open = true;
@@ -132,6 +153,14 @@ impl DraftScreen {
             }
             DraftMessage::Available(msg) => {
                 let task = self.available.update(msg).map(DraftMessage::Available);
+                (task, vec![])
+            }
+            DraftMessage::DraftLog(msg) => {
+                let task = self.draft_log.update(msg).map(DraftMessage::DraftLog);
+                (task, vec![])
+            }
+            DraftMessage::Teams(msg) => {
+                let task = self.teams.update(msg).map(DraftMessage::Teams);
                 (task, vec![])
             }
             DraftMessage::LlmUpdate { request_id, update } => {
@@ -164,7 +193,11 @@ impl DraftScreen {
                 (Task::batch([task1, task2]), vec![])
             }
             DraftMessage::StateSnapshot(snapshot) => {
-                self.available.available_players = snapshot.available_players;
+                self.available.available_players = snapshot.available_players.clone();
+                self.draft_log.draft_log = snapshot.draft_log;
+                self.draft_log.available_players = snapshot.available_players;
+                self.teams.team_snapshots = snapshot.team_snapshots;
+                self.teams.salary_cap = snapshot.salary_cap;
                 (Task::none(), vec![])
             }
         }
@@ -223,33 +256,11 @@ fn tab_content<'a>(screen: &'a DraftScreen) -> Element<'a, DraftMessage> {
             .available
             .view()
             .map(DraftMessage::Available),
-        TabId::DraftLog => tab_stub("Draft Log — stub (Phase 3.4)"),
-        TabId::Teams => tab_stub("Teams — stub (Phase 3.4)"),
+        TabId::DraftLog => screen.draft_log.view().map(DraftMessage::DraftLog),
+        TabId::Teams => screen.teams.view().map(DraftMessage::Teams),
     }
 }
 
-fn tab_stub<'a>(label: &'static str) -> Element<'a, DraftMessage> {
-    let placeholder: Element<DraftMessage> = text(
-        label,
-        TextStyle {
-            size: TextSize::Sm,
-            color: TextColor::Dimmed,
-            ..Default::default()
-        },
-    )
-    .into();
-
-    frame(
-        placeholder,
-        BoxStyle {
-            width: Length::Fill,
-            height: Length::Fill,
-            padding: Padding::new(12.0),
-            ..Default::default()
-        },
-    )
-    .into()
-}
 
 fn sidebar<'a>(focus: FocusTarget) -> Element<'a, DraftMessage> {
     let budget = sidebar_panel_stub("Budget", focus == FocusTarget::Budget);
