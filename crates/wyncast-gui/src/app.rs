@@ -1,33 +1,32 @@
 use std::sync::{Arc, Mutex};
 
-use iced::widget::{column, container, scrollable, text};
+use iced::keyboard::key::Named;
 use iced::{Element, Length, Subscription, Task};
 use tokio::sync::mpsc;
-use wyncast_app::protocol::{AppMode, UiUpdate, UserCommand};
+use wyncast_app::protocol::{AppMode, ConnectionStatus, ScrollDirection, TabId, UiUpdate, UserCommand};
 
 use crate::bridge;
 use crate::focus::FocusTarget;
 use crate::message::Message;
+use crate::screens::draft::{Direction, DraftMessage, DraftScreen};
 
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
 
 pub struct App {
-    /// Backend → GUI channel. Wrapped in Arc<Mutex<Option>> so the receiver
-    /// can be moved into the subscription stream (FnOnce) while subscription()
-    /// takes &self (Fn). After first render the Option is None; the stream
-    /// keeps running by hash identity.
+    /// Backend → GUI channel.
     ui_rx: Arc<Mutex<Option<mpsc::Receiver<UiUpdate>>>>,
-    /// GUI → backend channel. Used via send_command().
-    #[allow(dead_code)]
+    /// GUI → backend channel.
     cmd_tx: mpsc::Sender<UserCommand>,
-    /// Current app mode (displayed in debug view; drives screen routing from 3.1).
-    initial_mode: AppMode,
-    /// Keyboard focus target (displayed in debug view; drives focus ring from 3.1).
+    /// Current application mode — drives top-level screen routing.
+    app_mode: AppMode,
+    /// Keyboard focus target — which panel gets the focus ring.
     focus: FocusTarget,
-    /// Debug log: one discriminant string per UiUpdate received.
-    updates: Vec<String>,
+    /// WebSocket connection state.
+    connection_status: ConnectionStatus,
+    /// Draft screen state.
+    draft: DraftScreen,
 }
 
 impl App {
@@ -39,14 +38,14 @@ impl App {
         Self {
             ui_rx: Arc::new(Mutex::new(Some(ui_rx))),
             cmd_tx,
-            initial_mode,
+            app_mode: initial_mode,
             focus: FocusTarget::default(),
-            updates: Vec::new(),
+            connection_status: ConnectionStatus::Disconnected,
+            draft: DraftScreen::new(),
         }
     }
 
-    #[allow(dead_code)]
-    pub fn send_command(&self, cmd: UserCommand) {
+    fn send_command(&self, cmd: UserCommand) {
         if self.cmd_tx.try_send(cmd).is_err() {
             tracing::warn!("cmd_tx full or closed, command dropped");
         }
@@ -60,19 +59,100 @@ impl App {
 pub fn update(app: &mut App, msg: Message) -> Task<Message> {
     match msg {
         Message::UiUpdate(update) => {
-            app.updates.push(variant_name(&update));
-            Task::none()
-        }
-        Message::KeyPressed(key, _mods) => {
-            if matches!(
-                key,
-                iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape)
-            ) {
-                return iced::exit();
+            match &update {
+                UiUpdate::ModeChanged(mode) => app.app_mode = mode.clone(),
+                UiUpdate::ConnectionStatus(status) => app.connection_status = *status,
+                _ => {}
             }
             Task::none()
         }
+        Message::KeyPressed(key, mods) => {
+            // Priority order: modal → global
+            if app.draft.quit_modal_open {
+                return handle_modal_key(app, &key);
+            }
+            handle_global_key(app, &key, mods.shift())
+        }
+        Message::Draft(draft_msg) => handle_draft_message(app, draft_msg),
         Message::NoOp => Task::none(),
+    }
+}
+
+fn handle_modal_key(app: &mut App, key: &iced::keyboard::Key) -> Task<Message> {
+    match key {
+        iced::keyboard::Key::Named(Named::Enter) => {
+            handle_draft_message(app, DraftMessage::QuitConfirmed)
+        }
+        iced::keyboard::Key::Named(Named::Escape) => {
+            handle_draft_message(app, DraftMessage::QuitCancelled)
+        }
+        _ => Task::none(),
+    }
+}
+
+fn handle_global_key(app: &mut App, key: &iced::keyboard::Key, shift: bool) -> Task<Message> {
+    match key {
+        iced::keyboard::Key::Character(c) => match c.as_str() {
+            "q" => handle_draft_message(app, DraftMessage::QuitRequested),
+            "1" => handle_draft_message(app, DraftMessage::TabSelected(TabId::Analysis)),
+            "2" => handle_draft_message(app, DraftMessage::TabSelected(TabId::Available)),
+            "3" => handle_draft_message(app, DraftMessage::TabSelected(TabId::DraftLog)),
+            "4" => handle_draft_message(app, DraftMessage::TabSelected(TabId::Teams)),
+            "j" => handle_draft_message(app, DraftMessage::ScrollRequested(ScrollDirection::Down)),
+            "k" => handle_draft_message(app, DraftMessage::ScrollRequested(ScrollDirection::Up)),
+            _ => Task::none(),
+        },
+        iced::keyboard::Key::Named(Named::Tab) => {
+            if shift {
+                handle_draft_message(app, DraftMessage::FocusCycle(Direction::Reverse))
+            } else {
+                handle_draft_message(app, DraftMessage::FocusCycle(Direction::Forward))
+            }
+        }
+        iced::keyboard::Key::Named(Named::ArrowUp) => {
+            handle_draft_message(app, DraftMessage::ScrollRequested(ScrollDirection::Up))
+        }
+        iced::keyboard::Key::Named(Named::ArrowDown) => {
+            handle_draft_message(app, DraftMessage::ScrollRequested(ScrollDirection::Down))
+        }
+        iced::keyboard::Key::Named(Named::PageUp) => {
+            handle_draft_message(app, DraftMessage::ScrollRequested(ScrollDirection::PageUp))
+        }
+        iced::keyboard::Key::Named(Named::PageDown) => {
+            handle_draft_message(app, DraftMessage::ScrollRequested(ScrollDirection::PageDown))
+        }
+        _ => Task::none(),
+    }
+}
+
+fn handle_draft_message(app: &mut App, msg: DraftMessage) -> Task<Message> {
+    match msg {
+        DraftMessage::TabSelected(tab) => {
+            app.draft.active_tab = tab;
+            app.send_command(UserCommand::SwitchTab(tab));
+            Task::none()
+        }
+        DraftMessage::FocusCycle(Direction::Forward) => {
+            app.focus = app.focus.cycle_forward();
+            Task::none()
+        }
+        DraftMessage::FocusCycle(Direction::Reverse) => {
+            app.focus = app.focus.cycle_backward();
+            Task::none()
+        }
+        DraftMessage::QuitRequested => {
+            app.draft.quit_modal_open = true;
+            Task::none()
+        }
+        DraftMessage::QuitConfirmed => {
+            app.send_command(UserCommand::Quit);
+            iced::exit()
+        }
+        DraftMessage::QuitCancelled => {
+            app.draft.quit_modal_open = false;
+            Task::none()
+        }
+        DraftMessage::ScrollRequested(_) => Task::none(),
     }
 }
 
@@ -81,36 +161,24 @@ pub fn update(app: &mut App, msg: Message) -> Task<Message> {
 // ---------------------------------------------------------------------------
 
 pub fn view(app: &App) -> Element<'_, Message> {
-    let log_items: Vec<Element<Message>> = if app.updates.is_empty() {
-        vec![text("Waiting for backend updates…").into()]
-    } else {
-        app.updates
-            .iter()
-            .enumerate()
-            .map(|(i, s)| text(format!("{i}: {s}")).into())
-            .collect()
-    };
-
-    let log = scrollable(column(log_items).spacing(2)).height(Length::Fill);
-
-    container(
-        column([
-            text("Wyncast").size(24).into(),
-            text(format!(
-                "Mode: {:?} | Focus: {:?} | {} update(s) (Esc to quit)",
-                app.initial_mode,
-                app.focus,
-                app.updates.len()
-            ))
-            .into(),
-            log.into(),
-        ])
-        .spacing(8)
-        .padding(16),
-    )
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .into()
+    match &app.app_mode {
+        AppMode::Draft => {
+            let draft_elem =
+                crate::screens::draft::view(&app.draft, app.focus, app.connection_status);
+            draft_elem.map(Message::Draft)
+        }
+        _ => {
+            // TODO: unhandled mode — subsequent phases add Onboarding, Settings, Matchup
+            iced::widget::container(
+                iced::widget::text("TODO: unhandled mode"),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -127,24 +195,4 @@ pub fn subscription(app: &App) -> Subscription<Message> {
             _ => Message::NoOp,
         }),
     ])
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn variant_name(update: &UiUpdate) -> String {
-    match update {
-        UiUpdate::StateSnapshot(_) => "StateSnapshot",
-        UiUpdate::LlmUpdate { .. } => "LlmUpdate",
-        UiUpdate::ConnectionStatus(_) => "ConnectionStatus",
-        UiUpdate::NominationUpdate { .. } => "NominationUpdate",
-        UiUpdate::BidUpdate(_) => "BidUpdate",
-        UiUpdate::NominationCleared => "NominationCleared",
-        UiUpdate::PlanStarted { .. } => "PlanStarted",
-        UiUpdate::OnboardingUpdate(_) => "OnboardingUpdate",
-        UiUpdate::ModeChanged(_) => "ModeChanged",
-        UiUpdate::MatchupSnapshot(_) => "MatchupSnapshot",
-    }
-    .to_string()
 }

@@ -1,2 +1,7 @@
-// Widget library for wyncast-gui.
-// Phase 3.0: empty — custom widgets will be added in Phase 3.1+.
+pub mod focus_ring;
+pub mod overlay;
+pub mod split_pane;
+
+pub use focus_ring::focus_ring;
+pub use overlay::with_overlay;
+pub use split_pane::{SplitOrientation, split_pane};
