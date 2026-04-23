@@ -10,7 +10,6 @@ use wyncast_app::protocol::ScrollDirection;
 use wyncast_baseball::draft::pick::Position;
 use wyncast_baseball::valuation::zscore::PlayerValuation;
 
-use crate::modals::position_filter::position_filter_modal;
 use crate::widgets::{
     data_table::{Column, DataTableStyle, ROW_HEIGHT, data_table},
     filter_input::filter_input,
@@ -83,8 +82,7 @@ pub struct AvailablePanel {
     // Internal state
     filter_text: String,
     filter_focused: bool,
-    position_filter: Option<Position>,
-    position_modal_open: bool,
+    pub position_filter: Option<Position>,
     scroll_id: WidgetId,
     highlighted_player_name: Option<String>,
     filter_input_id: WidgetId,
@@ -97,16 +95,10 @@ impl AvailablePanel {
             filter_text: String::new(),
             filter_focused: false,
             position_filter: None,
-            position_modal_open: false,
             scroll_id: WidgetId::unique(),
             highlighted_player_name: None,
             filter_input_id: WidgetId::unique(),
         }
-    }
-
-    /// Whether the position filter modal is open (for has_modal gating).
-    pub fn position_modal_open(&self) -> bool {
-        self.position_modal_open
     }
 
     #[allow(dead_code)]
@@ -129,16 +121,14 @@ impl AvailablePanel {
                 }
             }
             AvailableMessage::PositionFilterOpened => {
-                self.position_modal_open = true;
+                // Modal open/close is tracked by ModalStack on DraftScreen.
                 Task::none()
             }
             AvailableMessage::PositionSelected(pos) => {
                 self.position_filter = pos;
-                self.position_modal_open = false;
                 Task::none()
             }
             AvailableMessage::PositionFilterClosed => {
-                self.position_modal_open = false;
                 Task::none()
             }
             AvailableMessage::RowClicked(_) => Task::none(),
@@ -198,13 +188,6 @@ impl AvailablePanel {
         );
 
         let filter_bar = self.view_filter_bar(total);
-        let position_overlay =
-            position_filter_modal(
-                self.position_modal_open,
-                AvailableMessage::PositionFilterClosed,
-                AvailableMessage::PositionSelected,
-                self.position_filter,
-            );
 
         let table_area: Element<'a, AvailableMessage> = frame(
             table,
@@ -216,7 +199,7 @@ impl AvailablePanel {
         )
         .into();
 
-        let content: Element<'a, AvailableMessage> = v_stack(
+        v_stack(
             vec![filter_bar, table_area],
             StackStyle {
                 gap: StackGap::None,
@@ -225,12 +208,7 @@ impl AvailablePanel {
                 ..Default::default()
             },
         )
-        .into();
-
-        match position_overlay {
-            Some(overlay) => iced::widget::stack![content, overlay].into(),
-            None => content,
-        }
+        .into()
     }
 
     fn view_filter_bar<'a>(&'a self, count: usize) -> Element<'a, AvailableMessage> {
@@ -471,7 +449,6 @@ mod tests {
         assert!(panel.filter_text.is_empty());
         assert!(!panel.filter_focused);
         assert!(panel.position_filter.is_none());
-        assert!(!panel.position_modal_open);
         assert!(panel.highlighted_player_name.is_none());
         assert!(panel.available_players.is_empty());
     }
@@ -493,19 +470,18 @@ mod tests {
     }
 
     #[test]
-    fn update_position_filter_opened_opens_modal() {
+    fn update_position_filter_opened_is_noop_on_panel() {
         let mut panel = AvailablePanel::new();
         let _ = panel.update(AvailableMessage::PositionFilterOpened);
-        assert!(panel.position_modal_open);
+        // ModalStack on DraftScreen owns open/close; panel state unchanged.
+        assert!(panel.position_filter.is_none());
     }
 
     #[test]
-    fn update_position_selected_sets_filter_and_closes_modal() {
+    fn update_position_selected_sets_filter() {
         let mut panel = AvailablePanel::new();
-        let _ = panel.update(AvailableMessage::PositionFilterOpened);
         let _ = panel.update(AvailableMessage::PositionSelected(Some(Position::Catcher)));
         assert_eq!(panel.position_filter, Some(Position::Catcher));
-        assert!(!panel.position_modal_open);
     }
 
     #[test]
@@ -517,11 +493,10 @@ mod tests {
     }
 
     #[test]
-    fn update_position_filter_closed_closes_modal() {
+    fn update_position_filter_closed_is_noop_on_panel() {
         let mut panel = AvailablePanel::new();
-        let _ = panel.update(AvailableMessage::PositionFilterOpened);
         let _ = panel.update(AvailableMessage::PositionFilterClosed);
-        assert!(!panel.position_modal_open);
+        assert!(panel.position_filter.is_none());
     }
 
     #[test]
