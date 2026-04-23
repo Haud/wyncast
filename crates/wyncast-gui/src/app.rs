@@ -11,6 +11,9 @@ use crate::bridge;
 use crate::focus::FocusTarget;
 use crate::message::Message;
 use crate::screens::draft::{Direction, DraftEffect, DraftMessage, DraftScreen};
+use crate::screens::draft::sidebar::{SidebarMessage};
+use crate::screens::draft::sidebar::nomination_plan::PlanMessage;
+use crate::screens::draft::sidebar::roster::RosterMessage;
 use crate::screens::draft::tabs::available::AvailableMessage;
 
 // ---------------------------------------------------------------------------
@@ -74,12 +77,16 @@ pub fn update(app: &mut App, msg: Message) -> Task<Message> {
                         DraftMessage::LlmUpdate { request_id, update: llm_update },
                     )
                 }
+                UiUpdate::PlanStarted { request_id } => {
+                    dispatch_draft(app, DraftMessage::PlanStarted { request_id })
+                }
                 UiUpdate::NominationUpdate { info, analysis_request_id } => {
                     dispatch_draft(
                         app,
                         DraftMessage::Nominated {
                             analysis_request_id,
                             player_name: info.player_name.clone(),
+                            position: info.position.clone(),
                         },
                     )
                 }
@@ -104,12 +111,6 @@ pub fn update(app: &mut App, msg: Message) -> Task<Message> {
 }
 
 fn dispatch_draft(app: &mut App, msg: DraftMessage) -> Task<Message> {
-    if matches!(&msg, DraftMessage::ScrollRequested(_))
-        && app.focus != FocusTarget::MainPanel
-    {
-        return Task::none();
-    }
-
     let (task, effects) = app.draft.update(msg);
     let mut exit = false;
     for effect in effects {
@@ -130,6 +131,23 @@ fn dispatch_draft(app: &mut App, msg: DraftMessage) -> Task<Message> {
     } else {
         task
     }
+}
+
+fn route_scroll(
+    app: &mut App,
+    dir: wyncast_app::protocol::ScrollDirection,
+) -> Task<Message> {
+    use FocusTarget::*;
+    let msg = match app.focus {
+        MainPanel => DraftMessage::ScrollRequested(dir),
+        Roster => DraftMessage::Sidebar(SidebarMessage::Roster(RosterMessage::ScrollBy(dir))),
+        Scarcity => DraftMessage::Sidebar(SidebarMessage::ScarcityScrollBy(dir)),
+        NominationPlan => {
+            DraftMessage::Sidebar(SidebarMessage::Plan(PlanMessage::ScrollBy(dir)))
+        }
+        None | Budget => return Task::none(),
+    };
+    dispatch_draft(app, msg)
 }
 
 fn handle_modal_key(app: &mut App, key: &iced::keyboard::Key) -> Task<Message> {
@@ -171,14 +189,8 @@ fn handle_global_key(app: &mut App, key: &iced::keyboard::Key, shift: bool) -> T
                 app,
                 DraftMessage::Available(AvailableMessage::PositionFilterOpened),
             ),
-            "j" => dispatch_draft(
-                app,
-                DraftMessage::ScrollRequested(wyncast_app::protocol::ScrollDirection::Down),
-            ),
-            "k" => dispatch_draft(
-                app,
-                DraftMessage::ScrollRequested(wyncast_app::protocol::ScrollDirection::Up),
-            ),
+            "j" => route_scroll(app, wyncast_app::protocol::ScrollDirection::Down),
+            "k" => route_scroll(app, wyncast_app::protocol::ScrollDirection::Up),
             _ => Task::none(),
         },
         iced::keyboard::Key::Named(Named::Tab) => {
@@ -188,22 +200,18 @@ fn handle_global_key(app: &mut App, key: &iced::keyboard::Key, shift: bool) -> T
                 dispatch_draft(app, DraftMessage::FocusCycle(Direction::Forward))
             }
         }
-        iced::keyboard::Key::Named(Named::ArrowUp) => dispatch_draft(
-            app,
-            DraftMessage::ScrollRequested(wyncast_app::protocol::ScrollDirection::Up),
-        ),
-        iced::keyboard::Key::Named(Named::ArrowDown) => dispatch_draft(
-            app,
-            DraftMessage::ScrollRequested(wyncast_app::protocol::ScrollDirection::Down),
-        ),
-        iced::keyboard::Key::Named(Named::PageUp) => dispatch_draft(
-            app,
-            DraftMessage::ScrollRequested(wyncast_app::protocol::ScrollDirection::PageUp),
-        ),
-        iced::keyboard::Key::Named(Named::PageDown) => dispatch_draft(
-            app,
-            DraftMessage::ScrollRequested(wyncast_app::protocol::ScrollDirection::PageDown),
-        ),
+        iced::keyboard::Key::Named(Named::ArrowUp) => {
+            route_scroll(app, wyncast_app::protocol::ScrollDirection::Up)
+        }
+        iced::keyboard::Key::Named(Named::ArrowDown) => {
+            route_scroll(app, wyncast_app::protocol::ScrollDirection::Down)
+        }
+        iced::keyboard::Key::Named(Named::PageUp) => {
+            route_scroll(app, wyncast_app::protocol::ScrollDirection::PageUp)
+        }
+        iced::keyboard::Key::Named(Named::PageDown) => {
+            route_scroll(app, wyncast_app::protocol::ScrollDirection::PageDown)
+        }
         _ => Task::none(),
     }
 }
