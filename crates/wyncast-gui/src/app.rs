@@ -83,12 +83,11 @@ pub fn update(app: &mut App, msg: Message) -> Task<Message> {
                 UiUpdate::NominationUpdate { info, analysis_request_id } => {
                     dispatch_draft(
                         app,
-                        DraftMessage::Nominated {
-                            analysis_request_id,
-                            player_name: info.player_name.clone(),
-                            position: info.position.clone(),
-                        },
+                        DraftMessage::Nominated { analysis_request_id, info },
                     )
+                }
+                UiUpdate::BidUpdate(info) => {
+                    dispatch_draft(app, DraftMessage::BidUpdated(info))
                 }
                 UiUpdate::NominationCleared => {
                     dispatch_draft(app, DraftMessage::NominationCleared)
