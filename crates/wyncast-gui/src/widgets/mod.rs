@@ -1,3 +1,4 @@
+pub mod bar_gauge;
 pub mod data_table;
 pub mod filter_input;
 pub mod focus_ring;
