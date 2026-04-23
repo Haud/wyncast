@@ -22,6 +22,18 @@ pub fn view<'a>(active_tab: TabId) -> Element<'a, DraftMessage> {
     tab_bar(tabs, selected, TabBarStyle::default()).into()
 }
 
+/// Disabled tab bar shown when the draft is in the disconnected state.
+pub fn view_disabled<'a>() -> Element<'a, DraftMessage> {
+    let tabs = vec![
+        Tab::new("1: Analysis", DraftMessage::TabSelected(TabId::Analysis)),
+        Tab::new("2: Available", DraftMessage::TabSelected(TabId::Available)),
+        Tab::new("3: Draft Log", DraftMessage::TabSelected(TabId::DraftLog)),
+        Tab::new("4: Teams", DraftMessage::TabSelected(TabId::Teams)),
+    ];
+
+    tab_bar(tabs, 0, TabBarStyle::default().disabled(true)).into()
+}
+
 fn tab_id_to_index(tab: TabId) -> usize {
     match tab {
         TabId::Analysis => 0,
