@@ -7,7 +7,7 @@ pub mod sidebar;
 pub mod tabs;
 
 use iced::{Element, Length, Padding, Task};
-use twui::{Colors, ConfirmationModal, StackGap, StackStyle, v_stack};
+use twui::{Colors, StackGap, StackStyle, v_stack};
 use wyncast_app::protocol::{
     AppSnapshot, ConnectionStatus, LlmStreamUpdate, NominationInfo, ScrollDirection, TabId,
     UserCommand,
@@ -16,6 +16,9 @@ use wyncast_baseball::draft::roster::RosterSlot;
 use wyncast_baseball::valuation::scarcity::ScarcityEntry;
 
 use crate::focus::FocusTarget;
+use crate::modals::{ModalKind, ModalStack};
+use crate::modals::position_filter::position_filter_modal;
+use crate::modals::quit_confirm::quit_confirm_modal;
 use crate::widgets::{focus_ring, with_overlay};
 use sidebar::{Sidebar, SidebarMessage};
 use sidebar::nomination_plan::PlanMessage;
@@ -70,7 +73,8 @@ pub enum DraftEffect {
 
 pub struct DraftScreen {
     active_tab: TabId,
-    quit_modal_open: bool,
+    /// Active modal stack — replaces per-component modal flags.
+    pub modal_stack: ModalStack,
     analysis: AnalysisPanel,
     pub available: AvailablePanel,
     pub draft_log: DraftLogPanel,
@@ -97,7 +101,7 @@ impl DraftScreen {
     pub fn new() -> Self {
         Self {
             active_tab: TabId::Analysis,
-            quit_modal_open: false,
+            modal_stack: ModalStack::new(),
             analysis: AnalysisPanel::new(),
             available: AvailablePanel::new(),
             draft_log: DraftLogPanel::new(),
@@ -123,7 +127,7 @@ impl DraftScreen {
 
     /// Returns true when any modal is open (used to gate global key handling).
     pub fn has_modal(&self) -> bool {
-        self.quit_modal_open || self.available.position_modal_open()
+        !self.modal_stack.is_empty()
     }
 
     pub fn update(&mut self, msg: DraftMessage) -> (Task<DraftMessage>, Vec<DraftEffect>) {
@@ -169,18 +173,21 @@ impl DraftScreen {
                 }
             },
             DraftMessage::QuitRequested => {
-                self.quit_modal_open = true;
+                self.modal_stack.push(ModalKind::QuitConfirm);
                 (Task::none(), vec![])
             }
-            DraftMessage::QuitConfirmed => (
-                Task::none(),
-                vec![
-                    DraftEffect::SendCommand(UserCommand::Quit),
-                    DraftEffect::Exit,
-                ],
-            ),
+            DraftMessage::QuitConfirmed => {
+                self.modal_stack.pop();
+                (
+                    Task::none(),
+                    vec![
+                        DraftEffect::SendCommand(UserCommand::Quit),
+                        DraftEffect::Exit,
+                    ],
+                )
+            }
             DraftMessage::QuitCancelled => {
-                self.quit_modal_open = false;
+                self.modal_stack.pop();
                 (Task::none(), vec![])
             }
             DraftMessage::Analysis(msg) => {
@@ -188,6 +195,17 @@ impl DraftScreen {
                 (task, vec![])
             }
             DraftMessage::Available(msg) => {
+                // Intercept position-filter messages to drive the modal stack.
+                match &msg {
+                    AvailableMessage::PositionFilterOpened => {
+                        self.modal_stack.push(ModalKind::PositionFilter);
+                    }
+                    AvailableMessage::PositionFilterClosed
+                    | AvailableMessage::PositionSelected(_) => {
+                        self.modal_stack.pop();
+                    }
+                    _ => {}
+                }
                 let task = self.available.update(msg).map(DraftMessage::Available);
                 (task, vec![])
             }
@@ -378,23 +396,19 @@ fn budget_bar_elem<'a>(screen: &DraftScreen, focus: FocusTarget) -> Element<'a, 
     )
 }
 
-fn view_modal<'a>(screen: &DraftScreen) -> Option<Element<'a, DraftMessage>> {
-    if screen.available.position_modal_open() {
-        return None;
+fn view_modal<'a>(screen: &'a DraftScreen) -> Option<Element<'a, DraftMessage>> {
+    match screen.modal_stack.top() {
+        Some(ModalKind::QuitConfirm) => {
+            quit_confirm_modal(DraftMessage::QuitConfirmed, DraftMessage::QuitCancelled)
+        }
+        Some(ModalKind::PositionFilter) => position_filter_modal(
+            true,
+            DraftMessage::Available(AvailableMessage::PositionFilterClosed),
+            |pos| DraftMessage::Available(AvailableMessage::PositionSelected(pos)),
+            screen.available.position_filter,
+        ),
+        None => None,
     }
-    quit_modal(screen)
-}
-
-fn quit_modal<'a>(screen: &DraftScreen) -> Option<Element<'a, DraftMessage>> {
-    ConfirmationModal::view(
-        screen.quit_modal_open,
-        "Quit Wyncast?",
-        "Are you sure you want to quit?",
-        "Quit",
-        "Cancel",
-        DraftMessage::QuitConfirmed,
-        DraftMessage::QuitCancelled,
-    )
 }
 
 // ---------------------------------------------------------------------------
@@ -446,18 +460,18 @@ mod tests {
     #[test]
     fn quit_requested_opens_modal() {
         let mut screen = DraftScreen::new();
-        assert!(!screen.quit_modal_open);
+        assert!(!screen.has_modal());
         let (_, effects) = screen.update(DraftMessage::QuitRequested);
-        assert!(screen.quit_modal_open);
+        assert_eq!(screen.modal_stack.top(), Some(&ModalKind::QuitConfirm));
         assert!(effects.is_empty());
     }
 
     #[test]
     fn quit_cancelled_closes_modal() {
         let mut screen = DraftScreen::new();
-        screen.quit_modal_open = true;
+        screen.modal_stack.push(ModalKind::QuitConfirm);
         let (_, effects) = screen.update(DraftMessage::QuitCancelled);
-        assert!(!screen.quit_modal_open);
+        assert!(screen.modal_stack.is_empty());
         assert!(effects.is_empty());
     }
 
@@ -589,8 +603,37 @@ mod tests {
     #[test]
     fn has_modal_true_when_quit_open() {
         let mut screen = DraftScreen::new();
-        screen.quit_modal_open = true;
+        screen.modal_stack.push(ModalKind::QuitConfirm);
         assert!(screen.has_modal());
+    }
+
+    #[test]
+    fn position_filter_opened_pushes_stack() {
+        let mut screen = DraftScreen::new();
+        screen.active_tab = TabId::Available;
+        let (_, effects) = screen.update(DraftMessage::Available(AvailableMessage::PositionFilterOpened));
+        assert_eq!(screen.modal_stack.top(), Some(&ModalKind::PositionFilter));
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn position_filter_closed_pops_stack() {
+        let mut screen = DraftScreen::new();
+        screen.modal_stack.push(ModalKind::PositionFilter);
+        let (_, effects) = screen.update(DraftMessage::Available(AvailableMessage::PositionFilterClosed));
+        assert!(screen.modal_stack.is_empty());
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn position_selected_pops_stack_and_sets_filter() {
+        use wyncast_baseball::draft::pick::Position;
+        let mut screen = DraftScreen::new();
+        screen.modal_stack.push(ModalKind::PositionFilter);
+        let (_, effects) = screen.update(DraftMessage::Available(AvailableMessage::PositionSelected(Some(Position::Catcher))));
+        assert!(screen.modal_stack.is_empty());
+        assert_eq!(screen.available.position_filter, Some(Position::Catcher));
+        assert!(effects.is_empty());
     }
 
     #[test]

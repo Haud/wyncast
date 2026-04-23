@@ -10,6 +10,7 @@ use wyncast_app::protocol::{
 use crate::bridge;
 use crate::focus::FocusTarget;
 use crate::message::Message;
+use crate::modals::ModalKind;
 use crate::screens::draft::{Direction, DraftEffect, DraftMessage, DraftScreen};
 use crate::screens::draft::sidebar::{SidebarMessage};
 use crate::screens::draft::sidebar::nomination_plan::PlanMessage;
@@ -150,25 +151,27 @@ fn route_scroll(
 }
 
 fn handle_modal_key(app: &mut App, key: &iced::keyboard::Key) -> Task<Message> {
-    // Position filter modal: only Escape closes it.
-    if app.draft.available.position_modal_open() {
-        if matches!(key, iced::keyboard::Key::Named(Named::Escape)) {
-            return dispatch_draft(
-                app,
-                DraftMessage::Available(AvailableMessage::PositionFilterClosed),
-            );
+    match app.draft.modal_stack.top() {
+        Some(ModalKind::PositionFilter) => {
+            if matches!(key, iced::keyboard::Key::Named(Named::Escape)) {
+                dispatch_draft(
+                    app,
+                    DraftMessage::Available(AvailableMessage::PositionFilterClosed),
+                )
+            } else {
+                Task::none()
+            }
         }
-        return Task::none();
-    }
-    // Quit modal.
-    match key {
-        iced::keyboard::Key::Named(Named::Enter) => {
-            dispatch_draft(app, DraftMessage::QuitConfirmed)
-        }
-        iced::keyboard::Key::Named(Named::Escape) => {
-            dispatch_draft(app, DraftMessage::QuitCancelled)
-        }
-        _ => Task::none(),
+        Some(ModalKind::QuitConfirm) => match key {
+            iced::keyboard::Key::Named(Named::Enter) => {
+                dispatch_draft(app, DraftMessage::QuitConfirmed)
+            }
+            iced::keyboard::Key::Named(Named::Escape) => {
+                dispatch_draft(app, DraftMessage::QuitCancelled)
+            }
+            _ => Task::none(),
+        },
+        None => Task::none(),
     }
 }
 
