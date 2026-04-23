@@ -1,3 +1,4 @@
+mod budget_bar;
 mod help_bar;
 mod layout;
 mod nomination_banner;
@@ -6,13 +7,10 @@ pub mod sidebar;
 pub mod tabs;
 
 use iced::{Element, Length, Padding, Task};
-use twui::{
-    Colors, ConfirmationModal, TextColor, TextSize, TextStyle,
-    frame, text, v_stack,
-    BoxStyle, StackGap, StackStyle,
-};
+use twui::{Colors, ConfirmationModal, StackGap, StackStyle, v_stack};
 use wyncast_app::protocol::{
-    AppSnapshot, ConnectionStatus, LlmStreamUpdate, ScrollDirection, TabId, UserCommand,
+    AppSnapshot, ConnectionStatus, LlmStreamUpdate, NominationInfo, ScrollDirection, TabId,
+    UserCommand,
 };
 use wyncast_baseball::draft::roster::RosterSlot;
 use wyncast_baseball::valuation::scarcity::ScarcityEntry;
@@ -50,7 +48,10 @@ pub enum DraftMessage {
     Teams(TeamsMessage),
     Sidebar(SidebarMessage),
     LlmUpdate { request_id: u64, update: LlmStreamUpdate },
-    Nominated { analysis_request_id: Option<u64>, player_name: String, position: String },
+    /// New nomination arrived — carries full info for banner display.
+    Nominated { analysis_request_id: Option<u64>, info: Box<NominationInfo> },
+    /// Bid updated on the active nomination (same player, new bid/bidder).
+    BidUpdated(Box<NominationInfo>),
     NominationCleared,
     PlanStarted { request_id: u64 },
     StateSnapshot(Box<AppSnapshot>),
@@ -77,10 +78,19 @@ pub struct DraftScreen {
     sidebar: Sidebar,
     pub my_roster: Vec<RosterSlot>,
     pub positional_scarcity: Vec<ScarcityEntry>,
+    /// Active nomination — drives the nomination banner.
+    pub current_nomination: Option<NominationInfo>,
     /// Position string from the active nomination (e.g. "1B", "SP").
     nominated_position: Option<String>,
     /// Request ID for the active plan stream, used to route LlmUpdates.
     plan_request_id: Option<u64>,
+    // Budget fields from the most recent StateSnapshot.
+    pub budget_spent: u32,
+    pub budget_remaining: u32,
+    pub salary_cap: u32,
+    pub inflation_rate: f64,
+    pub max_bid: u32,
+    pub avg_per_slot: f64,
 }
 
 impl DraftScreen {
@@ -95,8 +105,15 @@ impl DraftScreen {
             sidebar: Sidebar::new(),
             my_roster: Vec::new(),
             positional_scarcity: Vec::new(),
+            current_nomination: None,
             nominated_position: None,
             plan_request_id: None,
+            budget_spent: 0,
+            budget_remaining: 260,
+            salary_cap: 260,
+            inflation_rate: 1.0,
+            max_bid: 260,
+            avg_per_slot: 0.0,
         }
     }
 
@@ -201,8 +218,10 @@ impl DraftScreen {
 
                 (Task::batch([task1, task2]), vec![])
             }
-            DraftMessage::Nominated { analysis_request_id, player_name, position } => {
-                self.nominated_position = Some(position);
+            DraftMessage::Nominated { analysis_request_id, info } => {
+                self.nominated_position = Some(info.position.clone());
+                let player_name = info.player_name.clone();
+                self.current_nomination = Some(*info);
                 let task1 = self
                     .analysis
                     .update(AnalysisMessage::Nominated { analysis_request_id })
@@ -213,7 +232,12 @@ impl DraftScreen {
                     .map(DraftMessage::Available);
                 (Task::batch([task1, task2]), vec![])
             }
+            DraftMessage::BidUpdated(info) => {
+                self.current_nomination = Some(*info);
+                (Task::none(), vec![])
+            }
             DraftMessage::NominationCleared => {
+                self.current_nomination = None;
                 self.nominated_position = None;
                 let task1 = self
                     .analysis
@@ -245,6 +269,12 @@ impl DraftScreen {
                 self.teams.salary_cap = snapshot.salary_cap;
                 self.my_roster = snapshot.my_roster;
                 self.positional_scarcity = snapshot.positional_scarcity;
+                self.budget_spent = snapshot.budget_spent;
+                self.budget_remaining = snapshot.budget_remaining;
+                self.salary_cap = snapshot.salary_cap;
+                self.inflation_rate = snapshot.inflation_rate;
+                self.max_bid = snapshot.max_bid;
+                self.avg_per_slot = snapshot.avg_per_slot;
                 (Task::none(), vec![])
             }
         }
@@ -271,7 +301,11 @@ fn view_content<'a>(
     connection_status: ConnectionStatus,
 ) -> Element<'a, DraftMessage> {
     let status_bar = status_bar::view(connection_status);
-    let nomination_banner = nomination_banner::view();
+    let nomination_banner = nomination_banner::view(
+        screen.current_nomination.as_ref(),
+        screen.inflation_rate,
+        &screen.available.available_players,
+    );
     let main = main_panel(screen, focus);
     let sidebar = sidebar(screen, focus);
     let help_bar = help_bar::view();
@@ -306,7 +340,7 @@ fn tab_content<'a>(screen: &'a DraftScreen) -> Element<'a, DraftMessage> {
 }
 
 fn sidebar<'a>(screen: &'a DraftScreen, focus: FocusTarget) -> Element<'a, DraftMessage> {
-    let budget = sidebar_panel_stub("Budget", focus == FocusTarget::Budget);
+    let budget = budget_bar_elem(screen, focus);
 
     let three_panels = screen
         .sidebar
@@ -332,34 +366,16 @@ fn sidebar<'a>(screen: &'a DraftScreen, focus: FocusTarget) -> Element<'a, Draft
     .into()
 }
 
-fn sidebar_panel_stub<'a>(label: &'static str, focused: bool) -> Element<'a, DraftMessage> {
-    use iced::alignment;
-
-    let label_elem: Element<DraftMessage> = text(
-        label,
-        TextStyle {
-            size: TextSize::Sm,
-            color: TextColor::Dimmed,
-            ..Default::default()
-        },
+fn budget_bar_elem<'a>(screen: &DraftScreen, focus: FocusTarget) -> Element<'a, DraftMessage> {
+    budget_bar::view(
+        screen.budget_spent,
+        screen.budget_remaining,
+        screen.salary_cap,
+        screen.inflation_rate,
+        screen.max_bid,
+        screen.avg_per_slot,
+        focus == FocusTarget::Budget,
     )
-    .into();
-
-    let content: Element<DraftMessage> = frame(
-        label_elem,
-        BoxStyle {
-            width: Length::Fill,
-            height: Length::Fixed(50.0),
-            padding: Padding::new(8.0),
-            background: Some(Colors::BgElevated),
-            align_x: alignment::Horizontal::Left,
-            align_y: alignment::Vertical::Top,
-            ..Default::default()
-        },
-    )
-    .into();
-
-    focus_ring(content, focused)
 }
 
 fn view_modal<'a>(screen: &DraftScreen) -> Option<Element<'a, DraftMessage>> {
@@ -470,23 +486,60 @@ mod tests {
     }
 
     #[test]
-    fn nominated_sets_position() {
+    fn nominated_sets_position_and_nomination() {
         let mut screen = DraftScreen::new();
-        let (_, effects) = screen.update(DraftMessage::Nominated {
-            analysis_request_id: Some(1),
+        let info = Box::new(NominationInfo {
             player_name: "Test Player".to_string(),
             position: "1B".to_string(),
+            nominated_by: "Some Team".to_string(),
+            current_bid: 1,
+            current_bidder: None,
+            time_remaining: None,
+            eligible_slots: vec![],
+        });
+        let (_, effects) = screen.update(DraftMessage::Nominated {
+            analysis_request_id: Some(1),
+            info,
         });
         assert_eq!(screen.nominated_position, Some("1B".to_string()));
+        assert!(screen.current_nomination.is_some());
+        assert_eq!(screen.current_nomination.as_ref().unwrap().player_name, "Test Player");
         assert!(effects.is_empty());
     }
 
     #[test]
-    fn nomination_cleared_clears_position() {
+    fn bid_updated_updates_nomination() {
+        let mut screen = DraftScreen::new();
+        let info = Box::new(NominationInfo {
+            player_name: "Test Player".to_string(),
+            position: "1B".to_string(),
+            nominated_by: "Some Team".to_string(),
+            current_bid: 50,
+            current_bidder: Some("Team B".to_string()),
+            time_remaining: None,
+            eligible_slots: vec![],
+        });
+        let (_, effects) = screen.update(DraftMessage::BidUpdated(info));
+        assert_eq!(screen.current_nomination.as_ref().unwrap().current_bid, 50);
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn nomination_cleared_clears_position_and_nomination() {
         let mut screen = DraftScreen::new();
         screen.nominated_position = Some("SP".to_string());
+        screen.current_nomination = Some(NominationInfo {
+            player_name: "P".to_string(),
+            position: "SP".to_string(),
+            nominated_by: "T".to_string(),
+            current_bid: 1,
+            current_bidder: None,
+            time_remaining: None,
+            eligible_slots: vec![],
+        });
         let (_, effects) = screen.update(DraftMessage::NominationCleared);
         assert!(screen.nominated_position.is_none());
+        assert!(screen.current_nomination.is_none());
         assert!(effects.is_empty());
     }
 
@@ -507,6 +560,25 @@ mod tests {
         assert!(effects.is_empty());
         // Still empty because the snapshot has empty vecs; just verify no panic.
         assert!(screen.my_roster.is_empty());
+    }
+
+    #[test]
+    fn state_snapshot_captures_budget_fields() {
+        let mut screen = DraftScreen::new();
+        let mut snap = *empty_snapshot();
+        snap.budget_spent = 100;
+        snap.budget_remaining = 160;
+        snap.salary_cap = 260;
+        snap.inflation_rate = 1.12;
+        snap.max_bid = 155;
+        snap.avg_per_slot = 8.5;
+        let _ = screen.update(DraftMessage::StateSnapshot(Box::new(snap)));
+        assert_eq!(screen.budget_spent, 100);
+        assert_eq!(screen.budget_remaining, 160);
+        assert_eq!(screen.salary_cap, 260);
+        assert!((screen.inflation_rate - 1.12).abs() < 1e-10);
+        assert_eq!(screen.max_bid, 155);
+        assert!((screen.avg_per_slot - 8.5).abs() < 1e-10);
     }
 
     #[test]
