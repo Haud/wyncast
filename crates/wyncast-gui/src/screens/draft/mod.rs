@@ -58,6 +58,8 @@ pub enum DraftMessage {
     NominationCleared,
     PlanStarted { request_id: u64 },
     StateSnapshot(Box<AppSnapshot>),
+    /// Retry button pressed while disconnected — sends RequestKeyframe to backend.
+    RetryConnection,
 }
 
 #[derive(Debug, Clone)]
@@ -279,6 +281,12 @@ impl DraftScreen {
                     .map(DraftMessage::Sidebar);
                 (task, vec![])
             }
+            DraftMessage::RetryConnection => {
+                (
+                    Task::none(),
+                    vec![DraftEffect::SendCommand(UserCommand::RequestKeyframe)],
+                )
+            }
             DraftMessage::StateSnapshot(snapshot) => {
                 self.available.available_players = snapshot.available_players.clone();
                 self.draft_log.draft_log = snapshot.draft_log;
@@ -319,6 +327,17 @@ fn view_content<'a>(
     connection_status: ConnectionStatus,
 ) -> Element<'a, DraftMessage> {
     let status_bar = status_bar::view(connection_status);
+    let help_bar = help_bar::view();
+
+    if connection_status == ConnectionStatus::Disconnected {
+        return layout::disconnected_layout(
+            status_bar,
+            tabs::view_disabled(),
+            crate::screens::disconnected::view(),
+            help_bar,
+        );
+    }
+
     let nomination_banner = nomination_banner::view(
         screen.current_nomination.as_ref(),
         screen.inflation_rate,
@@ -326,7 +345,6 @@ fn view_content<'a>(
     );
     let main = main_panel(screen, focus);
     let sidebar = sidebar(screen, focus);
-    let help_bar = help_bar::view();
 
     layout::draft_layout(status_bar, nomination_banner, main, sidebar, help_bar)
 }
@@ -653,5 +671,16 @@ mod tests {
             SidebarMessage::Roster(RosterMessage::ScrollBy(ScrollDirection::Down)),
         ));
         assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn retry_connection_emits_request_keyframe() {
+        let mut screen = DraftScreen::new();
+        let (_, effects) = screen.update(DraftMessage::RetryConnection);
+        assert_eq!(effects.len(), 1);
+        assert!(matches!(
+            effects[0],
+            DraftEffect::SendCommand(UserCommand::RequestKeyframe)
+        ));
     }
 }

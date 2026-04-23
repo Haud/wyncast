@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use iced::keyboard::key::Named;
 use iced::{Element, Length, Subscription, Task};
@@ -100,11 +101,15 @@ pub fn update(app: &mut App, msg: Message) -> Task<Message> {
             }
         }
         Message::KeyPressed(key, mods) => {
+            if app.connection_status == ConnectionStatus::Disconnected {
+                return handle_disconnected_key(app, &key);
+            }
             if app.draft.has_modal() {
                 return handle_modal_key(app, &key);
             }
             handle_global_key(app, &key, mods.shift())
         }
+        Message::SpinnerTick => Task::none(),
         Message::Draft(draft_msg) => dispatch_draft(app, draft_msg),
         Message::NoOp => Task::none(),
     }
@@ -148,6 +153,15 @@ fn route_scroll(
         None | Budget => return Task::none(),
     };
     dispatch_draft(app, msg)
+}
+
+fn handle_disconnected_key(app: &mut App, key: &iced::keyboard::Key) -> Task<Message> {
+    if let iced::keyboard::Key::Character(c) = key {
+        if c.as_str() == "r" {
+            return dispatch_draft(app, DraftMessage::RetryConnection);
+        }
+    }
+    Task::none()
 }
 
 fn handle_modal_key(app: &mut App, key: &iced::keyboard::Key) -> Task<Message> {
@@ -247,7 +261,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
 // ---------------------------------------------------------------------------
 
 pub fn subscription(app: &App) -> Subscription<Message> {
-    Subscription::batch([
+    let mut subs = vec![
         bridge::ui_subscription_from_arc(app.ui_rx.clone()),
         iced::keyboard::listen().map(|event| match event {
             iced::keyboard::Event::KeyPressed { key, modifiers, .. } => {
@@ -255,5 +269,13 @@ pub fn subscription(app: &App) -> Subscription<Message> {
             }
             _ => Message::NoOp,
         }),
-    ])
+    ];
+
+    if app.connection_status == ConnectionStatus::Disconnected {
+        subs.push(
+            iced::time::every(Duration::from_millis(50)).map(|_| Message::SpinnerTick),
+        );
+    }
+
+    Subscription::batch(subs)
 }
