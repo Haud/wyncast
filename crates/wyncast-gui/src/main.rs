@@ -7,7 +7,8 @@
 // 4. Load projections, initialize DraftState
 // 5. Create mpsc channels
 // 6. Create tokio runtime; bind WebSocket server; spawn backend tasks
-// 7. Launch Iced with the channel pair (ui_rx, cmd_tx)
+// 7. Load persisted layout config (pane ratio, window geometry)
+// 8. Launch Iced with the channel pair (ui_rx, cmd_tx) and window settings
 
 mod app;
 mod bridge;
@@ -15,6 +16,7 @@ mod focus;
 mod forms;
 mod message;
 mod modals;
+mod persistence;
 mod screens;
 mod theme;
 mod widgets;
@@ -124,22 +126,45 @@ fn main() -> anyhow::Result<()> {
     // Enter the runtime so Iced's tokio executor can schedule on it.
     let _guard = rt.enter();
 
+    // 7. Load persisted layout config (pane ratio, window geometry).
+    let layout = persistence::load();
+    info!(
+        "Layout config loaded: pane_ratio={:.2}, window={}x{}",
+        layout.pane_ratio, layout.window_width, layout.window_height
+    );
+
+    let window_settings = {
+        let size = iced::Size::new(layout.window_width, layout.window_height);
+        let position = match (layout.window_x, layout.window_y) {
+            (Some(x), Some(y)) => iced::window::Position::Specific(
+                iced::Point::new(x as f32, y as f32),
+            ),
+            _ => iced::window::Position::Default,
+        };
+        iced::window::Settings {
+            size,
+            position,
+            ..Default::default()
+        }
+    };
+
     // Boot closure must be `Fn` (not `FnOnce`) for the BootFn trait bound.
     // We wrap the non-Clone items in Arc<Mutex<Option>> and take them once.
-    let boot_data = Arc::new(Mutex::new(Some((ui_rx, cmd_tx, initial_mode))));
+    let boot_data = Arc::new(Mutex::new(Some((ui_rx, cmd_tx, initial_mode, layout))));
     let boot = move || {
-        let (rx, tx, mode) = boot_data
+        let (rx, tx, mode, layout_cfg) = boot_data
             .lock()
             .unwrap()
             .take()
             .expect("Iced boot called more than once");
-        app::App::new(rx, tx, mode)
+        app::App::new(rx, tx, mode, layout_cfg)
     };
 
-    // 7. Launch Iced (blocking until user closes the window or presses Esc)
+    // 8. Launch Iced (blocking until user closes the window or presses Esc)
     iced::application(boot, app::update, app::view)
         .title("Wyncast")
         .subscription(app::subscription)
+        .window(window_settings)
         .run()
         .context("Iced error")?;
 

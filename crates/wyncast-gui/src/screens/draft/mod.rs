@@ -6,6 +6,7 @@ mod status_bar;
 pub mod sidebar;
 pub mod tabs;
 
+use iced::widget::pane_grid;
 use iced::{Element, Length, Padding, Task};
 use twui::{Colors, StackGap, StackStyle, v_stack};
 use wyncast_app::protocol::{
@@ -19,7 +20,7 @@ use crate::focus::FocusTarget;
 use crate::modals::{ModalKind, ModalStack};
 use crate::modals::position_filter::position_filter_modal;
 use crate::modals::quit_confirm::quit_confirm_modal;
-use crate::widgets::{focus_ring, with_overlay};
+use crate::widgets::{SplitPaneState, focus_ring, with_overlay};
 use sidebar::{Sidebar, SidebarMessage};
 use sidebar::nomination_plan::PlanMessage;
 use tabs::analysis::{AnalysisMessage, AnalysisPanel};
@@ -45,6 +46,7 @@ pub enum DraftMessage {
     QuitRequested,
     QuitConfirmed,
     QuitCancelled,
+    PaneResized(pane_grid::ResizeEvent),
     Analysis(AnalysisMessage),
     Available(AvailableMessage),
     DraftLog(DraftLogMessage),
@@ -67,6 +69,8 @@ pub enum DraftEffect {
     SendCommand(UserCommand),
     CycleFocus(Direction),
     Exit,
+    /// Main/sidebar divider was dragged to a new ratio.  App handles persistence.
+    PaneResized(pane_grid::ResizeEvent),
 }
 
 // ---------------------------------------------------------------------------
@@ -281,6 +285,9 @@ impl DraftScreen {
                     .map(DraftMessage::Sidebar);
                 (task, vec![])
             }
+            DraftMessage::PaneResized(event) => {
+                (Task::none(), vec![DraftEffect::PaneResized(event)])
+            }
             DraftMessage::RetryConnection => {
                 (
                     Task::none(),
@@ -315,8 +322,9 @@ pub fn view<'a>(
     screen: &'a DraftScreen,
     focus: FocusTarget,
     connection_status: ConnectionStatus,
+    pane_state: &'a SplitPaneState,
 ) -> Element<'a, DraftMessage> {
-    let content = view_content(screen, focus, connection_status);
+    let content = view_content(screen, focus, connection_status, pane_state);
     let modal = view_modal(screen);
     with_overlay(content, modal)
 }
@@ -325,6 +333,7 @@ fn view_content<'a>(
     screen: &'a DraftScreen,
     focus: FocusTarget,
     connection_status: ConnectionStatus,
+    pane_state: &'a SplitPaneState,
 ) -> Element<'a, DraftMessage> {
     let status_bar = status_bar::view(connection_status);
     let help_bar = help_bar::view();
@@ -346,7 +355,15 @@ fn view_content<'a>(
     let main = main_panel(screen, focus);
     let sidebar = sidebar(screen, focus);
 
-    layout::draft_layout(status_bar, nomination_banner, main, sidebar, help_bar)
+    layout::draft_layout(
+        status_bar,
+        nomination_banner,
+        main,
+        sidebar,
+        help_bar,
+        pane_state,
+        DraftMessage::PaneResized,
+    )
 }
 
 fn main_panel<'a>(screen: &'a DraftScreen, focus: FocusTarget) -> Element<'a, DraftMessage> {
