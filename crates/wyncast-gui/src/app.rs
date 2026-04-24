@@ -18,6 +18,7 @@ use crate::screens::draft::sidebar::nomination_plan::PlanMessage;
 use crate::screens::draft::sidebar::roster::RosterMessage;
 use crate::screens::draft::tabs::available::AvailableMessage;
 use crate::screens::matchup::MatchupScreen;
+use crate::screens::onboarding::{OnboardingMessage, OnboardingScreen};
 
 // ---------------------------------------------------------------------------
 // State
@@ -38,6 +39,8 @@ pub struct App {
     draft: DraftScreen,
     /// Matchup screen state.
     matchup: MatchupScreen,
+    /// Onboarding wizard state.
+    onboarding: OnboardingScreen,
     /// Current window width — used to toggle sidebar visibility.
     window_width: f32,
 }
@@ -56,6 +59,7 @@ impl App {
             connection_status: ConnectionStatus::Disconnected,
             draft: DraftScreen::new(),
             matchup: MatchupScreen::new(),
+            onboarding: OnboardingScreen::new(),
             window_width: 1280.0,
         }
     }
@@ -108,11 +112,16 @@ pub fn update(app: &mut App, msg: Message) -> Task<Message> {
                     app.matchup.apply_snapshot(snapshot);
                     Task::none()
                 }
+                UiUpdate::OnboardingUpdate(update) => {
+                    app.onboarding.apply_update(update);
+                    Task::none()
+                }
                 _ => Task::none(),
             }
         }
         Message::KeyPressed(key, mods) => {
             match &app.app_mode {
+                AppMode::Onboarding(_) => handle_onboarding_key(app, &key),
                 AppMode::Matchup => handle_matchup_key(app, &key, mods.shift()),
                 _ => {
                     if app.connection_status == ConnectionStatus::Disconnected {
@@ -135,6 +144,7 @@ pub fn update(app: &mut App, msg: Message) -> Task<Message> {
         Message::Matchup(matchup_msg) => {
             app.matchup.update(matchup_msg).map(Message::Matchup)
         }
+        Message::Onboarding(msg) => dispatch_onboarding(app, msg),
         Message::NoOp => Task::none(),
     }
 }
@@ -159,6 +169,26 @@ fn dispatch_draft(app: &mut App, msg: DraftMessage) -> Task<Message> {
         Task::batch([task, iced::exit()])
     } else {
         task
+    }
+}
+
+fn dispatch_onboarding(app: &mut App, msg: OnboardingMessage) -> Task<Message> {
+    let (task, cmds) = app.onboarding.update(msg);
+    for cmd in cmds {
+        app.send_command(cmd);
+    }
+    task.map(Message::Onboarding)
+}
+
+fn handle_onboarding_key(app: &mut App, key: &iced::keyboard::Key) -> Task<Message> {
+    match key {
+        iced::keyboard::Key::Named(Named::Enter) => {
+            dispatch_onboarding(app, OnboardingMessage::Next)
+        }
+        iced::keyboard::Key::Named(Named::Escape) => {
+            dispatch_onboarding(app, OnboardingMessage::Back)
+        }
+        _ => Task::none(),
     }
 }
 
@@ -329,6 +359,9 @@ pub fn view(app: &App) -> Element<'_, Message> {
             let draft_elem =
                 crate::screens::draft::view(&app.draft, app.focus, app.connection_status);
             draft_elem.map(Message::Draft)
+        }
+        AppMode::Onboarding(step) => {
+            crate::screens::onboarding::view(&app.onboarding, step).map(Message::Onboarding)
         }
         AppMode::Matchup => {
             crate::screens::matchup::view(&app.matchup).map(Message::Matchup)

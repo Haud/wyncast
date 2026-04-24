@@ -3,6 +3,7 @@ use wyncast_app::protocol::UiUpdate;
 
 use crate::screens::draft::DraftMessage;
 use crate::screens::matchup::MatchupMessage;
+use crate::screens::onboarding::OnboardingMessage;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -11,6 +12,7 @@ pub enum Message {
     WindowResized(iced::Size),
     Draft(DraftMessage),
     Matchup(MatchupMessage),
+    Onboarding(OnboardingMessage),
     /// Periodic tick that drives spinner animation while disconnected.
     SpinnerTick,
     NoOp,
