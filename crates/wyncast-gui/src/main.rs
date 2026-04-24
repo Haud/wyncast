@@ -12,6 +12,7 @@
 mod app;
 mod bridge;
 mod focus;
+mod forms;
 mod message;
 mod modals;
 mod screens;

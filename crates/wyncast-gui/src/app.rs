@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iced::keyboard::key::Named;
-use iced::{Element, Length, Subscription, Task};
+use iced::{Element, Subscription, Task};
 use tokio::sync::mpsc;
 use wyncast_app::protocol::{
     AppMode, ConnectionStatus, TabId, UiUpdate, UserCommand,
@@ -19,6 +19,7 @@ use crate::screens::draft::sidebar::roster::RosterMessage;
 use crate::screens::draft::tabs::available::AvailableMessage;
 use crate::screens::matchup::MatchupScreen;
 use crate::screens::onboarding::{OnboardingMessage, OnboardingScreen};
+use crate::screens::settings::{SettingsMessage, SettingsScreen};
 
 // ---------------------------------------------------------------------------
 // State
@@ -41,6 +42,8 @@ pub struct App {
     matchup: MatchupScreen,
     /// Onboarding wizard state.
     onboarding: OnboardingScreen,
+    /// Settings screen state.
+    settings: SettingsScreen,
     /// Current window width — used to toggle sidebar visibility.
     window_width: f32,
 }
@@ -60,6 +63,7 @@ impl App {
             draft: DraftScreen::new(),
             matchup: MatchupScreen::new(),
             onboarding: OnboardingScreen::new(),
+            settings: SettingsScreen::new(),
             window_width: 1280.0,
         }
     }
@@ -79,7 +83,18 @@ pub fn update(app: &mut App, msg: Message) -> Task<Message> {
     match msg {
         Message::UiUpdate(update) => {
             match &update {
-                UiUpdate::ModeChanged(mode) => app.app_mode = mode.clone(),
+                UiUpdate::ModeChanged(mode) => {
+                    let entering_settings = matches!(mode, AppMode::Settings(_))
+                        && !matches!(app.app_mode, AppMode::Settings(_));
+                    app.app_mode = mode.clone();
+                    if entering_settings {
+                        // Reset dirty state whenever we enter settings fresh.
+                        app.settings.reset_dirty();
+                    }
+                    if let AppMode::Settings(section) = mode {
+                        app.settings.active_section = *section;
+                    }
+                }
                 UiUpdate::ConnectionStatus(status) => app.connection_status = *status,
                 _ => {}
             }
@@ -113,7 +128,12 @@ pub fn update(app: &mut App, msg: Message) -> Task<Message> {
                     Task::none()
                 }
                 UiUpdate::OnboardingUpdate(update) => {
-                    app.onboarding.apply_update(update);
+                    // Route to whichever screen is currently active.
+                    if matches!(app.app_mode, AppMode::Settings(_)) {
+                        app.settings.apply_update(&update);
+                    } else {
+                        app.onboarding.apply_update(update);
+                    }
                     Task::none()
                 }
                 _ => Task::none(),
@@ -122,6 +142,7 @@ pub fn update(app: &mut App, msg: Message) -> Task<Message> {
         Message::KeyPressed(key, mods) => {
             match &app.app_mode {
                 AppMode::Onboarding(_) => handle_onboarding_key(app, &key),
+                AppMode::Settings(_) => handle_settings_key(app, &key, mods.shift()),
                 AppMode::Matchup => handle_matchup_key(app, &key, mods.shift()),
                 _ => {
                     if app.connection_status == ConnectionStatus::Disconnected {
@@ -145,6 +166,7 @@ pub fn update(app: &mut App, msg: Message) -> Task<Message> {
             app.matchup.update(matchup_msg).map(Message::Matchup)
         }
         Message::Onboarding(msg) => dispatch_onboarding(app, msg),
+        Message::Settings(msg) => dispatch_settings(app, msg),
         Message::NoOp => Task::none(),
     }
 }
@@ -180,6 +202,14 @@ fn dispatch_onboarding(app: &mut App, msg: OnboardingMessage) -> Task<Message> {
     task.map(Message::Onboarding)
 }
 
+fn dispatch_settings(app: &mut App, msg: SettingsMessage) -> Task<Message> {
+    let (task, cmds) = app.settings.update(msg);
+    for cmd in cmds {
+        app.send_command(cmd);
+    }
+    task.map(Message::Settings)
+}
+
 fn handle_onboarding_key(app: &mut App, key: &iced::keyboard::Key) -> Task<Message> {
     match key {
         iced::keyboard::Key::Named(Named::Enter) => {
@@ -187,6 +217,42 @@ fn handle_onboarding_key(app: &mut App, key: &iced::keyboard::Key) -> Task<Messa
         }
         iced::keyboard::Key::Named(Named::Escape) => {
             dispatch_onboarding(app, OnboardingMessage::Back)
+        }
+        _ => Task::none(),
+    }
+}
+
+fn handle_settings_key(app: &mut App, key: &iced::keyboard::Key, shift: bool) -> Task<Message> {
+    match key {
+        iced::keyboard::Key::Named(Named::Escape) => {
+            dispatch_settings(app, SettingsMessage::CancelRequested)
+        }
+        iced::keyboard::Key::Character(c) if c.as_str() == "," => {
+            dispatch_settings(app, SettingsMessage::CancelRequested)
+        }
+        iced::keyboard::Key::Named(Named::Tab) => {
+            if app.settings.discard_modal_open {
+                return Task::none();
+            }
+            use wyncast_app::protocol::SettingsSection;
+            let next_section = if shift {
+                match app.settings.active_section {
+                    SettingsSection::LlmConfig => SettingsSection::StrategyConfig,
+                    SettingsSection::StrategyConfig => SettingsSection::LlmConfig,
+                }
+            } else {
+                match app.settings.active_section {
+                    SettingsSection::LlmConfig => SettingsSection::StrategyConfig,
+                    SettingsSection::StrategyConfig => SettingsSection::LlmConfig,
+                }
+            };
+            dispatch_settings(app, SettingsMessage::SectionSelected(next_section))
+        }
+        // Discard modal keys
+        iced::keyboard::Key::Named(Named::Enter)
+            if app.settings.discard_modal_open =>
+        {
+            dispatch_settings(app, SettingsMessage::DiscardConfirmed)
         }
         _ => Task::none(),
     }
@@ -247,6 +313,11 @@ fn handle_global_key(app: &mut App, key: &iced::keyboard::Key, shift: bool) -> T
     match key {
         iced::keyboard::Key::Character(c) => match c.as_str() {
             "q" => dispatch_draft(app, DraftMessage::QuitRequested),
+            "," => {
+                app.settings.reset_dirty();
+                app.send_command(UserCommand::OpenSettings);
+                Task::none()
+            }
             "1" => dispatch_draft(app, DraftMessage::TabSelected(TabId::Analysis)),
             "2" => dispatch_draft(app, DraftMessage::TabSelected(TabId::Available)),
             "3" => dispatch_draft(app, DraftMessage::TabSelected(TabId::DraftLog)),
@@ -366,15 +437,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
         AppMode::Matchup => {
             crate::screens::matchup::view(&app.matchup).map(Message::Matchup)
         }
-        _ => {
-            iced::widget::container(
-                iced::widget::text("TODO: unhandled mode"),
-            )
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
-            .into()
+        AppMode::Settings(_section) => {
+            crate::screens::settings::view(&app.settings).map(Message::Settings)
         }
     }
 }
