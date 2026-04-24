@@ -11,11 +11,17 @@ pub enum Message {
     UiUpdate(UiUpdate),
     KeyPressed(Key, Modifiers),
     WindowResized(iced::Size),
+    WindowMoved { x: i32, y: i32 },
+    WindowClosed,
     Draft(DraftMessage),
     Matchup(MatchupMessage),
     Onboarding(OnboardingMessage),
     Settings(SettingsMessage),
-    /// Periodic tick that drives spinner animation while disconnected.
+    /// Toast dismissed by ID (close button or auto-expiry).
+    ToastDismissed(u64),
+    /// Toggle the keyboard help overlay on/off.
+    HelpToggled,
+    /// Periodic tick that drives spinner animation while streaming or disconnected.
     SpinnerTick,
     NoOp,
 }

@@ -2,6 +2,7 @@ mod category_tracker;
 mod scoreboard;
 pub mod tabs;
 
+use iced::widget::row;
 use iced::{Element, Length, Padding, Task};
 use twui::{
     BoxStyle, Colors, StackGap, StackStyle, TextColor, TextSize, TextStyle,
@@ -10,7 +11,7 @@ use twui::{
 use wyncast_app::protocol::ScrollDirection;
 use wyncast_baseball::matchup::MatchupSnapshot;
 
-use crate::widgets::{SplitOrientation, focus_ring, split_pane};
+use crate::widgets::focus_ring;
 
 use category_tracker::{CategoryTracker, CategoryTrackerMessage};
 use tabs::{
@@ -273,13 +274,19 @@ fn populated_view<'a>(
 
     let content = if screen.show_sidebar {
         let sidebar_elem = sidebar_view(screen, snapshot);
-        split_pane(
-            main_panel,
-            sidebar_elem,
-            0.65,
-            SplitOrientation::Horizontal,
-            None::<fn(f32) -> MatchupMessage>,
-        )
+        // Matchup sidebar is purely visibility-toggled by window width — no
+        // drag-to-resize needed, so we use a static 65/35 row layout.
+        let left = iced::widget::container(main_panel)
+            .width(Length::FillPortion(65))
+            .height(Length::Fill);
+        let right = iced::widget::container(sidebar_elem)
+            .width(Length::FillPortion(35))
+            .height(Length::Fill);
+        let r: Element<MatchupMessage> = row![left, right]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into();
+        r
     } else {
         frame(
             main_panel,
