@@ -17,6 +17,7 @@ use crate::screens::draft::sidebar::{SidebarMessage};
 use crate::screens::draft::sidebar::nomination_plan::PlanMessage;
 use crate::screens::draft::sidebar::roster::RosterMessage;
 use crate::screens::draft::tabs::available::AvailableMessage;
+use crate::screens::matchup::MatchupScreen;
 
 // ---------------------------------------------------------------------------
 // State
@@ -35,6 +36,10 @@ pub struct App {
     connection_status: ConnectionStatus,
     /// Draft screen state.
     draft: DraftScreen,
+    /// Matchup screen state.
+    matchup: MatchupScreen,
+    /// Current window width — used to toggle sidebar visibility.
+    window_width: f32,
 }
 
 impl App {
@@ -50,6 +55,8 @@ impl App {
             focus: FocusTarget::default(),
             connection_status: ConnectionStatus::Disconnected,
             draft: DraftScreen::new(),
+            matchup: MatchupScreen::new(),
+            window_width: 1280.0,
         }
     }
 
@@ -97,20 +104,37 @@ pub fn update(app: &mut App, msg: Message) -> Task<Message> {
                 UiUpdate::StateSnapshot(snapshot) => {
                     dispatch_draft(app, DraftMessage::StateSnapshot(snapshot))
                 }
+                UiUpdate::MatchupSnapshot(snapshot) => {
+                    app.matchup.apply_snapshot(snapshot);
+                    Task::none()
+                }
                 _ => Task::none(),
             }
         }
         Message::KeyPressed(key, mods) => {
-            if app.connection_status == ConnectionStatus::Disconnected {
-                return handle_disconnected_key(app, &key);
+            match &app.app_mode {
+                AppMode::Matchup => handle_matchup_key(app, &key, mods.shift()),
+                _ => {
+                    if app.connection_status == ConnectionStatus::Disconnected {
+                        return handle_disconnected_key(app, &key);
+                    }
+                    if app.draft.has_modal() {
+                        return handle_modal_key(app, &key);
+                    }
+                    handle_global_key(app, &key, mods.shift())
+                }
             }
-            if app.draft.has_modal() {
-                return handle_modal_key(app, &key);
-            }
-            handle_global_key(app, &key, mods.shift())
+        }
+        Message::WindowResized(size) => {
+            app.window_width = size.width;
+            app.matchup.show_sidebar = size.width >= 1100.0;
+            Task::none()
         }
         Message::SpinnerTick => Task::none(),
         Message::Draft(draft_msg) => dispatch_draft(app, draft_msg),
+        Message::Matchup(matchup_msg) => {
+            app.matchup.update(matchup_msg).map(Message::Matchup)
+        }
         Message::NoOp => Task::none(),
     }
 }
@@ -232,6 +256,69 @@ fn handle_global_key(app: &mut App, key: &iced::keyboard::Key, shift: bool) -> T
     }
 }
 
+fn handle_matchup_key(app: &mut App, key: &iced::keyboard::Key, shift: bool) -> Task<Message> {
+    use crate::screens::matchup::MatchupMessage;
+    match key {
+        iced::keyboard::Key::Character(c) => match c.as_str() {
+            "1" => app.matchup.update(MatchupMessage::TabSelected(
+                crate::screens::matchup::tabs::MatchupTab::DailyStats,
+            )).map(Message::Matchup),
+            "2" => app.matchup.update(MatchupMessage::TabSelected(
+                crate::screens::matchup::tabs::MatchupTab::Analytics,
+            )).map(Message::Matchup),
+            "3" => app.matchup.update(MatchupMessage::TabSelected(
+                crate::screens::matchup::tabs::MatchupTab::HomeRoster,
+            )).map(Message::Matchup),
+            "4" => app.matchup.update(MatchupMessage::TabSelected(
+                crate::screens::matchup::tabs::MatchupTab::AwayRoster,
+            )).map(Message::Matchup),
+            "j" => app.matchup.update(MatchupMessage::ScrollRequested(
+                wyncast_app::protocol::ScrollDirection::Down,
+            )).map(Message::Matchup),
+            "k" => app.matchup.update(MatchupMessage::ScrollRequested(
+                wyncast_app::protocol::ScrollDirection::Up,
+            )).map(Message::Matchup),
+            "q" => dispatch_draft(app, DraftMessage::QuitRequested),
+            _ => Task::none(),
+        },
+        iced::keyboard::Key::Named(Named::Tab) => {
+            let msg = if shift {
+                MatchupMessage::FocusToggledBack
+            } else {
+                MatchupMessage::FocusToggled
+            };
+            app.matchup.update(msg).map(Message::Matchup)
+        }
+        iced::keyboard::Key::Named(Named::ArrowLeft) => {
+            app.matchup.update(MatchupMessage::PreviousDay).map(Message::Matchup)
+        }
+        iced::keyboard::Key::Named(Named::ArrowRight) => {
+            app.matchup.update(MatchupMessage::NextDay).map(Message::Matchup)
+        }
+        iced::keyboard::Key::Named(Named::ArrowUp) => {
+            app.matchup.update(MatchupMessage::ScrollRequested(
+                wyncast_app::protocol::ScrollDirection::Up,
+            )).map(Message::Matchup)
+        }
+        iced::keyboard::Key::Named(Named::ArrowDown) => {
+            app.matchup.update(MatchupMessage::ScrollRequested(
+                wyncast_app::protocol::ScrollDirection::Down,
+            )).map(Message::Matchup)
+        }
+        iced::keyboard::Key::Named(Named::PageUp) => {
+            app.matchup.update(MatchupMessage::ScrollRequested(
+                wyncast_app::protocol::ScrollDirection::PageUp,
+            )).map(Message::Matchup)
+        }
+        iced::keyboard::Key::Named(Named::PageDown) => {
+            app.matchup.update(MatchupMessage::ScrollRequested(
+                wyncast_app::protocol::ScrollDirection::PageDown,
+            )).map(Message::Matchup)
+        }
+        _ => Task::none(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // View
 // ---------------------------------------------------------------------------
@@ -242,6 +329,9 @@ pub fn view(app: &App) -> Element<'_, Message> {
             let draft_elem =
                 crate::screens::draft::view(&app.draft, app.focus, app.connection_status);
             draft_elem.map(Message::Draft)
+        }
+        AppMode::Matchup => {
+            crate::screens::matchup::view(&app.matchup).map(Message::Matchup)
         }
         _ => {
             iced::widget::container(
@@ -268,6 +358,13 @@ pub fn subscription(app: &App) -> Subscription<Message> {
                 Message::KeyPressed(key, modifiers)
             }
             _ => Message::NoOp,
+        }),
+        iced::event::listen_with(|event, _status, _id| {
+            if let iced::Event::Window(iced::window::Event::Resized(size)) = event {
+                Some(Message::WindowResized(size))
+            } else {
+                None
+            }
         }),
     ];
 
