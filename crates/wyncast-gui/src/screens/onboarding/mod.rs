@@ -2,13 +2,13 @@
 //
 // Renders AppMode::Onboarding(step) as a full-screen centered wizard with a
 // three-step flow: LLM config → Strategy config → Summary (Complete).
+//
+// Form state and messages are now shared with the settings screen via the
+// forms/ module (Phase 3.11 refactor).
 
 mod llm_setup;
 mod strategy_setup;
 mod summary;
-
-pub use llm_setup::LlmSetupState;
-pub use strategy_setup::StrategyState;
 
 use iced::{Element, Length, Padding, Task};
 use twui::{
@@ -17,7 +17,9 @@ use twui::{
 };
 use wyncast_app::onboarding::OnboardingStep;
 use wyncast_app::protocol::{OnboardingAction, OnboardingUpdate, UserCommand};
-use wyncast_core::llm::provider::LlmProvider;
+
+use crate::forms::llm_form::{ConnectionTestState, LlmFormMessage, LlmFormState};
+use crate::forms::strategy_form::{StrategyFormMessage, StrategyFormState};
 
 // ---------------------------------------------------------------------------
 // Messages
@@ -25,18 +27,11 @@ use wyncast_core::llm::provider::LlmProvider;
 
 #[derive(Debug, Clone)]
 pub enum OnboardingMessage {
-    // LLM setup step
-    ProviderSelected(LlmProvider),
-    ModelSelected(String),
-    ApiKeyChanged(String),
-    ProviderDropdownToggled,
-    ModelDropdownToggled,
-    TestConnection,
-    // Strategy setup step
-    HittingBudgetChanged(f32),
-    WeightChanged(usize, f32),
-    StrategyOverviewChanged(String),
-    // Navigation
+    /// Messages from the LLM configuration form.
+    Llm(LlmFormMessage),
+    /// Messages from the strategy configuration form.
+    Strategy(StrategyFormMessage),
+    /// Navigation
     Next,
     Back,
     Finish,
@@ -48,15 +43,15 @@ pub enum OnboardingMessage {
 // ---------------------------------------------------------------------------
 
 pub struct OnboardingScreen {
-    pub llm: LlmSetupState,
-    pub strategy: StrategyState,
+    pub llm: LlmFormState,
+    pub strategy: StrategyFormState,
 }
 
 impl OnboardingScreen {
     pub fn new() -> Self {
         Self {
-            llm: LlmSetupState::default(),
-            strategy: StrategyState::default(),
+            llm: LlmFormState::default(),
+            strategy: StrategyFormState::default(),
         }
     }
 
@@ -73,9 +68,9 @@ impl OnboardingScreen {
             }
             OnboardingUpdate::ConnectionTestResult { success, message } => {
                 self.llm.connection_test = if success {
-                    llm_setup::ConnectionTestState::Success
+                    ConnectionTestState::Success
                 } else {
-                    llm_setup::ConnectionTestState::Failed
+                    ConnectionTestState::Failed
                 };
                 self.llm.connection_test_message = message;
             }
@@ -86,50 +81,27 @@ impl OnboardingScreen {
     pub fn update(&mut self, msg: OnboardingMessage) -> (Task<OnboardingMessage>, Vec<UserCommand>) {
         let mut cmds = Vec::new();
         match msg {
-            OnboardingMessage::ProviderSelected(p) => {
-                self.llm.provider = Some(p);
-                self.llm.model_id = None;
-                self.llm.provider_dropdown_open = false;
-            }
-            OnboardingMessage::ModelSelected(id) => {
-                self.llm.model_id = Some(id);
-                self.llm.model_dropdown_open = false;
-            }
-            OnboardingMessage::ApiKeyChanged(key) => {
-                self.llm.api_key = key;
-                self.llm.connection_test = llm_setup::ConnectionTestState::Idle;
-            }
-            OnboardingMessage::ProviderDropdownToggled => {
-                self.llm.provider_dropdown_open = !self.llm.provider_dropdown_open;
-                self.llm.model_dropdown_open = false;
-            }
-            OnboardingMessage::ModelDropdownToggled => {
-                self.llm.model_dropdown_open = !self.llm.model_dropdown_open;
-                self.llm.provider_dropdown_open = false;
-            }
-            OnboardingMessage::TestConnection => {
-                if let (Some(provider), Some(model_id)) =
-                    (&self.llm.provider, &self.llm.model_id)
-                {
-                    self.llm.connection_test = llm_setup::ConnectionTestState::Testing;
-                    let api_key = self.llm.api_key.clone();
-                    cmds.push(UserCommand::OnboardingAction(
-                        OnboardingAction::TestConnectionWith {
-                            provider: provider.clone(),
-                            model_id: model_id.clone(),
-                            api_key,
-                        },
-                    ));
+            OnboardingMessage::Llm(llm_msg) => {
+                let was_test = matches!(llm_msg, LlmFormMessage::TestConnection);
+                self.llm.apply(llm_msg);
+                if was_test {
+                    if let (Some(provider), Some(model_id)) =
+                        (&self.llm.provider, &self.llm.model_id)
+                    {
+                        self.llm.connection_test = ConnectionTestState::Testing;
+                        let api_key = self.llm.api_key.clone();
+                        cmds.push(UserCommand::OnboardingAction(
+                            OnboardingAction::TestConnectionWith {
+                                provider: provider.clone(),
+                                model_id: model_id.clone(),
+                                api_key,
+                            },
+                        ));
+                    }
                 }
             }
-            OnboardingMessage::HittingBudgetChanged(v) => {
-                self.strategy.hitting_budget_pct = (v * 100.0).round() as u8;
-            }
-            OnboardingMessage::WeightChanged(idx, v) => {
-                self.strategy.category_weights.set(idx, v);
-            }
-            OnboardingMessage::StrategyOverviewChanged(s) => {
-                self.strategy.strategy_overview = s;
+            OnboardingMessage::Strategy(strategy_msg) => {
+                self.strategy.apply(strategy_msg);
             }
             OnboardingMessage::Next => {
                 cmds.extend(self.handle_next());
@@ -170,7 +142,10 @@ impl OnboardingScreen {
 // View
 // ---------------------------------------------------------------------------
 
-pub fn view<'a>(screen: &'a OnboardingScreen, step: &'a OnboardingStep) -> Element<'a, OnboardingMessage> {
+pub fn view<'a>(
+    screen: &'a OnboardingScreen,
+    step: &'a OnboardingStep,
+) -> Element<'a, OnboardingMessage> {
     let step_indicator = build_step_indicator(step);
 
     let form: Element<'a, OnboardingMessage> = match step {
@@ -207,11 +182,7 @@ pub fn view<'a>(screen: &'a OnboardingScreen, step: &'a OnboardingStep) -> Eleme
 }
 
 fn build_step_indicator<'a>(step: &OnboardingStep) -> Element<'a, OnboardingMessage> {
-    let steps = [
-        ("LLM Setup", 0usize),
-        ("Strategy", 1usize),
-        ("Ready", 2usize),
-    ];
+    let steps = [("LLM Setup", 0usize), ("Strategy", 1usize), ("Ready", 2usize)];
 
     let current_idx: usize = match step {
         OnboardingStep::LlmSetup => 0,
@@ -248,7 +219,11 @@ fn build_step_indicator<'a>(step: &OnboardingStep) -> Element<'a, OnboardingMess
             TextStyle {
                 size: TextSize::Xs,
                 color: text_color,
-                weight: if is_current { TextWeight::Semibold } else { TextWeight::Normal },
+                weight: if is_current {
+                    TextWeight::Semibold
+                } else {
+                    TextWeight::Normal
+                },
                 ..Default::default()
             },
         )
@@ -304,16 +279,17 @@ fn build_step_indicator<'a>(step: &OnboardingStep) -> Element<'a, OnboardingMess
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wyncast_core::llm::provider::LlmProvider;
 
     #[test]
-    fn llm_setup_invalid_when_empty() {
-        let state = LlmSetupState::default();
+    fn llm_form_invalid_when_empty() {
+        let state = LlmFormState::default();
         assert!(!state.is_valid());
     }
 
     #[test]
-    fn llm_setup_valid_with_provider_model_key() {
-        let mut state = LlmSetupState::default();
+    fn llm_form_valid_with_provider_model_key() {
+        let mut state = LlmFormState::default();
         state.provider = Some(LlmProvider::Anthropic);
         state.model_id = Some("claude-sonnet-4-6".to_string());
         state.api_key = "sk-ant-test".to_string();
@@ -321,8 +297,8 @@ mod tests {
     }
 
     #[test]
-    fn llm_setup_valid_with_saved_key_mask() {
-        let mut state = LlmSetupState::default();
+    fn llm_form_valid_with_saved_key_mask() {
+        let mut state = LlmFormState::default();
         state.provider = Some(LlmProvider::Anthropic);
         state.model_id = Some("claude-sonnet-4-6".to_string());
         state.api_key_mask = Some("sk-ant-•••••6789".to_string());
@@ -330,8 +306,8 @@ mod tests {
     }
 
     #[test]
-    fn llm_setup_invalid_missing_model() {
-        let mut state = LlmSetupState::default();
+    fn llm_form_invalid_missing_model() {
+        let mut state = LlmFormState::default();
         state.provider = Some(LlmProvider::Anthropic);
         state.api_key = "sk-ant-test".to_string();
         assert!(!state.is_valid());
@@ -341,7 +317,9 @@ mod tests {
     fn update_provider_resets_model() {
         let mut screen = OnboardingScreen::new();
         screen.llm.model_id = Some("claude-sonnet-4-6".to_string());
-        let _ = screen.update(OnboardingMessage::ProviderSelected(LlmProvider::Google));
+        let _ = screen.update(OnboardingMessage::Llm(LlmFormMessage::ProviderSelected(
+            LlmProvider::Google,
+        )));
         assert!(screen.llm.model_id.is_none());
         assert_eq!(screen.llm.provider, Some(LlmProvider::Google));
     }
@@ -349,9 +327,10 @@ mod tests {
     #[test]
     fn update_api_key_clears_test_result() {
         let mut screen = OnboardingScreen::new();
-        screen.llm.connection_test = llm_setup::ConnectionTestState::Success;
-        let _ = screen.update(OnboardingMessage::ApiKeyChanged("new-key".to_string()));
-        assert_eq!(screen.llm.connection_test, llm_setup::ConnectionTestState::Idle);
+        screen.llm.connection_test = ConnectionTestState::Success;
+        let _ = screen
+            .update(OnboardingMessage::Llm(LlmFormMessage::ApiKeyChanged("new-key".to_string())));
+        assert_eq!(screen.llm.connection_test, ConnectionTestState::Idle);
     }
 
     #[test]
@@ -370,14 +349,18 @@ mod tests {
     #[test]
     fn hitting_budget_changed_rounds() {
         let mut screen = OnboardingScreen::new();
-        let _ = screen.update(OnboardingMessage::HittingBudgetChanged(0.75));
+        let _ = screen.update(OnboardingMessage::Strategy(
+            StrategyFormMessage::HittingBudgetChanged(0.75),
+        ));
         assert_eq!(screen.strategy.hitting_budget_pct, 75);
     }
 
     #[test]
     fn weight_changed_updates_category() {
         let mut screen = OnboardingScreen::new();
-        let _ = screen.update(OnboardingMessage::WeightChanged(0, 1.5));
+        let _ = screen.update(OnboardingMessage::Strategy(StrategyFormMessage::WeightChanged(
+            0, 1.5,
+        )));
         assert!((screen.strategy.category_weights.get(0) - 1.5).abs() < 0.001);
     }
 }
