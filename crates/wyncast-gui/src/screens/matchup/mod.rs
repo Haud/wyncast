@@ -328,7 +328,18 @@ fn tab_content<'a>(
             .daily_stats
             .view(day, home_name, away_name)
             .map(MatchupMessage::DailyStats),
-        MatchupTab::Analytics => screen.analytics.view().map(MatchupMessage::Analytics),
+        MatchupTab::Analytics => {
+            let total_days = snapshot.scoring_period_days.len();
+            let days_elapsed = if total_days > 0 {
+                (snapshot.selected_day + 1).min(total_days)
+            } else {
+                0
+            };
+            screen
+                .analytics
+                .view(&snapshot.category_scores, days_elapsed, total_days)
+                .map(MatchupMessage::Analytics)
+        }
         MatchupTab::HomeRoster => screen
             .home_roster
             .view(day.map(|d| &d.home), home_name)
