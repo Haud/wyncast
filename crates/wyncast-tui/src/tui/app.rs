@@ -336,7 +336,11 @@ impl App {
                 }
             }
             AppMode::Matchup => {
-                self.matchup_screen.view(frame, &self.active_keybinds);
+                if self.espn_page_detected {
+                    self.matchup_screen.view(frame, &self.active_keybinds);
+                } else {
+                    super::home::render(frame, self);
+                }
             }
         }
     }
@@ -456,9 +460,13 @@ impl App {
                 }
             }
             AppMode::Matchup => {
-                self.matchup_screen
-                    .subscription(kb)
-                    .map(AppMessage::Matchup)
+                if self.espn_page_detected {
+                    self.matchup_screen
+                        .subscription(kb)
+                        .map(AppMessage::Matchup)
+                } else {
+                    super::home::subscription(kb).map(AppMessage::Home)
+                }
             }
             AppMode::Settings(_) => settings::subscription(
                 self.settings_tab,
