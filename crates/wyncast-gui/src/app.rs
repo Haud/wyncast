@@ -40,6 +40,9 @@ pub struct App {
     focus: FocusTarget,
     /// WebSocket connection state.
     connection_status: ConnectionStatus,
+    /// True once content-bearing data arrives from the ESPN extension while
+    /// connected. Reset on disconnect.
+    espn_page_detected: bool,
     /// Draft screen state.
     draft: DraftScreen,
     /// Matchup screen state.
@@ -76,6 +79,7 @@ impl App {
             app_mode: initial_mode,
             focus: FocusTarget::default(),
             connection_status: ConnectionStatus::Disconnected,
+            espn_page_detected: false,
             draft: DraftScreen::new(),
             matchup: MatchupScreen::new(),
             onboarding: OnboardingScreen::new(),
@@ -125,6 +129,9 @@ pub fn update(app: &mut App, msg: Message) -> Task<Message> {
                     if let AppMode::Settings(section) = mode {
                         app.settings.active_section = *section;
                     }
+                    if app.connection_status == ConnectionStatus::Connected {
+                        app.espn_page_detected = true;
+                    }
                 }
                 UiUpdate::ConnectionStatus(status) => {
                     let old = app.connection_status;
@@ -139,6 +146,7 @@ pub fn update(app: &mut App, msg: Message) -> Task<Message> {
                                 );
                             }
                             ConnectionStatus::Disconnected => {
+                                app.espn_page_detected = false;
                                 app.toaster.show(
                                     ToastType::Warning,
                                     "Disconnected",
@@ -180,10 +188,17 @@ pub fn update(app: &mut App, msg: Message) -> Task<Message> {
                     dispatch_draft(app, DraftMessage::NominationCleared)
                 }
                 UiUpdate::StateSnapshot(snapshot) => {
-                    dispatch_draft(app, DraftMessage::StateSnapshot(snapshot))
+                    let task = dispatch_draft(app, DraftMessage::StateSnapshot(snapshot));
+                    if app.connection_status == ConnectionStatus::Connected {
+                        app.espn_page_detected = true;
+                    }
+                    task
                 }
                 UiUpdate::MatchupSnapshot(snapshot) => {
                     app.matchup.apply_snapshot(snapshot);
+                    if app.connection_status == ConnectionStatus::Connected {
+                        app.espn_page_detected = true;
+                    }
                     Task::none()
                 }
                 UiUpdate::OnboardingUpdate(update) => {
@@ -209,9 +224,14 @@ pub fn update(app: &mut App, msg: Message) -> Task<Message> {
             match &app.app_mode {
                 AppMode::Onboarding(_) => handle_onboarding_key(app, &key),
                 AppMode::Settings(_) => handle_settings_key(app, &key, mods.shift()),
-                AppMode::Matchup => handle_matchup_key(app, &key, mods.shift()),
+                AppMode::Matchup => {
+                    if !app.espn_page_detected {
+                        return handle_disconnected_key(app, &key);
+                    }
+                    handle_matchup_key(app, &key, mods.shift())
+                }
                 _ => {
-                    if app.connection_status == ConnectionStatus::Disconnected {
+                    if !app.espn_page_detected {
                         return handle_disconnected_key(app, &key);
                     }
                     if app.draft.has_modal() {
@@ -530,19 +550,26 @@ fn handle_matchup_key(app: &mut App, key: &iced::keyboard::Key, shift: bool) -> 
 pub fn view(app: &App) -> Element<'_, Message> {
     let screen_elem = match &app.app_mode {
         AppMode::Draft => {
-            let draft_elem = crate::screens::draft::view(
-                &app.draft,
-                app.focus,
-                app.connection_status,
-                &app.pane_state,
-            );
-            draft_elem.map(Message::Draft)
+            if app.espn_page_detected {
+                crate::screens::draft::view(
+                    &app.draft,
+                    app.focus,
+                    &app.pane_state,
+                )
+                .map(Message::Draft)
+            } else {
+                crate::screens::disconnected::view().map(Message::Draft)
+            }
         }
         AppMode::Onboarding(step) => {
             crate::screens::onboarding::view(&app.onboarding, step).map(Message::Onboarding)
         }
         AppMode::Matchup => {
-            crate::screens::matchup::view(&app.matchup).map(Message::Matchup)
+            if app.espn_page_detected {
+                crate::screens::matchup::view(&app.matchup).map(Message::Matchup)
+            } else {
+                crate::screens::disconnected::view().map(Message::Draft)
+            }
         }
         AppMode::Settings(_section) => {
             crate::screens::settings::view(&app.settings).map(Message::Settings)
@@ -582,7 +609,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
 // ---------------------------------------------------------------------------
 
 pub fn subscription(app: &App) -> Subscription<Message> {
-    let needs_tick = app.connection_status == ConnectionStatus::Disconnected
+    let needs_tick = !app.espn_page_detected
         || app.toaster.has_active_animations();
 
     let mut subs = vec![
