@@ -48,6 +48,9 @@ pub struct App {
     pub confirm_exit_settings: ConfirmDialog,
     /// Latest matchup snapshot from the backend.
     pub matchup_snapshot: Option<crate::matchup::MatchupSnapshot>,
+    /// True once content-bearing data arrives from the ESPN extension while
+    /// connected. Reset on disconnect.
+    pub espn_page_detected: bool,
     /// Stable ID for the global Ctrl+C subscription (never changes).
     sub_id_global: SubscriptionId,
     /// Stable ID for the 500ms timer subscription (never changes).
@@ -69,6 +72,7 @@ impl App {
             settings_tab: SettingsSection::LlmConfig,
             confirm_exit_settings: ConfirmDialog::unsaved_changes(),
             matchup_snapshot: None,
+            espn_page_detected: false,
             sub_id_global: SubscriptionId::unique(),
             sub_id_tick: SubscriptionId::unique(),
             tick_count: 0,
@@ -83,6 +87,9 @@ impl App {
         match update {
             UiUpdate::StateSnapshot(snapshot) => {
                 self.apply_snapshot(*snapshot);
+                if self.draft_screen.connection_status == ConnectionStatus::Connected {
+                    self.espn_page_detected = true;
+                }
             }
             UiUpdate::NominationUpdate { info, analysis_request_id } => {
                 self.draft_screen.current_nomination = Some(*info);
@@ -126,6 +133,9 @@ impl App {
             }
             UiUpdate::ConnectionStatus(status) => {
                 self.draft_screen.connection_status = status;
+                if status == ConnectionStatus::Disconnected {
+                    self.espn_page_detected = false;
+                }
             }
             UiUpdate::OnboardingUpdate(update) => {
                 use crate::protocol::OnboardingUpdate;
@@ -215,6 +225,9 @@ impl App {
                 );
                 self.matchup_screen.apply_snapshot(&snapshot);
                 self.matchup_snapshot = Some(*snapshot);
+                if self.draft_screen.connection_status == ConnectionStatus::Connected {
+                    self.espn_page_detected = true;
+                }
             }
             UiUpdate::ModeChanged(mode) => {
                 self.confirm_exit_settings.open = false;
@@ -237,6 +250,9 @@ impl App {
                     self.llm_setup.in_settings_mode = false;
                 }
                 self.app_mode = mode;
+                if self.draft_screen.connection_status == ConnectionStatus::Connected {
+                    self.espn_page_detected = true;
+                }
             }
         }
     }
@@ -313,10 +329,10 @@ impl App {
                 settings::render(frame, self);
             }
             AppMode::Draft => {
-                if self.draft_screen.connection_status == ConnectionStatus::Disconnected {
-                    super::home::render(frame, self);
-                } else {
+                if self.espn_page_detected {
                     self.draft_screen.view(frame, &self.active_keybinds);
+                } else {
+                    super::home::render(frame, self);
                 }
             }
             AppMode::Matchup => {
@@ -431,12 +447,12 @@ impl App {
 
         let mode_sub = match &self.app_mode {
             AppMode::Draft => {
-                if self.draft_screen.connection_status == ConnectionStatus::Disconnected {
-                    super::home::subscription(kb).map(AppMessage::Home)
-                } else {
+                if self.espn_page_detected {
                     self.draft_screen
                         .subscription(kb)
                         .map(AppMessage::Draft)
+                } else {
+                    super::home::subscription(kb).map(AppMessage::Home)
                 }
             }
             AppMode::Matchup => {

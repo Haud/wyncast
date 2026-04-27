@@ -495,6 +495,7 @@ mod tests {
         assert!(app.draft_screen.my_roster.is_empty());
         assert!(app.draft_screen.focused_panel.is_none());
         assert!(!app.draft_screen.modal_layer.position_filter.open);
+        assert!(!app.espn_page_detected);
     }
 
     #[test]
@@ -788,6 +789,47 @@ mod tests {
         assert_eq!(app.draft_screen.connection_status, ConnectionStatus::Disconnected);
         app.apply_update(UiUpdate::ConnectionStatus(ConnectionStatus::Connected));
         assert_eq!(app.draft_screen.connection_status, ConnectionStatus::Connected);
+        assert!(!app.espn_page_detected);
+    }
+
+    // -- espn_page_detected --
+
+    #[test]
+    fn espn_page_not_detected_on_initial_snapshot() {
+        let mut app = app::App::default();
+        let snapshot = test_snapshot(0, 0, None);
+        app.apply_update(UiUpdate::StateSnapshot(Box::new(snapshot)));
+        assert!(!app.espn_page_detected);
+    }
+
+    #[test]
+    fn espn_page_detected_on_snapshot_while_connected() {
+        let mut app = app::App::default();
+        app.apply_update(UiUpdate::ConnectionStatus(ConnectionStatus::Connected));
+        assert!(!app.espn_page_detected);
+        let snapshot = test_snapshot(5, 260, Some(TabId::Analysis));
+        app.apply_update(UiUpdate::StateSnapshot(Box::new(snapshot)));
+        assert!(app.espn_page_detected);
+    }
+
+    #[test]
+    fn espn_page_detected_on_mode_changed() {
+        let mut app = app::App::default();
+        app.apply_update(UiUpdate::ConnectionStatus(ConnectionStatus::Connected));
+        app.apply_update(UiUpdate::ModeChanged(AppMode::Matchup));
+        assert!(app.espn_page_detected);
+    }
+
+    #[test]
+    fn espn_page_detected_reset_on_disconnect() {
+        let mut app = app::App::default();
+        app.apply_update(UiUpdate::ConnectionStatus(ConnectionStatus::Connected));
+        let snapshot = test_snapshot(5, 260, None);
+        app.apply_update(UiUpdate::StateSnapshot(Box::new(snapshot)));
+        assert!(app.espn_page_detected);
+
+        app.apply_update(UiUpdate::ConnectionStatus(ConnectionStatus::Disconnected));
+        assert!(!app.espn_page_detected);
     }
 
     // -- KeybindHint --

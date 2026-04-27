@@ -13,6 +13,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
+use crate::protocol::ConnectionStatus;
 use crate::tui::app::App;
 use crate::tui::subscription::keybinding::{
     exact, KeyBindingRecipe, KeybindHint, KeybindManager,
@@ -121,12 +122,19 @@ pub fn render(frame: &mut Frame, app: &App) {
     // Blank line.
     lines.push(Line::from(""));
 
-    // Blinking connection status.
-    let dot = if app.tick_count.is_multiple_of(2) { "● " } else { "  " };
-    let status_line = Line::from(vec![
-        Span::styled(dot, Style::default().fg(Color::Red)),
-        Span::styled("Waiting for connection...", subtitle_style),
-    ]);
+    // Connection status indicator.
+    let status_line = if app.draft_screen.connection_status == ConnectionStatus::Connected {
+        Line::from(vec![
+            Span::styled("● ", Style::default().fg(Color::Green)),
+            Span::styled("Connected — waiting for ESPN page...", subtitle_style),
+        ])
+    } else {
+        let dot = if app.tick_count.is_multiple_of(2) { "● " } else { "  " };
+        Line::from(vec![
+            Span::styled(dot, Style::default().fg(Color::Red)),
+            Span::styled("Waiting for connection...", subtitle_style),
+        ])
+    };
     lines.push(status_line);
 
     let paragraph = Paragraph::new(lines).alignment(Alignment::Center);
