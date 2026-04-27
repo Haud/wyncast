@@ -8,3 +8,4 @@ extension/.amo-credentials
 extension/web-ext-artifacts/
 extension/dist/
 __pycache__/
+.oworktrees/

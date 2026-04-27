@@ -14,7 +14,7 @@ pub fn view<'a>() -> Element<'a, DraftMessage> {
         spinner(SpinnerStyle::new().size(SpinnerSize::Xl2)).into();
 
     let heading: Element<DraftMessage> = text(
-        "Waiting for ESPN draft extension…",
+        "Waiting for Connection...", 
         TextStyle {
             size: TextSize::Xl3,
             weight: TextWeight::Bold,
@@ -41,23 +41,8 @@ pub fn view<'a>() -> Element<'a, DraftMessage> {
     )
     .into();
 
-    let continue_btn: Element<DraftMessage> = button(
-        text(
-            "Continue without extension",
-            TextStyle {
-                color: TextColor::Dimmed,
-                ..Default::default()
-            },
-        ),
-        DraftMessage::RetryConnection, // placeholder target — button is disabled
-        ButtonStyle::new()
-            .variant(ButtonVariant::Ghost)
-            .disabled(true),
-    )
-    .into();
-
     let card_content: Element<DraftMessage> = v_stack(
-        vec![spinner_elem, heading, subtext, retry_btn, continue_btn],
+        vec![spinner_elem, heading, subtext, retry_btn],
         StackStyle {
             gap: StackGap::Lg,
             align: StackAlign::Center,
