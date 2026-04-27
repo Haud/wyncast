@@ -832,6 +832,18 @@ mod tests {
         assert!(!app.espn_page_detected);
     }
 
+    #[test]
+    fn espn_page_detected_reset_on_disconnect_in_matchup_mode() {
+        let mut app = app::App::default();
+        app.apply_update(UiUpdate::ConnectionStatus(ConnectionStatus::Connected));
+        app.apply_update(UiUpdate::ModeChanged(AppMode::Matchup));
+        assert!(app.espn_page_detected);
+
+        app.apply_update(UiUpdate::ConnectionStatus(ConnectionStatus::Disconnected));
+        assert!(!app.espn_page_detected);
+        assert!(matches!(app.app_mode, AppMode::Matchup));
+    }
+
     // -- KeybindHint --
 
     #[test]
