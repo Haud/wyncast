@@ -321,10 +321,9 @@ impl DraftScreen {
 pub fn view<'a>(
     screen: &'a DraftScreen,
     focus: FocusTarget,
-    connection_status: ConnectionStatus,
     pane_state: &'a SplitPaneState,
 ) -> Element<'a, DraftMessage> {
-    let content = view_content(screen, focus, connection_status, pane_state);
+    let content = view_content(screen, focus, pane_state);
     let modal = view_modal(screen);
     with_overlay(content, modal)
 }
@@ -332,20 +331,10 @@ pub fn view<'a>(
 fn view_content<'a>(
     screen: &'a DraftScreen,
     focus: FocusTarget,
-    connection_status: ConnectionStatus,
     pane_state: &'a SplitPaneState,
 ) -> Element<'a, DraftMessage> {
-    let status_bar = status_bar::view(connection_status);
+    let status_bar = status_bar::view(ConnectionStatus::Connected);
     let help_bar = help_bar::view();
-
-    if connection_status == ConnectionStatus::Disconnected {
-        return layout::disconnected_layout(
-            status_bar,
-            tabs::view_disabled(),
-            crate::screens::disconnected::view(),
-            help_bar,
-        );
-    }
 
     let nomination_banner = nomination_banner::view(
         screen.current_nomination.as_ref(),
