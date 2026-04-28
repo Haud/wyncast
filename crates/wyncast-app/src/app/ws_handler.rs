@@ -636,6 +636,17 @@ fn parse_record(s: &str) -> TeamRecord {
     }
 }
 
+/// Parse an ESPN matchup score string in "W-T-L" format (e.g. "4-6-2")
+/// into a `TeamRecord`.
+fn parse_matchup_score(s: &str) -> TeamRecord {
+    let parts: Vec<u16> = s.split('-').filter_map(|p| p.trim().parse().ok()).collect();
+    TeamRecord {
+        wins: parts.first().copied().unwrap_or(0),
+        losses: parts.get(2).copied().unwrap_or(0),
+        ties: parts.get(1).copied().unwrap_or(0),
+    }
+}
+
 /// Determine category win/loss/tie state from home and away values.
 ///
 /// `None` values (ESPN renders `"--"` for rate stats with a zero denominator)
@@ -706,8 +717,8 @@ async fn handle_matchup_state(
 
     let home_record = parse_record(&payload.home_team.record);
     let away_record = parse_record(&payload.away_team.record);
-    let home_category_score = parse_record(&payload.home_team.matchup_score);
-    let away_category_score = parse_record(&payload.away_team.matchup_score);
+    let home_category_score = parse_matchup_score(&payload.home_team.matchup_score);
+    let away_category_score = parse_matchup_score(&payload.away_team.matchup_score);
 
     // Convert categories with home/away lead state.
     let category_scores: Vec<CategoryScore> = payload
@@ -1219,12 +1230,12 @@ mod tests {
             home_team: MatchupTeamPayload {
                 name: "Bob Dole Experience".to_string(),
                 record: "3-2-0".to_string(),
-                matchup_score: "6-4-2".to_string(),
+                matchup_score: "6-2-4".to_string(),
             },
             away_team: MatchupTeamPayload {
                 name: "Certified! Smokified!".to_string(),
                 record: "2-3-0".to_string(),
-                matchup_score: "4-6-2".to_string(),
+                matchup_score: "4-2-6".to_string(),
             },
             categories: vec![
                 MatchupCategoryPayload {
@@ -1344,12 +1355,12 @@ mod tests {
                 "homeTeam": {
                     "name": "Bob Dole Experience",
                     "record": "3-2-0",
-                    "matchupScore": "6-4-2"
+                    "matchupScore": "6-2-4"
                 },
                 "awayTeam": {
                     "name": "Certified! Smokified!",
                     "record": "2-3-0",
-                    "matchupScore": "4-6-2"
+                    "matchupScore": "4-2-6"
                 },
                 "categories": [
                     { "statId": 20, "abbrev": "R", "homeValue": 5.0, "awayValue": 3.0, "lowerIsBetter": false }
@@ -1494,6 +1505,14 @@ mod tests {
         assert_eq!(record.wins, 0);
         assert_eq!(record.losses, 0);
         assert_eq!(record.ties, 0);
+    }
+
+    #[test]
+    fn parse_matchup_score_swaps_ties_and_losses() {
+        let record = parse_matchup_score("4-6-2");
+        assert_eq!(record.wins, 4);
+        assert_eq!(record.losses, 2);
+        assert_eq!(record.ties, 6);
     }
 
     #[test]
