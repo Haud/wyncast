@@ -25,6 +25,7 @@ use ratatui::Frame;
 use crate::matchup::{
     CategoryScore, MatchupInfo, MatchupSnapshot, ScoringDay, TeamMatchupState,
 };
+use crate::config::LeagueConfig;
 use crate::stats::StatRegistry;
 use crate::tui::action::Action;
 use crate::tui::scroll::ScrollDirection;
@@ -121,7 +122,10 @@ impl MatchupScreen {
             category_scores: Vec::new(),
             selected_day: 0,
             scoring_period_days: Vec::new(),
-            stat_registry: None,
+            stat_registry: Some(
+                StatRegistry::from_league_config(&LeagueConfig::default())
+                    .expect("default league config must produce a valid StatRegistry"),
+            ),
             sub_id_base: SubscriptionId::unique(),
         }
     }
@@ -196,7 +200,7 @@ impl MatchupScreen {
             &self.category_scores,
             &self.scoring_period_days,
             self.selected_day,
-            None, // StatRegistry not available at screen level yet
+            self.stat_registry.as_ref(),
             home_name,
             away_name,
             main_focused,
@@ -648,6 +652,45 @@ mod tests {
         terminal
             .draw(|frame| screen.view(frame, &[]))
             .unwrap();
+    }
+
+    #[test]
+    fn scoreboard_renders_after_apply_snapshot() {
+        let backend = ratatui::backend::TestBackend::new(160, 50);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut screen = MatchupScreen::new();
+        screen.apply_snapshot(&make_test_snapshot());
+        terminal
+            .draw(|frame| screen.view(frame, &[]))
+            .unwrap();
+        let buf_text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            !buf_text.contains("waiting for data"),
+            "scoreboard should render real data, not the waiting placeholder"
+        );
+        assert!(
+            buf_text.contains("HT"),
+            "home team abbreviation should appear in scoreboard"
+        );
+        assert!(
+            buf_text.contains("AT"),
+            "away team abbreviation should appear in scoreboard"
+        );
+    }
+
+    #[test]
+    fn stat_registry_initialized_on_construction() {
+        let screen = MatchupScreen::new();
+        assert!(
+            screen.stat_registry.is_some(),
+            "stat_registry must be Some from construction"
+        );
     }
 
     // -- Helpers --
