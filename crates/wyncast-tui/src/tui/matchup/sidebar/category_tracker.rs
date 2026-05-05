@@ -13,6 +13,9 @@ use crate::matchup::{CategoryScore, CategoryState};
 use crate::stats::{PlayerType, SortDirection, lookup_stat_definition};
 use crate::tui::action::Action;
 use crate::tui::scroll::{ScrollDirection, ScrollState};
+
+const HOME_COLOR: Color = Color::LightBlue;
+const AWAY_COLOR: Color = Color::Rgb(255, 165, 0);
 use crate::tui::widgets::focused_border_style;
 
 // ---------------------------------------------------------------------------
@@ -218,18 +221,11 @@ fn build_category_line(cs: &CategoryScore, available_width: usize, home_abbrev: 
     let filled = ((bar_width as f64 * home_share).round() as usize).min(bar_width);
     let empty = bar_width.saturating_sub(filled);
 
-    // Home bar is green when home is winning, red when home is losing.
-    // Away fill uses the opposite color, so both cells always show the
-    // winner in green.
-    let (home_color, away_color) = match cs.state {
-        CategoryState::HomeWinning => (Color::Green, Color::Red),
-        CategoryState::AwayWinning => (Color::Red, Color::Green),
-        CategoryState::Tied => (Color::Yellow, Color::Yellow),
-    };
+    let (home_color, away_color) = (HOME_COLOR, AWAY_COLOR);
 
     let status_color = match cs.state {
-        CategoryState::HomeWinning => Color::Green,
-        CategoryState::AwayWinning => Color::Red,
+        CategoryState::HomeWinning => HOME_COLOR,
+        CategoryState::AwayWinning => AWAY_COLOR,
         CategoryState::Tied => Color::Yellow,
     };
 

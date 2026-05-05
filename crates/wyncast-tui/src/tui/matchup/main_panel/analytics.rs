@@ -19,6 +19,9 @@ use crate::stats::{SortDirection, StatComputation, StatDefinition, StatRegistry}
 use crate::tui::action::Action;
 use crate::tui::scroll::{ScrollDirection, ScrollState};
 
+const HOME_COLOR: Color = Color::LightBlue;
+const AWAY_COLOR: Color = Color::Rgb(255, 165, 0);
+
 // ---------------------------------------------------------------------------
 // Messages
 // ---------------------------------------------------------------------------
@@ -191,13 +194,13 @@ fn build_category_outlook(
         Span::styled(
             format!("  {} ({})               ", home_abbrev, home_winning.len()),
             Style::default()
-                .fg(Color::Green)
+                .fg(HOME_COLOR)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!("{} ({})              ", away_abbrev, away_winning.len()),
             Style::default()
-                .fg(Color::Red)
+                .fg(AWAY_COLOR)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
@@ -220,7 +223,7 @@ fn build_category_outlook(
             let diff = format_diff(cat, registry);
             spans.push(Span::styled(
                 format!("  {:<6}{:<18}", cat.stat_abbrev, diff),
-                Style::default().fg(Color::Green),
+                Style::default().fg(HOME_COLOR),
             ));
         } else {
             spans.push(Span::raw("                        "));
@@ -231,7 +234,7 @@ fn build_category_outlook(
             let diff = format_diff(cat, registry);
             spans.push(Span::styled(
                 format!("{:<6}{:<16}", cat.stat_abbrev, diff),
-                Style::default().fg(Color::Red),
+                Style::default().fg(AWAY_COLOR),
             ));
         } else {
             spans.push(Span::raw("                      "));
@@ -299,8 +302,8 @@ fn build_close_categories(
         let status = build_close_status(cat, is_counting, effective_diff, home_abbrev, away_abbrev);
 
         let color = match cat.state {
-            CategoryState::HomeWinning => Color::Green,
-            CategoryState::AwayWinning => Color::Red,
+            CategoryState::HomeWinning => HOME_COLOR,
+            CategoryState::AwayWinning => AWAY_COLOR,
             CategoryState::Tied => Color::Yellow,
         };
 
@@ -372,9 +375,9 @@ fn build_pace_projections(
         };
 
         let (result_label, result_color) = if proj_diff > 0.001 {
-            (home_abbrev, Color::Green)
+            (home_abbrev, HOME_COLOR)
         } else if proj_diff < -0.001 {
-            (away_abbrev, Color::Red)
+            (away_abbrev, AWAY_COLOR)
         } else {
             ("TIE", Color::Yellow)
         };

@@ -8,6 +8,19 @@ use twui::{
 use wyncast_app::protocol::ScrollDirection;
 use wyncast_baseball::matchup::{CategoryScore, CategoryState};
 
+const GUI_HOME_COLOR: iced::Color = iced::Color {
+    r: 0.392,
+    g: 0.584,
+    b: 0.929,
+    a: 1.0,
+};
+const GUI_AWAY_COLOR: iced::Color = iced::Color {
+    r: 1.0,
+    g: 0.647,
+    b: 0.0,
+    a: 1.0,
+};
+
 use crate::widgets::data_table::ROW_HEIGHT;
 use crate::widgets::focus_ring::focus_ring;
 
@@ -96,11 +109,7 @@ impl Default for CategoryTracker {
 fn category_row<'a>(score: &'a CategoryScore, home_abbrev: &'a str, away_abbrev: &'a str) -> Element<'a, CategoryTrackerMessage> {
     let home_share = compute_home_share(score.home_value, score.away_value, &score.state);
 
-    let (home_color, away_color) = match score.state {
-        CategoryState::HomeWinning => (Colors::Success, Colors::Destructive),
-        CategoryState::AwayWinning => (Colors::Destructive, Colors::Success),
-        CategoryState::Tied => (Colors::Warning, Colors::Warning),
-    };
+    let (home_color, away_color) = (GUI_HOME_COLOR, GUI_AWAY_COLOR);
 
     // Label (stat abbreviation)
     let label: Element<CategoryTrackerMessage> = frame(
@@ -131,7 +140,7 @@ fn category_row<'a>(score: &'a CategoryScore, home_abbrev: &'a str, away_abbrev:
     .width(Length::FillPortion(home_w))
     .height(Length::Fixed(8.0))
     .style(move |_| iced::widget::container::Style {
-        background: Some(Background::Color(home_color.rgb())),
+        background: Some(Background::Color(home_color)),
         ..Default::default()
     })
     .into();
@@ -142,7 +151,7 @@ fn category_row<'a>(score: &'a CategoryScore, home_abbrev: &'a str, away_abbrev:
     .width(Length::FillPortion(away_w))
     .height(Length::Fixed(8.0))
     .style(move |_| iced::widget::container::Style {
-        background: Some(Background::Color(away_color.rgb())),
+        background: Some(Background::Color(away_color)),
         ..Default::default()
     })
     .into();
@@ -161,26 +170,18 @@ fn category_row<'a>(score: &'a CategoryScore, home_abbrev: &'a str, away_abbrev:
         CategoryState::Tied => "TIE",
     };
     let status_color = match score.state {
-        CategoryState::HomeWinning => TextColor::Default,
-        CategoryState::AwayWinning => TextColor::Error,
-        CategoryState::Tied => TextColor::Yellow,
+        CategoryState::HomeWinning => GUI_HOME_COLOR,
+        CategoryState::AwayWinning => GUI_AWAY_COLOR,
+        CategoryState::Tied => Colors::Warning.rgb(),
     };
-    let status: Element<CategoryTrackerMessage> = frame(
-        text(
-            status_str,
-            TextStyle {
-                size: TextSize::Xs,
-                color: status_color,
-                ..Default::default()
-            },
-        ),
-        BoxStyle {
-            width: Length::Fixed(40.0),
-            padding: Padding::new(2.0),
-            ..Default::default()
-        },
-    )
-    .into();
+    let status_text: Element<CategoryTrackerMessage> = iced::widget::Text::new(status_str.to_string())
+        .size(12.0)
+        .color(status_color)
+        .into();
+    let status: Element<CategoryTrackerMessage> = iced::widget::container(status_text)
+        .width(Length::Fixed(40.0))
+        .padding(Padding::new(2.0))
+        .into();
 
     let bar_with_ends: Element<CategoryTrackerMessage> = h_stack(
         vec![label, bar, status],
