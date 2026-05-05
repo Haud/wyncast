@@ -194,6 +194,16 @@ impl MatchupScreen {
             .as_ref()
             .map(|i| i.away_team_name.as_str())
             .unwrap_or("Away Roster");
+        let home_abbrev = self
+            .home_team
+            .as_ref()
+            .map(|t| t.abbrev.as_str())
+            .unwrap_or("HOME");
+        let away_abbrev = self
+            .away_team
+            .as_ref()
+            .map(|t| t.abbrev.as_str())
+            .unwrap_or("AWAY");
         self.main_panel.view(
             frame,
             layout.main_panel,
@@ -203,6 +213,8 @@ impl MatchupScreen {
             self.stat_registry.as_ref(),
             home_name,
             away_name,
+            home_abbrev,
+            away_abbrev,
             main_focused,
         );
 
@@ -214,6 +226,8 @@ impl MatchupScreen {
                 frame,
                 sidebar_rect,
                 &self.category_scores,
+                home_abbrev,
+                away_abbrev,
                 cat_focused,
             );
         }

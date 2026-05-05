@@ -55,6 +55,8 @@ impl CategoryTrackerPanel {
         frame: &mut Frame,
         area: Rect,
         category_scores: &[CategoryScore],
+        home_abbrev: &str,
+        away_abbrev: &str,
         focused: bool,
     ) {
         let border = focused_border_style(focused, Style::default());
@@ -97,7 +99,7 @@ impl CategoryTrackerPanel {
                     .add_modifier(Modifier::BOLD),
             )));
             for cs in &batting {
-                lines.push(build_category_line(cs, inner_width));
+                lines.push(build_category_line(cs, inner_width, home_abbrev, away_abbrev));
             }
         }
 
@@ -113,7 +115,7 @@ impl CategoryTrackerPanel {
                     .add_modifier(Modifier::BOLD),
             )));
             for cs in &pitching {
-                lines.push(build_category_line(cs, inner_width));
+                lines.push(build_category_line(cs, inner_width, home_abbrev, away_abbrev));
             }
         }
 
@@ -193,16 +195,16 @@ fn format_diff(cs: &CategoryScore) -> String {
 }
 
 /// Build a single category line with visual bar.
-fn build_category_line(cs: &CategoryScore, available_width: usize) -> Line<'static> {
+fn build_category_line(cs: &CategoryScore, available_width: usize, home_abbrev: &str, away_abbrev: &str) -> Line<'static> {
     let abbrev = &cs.stat_abbrev;
 
     // Layout: " ABBR ████░░░░ +diff STATUS "
     let label_width = 6; // " ABBR " (1 space + 4 chars + 1 space)
     let diff_str = format_diff(cs);
-    let status_str = match cs.state {
-        CategoryState::HomeWinning => "HOME",
-        CategoryState::AwayWinning => "AWAY",
-        CategoryState::Tied => "TIED",
+    let status_str: String = match cs.state {
+        CategoryState::HomeWinning => home_abbrev.to_string(),
+        CategoryState::AwayWinning => away_abbrev.to_string(),
+        CategoryState::Tied => "TIED".to_string(),
     };
     let right_str = format!(" {} {}", diff_str, status_str);
     let right_width = right_str.len();
@@ -430,7 +432,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let panel = CategoryTrackerPanel::new();
         terminal
-            .draw(|frame| panel.view(frame, frame.area(), &[], false))
+            .draw(|frame| panel.view(frame, frame.area(), &[], "HT", "AT", false))
             .unwrap();
     }
 
@@ -454,7 +456,7 @@ mod tests {
             },
         ];
         terminal
-            .draw(|frame| panel.view(frame, frame.area(), &scores, true))
+            .draw(|frame| panel.view(frame, frame.area(), &scores, "HT", "AT", true))
             .unwrap();
     }
 
@@ -470,7 +472,7 @@ mod tests {
             state: CategoryState::HomeWinning,
         }];
         terminal
-            .draw(|frame| panel.view(frame, frame.area(), &scores, false))
+            .draw(|frame| panel.view(frame, frame.area(), &scores, "HT", "AT", false))
             .unwrap();
     }
 }

@@ -99,13 +99,13 @@ impl DailyStatsPanel {
     }
 
     /// Render the daily stats for `day` into `area`.
-    pub fn view(&self, frame: &mut Frame, area: Rect, day: &ScoringDay, _focused: bool) {
+    pub fn view(&self, frame: &mut Frame, area: Rect, day: &ScoringDay, home_name: &str, away_name: &str, _focused: bool) {
         if area.width < 2 || area.height < 2 {
             return;
         }
 
         // Build all lines for the scrollable view.
-        let lines = build_all_lines(day, area.width as usize);
+        let lines = build_all_lines(day, area.width as usize, home_name, away_name);
         let content_height = lines.len();
         let viewport_height = area.height as usize;
 
@@ -151,15 +151,15 @@ impl Default for DailyStatsPanel {
 /// Renders the away team first, then the home team. Each team gets a batting
 /// and a pitching section with the same dynamic-column layout, separated by
 /// blank lines.
-fn build_all_lines(day: &ScoringDay, width: usize) -> Vec<Line<'static>> {
+fn build_all_lines(day: &ScoringDay, width: usize, home_name: &str, away_name: &str) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
 
     let batting_cols = stat_cols_from_headers(&day.batting_stat_columns);
     let pitching_cols = stat_cols_from_headers(&day.pitching_stat_columns);
 
-    build_team_sections(&mut lines, "Away", &day.label, &day.away, &batting_cols, &pitching_cols, width);
+    build_team_sections(&mut lines, away_name, &day.label, &day.away, &batting_cols, &pitching_cols, width);
     lines.push(Line::default());
-    build_team_sections(&mut lines, "Home", &day.label, &day.home, &batting_cols, &pitching_cols, width);
+    build_team_sections(&mut lines, home_name, &day.label, &day.home, &batting_cols, &pitching_cols, width);
 
     lines
 }
@@ -627,7 +627,7 @@ mod tests {
         let panel = DailyStatsPanel::new();
         let day = make_test_scoring_day();
         terminal
-            .draw(|frame| panel.view(frame, frame.area(), &day, false))
+            .draw(|frame| panel.view(frame, frame.area(), &day, "Home Team", "Away Team", false))
             .unwrap();
     }
 
@@ -638,7 +638,7 @@ mod tests {
         let panel = DailyStatsPanel::new();
         let day = make_test_scoring_day();
         terminal
-            .draw(|frame| panel.view(frame, frame.area(), &day, false))
+            .draw(|frame| panel.view(frame, frame.area(), &day, "Home Team", "Away Team", false))
             .unwrap();
     }
 
@@ -656,7 +656,7 @@ mod tests {
             away: TeamDailyRoster::default(),
         };
         terminal
-            .draw(|frame| panel.view(frame, frame.area(), &day, false))
+            .draw(|frame| panel.view(frame, frame.area(), &day, "Home Team", "Away Team", false))
             .unwrap();
     }
 
@@ -665,7 +665,7 @@ mod tests {
     #[test]
     fn content_height_matches_expected_lines() {
         let day = make_test_scoring_day();
-        let lines = build_all_lines(&day, 120);
+        let lines = build_all_lines(&day, 120, "Home Team", "Away Team");
         // Away block (one-row batter + one-row pitcher, each with totals):
         //   Batting: header(1) + col_header(1) + active(1) + totals(1) = 4
         //   Gap: 1
@@ -687,7 +687,7 @@ mod tests {
             panel.update(DailyStatsPanelMessage::Scroll(ScrollDirection::Down));
         }
         let day = make_test_scoring_day();
-        let lines = build_all_lines(&day, 120);
+        let lines = build_all_lines(&day, 120, "Home Team", "Away Team");
         let content_height = lines.len();
         let viewport = 10_usize;
         let clamped = panel.scroll.clamped_offset(content_height, viewport);
@@ -805,7 +805,7 @@ mod tests {
             },
             away: TeamDailyRoster::default(),
         };
-        let lines = build_all_lines(&day, 120);
+        let lines = build_all_lines(&day, 120, "Home Team", "Away Team");
         // Should still have section headers for both teams + col headers + player row + gaps
         assert!(lines.len() >= 4);
     }

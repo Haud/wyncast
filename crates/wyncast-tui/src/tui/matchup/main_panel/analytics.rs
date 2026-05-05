@@ -66,6 +66,8 @@ impl MatchupAnalyticsPanel {
         scoring_period_days: &[ScoringDay],
         selected_day: usize,
         registry: Option<&StatRegistry>,
+        home_abbrev: &str,
+        away_abbrev: &str,
         _focused: bool,
     ) {
         let block = Block::default()
@@ -95,10 +97,12 @@ impl MatchupAnalyticsPanel {
             days_elapsed,
             total_days,
             registry,
+            home_abbrev,
+            away_abbrev,
         );
 
         // Section 2: Close Categories
-        build_close_categories(&mut lines, category_scores, registry);
+        build_close_categories(&mut lines, category_scores, registry, home_abbrev, away_abbrev);
 
         // Section 3: Pace Projections
         build_pace_projections(
@@ -107,6 +111,8 @@ impl MatchupAnalyticsPanel {
             days_elapsed,
             total_days,
             registry,
+            home_abbrev,
+            away_abbrev,
         );
 
         let content_height = lines.len();
@@ -151,6 +157,8 @@ fn build_category_outlook(
     days_elapsed: usize,
     total_days: usize,
     registry: Option<&StatRegistry>,
+    home_abbrev: &str,
+    away_abbrev: &str,
 ) {
     section_header(
         lines,
@@ -181,13 +189,13 @@ fn build_category_outlook(
     // Header row
     lines.push(Line::from(vec![
         Span::styled(
-            format!("  HOME ({})               ", home_winning.len()),
+            format!("  {} ({})               ", home_abbrev, home_winning.len()),
             Style::default()
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!("AWAY ({})              ", away_winning.len()),
+            format!("{} ({})              ", away_abbrev, away_winning.len()),
             Style::default()
                 .fg(Color::Red)
                 .add_modifier(Modifier::BOLD),
@@ -246,6 +254,8 @@ fn build_close_categories(
     lines: &mut Vec<Line<'static>>,
     scores: &[CategoryScore],
     registry: Option<&StatRegistry>,
+    home_abbrev: &str,
+    away_abbrev: &str,
 ) {
     section_header(lines, "CLOSE CATEGORIES (swingable)");
 
@@ -259,9 +269,8 @@ fn build_close_categories(
         return;
     }
 
-    // Header (Home / Away / H-A diff)
     lines.push(Line::from(Span::styled(
-        "  Category  Home    Away    H-A      Status",
+        format!("  Category  {:<6}  {:<6}  Diff     Status", home_abbrev, away_abbrev),
         Style::default().add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(Span::styled(
@@ -287,7 +296,7 @@ fn build_close_categories(
         let effective_diff = if lower_is_better { -raw_diff } else { raw_diff };
         let diff_display = format_signed_value(raw_diff, precision);
 
-        let status = build_close_status(cat, is_counting, effective_diff);
+        let status = build_close_status(cat, is_counting, effective_diff, home_abbrev, away_abbrev);
 
         let color = match cat.state {
             CategoryState::HomeWinning => Color::Green,
@@ -311,6 +320,8 @@ fn build_pace_projections(
     days_elapsed: usize,
     total_days: usize,
     registry: Option<&StatRegistry>,
+    home_abbrev: &str,
+    away_abbrev: &str,
 ) {
     section_header(lines, "PACE PROJECTIONS");
 
@@ -335,7 +346,7 @@ fn build_pace_projections(
 
     // Header
     lines.push(Line::from(Span::styled(
-        "  Category  Home     Home Proj  Away Proj  Proj Result",
+        format!("  Category  {:<7}  {:<4} Proj  {:<4} Proj  Proj Result", home_abbrev, home_abbrev, away_abbrev),
         Style::default().add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(Span::styled(
@@ -361,9 +372,9 @@ fn build_pace_projections(
         };
 
         let (result_label, result_color) = if proj_diff > 0.001 {
-            ("HOME", Color::Green)
+            (home_abbrev, Color::Green)
         } else if proj_diff < -0.001 {
-            ("AWAY", Color::Red)
+            (away_abbrev, Color::Red)
         } else {
             ("TIE", Color::Yellow)
         };
@@ -462,19 +473,19 @@ pub fn project_counting_stat(current: f64, days_elapsed: usize, total_days: usiz
 /// Build a close-category status string.
 ///
 /// `effective_diff` is positive when the current leader (per sort direction) is ahead.
-fn build_close_status(cat: &CategoryScore, is_counting: bool, effective_diff: f64) -> String {
+fn build_close_status(cat: &CategoryScore, is_counting: bool, effective_diff: f64, home_abbrev: &str, away_abbrev: &str) -> String {
     match cat.state {
-        CategoryState::HomeWinning => "HOME - lead is narrow".to_string(),
+        CategoryState::HomeWinning => format!("{} - lead is narrow", home_abbrev),
         CategoryState::AwayWinning => {
             if is_counting {
                 let to_tie = effective_diff.abs().ceil() as i64;
                 let to_lead = to_tie + 1;
                 format!(
-                    "AWAY - {} {} to tie, {} to lead",
-                    to_tie, cat.stat_abbrev, to_lead
+                    "{} - {} {} to tie, {} to lead",
+                    away_abbrev, to_tie, cat.stat_abbrev, to_lead
                 )
             } else {
-                "AWAY - gap is closeable".to_string()
+                format!("{} - gap is closeable", away_abbrev)
             }
         }
         CategoryState::Tied => {
@@ -712,7 +723,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let panel = MatchupAnalyticsPanel::new();
         terminal
-            .draw(|frame| panel.view(frame, frame.area(), &[], &[], 0, None, false))
+            .draw(|frame| panel.view(frame, frame.area(), &[], &[], 0, None, "HT", "AT", false))
             .unwrap();
     }
 
@@ -737,6 +748,8 @@ mod tests {
                     &days,
                     0,
                     Some(&reg),
+                    "HT",
+                    "AT",
                     false,
                 )
             })
@@ -749,7 +762,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let panel = MatchupAnalyticsPanel::new();
         terminal
-            .draw(|frame| panel.view(frame, frame.area(), &[], &[], 0, None, false))
+            .draw(|frame| panel.view(frame, frame.area(), &[], &[], 0, None, "HT", "AT", false))
             .unwrap();
     }
 

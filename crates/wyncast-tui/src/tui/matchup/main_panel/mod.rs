@@ -96,13 +96,15 @@ impl MatchupMainPanel {
         registry: Option<&StatRegistry>,
         home_team_name: &str,
         away_team_name: &str,
+        home_abbrev: &str,
+        away_abbrev: &str,
         focused: bool,
     ) {
         let current_day = scoring_period_days.get(selected_day);
         match self.active_tab {
             MatchupTab::DailyStats => {
                 if let Some(day) = current_day {
-                    self.daily_panel.view(frame, area, day, focused);
+                    self.daily_panel.view(frame, area, day, home_team_name, away_team_name, focused);
                 } else {
                     self.daily_panel.view_placeholder(frame, area);
                 }
@@ -114,6 +116,8 @@ impl MatchupMainPanel {
                 scoring_period_days,
                 selected_day,
                 registry,
+                home_abbrev,
+                away_abbrev,
                 focused,
             ),
             MatchupTab::HomeRoster => {
@@ -213,6 +217,8 @@ mod tests {
                     None,
                     "Home Team",
                     "Away Team",
+                    "HT",
+                    "AT",
                     false,
                 )
             })
@@ -237,6 +243,8 @@ mod tests {
                     None,
                     "Home Team",
                     "Away Team",
+                    "HT",
+                    "AT",
                     false,
                 )
             })
@@ -260,6 +268,8 @@ mod tests {
                     None,
                     "Home Team",
                     "Away Team",
+                    "HT",
+                    "AT",
                     false,
                 )
             })
@@ -283,6 +293,8 @@ mod tests {
                     None,
                     "Home Team",
                     "Away Team",
+                    "HT",
+                    "AT",
                     false,
                 )
             })
@@ -306,6 +318,8 @@ mod tests {
                     None,
                     "Home Team",
                     "Away Team",
+                    "HT",
+                    "AT",
                     false,
                 )
             })

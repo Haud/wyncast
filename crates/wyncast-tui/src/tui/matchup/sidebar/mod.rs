@@ -49,10 +49,12 @@ impl MatchupSidebar {
         frame: &mut Frame,
         category_area: Rect,
         category_scores: &[CategoryScore],
+        home_abbrev: &str,
+        away_abbrev: &str,
         category_focused: bool,
     ) {
         self.category_tracker
-            .view(frame, category_area, category_scores, category_focused);
+            .view(frame, category_area, category_scores, home_abbrev, away_abbrev, category_focused);
     }
 }
 

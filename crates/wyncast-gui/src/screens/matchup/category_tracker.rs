@@ -37,6 +37,8 @@ impl CategoryTracker {
     pub fn view<'a>(
         &self,
         scores: &'a [CategoryScore],
+        home_abbrev: &'a str,
+        away_abbrev: &'a str,
         focused: bool,
     ) -> Element<'a, CategoryTrackerMessage> {
         let title: Element<CategoryTrackerMessage> = text(
@@ -51,7 +53,7 @@ impl CategoryTracker {
 
         let rows: Vec<Element<CategoryTrackerMessage>> = scores
             .iter()
-            .map(category_row)
+            .map(|score| category_row(score, home_abbrev, away_abbrev))
             .collect();
 
         let mut children: Vec<Element<CategoryTrackerMessage>> = vec![title];
@@ -91,7 +93,7 @@ impl Default for CategoryTracker {
 // Category row rendering
 // ---------------------------------------------------------------------------
 
-fn category_row<'a>(score: &'a CategoryScore) -> Element<'a, CategoryTrackerMessage> {
+fn category_row<'a>(score: &'a CategoryScore, home_abbrev: &'a str, away_abbrev: &'a str) -> Element<'a, CategoryTrackerMessage> {
     let home_share = compute_home_share(score.home_value, score.away_value, &score.state);
 
     let (home_color, away_color) = match score.state {
@@ -154,8 +156,8 @@ fn category_row<'a>(score: &'a CategoryScore) -> Element<'a, CategoryTrackerMess
 
     // Status chip (who's winning)
     let status_str = match score.state {
-        CategoryState::HomeWinning => "HOME",
-        CategoryState::AwayWinning => "AWAY",
+        CategoryState::HomeWinning => home_abbrev,
+        CategoryState::AwayWinning => away_abbrev,
         CategoryState::Tied => "TIE",
     };
     let status_color = match score.state {

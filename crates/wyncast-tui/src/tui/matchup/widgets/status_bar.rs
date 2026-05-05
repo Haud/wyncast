@@ -47,10 +47,7 @@ fn build_info_line(info: &MatchupInfo, selected_day: usize, total_days: usize) -
         ),
         Span::styled("  \u{2502}  ", sep),
         Span::styled(
-            format!(
-                "{} (away) vs {} (home)",
-                info.away_team_name, info.home_team_name
-            ),
+            format!("{} @ {}", info.away_team_name, info.home_team_name),
             Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
         ),
         Span::styled("  \u{2502}  ", sep),
