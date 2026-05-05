@@ -8,6 +8,8 @@ use twui::{
 use wyncast_app::protocol::ScrollDirection;
 use wyncast_baseball::matchup::{CategoryScore, CategoryState};
 
+use crate::screens::matchup::colors::{state_text_color, HOME_TEXT_COLOR, AWAY_TEXT_COLOR, TIED_TEXT_COLOR};
+
 use crate::widgets::data_table::ROW_HEIGHT;
 
 // ---------------------------------------------------------------------------
@@ -197,17 +199,17 @@ fn view_category_outlook(
 
     let home_col = build_column(
         format!("{} ({})", home_abbrev, home_winning.len()),
-        TextColor::Default,
+        HOME_TEXT_COLOR,
         &home_winning,
     );
     let away_col = build_column(
         format!("{} ({})", away_abbrev, away_winning.len()),
-        TextColor::Error,
+        AWAY_TEXT_COLOR,
         &away_winning,
     );
     let tied_col = build_column(
         format!("TIED ({})", tied.len()),
-        TextColor::Yellow,
+        TIED_TEXT_COLOR,
         &tied,
     );
 
@@ -358,11 +360,11 @@ fn view_pace_projections(
         };
 
         let (result_label, result_color) = if proj_diff > 0.001 {
-            (home_abbrev, TextColor::Default)
+            (home_abbrev, HOME_TEXT_COLOR)
         } else if proj_diff < -0.001 {
-            (away_abbrev, TextColor::Error)
+            (away_abbrev, AWAY_TEXT_COLOR)
         } else {
-            ("TIE", TextColor::Yellow)
+            ("TIE", TIED_TEXT_COLOR)
         };
 
         let raw_proj_diff = home_proj - away_proj;
@@ -469,14 +471,6 @@ fn table_data_row(
 // ---------------------------------------------------------------------------
 // Computation helpers
 // ---------------------------------------------------------------------------
-
-fn state_text_color(state: &CategoryState) -> TextColor {
-    match state {
-        CategoryState::HomeWinning => TextColor::Default,
-        CategoryState::AwayWinning => TextColor::Error,
-        CategoryState::Tied => TextColor::Yellow,
-    }
-}
 
 fn stat_precision(abbrev: &str) -> usize {
     match abbrev {

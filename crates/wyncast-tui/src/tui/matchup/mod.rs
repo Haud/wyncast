@@ -11,6 +11,7 @@
 // "my team" / "opp team" distinction — both rosters are displayed on
 // equivalent tabs, and scoreboard rows/lead-bar cells are keyed by side.
 
+pub mod colors;
 pub mod layout;
 pub mod main_panel;
 pub mod sidebar;

@@ -8,6 +8,8 @@ use twui::{
 use wyncast_app::protocol::ScrollDirection;
 use wyncast_baseball::matchup::{CategoryScore, CategoryState};
 
+use super::colors::{bar_colors, state_text_color};
+
 use crate::widgets::data_table::ROW_HEIGHT;
 use crate::widgets::focus_ring::focus_ring;
 
@@ -96,11 +98,7 @@ impl Default for CategoryTracker {
 fn category_row<'a>(score: &'a CategoryScore, home_abbrev: &'a str, away_abbrev: &'a str) -> Element<'a, CategoryTrackerMessage> {
     let home_share = compute_home_share(score.home_value, score.away_value, &score.state);
 
-    let (home_color, away_color) = match score.state {
-        CategoryState::HomeWinning => (Colors::Success, Colors::Destructive),
-        CategoryState::AwayWinning => (Colors::Destructive, Colors::Success),
-        CategoryState::Tied => (Colors::Warning, Colors::Warning),
-    };
+    let (home_color, away_color) = bar_colors(&score.state);
 
     // Label (stat abbreviation)
     let label: Element<CategoryTrackerMessage> = frame(
@@ -160,11 +158,7 @@ fn category_row<'a>(score: &'a CategoryScore, home_abbrev: &'a str, away_abbrev:
         CategoryState::AwayWinning => away_abbrev,
         CategoryState::Tied => "TIE",
     };
-    let status_color = match score.state {
-        CategoryState::HomeWinning => TextColor::Default,
-        CategoryState::AwayWinning => TextColor::Error,
-        CategoryState::Tied => TextColor::Yellow,
-    };
+    let status_color = state_text_color(&score.state);
     let status: Element<CategoryTrackerMessage> = frame(
         text(
             status_str,

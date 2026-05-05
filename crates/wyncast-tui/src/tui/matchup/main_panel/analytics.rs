@@ -17,6 +17,7 @@ use ratatui::Frame;
 use crate::matchup::{CategoryScore, CategoryState, ScoringDay};
 use crate::stats::{SortDirection, StatComputation, StatDefinition, StatRegistry};
 use crate::tui::action::Action;
+use crate::tui::matchup::colors::{state_color, HOME_WINNING_COLOR, AWAY_WINNING_COLOR, TIED_COLOR};
 use crate::tui::scroll::{ScrollDirection, ScrollState};
 
 // ---------------------------------------------------------------------------
@@ -191,19 +192,19 @@ fn build_category_outlook(
         Span::styled(
             format!("  {} ({})               ", home_abbrev, home_winning.len()),
             Style::default()
-                .fg(Color::Green)
+                .fg(HOME_WINNING_COLOR)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!("{} ({})              ", away_abbrev, away_winning.len()),
             Style::default()
-                .fg(Color::Red)
+                .fg(AWAY_WINNING_COLOR)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!("TIED ({})", tied.len()),
             Style::default()
-                .fg(Color::Yellow)
+                .fg(TIED_COLOR)
                 .add_modifier(Modifier::BOLD),
         ),
     ]));
@@ -220,7 +221,7 @@ fn build_category_outlook(
             let diff = format_diff(cat, registry);
             spans.push(Span::styled(
                 format!("  {:<6}{:<18}", cat.stat_abbrev, diff),
-                Style::default().fg(Color::Green),
+                Style::default().fg(HOME_WINNING_COLOR),
             ));
         } else {
             spans.push(Span::raw("                        "));
@@ -231,7 +232,7 @@ fn build_category_outlook(
             let diff = format_diff(cat, registry);
             spans.push(Span::styled(
                 format!("{:<6}{:<16}", cat.stat_abbrev, diff),
-                Style::default().fg(Color::Red),
+                Style::default().fg(AWAY_WINNING_COLOR),
             ));
         } else {
             spans.push(Span::raw("                      "));
@@ -242,7 +243,7 @@ fn build_category_outlook(
             let diff = format_diff(cat, registry);
             spans.push(Span::styled(
                 format!("{:<6}{}", cat.stat_abbrev, diff),
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(TIED_COLOR),
             ));
         }
 
@@ -298,11 +299,7 @@ fn build_close_categories(
 
         let status = build_close_status(cat, is_counting, effective_diff, home_abbrev, away_abbrev);
 
-        let color = match cat.state {
-            CategoryState::HomeWinning => Color::Green,
-            CategoryState::AwayWinning => Color::Red,
-            CategoryState::Tied => Color::Yellow,
-        };
+        let color = state_color(cat.state);
 
         lines.push(Line::from(vec![
             Span::raw(format!("  {:<10}", cat.stat_abbrev)),
@@ -372,11 +369,11 @@ fn build_pace_projections(
         };
 
         let (result_label, result_color) = if proj_diff > 0.001 {
-            (home_abbrev, Color::Green)
+            (home_abbrev, HOME_WINNING_COLOR)
         } else if proj_diff < -0.001 {
-            (away_abbrev, Color::Red)
+            (away_abbrev, AWAY_WINNING_COLOR)
         } else {
-            ("TIE", Color::Yellow)
+            ("TIE", TIED_COLOR)
         };
 
         let raw_proj_diff = home_proj - away_proj;

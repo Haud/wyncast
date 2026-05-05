@@ -21,6 +21,7 @@ use ratatui::Frame;
 
 use crate::matchup::{CategoryScore, CategoryState, TeamMatchupState};
 use crate::stats::StatRegistry;
+use crate::tui::matchup::colors::{HOME_WINNING_COLOR, AWAY_WINNING_COLOR, TIED_COLOR};
 
 /// Column width for each stat value cell.
 const COL_WIDTH: usize = 6;
@@ -190,13 +191,13 @@ fn render_lead_bar(
         Span::raw(" ".repeat(left_empty)),
         Span::styled(
             "\u{2588}".repeat(left_fill),
-            Style::default().fg(Color::Red),
+            Style::default().fg(AWAY_WINNING_COLOR),
         ),
         // Center anchor character.
         Span::styled("\u{2503}", Style::default().fg(Color::DarkGray)),
         Span::styled(
             "\u{2588}".repeat(right_fill),
-            Style::default().fg(Color::Green),
+            Style::default().fg(HOME_WINNING_COLOR),
         ),
         Span::raw(" ".repeat(right_empty)),
         Span::raw(" "),
@@ -207,15 +208,15 @@ fn render_lead_bar(
     let diff_label = if lead > 0.0 {
         Span::styled(
             format!("{} +{}", home_team.abbrev, lead as i32),
-            Style::default().fg(Color::Green),
+            Style::default().fg(HOME_WINNING_COLOR),
         )
     } else if lead < 0.0 {
         Span::styled(
             format!("{} +{}", away_team.abbrev, (-lead) as i32),
-            Style::default().fg(Color::Red),
+            Style::default().fg(AWAY_WINNING_COLOR),
         )
     } else {
-        Span::styled("TIED", Style::default().fg(Color::Yellow))
+        Span::styled("TIED", Style::default().fg(TIED_COLOR))
     };
 
     let lines = vec![label_line, bar_line, Line::from(diff_label)];
@@ -327,7 +328,7 @@ fn cell_style(state: CategoryState, is_home: bool) -> (Style, &'static str) {
             if is_home {
                 (
                     Style::default()
-                        .fg(Color::Green)
+                        .fg(HOME_WINNING_COLOR)
                         .add_modifier(Modifier::BOLD),
                     "*",
                 )
@@ -341,13 +342,13 @@ fn cell_style(state: CategoryState, is_home: bool) -> (Style, &'static str) {
             } else {
                 (
                     Style::default()
-                        .fg(Color::Green)
+                        .fg(HOME_WINNING_COLOR)
                         .add_modifier(Modifier::BOLD),
                     "*",
                 )
             }
         }
-        CategoryState::Tied => (Style::default().fg(Color::Yellow), ""),
+        CategoryState::Tied => (Style::default().fg(TIED_COLOR), ""),
     }
 }
 
@@ -460,9 +461,9 @@ mod tests {
     // -- cell_style tests: symmetric home/away --
 
     #[test]
-    fn home_winning_home_cell_is_green_bold_starred() {
+    fn home_winning_home_cell_is_winning_color_bold_starred() {
         let (style, prefix) = cell_style(CategoryState::HomeWinning, true);
-        assert_eq!(style.fg, Some(Color::Green));
+        assert_eq!(style.fg, Some(HOME_WINNING_COLOR));
         assert!(style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(prefix, "*");
     }
@@ -482,21 +483,21 @@ mod tests {
     }
 
     #[test]
-    fn away_winning_away_cell_is_green_bold_starred() {
+    fn away_winning_away_cell_is_winning_color_bold_starred() {
         let (style, prefix) = cell_style(CategoryState::AwayWinning, false);
-        assert_eq!(style.fg, Some(Color::Green));
+        assert_eq!(style.fg, Some(HOME_WINNING_COLOR));
         assert!(style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(prefix, "*");
     }
 
     #[test]
-    fn tied_is_yellow_on_both_sides() {
+    fn tied_uses_tied_color_on_both_sides() {
         let (style, prefix) = cell_style(CategoryState::Tied, true);
-        assert_eq!(style.fg, Some(Color::Yellow));
+        assert_eq!(style.fg, Some(TIED_COLOR));
         assert_eq!(prefix, "");
 
         let (style, prefix) = cell_style(CategoryState::Tied, false);
-        assert_eq!(style.fg, Some(Color::Yellow));
+        assert_eq!(style.fg, Some(TIED_COLOR));
         assert_eq!(prefix, "");
     }
 
