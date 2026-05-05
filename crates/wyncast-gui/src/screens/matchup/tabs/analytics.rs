@@ -47,15 +47,17 @@ impl AnalyticsPanel {
         }
     }
 
-    pub fn view(
-        &self,
+    pub fn view<'a>(
+        &'a self,
         category_scores: &[CategoryScore],
         days_elapsed: usize,
         total_days: usize,
-    ) -> Element<'_, AnalyticsMessage> {
-        let outlook = view_category_outlook(category_scores, days_elapsed, total_days);
-        let close = view_close_categories(category_scores);
-        let projections = view_pace_projections(category_scores, days_elapsed, total_days);
+        home_abbrev: &str,
+        away_abbrev: &str,
+    ) -> Element<'a, AnalyticsMessage> {
+        let outlook = view_category_outlook(category_scores, days_elapsed, total_days, home_abbrev, away_abbrev);
+        let close = view_close_categories(category_scores, home_abbrev, away_abbrev);
+        let projections = view_pace_projections(category_scores, days_elapsed, total_days, home_abbrev, away_abbrev);
 
         let body: Element<'_, AnalyticsMessage> = v_stack(
             vec![outlook, close, projections],
@@ -127,6 +129,8 @@ fn view_category_outlook(
     scores: &[CategoryScore],
     days_elapsed: usize,
     total_days: usize,
+    home_abbrev: &str,
+    away_abbrev: &str,
 ) -> Element<'static, AnalyticsMessage> {
     let header = section_header(&format!(
         "CATEGORY OUTLOOK (Day {days_elapsed} of {total_days})"
@@ -192,12 +196,12 @@ fn view_category_outlook(
     }
 
     let home_col = build_column(
-        format!("HOME ({})", home_winning.len()),
+        format!("{} ({})", home_abbrev, home_winning.len()),
         TextColor::Default,
         &home_winning,
     );
     let away_col = build_column(
-        format!("AWAY ({})", away_winning.len()),
+        format!("{} ({})", away_abbrev, away_winning.len()),
         TextColor::Error,
         &away_winning,
     );
@@ -217,7 +221,7 @@ fn view_category_outlook(
     .into()
 }
 
-fn view_close_categories(scores: &[CategoryScore]) -> Element<'static, AnalyticsMessage> {
+fn view_close_categories(scores: &[CategoryScore], home_abbrev: &str, away_abbrev: &str) -> Element<'static, AnalyticsMessage> {
     let header = section_header("CLOSE CATEGORIES (swingable)");
 
     let close: Vec<&CategoryScore> = scores
@@ -249,7 +253,7 @@ fn view_close_categories(scores: &[CategoryScore]) -> Element<'static, Analytics
     ];
 
     let table_hdr = table_header_row(
-        &["Category", "Home", "Away", "H-A", "Status"],
+        &["Category", home_abbrev, away_abbrev, "Diff", "Status"],
         col_widths,
         col_aligns,
     );
@@ -271,7 +275,7 @@ fn view_close_categories(scores: &[CategoryScore]) -> Element<'static, Analytics
                 (&format_value(cat.home_value, precision), TextColor::Default),
                 (&format_value(cat.away_value, precision), TextColor::Default),
                 (&format_signed_value(raw_diff, precision), color),
-                (&build_close_status(cat, is_counting, effective_diff), color),
+                (&build_close_status(cat, is_counting, effective_diff, home_abbrev, away_abbrev), color),
             ],
             col_widths,
             col_aligns,
@@ -290,6 +294,8 @@ fn view_pace_projections(
     scores: &[CategoryScore],
     days_elapsed: usize,
     total_days: usize,
+    home_abbrev: &str,
+    away_abbrev: &str,
 ) -> Element<'static, AnalyticsMessage> {
     let header = section_header("PACE PROJECTIONS");
 
@@ -328,8 +334,10 @@ fn view_pace_projections(
         alignment::Horizontal::Left,
     ];
 
+    let home_proj_label = format!("{} Proj", home_abbrev);
+    let away_proj_label = format!("{} Proj", away_abbrev);
     let table_hdr = table_header_row(
-        &["Category", "Home", "Home Proj", "Away Proj", "Proj Result"],
+        &["Category", home_abbrev, &home_proj_label, &away_proj_label, "Proj Result"],
         col_widths,
         col_aligns,
     );
@@ -350,9 +358,9 @@ fn view_pace_projections(
         };
 
         let (result_label, result_color) = if proj_diff > 0.001 {
-            ("HOME", TextColor::Default)
+            (home_abbrev, TextColor::Default)
         } else if proj_diff < -0.001 {
-            ("AWAY", TextColor::Error)
+            (away_abbrev, TextColor::Error)
         } else {
             ("TIE", TextColor::Yellow)
         };
@@ -545,19 +553,19 @@ fn project_counting_stat(current: f64, days_elapsed: usize, total_days: usize) -
     (current / days_elapsed as f64) * total_days as f64
 }
 
-fn build_close_status(cat: &CategoryScore, is_counting: bool, effective_diff: f64) -> String {
+fn build_close_status(cat: &CategoryScore, is_counting: bool, effective_diff: f64, home_abbrev: &str, away_abbrev: &str) -> String {
     match cat.state {
-        CategoryState::HomeWinning => "HOME - lead is narrow".to_string(),
+        CategoryState::HomeWinning => format!("{} - lead is narrow", home_abbrev),
         CategoryState::AwayWinning => {
             if is_counting {
                 let to_tie = effective_diff.abs().ceil() as i64;
                 let to_lead = to_tie + 1;
                 format!(
-                    "AWAY - {} {} to tie, {} to lead",
-                    to_tie, cat.stat_abbrev, to_lead
+                    "{} - {} {} to tie, {} to lead",
+                    away_abbrev, to_tie, cat.stat_abbrev, to_lead
                 )
             } else {
-                "AWAY - gap is closeable".to_string()
+                format!("{} - gap is closeable", away_abbrev)
             }
         }
         CategoryState::Tied => {

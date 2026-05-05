@@ -6,7 +6,7 @@ use twui::{
     empty_state, frame, text,
 };
 use wyncast_app::protocol::ScrollDirection;
-use wyncast_baseball::matchup::{DailyPlayerRow, DailyTotals, ScoringDay, TeamSide};
+use wyncast_baseball::matchup::{DailyPlayerRow, DailyTotals, ScoringDay};
 
 use crate::widgets::data_table::{Column, DataTableStyle, ROW_HEIGHT, data_table};
 
@@ -133,14 +133,14 @@ fn build_rows<'a>(
     let mut rows: Vec<Vec<Element<DailyStatsMessage>>> = Vec::new();
 
     for player in home_batting {
-        rows.push(player_row(TeamSide::Home, player, stat_cols));
+        rows.push(player_row(home_name, player, stat_cols));
     }
     if let Some(totals) = home_totals {
         rows.push(totals_row(home_name, stat_cols.len(), &totals.stats));
     }
 
     for player in away_batting {
-        rows.push(player_row(TeamSide::Away, player, stat_cols));
+        rows.push(player_row(away_name, player, stat_cols));
     }
     if let Some(totals) = away_totals {
         rows.push(totals_row(away_name, stat_cols.len(), &totals.stats));
@@ -150,15 +150,10 @@ fn build_rows<'a>(
 }
 
 fn player_row<'a>(
-    side: TeamSide,
+    side_label: &str,
     row: &'a DailyPlayerRow,
     stat_cols: &'a [String],
 ) -> Vec<Element<'a, DailyStatsMessage>> {
-    let side_label = match side {
-        TeamSide::Home => "Home",
-        TeamSide::Away => "Away",
-    };
-
     let mut cells: Vec<Element<DailyStatsMessage>> = vec![
         cell(side_label),
         cell(&row.slot),

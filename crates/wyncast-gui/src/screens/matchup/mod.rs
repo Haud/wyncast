@@ -322,6 +322,8 @@ fn tab_content<'a>(
     let day = snapshot.scoring_period_days.get(snapshot.selected_day);
     let home_name = &snapshot.home_team.name;
     let away_name = &snapshot.away_team.name;
+    let home_abbrev = snapshot.home_team.abbrev.as_str();
+    let away_abbrev = snapshot.away_team.abbrev.as_str();
 
     match screen.active_tab {
         MatchupTab::DailyStats => screen
@@ -337,7 +339,7 @@ fn tab_content<'a>(
             };
             screen
                 .analytics
-                .view(&snapshot.category_scores, days_elapsed, total_days)
+                .view(&snapshot.category_scores, days_elapsed, total_days, home_abbrev, away_abbrev)
                 .map(MatchupMessage::Analytics)
         }
         MatchupTab::HomeRoster => screen
@@ -356,9 +358,11 @@ fn sidebar_view<'a>(
     snapshot: &'a MatchupSnapshot,
 ) -> Element<'a, MatchupMessage> {
     let focused = screen.focus == Some(MatchupFocusPanel::CategoryTracker);
+    let home_abbrev = snapshot.home_team.abbrev.as_str();
+    let away_abbrev = snapshot.away_team.abbrev.as_str();
     let tracker = screen
         .category_tracker
-        .view(&snapshot.category_scores, focused)
+        .view(&snapshot.category_scores, home_abbrev, away_abbrev, focused)
         .map(MatchupMessage::CategoryTracker);
 
     frame(

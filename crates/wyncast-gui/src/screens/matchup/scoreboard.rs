@@ -14,12 +14,12 @@ pub fn view<'a>(
     info: &'a MatchupInfo,
     category_scores: &'a [CategoryScore],
 ) -> Element<'a, MatchupMessage> {
-    let home_card = team_card(home_team, "Home");
-    let away_card = team_card(away_team, "Away");
+    let home_card = team_card(home_team);
+    let away_card = team_card(away_team);
     let summary = category_summary(category_scores);
 
     let inner: Element<MatchupMessage> = h_stack(
-        vec![home_card, summary, away_card],
+        vec![away_card, summary, home_card],
         StackStyle {
             gap: StackGap::Md,
             align: StackAlign::Center,
@@ -59,7 +59,7 @@ pub fn view<'a>(
     outer
 }
 
-fn team_card<'a>(team: &'a TeamMatchupState, _side: &str) -> Element<'a, MatchupMessage> {
+fn team_card<'a>(team: &'a TeamMatchupState) -> Element<'a, MatchupMessage> {
     let name: Element<MatchupMessage> = text(
         team.name.clone(),
         TextStyle {
