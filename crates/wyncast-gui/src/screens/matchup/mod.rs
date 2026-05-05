@@ -1,3 +1,4 @@
+pub mod colors;
 mod category_tracker;
 mod scoreboard;
 pub mod tabs;

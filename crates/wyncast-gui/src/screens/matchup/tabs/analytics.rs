@@ -8,6 +8,8 @@ use twui::{
 use wyncast_app::protocol::ScrollDirection;
 use wyncast_baseball::matchup::{CategoryScore, CategoryState};
 
+use super::super::colors::{HOME_COLOR, AWAY_COLOR, state_color, tied_color};
+
 use crate::widgets::data_table::ROW_HEIGHT;
 
 // ---------------------------------------------------------------------------
@@ -159,30 +161,31 @@ fn view_category_outlook(
 
     fn build_column(
         title: String,
-        color: TextColor,
+        color: iced::Color,
         cats: &[&CategoryScore],
     ) -> Element<'static, AnalyticsMessage> {
         let mut entries: Vec<Element<'static, AnalyticsMessage>> = Vec::with_capacity(cats.len() + 1);
         entries.push(
-            container(text(
-                title,
-                TextStyle {
-                    size: TextSize::Xs,
-                    color,
-                    weight: TextWeight::Semibold,
-                    ..Default::default()
-                },
-            ))
+            container(
+                iced::widget::Text::new(title)
+                    .size(12.0)
+                    .color(color)
+                    .font(iced::Font {
+                        weight: iced::font::Weight::Semibold,
+                        ..Default::default()
+                    }),
+            )
             .padding(Padding::new(2.0))
             .into(),
         );
         for cat in cats {
             let diff = format_diff(cat);
             entries.push(
-                container(text(
-                    format!("{}  {diff}", cat.stat_abbrev),
-                    TextStyle { size: TextSize::Xs, color, ..Default::default() },
-                ))
+                container(
+                    iced::widget::Text::new(format!("{}  {diff}", cat.stat_abbrev))
+                        .size(12.0)
+                        .color(color),
+                )
                 .padding(Padding::new(2.0))
                 .into(),
             );
@@ -197,17 +200,17 @@ fn view_category_outlook(
 
     let home_col = build_column(
         format!("{} ({})", home_abbrev, home_winning.len()),
-        TextColor::Default,
+        HOME_COLOR,
         &home_winning,
     );
     let away_col = build_column(
         format!("{} ({})", away_abbrev, away_winning.len()),
-        TextColor::Error,
+        AWAY_COLOR,
         &away_winning,
     );
     let tied_col = build_column(
         format!("TIED ({})", tied.len()),
-        TextColor::Yellow,
+        tied_color(),
         &tied,
     );
 
@@ -267,13 +270,13 @@ fn view_close_categories(scores: &[CategoryScore], home_abbrev: &str, away_abbre
 
         let raw_diff = cat.home_value - cat.away_value;
         let effective_diff = if lower_better { -raw_diff } else { raw_diff };
-        let color = state_text_color(&cat.state);
+        let color = Some(state_color(&cat.state));
 
         rows.push(table_data_row(
             &[
-                (&cat.stat_abbrev, TextColor::Default),
-                (&format_value(cat.home_value, precision), TextColor::Default),
-                (&format_value(cat.away_value, precision), TextColor::Default),
+                (&cat.stat_abbrev, None),
+                (&format_value(cat.home_value, precision), None),
+                (&format_value(cat.away_value, precision), None),
                 (&format_signed_value(raw_diff, precision), color),
                 (&build_close_status(cat, is_counting, effective_diff, home_abbrev, away_abbrev), color),
             ],
@@ -358,11 +361,11 @@ fn view_pace_projections(
         };
 
         let (result_label, result_color) = if proj_diff > 0.001 {
-            (home_abbrev, TextColor::Default)
+            (home_abbrev, Some(HOME_COLOR))
         } else if proj_diff < -0.001 {
-            (away_abbrev, TextColor::Error)
+            (away_abbrev, Some(AWAY_COLOR))
         } else {
-            ("TIE", TextColor::Yellow)
+            ("TIE", Some(tied_color()))
         };
 
         let raw_proj_diff = home_proj - away_proj;
@@ -371,10 +374,10 @@ fn view_pace_projections(
 
         rows.push(table_data_row(
             &[
-                (&cat.stat_abbrev, TextColor::Default),
-                (&format_value(cat.home_value, precision), TextColor::Default),
-                (&format_value(home_proj, precision), TextColor::Default),
-                (&format_value(away_proj, precision), TextColor::Default),
+                (&cat.stat_abbrev, None),
+                (&format_value(cat.home_value, precision), None),
+                (&format_value(home_proj, precision), None),
+                (&format_value(away_proj, precision), None),
                 (&result_str, result_color),
             ],
             col_widths,
@@ -429,7 +432,7 @@ fn table_header_row(
 }
 
 fn table_data_row(
-    cells: &[(&str, TextColor)],
+    cells: &[(&str, Option<iced::Color>)],
     widths: &[Length],
     aligns: &[alignment::Horizontal],
     row_index: usize,
@@ -438,16 +441,17 @@ fn table_data_row(
         .iter()
         .zip(widths.iter().zip(aligns.iter()))
         .map(|((content, color), (width, align))| {
-            container(text(
-                content.to_string(),
-                TextStyle { size: TextSize::Xs, color: *color, ..Default::default() },
-            ))
-            .width(*width)
-            .height(Length::Fixed(ROW_HEIGHT))
-            .align_x(*align)
-            .align_y(alignment::Vertical::Center)
-            .padding(Padding::new(0.0).left(6.0).right(6.0))
-            .into()
+            let mut txt = iced::widget::Text::new(content.to_string()).size(12.0);
+            if let Some(c) = color {
+                txt = txt.color(*c);
+            }
+            container(txt)
+                .width(*width)
+                .height(Length::Fixed(ROW_HEIGHT))
+                .align_x(*align)
+                .align_y(alignment::Vertical::Center)
+                .padding(Padding::new(0.0).left(6.0).right(6.0))
+                .into()
         })
         .collect();
 
@@ -469,14 +473,6 @@ fn table_data_row(
 // ---------------------------------------------------------------------------
 // Computation helpers
 // ---------------------------------------------------------------------------
-
-fn state_text_color(state: &CategoryState) -> TextColor {
-    match state {
-        CategoryState::HomeWinning => TextColor::Default,
-        CategoryState::AwayWinning => TextColor::Error,
-        CategoryState::Tied => TextColor::Yellow,
-    }
-}
 
 fn stat_precision(abbrev: &str) -> usize {
     match abbrev {
