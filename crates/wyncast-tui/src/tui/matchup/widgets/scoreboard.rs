@@ -21,9 +21,7 @@ use ratatui::Frame;
 
 use crate::matchup::{CategoryScore, CategoryState, TeamMatchupState};
 use crate::stats::StatRegistry;
-
-const HOME_COLOR: Color = Color::LightBlue;
-const AWAY_COLOR: Color = Color::Rgb(255, 165, 0);
+use crate::tui::matchup::colors::{HOME_COLOR, AWAY_COLOR, TIED_COLOR};
 
 /// Column width for each stat value cell.
 const COL_WIDTH: usize = 6;
@@ -218,7 +216,7 @@ fn render_lead_bar(
             Style::default().fg(AWAY_COLOR),
         )
     } else {
-        Span::styled("TIED", Style::default().fg(Color::Yellow))
+        Span::styled("TIED", Style::default().fg(TIED_COLOR))
     };
 
     let lines = vec![label_line, bar_line, Line::from(diff_label)];
@@ -350,7 +348,7 @@ fn cell_style(state: CategoryState, is_home: bool) -> (Style, &'static str) {
                 )
             }
         }
-        CategoryState::Tied => (Style::default().fg(Color::Yellow), ""),
+        CategoryState::Tied => (Style::default().fg(TIED_COLOR), ""),
     }
 }
 
@@ -495,11 +493,11 @@ mod tests {
     #[test]
     fn tied_is_yellow_on_both_sides() {
         let (style, prefix) = cell_style(CategoryState::Tied, true);
-        assert_eq!(style.fg, Some(Color::Yellow));
+        assert_eq!(style.fg, Some(TIED_COLOR));
         assert_eq!(prefix, "");
 
         let (style, prefix) = cell_style(CategoryState::Tied, false);
-        assert_eq!(style.fg, Some(Color::Yellow));
+        assert_eq!(style.fg, Some(TIED_COLOR));
         assert_eq!(prefix, "");
     }
 

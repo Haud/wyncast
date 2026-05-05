@@ -8,18 +8,7 @@ use twui::{
 use wyncast_app::protocol::ScrollDirection;
 use wyncast_baseball::matchup::{CategoryScore, CategoryState};
 
-const GUI_HOME_COLOR: iced::Color = iced::Color {
-    r: 0.392,
-    g: 0.584,
-    b: 0.929,
-    a: 1.0,
-};
-const GUI_AWAY_COLOR: iced::Color = iced::Color {
-    r: 1.0,
-    g: 0.647,
-    b: 0.0,
-    a: 1.0,
-};
+use super::super::colors::{HOME_COLOR, AWAY_COLOR, state_color, tied_color};
 
 use crate::widgets::data_table::ROW_HEIGHT;
 
@@ -211,17 +200,17 @@ fn view_category_outlook(
 
     let home_col = build_column(
         format!("{} ({})", home_abbrev, home_winning.len()),
-        GUI_HOME_COLOR,
+        HOME_COLOR,
         &home_winning,
     );
     let away_col = build_column(
         format!("{} ({})", away_abbrev, away_winning.len()),
-        GUI_AWAY_COLOR,
+        AWAY_COLOR,
         &away_winning,
     );
     let tied_col = build_column(
         format!("TIED ({})", tied.len()),
-        Colors::Warning.rgb(),
+        tied_color(),
         &tied,
     );
 
@@ -372,11 +361,11 @@ fn view_pace_projections(
         };
 
         let (result_label, result_color) = if proj_diff > 0.001 {
-            (home_abbrev, Some(GUI_HOME_COLOR))
+            (home_abbrev, Some(HOME_COLOR))
         } else if proj_diff < -0.001 {
-            (away_abbrev, Some(GUI_AWAY_COLOR))
+            (away_abbrev, Some(AWAY_COLOR))
         } else {
-            ("TIE", Some(Colors::Warning.rgb()))
+            ("TIE", Some(tied_color()))
         };
 
         let raw_proj_diff = home_proj - away_proj;
@@ -484,14 +473,6 @@ fn table_data_row(
 // ---------------------------------------------------------------------------
 // Computation helpers
 // ---------------------------------------------------------------------------
-
-fn state_color(state: &CategoryState) -> iced::Color {
-    match state {
-        CategoryState::HomeWinning => GUI_HOME_COLOR,
-        CategoryState::AwayWinning => GUI_AWAY_COLOR,
-        CategoryState::Tied => Colors::Warning.rgb(),
-    }
-}
 
 fn stat_precision(abbrev: &str) -> usize {
     match abbrev {

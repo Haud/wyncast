@@ -17,10 +17,8 @@ use ratatui::Frame;
 use crate::matchup::{CategoryScore, CategoryState, ScoringDay};
 use crate::stats::{SortDirection, StatComputation, StatDefinition, StatRegistry};
 use crate::tui::action::Action;
+use crate::tui::matchup::colors::{HOME_COLOR, AWAY_COLOR, TIED_COLOR};
 use crate::tui::scroll::{ScrollDirection, ScrollState};
-
-const HOME_COLOR: Color = Color::LightBlue;
-const AWAY_COLOR: Color = Color::Rgb(255, 165, 0);
 
 // ---------------------------------------------------------------------------
 // Messages
@@ -206,7 +204,7 @@ fn build_category_outlook(
         Span::styled(
             format!("TIED ({})", tied.len()),
             Style::default()
-                .fg(Color::Yellow)
+                .fg(TIED_COLOR)
                 .add_modifier(Modifier::BOLD),
         ),
     ]));
@@ -245,7 +243,7 @@ fn build_category_outlook(
             let diff = format_diff(cat, registry);
             spans.push(Span::styled(
                 format!("{:<6}{}", cat.stat_abbrev, diff),
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(TIED_COLOR),
             ));
         }
 
@@ -304,7 +302,7 @@ fn build_close_categories(
         let color = match cat.state {
             CategoryState::HomeWinning => HOME_COLOR,
             CategoryState::AwayWinning => AWAY_COLOR,
-            CategoryState::Tied => Color::Yellow,
+            CategoryState::Tied => TIED_COLOR,
         };
 
         lines.push(Line::from(vec![
@@ -379,7 +377,7 @@ fn build_pace_projections(
         } else if proj_diff < -0.001 {
             (away_abbrev, AWAY_COLOR)
         } else {
-            ("TIE", Color::Yellow)
+            ("TIE", TIED_COLOR)
         };
 
         let raw_proj_diff = home_proj - away_proj;

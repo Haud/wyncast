@@ -12,10 +12,8 @@ use ratatui::Frame;
 use crate::matchup::{CategoryScore, CategoryState};
 use crate::stats::{PlayerType, SortDirection, lookup_stat_definition};
 use crate::tui::action::Action;
+use crate::tui::matchup::colors::{HOME_COLOR, AWAY_COLOR, TIED_COLOR};
 use crate::tui::scroll::{ScrollDirection, ScrollState};
-
-const HOME_COLOR: Color = Color::LightBlue;
-const AWAY_COLOR: Color = Color::Rgb(255, 165, 0);
 use crate::tui::widgets::focused_border_style;
 
 // ---------------------------------------------------------------------------
@@ -226,7 +224,7 @@ fn build_category_line(cs: &CategoryScore, available_width: usize, home_abbrev: 
     let status_color = match cs.state {
         CategoryState::HomeWinning => HOME_COLOR,
         CategoryState::AwayWinning => AWAY_COLOR,
-        CategoryState::Tied => Color::Yellow,
+        CategoryState::Tied => TIED_COLOR,
     };
 
     let label = format!(" {:<4} ", abbrev);
